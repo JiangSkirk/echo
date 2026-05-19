@@ -1,0 +1,313 @@
+"""Search engines with unified interface."""
+
+from __future__ import annotations
+
+import asyncio
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+
+import httpx
+
+from js.utils.log import get_logger
+from js.utils.metrics import get_metrics
+
+logger = get_logger("js.search")
+
+
+@dataclass
+class SearchResult:
+    title: str
+    url: str
+    snippet: str
+    source: str
+
+
+class SearchEngine(ABC):
+    """Abstract base for search engines."""
+
+    @abstractmethod
+    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        ...
+
+    @abstractmethod
+    async def health_check(self) -> bool:
+        ...
+
+
+class DuckDuckGoEngine(SearchEngine):
+    """DuckDuckGo search via html interface (no API key required)."""
+
+    _USER_AGENT = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+
+    def __init__(self, timeout: float = 15.0) -> None:
+        self.timeout = timeout
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout),
+            follow_redirects=True,
+            headers={"User-Agent": self._USER_AGENT},
+        )
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        await asyncio.sleep(1)  # Rate-limit delay
+
+        for attempt in range(3):  # initial + 2 retries
+            try:
+                resp = await self._client.get(
+                    "https://html.duckduckgo.com/html/",
+                    params={"q": query},
+                )
+                if resp.status_code == 200:
+                    return self._parse_html(resp.text, max_results)
+
+                # Do not retry permanent client errors (except 429 Too Many Requests)
+                if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                    logger.warning(
+                        f"DuckDuckGo returned {resp.status_code}, not retrying"
+                    )
+                    break
+
+                logger.warning(
+                    f"DuckDuckGo returned {resp.status_code}, "
+                    f"attempt {attempt + 1}/3"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"DuckDuckGo request failed: {e}, attempt {attempt + 1}/3"
+                )
+
+            if attempt < 2:
+                await asyncio.sleep(2 ** attempt)  # 1s, 2s exponential backoff
+
+        # Fallback to DuckDuckGo Lite
+        return await self._search_via_lite(query, max_results)
+
+    async def _search_via_lite(self, query: str, max_results: int) -> list[SearchResult]:
+        """Fallback using DuckDuckGo Lite."""
+        await asyncio.sleep(1)
+        try:
+            resp = await self._client.get(
+                "https://lite.duckduckgo.com/lite/",
+                params={"q": query},
+            )
+            return self._parse_html(resp.text, max_results)
+        except Exception as e:
+            logger.error(f"DuckDuckGo lite fallback failed: {e}")
+            return []
+
+    def _parse_html(self, html: str, max_results: int) -> list[SearchResult]:
+        import re
+        results: list[SearchResult] = []
+
+        # Remove scripts and styles to avoid false matches
+        html = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.S | re.I)
+
+        # Find result blocks: <div> containers whose class attribute starts
+        # with the word "result" (e.g. "result", "result results_links").
+        # This avoids brittle CSS-class-specific regexes.
+        block_starts = [
+            m.start()
+            for m in re.finditer(
+                r'<div[^>]*class="(?:[^"]*\s)?result(?:\s[^"]*)?"[^>]*>',
+                html,
+                re.I,
+            )
+        ]
+
+        for i, start in enumerate(block_starts):
+            end = block_starts[i + 1] if i + 1 < len(block_starts) else len(html)
+            block = html[start:end]
+
+            # Within each block, pick the first <a> tag that points to an
+            # external URL (skip internal DuckDuckGo navigation links).
+            for link_match in re.finditer(
+                r'<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', block, re.S
+            ):
+                url = link_match.group(1)
+                title = re.sub(r"<[^>]+>", "", link_match.group(2)).strip()
+
+                if not url.startswith("http") or "duckduckgo.com" in url or not title:
+                    continue
+
+                # Snippet: first substantial text chunk after the title link
+                after = block[link_match.end() :]
+                snippet = ""
+                for text_match in re.finditer(r">([^<]{10,})<", after, re.S):
+                    candidate = re.sub(r"<[^>]+>", "", text_match.group(1)).strip()
+                    if candidate and candidate != title:
+                        snippet = candidate
+                        break
+
+                results.append(
+                    SearchResult(
+                        title=title,
+                        url=url,
+                        snippet=snippet,
+                        source="duckduckgo",
+                    )
+                )
+                break  # Only one result per block
+
+            if len(results) >= max_results:
+                break
+
+        return results
+
+    async def health_check(self) -> bool:
+        try:
+            resp = await self._client.get("https://duckduckgo.com", timeout=5.0)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+
+class TavilyEngine(SearchEngine):
+    """Tavily AI search (requires API key, higher quality)."""
+
+    def __init__(self, api_key: str, timeout: float = 15.0) -> None:
+        self.api_key = api_key
+        self.timeout = timeout
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout),
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        try:
+            try:
+                get_metrics().search_requests_total.labels(engine="tavily").inc()
+            except Exception:
+                pass
+            resp = await self._client.post(
+                "https://api.tavily.com/search",
+                json={
+                    "query": query,
+                    "max_results": max_results,
+                    "search_depth": "basic",
+                    "include_answer": False,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            results: list[SearchResult] = []
+            for r in data.get("results", []):
+                results.append(SearchResult(
+                    title=r.get("title", ""),
+                    url=r.get("url", ""),
+                    snippet=r.get("content", ""),
+                    source="tavily",
+                ))
+            return results
+        except Exception as e:
+            logger.error(f"Tavily search failed: {e}")
+            return []
+
+    async def health_check(self) -> bool:
+        try:
+            resp = await self._client.post(
+                "https://api.tavily.com/search",
+                json={"query": "test", "max_results": 1},
+                timeout=5.0,
+            )
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+
+class SerperEngine(SearchEngine):
+    """Serper.dev Google search (requires API key)."""
+
+    def __init__(self, api_key: str, timeout: float = 15.0) -> None:
+        self.api_key = api_key
+        self.timeout = timeout
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout),
+            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+        )
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        try:
+            try:
+                get_metrics().search_requests_total.labels(engine="serper").inc()
+            except Exception:
+                pass
+            resp = await self._client.post(
+                "https://google.serper.dev/search",
+                json={"q": query, "num": max_results},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            results: list[SearchResult] = []
+            for r in data.get("organic", []):
+                results.append(SearchResult(
+                    title=r.get("title", ""),
+                    url=r.get("link", ""),
+                    snippet=r.get("snippet", ""),
+                    source="serper",
+                ))
+            return results
+        except Exception as e:
+            logger.error(f"Serper search failed: {e}")
+            return []
+
+    async def health_check(self) -> bool:
+        try:
+            resp = await self._client.post(
+                "https://google.serper.dev/search",
+                json={"q": "test", "num": 1},
+                timeout=5.0,
+            )
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+
+class SearchManager:
+    """Manages multiple search engines with fallback."""
+
+    def __init__(self) -> None:
+        self.engines: list[SearchEngine] = []
+        self._default: SearchEngine | None = None
+
+    def register(self, engine: SearchEngine, default: bool = False) -> None:
+        self.engines.append(engine)
+        if default or self._default is None:
+            self._default = engine
+
+    async def close(self) -> None:
+        for engine in self.engines:
+            close_method = getattr(engine, "close", None)
+            if close_method:
+                await close_method()
+
+    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        """Search with fallback across all engines."""
+        errors: list[str] = []
+        for engine in self.engines:
+            try:
+                results = await engine.search(query, max_results)
+                if results:
+                    return results
+            except Exception as e:
+                errors.append(f"{type(engine).__name__}: {e}")
+
+        logger.error(f"All search engines failed: {errors}")
+        return []
+
+    async def health_check(self) -> dict[str, bool]:
+        return {
+            type(e).__name__: await e.health_check()
+            for e in self.engines
+        }

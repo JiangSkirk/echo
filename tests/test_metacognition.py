@@ -1,0 +1,73 @@
+"""Tests for metacognition loop."""
+
+from pathlib import Path
+
+import pytest
+
+from js.compression.feedback import CompressionFeedback
+from js.evolution.learner import SelfLearner
+from js.evolution.metacognition import MetacognitionLoop
+from js.evolution.optimizer import PromptOptimizer
+
+
+class TestMetacognitionLoop:
+    @pytest.fixture
+    def loop(self, tmp_path: Path) -> MetacognitionLoop:
+        learner = SelfLearner(tmp_path)
+        optimizer = PromptOptimizer(tmp_path)
+        feedback = CompressionFeedback(tmp_path)
+        return MetacognitionLoop(
+            tmp_path,
+            learner=learner,
+            optimizer=optimizer,
+            compression_feedback=feedback,
+        )
+
+    def test_init(self, loop: MetacognitionLoop) -> None:
+        assert loop.learner is not None
+        assert loop.optimizer is not None
+
+    def test_tick_interval(self, loop: MetacognitionLoop) -> None:
+        # Should not trigger before interval
+        result = None
+        for _ in range(MetacognitionLoop.DEFAULT_INTERVAL - 1):
+            result = loop.tick()
+        assert result is None
+
+        # Should trigger at interval
+        result = loop.tick()
+        assert result is not None
+        assert hasattr(result, "overall_health_score")
+
+    def test_reflect(self, loop: MetacognitionLoop) -> None:
+        report = loop.reflect()
+        assert report.overall_health_score >= 0.0
+        assert report.overall_health_score <= 1.0
+        assert isinstance(report.proposals, list)
+
+    def test_reflect_with_compression_issues(self, loop: MetacognitionLoop) -> None:
+        # Record compressions followed by failures
+        for i in range(10):
+            loop.compression_feedback.record_compression(f"s{i}", 1000, 600, "full", 10, 5, 0)
+            loop.compression_feedback.record_outcome(f"s{i}", 1, False)
+        report = loop.reflect()
+        compression_proposals = [p for p in report.proposals if p["area"] == "compression"]
+        assert len(compression_proposals) > 0
+
+    def test_reflect_with_learning_issues(self, loop: MetacognitionLoop) -> None:
+        for _ in range(10):
+            loop.learner.record_interaction("s1", "x", "y", [], success=False)
+        report = loop.reflect()
+        learning_proposals = [p for p in report.proposals if p["area"] == "learning"]
+        assert len(learning_proposals) > 0
+
+    def test_recent_reports(self, loop: MetacognitionLoop) -> None:
+        loop.reflect()
+        reports = loop.get_recent_reports(limit=5)
+        assert len(reports) >= 1
+        assert "health_score" in reports[0]
+
+    def test_get_proposals(self, loop: MetacognitionLoop) -> None:
+        loop.reflect()
+        proposals = loop.get_proposals()
+        assert isinstance(proposals, list)

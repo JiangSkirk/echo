@@ -1,0 +1,57 @@
+# JS Agent Configuration Example
+
+workspace: ~/.js/workspace
+state_dir: ~/.js/state
+log_level: INFO
+
+max_turns: 50
+auto_delegate: true
+
+providers:
+  - name: lmstudio
+    base_url: http://127.0.0.1:1234/v1
+    api_key_env: LMSTUDIO_API_KEY
+    timeout: 120
+    max_retries: 3
+    models:
+      - id: qwen3.5-122b-a10b
+        name: Qwen3.5 122B
+        context_window: 128000
+        max_tokens: 4096
+        supports_vision: true
+
+  - name: openrouter
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    timeout: 60
+    models:
+      - id: kimi-k2.6
+        name: Kimi K2.6
+        context_window: 256000
+        max_tokens: 8192
+
+tools:
+  shell_timeout: 300
+  shell_max_output_bytes: 50000
+  file_read_max_chars: 100000
+  max_concurrent_tools: 4
+
+security:
+  defense_mode: enforce
+  protected_paths:
+    - /
+    - /etc
+    - /usr
+  secret_redaction: true
+  audit_enabled: true
+  max_loop_iterations: 10
+  encoding_guard: true
+
+memory:
+  enabled: true
+  max_memory_chars: 8000
+  auto_summarize: true
+
+display:
+  streaming: true
+  show_cost: false

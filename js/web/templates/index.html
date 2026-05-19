@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com; font-src https://cdnjs.cloudflare.com; connect-src 'self' ws: wss:;">
+<title>JS Agent</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+<style>
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 5px rgba(59,130,246,0.3); }
+  50% { box-shadow: 0 0 20px rgba(59,130,246,0.6); }
+}
+.msg-user { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); }
+.msg-assistant { background: #1f2937; border: 1px solid #374151; }
+.typing-dot { animation: bounce 1.4s infinite ease-in-out both; }
+.typing-dot:nth-child(1) { animation-delay: -0.32s; }
+.typing-dot:nth-child(2) { animation-delay: -0.16s; }
+@keyframes bounce {
+  0%, 80%, 100% { transform: scale(0); }
+  40% { transform: scale(1); }
+}
+#sidebar { transition: transform 0.3s ease; }
+.markdown pre { background: #111827; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; }
+.markdown code { background: #374151; padding: 0.2rem 0.4rem; border-radius: 0.25rem; font-size: 0.875rem; }
+.markdown pre code { background: transparent; padding: 0; }
+/* Chat scroll & wrap fixes */
+#tab-chat { min-height: 0; overflow: hidden; }
+#chat-messages { min-height: 0; overflow-x: hidden; width: 100%; }
+.msg-user, .msg-assistant { word-break: break-word; overflow-wrap: break-word; min-width: 0; overflow-wrap: anywhere; max-width: 100%; box-sizing: border-box; }
+/* Force message row containers to not expand */
+#chat-messages > div { min-width: 0; }
+.markdown pre { white-space: pre-wrap; word-break: break-all; max-width: 100%; box-sizing: border-box; min-width: 0; }
+/* Session list */
+#session-list { transition: max-height 0.3s ease, opacity 0.3s ease; }
+.session-item { cursor: pointer; }
+.session-item:hover { background: #374151; }
+</style>
+</head>
+<body class="bg-gray-950 text-gray-100 h-screen flex overflow-hidden">
+
+<!-- Sidebar -->
+<aside id="sidebar" class="w-64 bg-gray-900 border-r border-gray-800 flex flex-col transform -translate-x-full md:translate-x-0 absolute md:relative z-20 h-full">
+  <div class="p-4 border-b border-gray-800 flex items-center gap-3">
+    <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+      <i class="fas fa-robot text-white text-sm"></i>
+    </div>
+    <h1 class="font-bold text-lg">JS Agent</h1>
+  </div>
+  <nav class="flex-1 p-2 space-y-1 overflow-y-auto">
+    <div>
+      <button onclick="toggleSessionList()" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2 text-blue-400 bg-gray-800/50" id="nav-chat">
+        <i class="fas fa-comments w-5"></i> 对话
+        <i id="session-chevron" class="fas fa-chevron-down text-xs text-gray-500 ml-auto transition-transform"></i>
+      </button>
+      <div id="session-list" class="overflow-y-auto space-y-0.5" style="max-height: 0px; opacity: 0;">
+        <!-- Sessions loaded dynamically -->
+      </div>
+    </div>
+    <button onclick="switchTab('files')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-files">
+      <i class="fas fa-folder w-5"></i> 文件
+    </button>
+    <button onclick="switchTab('memory')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-memory">
+      <i class="fas fa-brain w-5"></i> 记忆
+    </button>
+    <button onclick="switchTab('audit')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-audit">
+      <i class="fas fa-shield-alt w-5"></i> 审计
+    </button>
+    <button onclick="switchTab('skills')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-skills">
+      <i class="fas fa-magic w-5"></i> Skills
+    </button>
+    <button onclick="switchTab('agents')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-agents">
+      <i class="fas fa-network-wired w-5"></i> 多Agent
+    </button>
+    <button onclick="switchTab('evolution')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-evolution">
+      <i class="fas fa-dna w-5"></i> 进化
+    </button>
+    <button onclick="switchTab('models')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-models">
+      <i class="fas fa-microchip w-5"></i> 模型
+    </button>
+    <button onclick="switchTab('search')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-search">
+      <i class="fas fa-search w-5"></i> 搜索
+    </button>
+    <button onclick="switchTab('stats')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-stats">
+      <i class="fas fa-coins w-5"></i> 用量统计
+    </button>
+    <button onclick="switchTab('status')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-status">
+      <i class="fas fa-chart-line w-5"></i> 状态
+    </button>
+  </nav>
+  <div class="p-4 border-t border-gray-800 text-xs text-gray-500">
+    <div id="conn-status" class="flex items-center gap-2">
+      <span class="w-2 h-2 rounded-full bg-green-500"></span> 已连接
+    </div>
+  </div>
+</aside>
+
+<!-- Main Content -->
+<main class="flex-1 flex flex-col min-w-0">
+  <!-- Header -->
+  <header class="h-14 bg-gray-900 border-b border-gray-800 flex items-center justify-between px-4">
+    <button onclick="toggleSidebar()" class="md:hidden text-gray-400 hover:text-white">
+      <i class="fas fa-bars"></i>
+    </button>
+    <div class="flex items-center gap-3">
+      <select id="current-model" onchange="setCurrentModel(this.value)" class="text-xs bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-300 focus:outline-none focus:border-blue-500">
+        <option value="">默认模型</option>
+      </select>
+      <button onclick="newSession()" class="text-xs bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded transition">
+        <i class="fas fa-plus mr-1"></i>新会话
+      </button>
+    </div>
+  </header>
+
+  <!-- Chat Tab -->
+  <div id="tab-chat" class="tab-content flex-1 flex flex-col">
+    <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-4 min-h-0"></div>
+    <div class="border-t border-gray-800 p-4">
+      <div class="max-w-4xl mx-auto">
+        <!-- Attachment preview bar -->
+        <div id="attachment-bar" class="hidden flex flex-wrap gap-2 mb-2"></div>
+        <div class="relative">
+          <textarea id="chat-input" rows="2" placeholder="输入消息... (Shift+Enter 换行, Enter 发送，或直接拖拽文件到页面)"
+            class="w-full bg-gray-800 border border-gray-700 rounded-xl px-12 py-3 resize-none focus:outline-none focus:border-blue-500 transition"></textarea>
+          <!-- Attach button -->
+          <button onclick="triggerFileSelect()" title="上传文件" class="absolute left-3 bottom-3 w-8 h-8 bg-blue-600/80 hover:bg-blue-500 rounded-lg flex items-center justify-center transition text-white shadow-lg shadow-blue-600/20">
+            <i class="fas fa-paperclip text-xs"></i>
+          </button>
+          <!-- Send button -->
+          <button onclick="sendMessage()" class="absolute right-3 bottom-3 w-8 h-8 bg-blue-600 hover:bg-blue-700 rounded-lg flex items-center justify-center transition">
+            <i class="fas fa-paper-plane text-xs"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Files Tab -->
+  <div id="tab-files" class="tab-content flex-1 hidden p-4 overflow-y-auto">
+    <div class="max-w-4xl mx-auto">
+      <div class="flex items-center gap-2 mb-4">
+        <button onclick="loadFiles()" class="bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded text-sm"><i class="fas fa-sync mr-1"></i>刷新</button>
+        <span id="file-path" class="text-sm text-gray-400">.</span>
+      </div>
+      <pre id="files-content" class="bg-gray-900 border border-gray-800 rounded-xl p-4 text-sm font-mono whitespace-pre-wrap"></pre>
+    </div>
+  </div>
+
+  <!-- Memory Tab -->
+  <div id="tab-memory" class="tab-content flex-1 hidden p-4 overflow-y-auto">
+    <div class="max-w-4xl mx-auto space-y-4">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xl font-bold">记忆内容</h2>
+        <button onclick="loadMemory()" class="text-sm bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-lg transition flex items-center gap-1">
+          <i class="fas fa-sync-alt text-xs"></i> 刷新
+        </button>
+      </div>
+
+      <!-- Active Context -->
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+        <h3 class="font-bold mb-2 text-blue-400"><i class="fas fa-brain mr-2"></i>当前上下文</h3>
+        <pre id="memory-context" class="text-sm font-mono whitespace-pre-wrap text-gray-300 min-h-[3rem]"></pre>
+      </div>
+
+      <!-- Working Memory -->
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+        <h3 class="font-bold mb-2 text-cyan-400"><i class="fas fa-bolt mr-2"></i>工作记忆 (Working)</h3>
+        <div id="memory-working" class="space-y-2"></div>
+      </div>
+
+      <!-- Semantic Memory -->
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="font-bold text-pink-400"><i class="fas fa-database mr-2"></i>长期知识 (Semantic)</h3>
+          <button onclick="showAddSemanticModal()" class="text-xs bg-pink-900/40 hover:bg-pink-900/60 text-pink-300 px-2 py-1 rounded transition">
+            <i class="fas fa-plus mr-1"></i>添加
+          </button>
+        </div>
+        <div class="flex gap-2 mb-3">
+          <input id="semantic-search" type="text" placeholder="搜索知识..." class="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-pink-500">
+          <button onclick="searchSemantic()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg text-sm transition">
+            <i class="fas fa-search"></i>
+          </button>
+        </div>
+        <div id="memory-semantic" class="space-y-2"></div>
+      </div>
+
+      <!-- Episodes -->
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+        <h3 class="font-bold mb-2 text-green-400"><i class="fas fa-film mr-2"></i>情景记忆 (Episodes)</h3>
+        <div id="memory-episodes" class="space-y-2"></div>
+      </div>
+
+      <!-- Dream Logs -->
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+        <h3 class="font-bold mb-2 text-purple-400"><i class="fas fa-moon mr-2"></i>梦境日志 (Dreams)</h3>
+        <div id="memory-dreams" class="space-y-2"></div>
+      </div>
+
+      <!-- Memory Files -->
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+        <h3 class="font-bold mb-2 text-yellow-400"><i class="fas fa-file-alt mr-2"></i>记忆文件</h3>
+        <div id="memory-files" class="grid grid-cols-1 md:grid-cols-3 gap-3"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Audit Tab -->
+  <div id="tab-audit" class="tab-content flex-1 hidden p-4 overflow-y-auto">
+    <div class="max-w-4xl mx-auto">
+      <h2 class="text-xl font-bold mb-4">审计日志</h2>
+      <div id="audit-content" class="space-y-2"></div>
+    </div>
+  </div>
+
+  <!-- Skills Tab -->
+  <div id="tab-skills" class="tab-content flex-1 hidden p-4 overflow-y-auto">
+    <div class="max-w-4xl mx-auto">
+      <h2 class="text-xl font-bold mb-4">Skills 管理</h2>
+      <div class="flex flex-wrap gap-2 mb-4">
+        <select id="skill-category-filter" onchange="loadSkills()" class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+          <option value="">所有分类</option>
+        </select>
+        <select id="skill-type-filter" onchange="loadSkills()" class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+          <option value="">所有类型</option>
+          <option value="code">Code</option>
+          <option value="prompt">Prompt</option>
+          <option value="workflow">Workflow</option>
+        </select>
+        <input id="skill-search" type="text" placeholder="搜索 skills..." oninput="loadSkills()" class="flex-1 min-w-[200px] bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+      </div>
+      <div id="skills-content" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+      <div id="skill-detail-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+        <div class="bg-gray-900 border border-gray-700 rounded-xl max-w-2xl w-full max-h-[80vh] overflow-y-auto p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h3 id="modal-skill-name" class="text-xl font-bold"></h3>
+            <button onclick="closeSkillModal()" class="text-gray-400 hover:text-white"><i class="fas fa-times"></i></button>
+          </div>
+          <div id="modal-skill-content" class="space-y-3 text-sm"></div>
+          <div class="flex gap-2 mt-6 pt-4 border-t border-gray-800">
+            <select id="modal-trust-select" class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm">
+              <option value="trusted">Trusted</option>
+              <option value="community">Community</option>
+              <option value="quarantine">Quarantine</option>
+            </select>
+            <button onclick="updateTrust()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm">更新信任等级</button>
+            <button onclick="uninstallSkill()" class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg text-sm ml-auto">卸载</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agents Tab -->
+  <div id="tab-agents" class="tab-content flex-1 hidden p-4 overflow-y-auto">
+    <div class="max-w-4xl mx-auto">
+      <h2 class="text-xl font-bold mb-4">多 Agent 协作</h2>
+      <div id="agents-content" class="space-y-4"></div>
+    </div>
+  </div>
+
+  <!-- Evolution Tab -->
+  <div id="tab-evolution" class="tab-content flex-1 hidden p-4 overflow-y-auto">
+    <div class="max-w-4xl mx-auto space-y-4">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xl font-bold">自主进化</h2>
+        <div class="flex gap-2">
+          <button onclick="runEvolutionNow()" class="text-sm bg-purple-900/40 hover:bg-purple-900/60 text-purple-300 px-3 py-1.5 rounded-lg transition flex items-center gap-1">
+            <i class="fas fa-play text-xs"></i> 立即运行
+          </button>
+          <button onclick="loadEvolution()" class="text-sm bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-lg transition flex items-center gap-1">
+            <i class="fas fa-sync-alt text-xs"></i> 刷新
+          </button>
+        </div>
+      </div>
+      <div id="evolution-content" class="space-y-4"></div>
+    </div>
+  </div>
+
+  <!-- Models Tab -->
+  <div id="tab-models" class="tab-content flex-1 hidden p-4 overflow-y-auto">
+    <div class="max-w-4xl mx-auto">
+      <h2 class="text-xl font-bold mb-4">模型管理</h2>
+
+      <!-- Add Provider Card -->
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-4">
+        <div class="flex items-center justify-between mb-3 cursor-pointer" onclick="toggleAddProvider()">
+          <h3 class="font-bold text-sm"><i class="fas fa-plus-circle text-green-400 mr-2"></i>添加 Provider</h3>
+          <i id="add-provider-chevron" class="fas fa-chevron-down text-gray-500 transition-transform"></i>
+        </div>
+        <div id="add-provider-form" class="hidden space-y-3">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs text-gray-500 block mb-1">名称</label>
+              <input id="provider-name" type="text" placeholder="例如: lm-studio" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+            </div>
+            <div>
+              <label class="text-xs text-gray-500 block mb-1">Base URL</label>
+              <input id="provider-url" type="text" placeholder="http://192.168.1.x:1234/v1" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+            </div>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 block mb-1">API Key (可选)</label>
+            <input id="provider-key" type="password" placeholder="留空表示不需要" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+          </div>
+          <div class="flex gap-2">
+            <button onclick="discoverModels()" id="btn-discover" class="bg-purple-600 hover:bg-purple-700 text-white text-sm px-3 py-2 rounded-lg transition">
+              <i class="fas fa-search mr-1"></i>自动发现模型
+            </button>
+            <button onclick="saveProvider()" id="btn-save-provider" class="bg-green-600 hover:bg-green-700 text-white text-sm px-3 py-2 rounded-lg transition hidden">
+              <i class="fas fa-check mr-1"></i>保存 Provider
+            </button>
+          </div>
+          <div id="discover-results" class="hidden">
+            <p class="text-xs text-gray-500 mb-2">发现的模型（勾选要添加的）:</p>
+            <div id="discover-list" class="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-48 overflow-y-auto"></div>
+          </div>
+          <div id="provider-error" class="text-xs text-red-400 hidden"></div>
+        </div>
+      </div>
+
+      <div id="models-content" class="space-y-4"></div>
+    </div>
+  </div>
+
+  <!-- Search Tab -->
+  <div id="tab-search" class="tab-content flex-1 hidden p-4 overflow-y-auto">
+    <div class="max-w-4xl mx-auto">
+      <h2 class="text-xl font-bold mb-4">网络搜索</h2>
+      <div class="flex gap-2 mb-4">
+        <input id="search-input" type="text" placeholder="输入搜索关键词..." class="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 focus:outline-none focus:border-blue-500">
+        <button onclick="doSearch()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg"><i class="fas fa-search mr-1"></i>搜索</button>
+      </div>
+      <div id="search-results" class="space-y-3"></div>
+    </div>
+  </div>
+
+  <!-- Stats Tab -->
+  <div id="tab-stats" class="tab-content flex-1 hidden p-4 overflow-y-auto">
+    <div class="max-w-4xl mx-auto">
+      <h2 class="text-xl font-bold mb-4">用量统计</h2>
+      <div id="stats-content" class="space-y-4"></div>
+    </div>
+  </div>
+
+  <!-- Status Tab -->
+  <div id="tab-status" class="tab-content flex-1 hidden p-4 overflow-y-auto">
+    <div class="max-w-4xl mx-auto">
+      <h2 class="text-xl font-bold mb-4">系统状态</h2>
+      <pre id="status-content" class="bg-gray-900 border border-gray-800 rounded-xl p-4 text-sm font-mono"></pre>
+    </div>
+  </div>
+</main>
+
+<!-- Memory File Editor Modal -->
+<div id="memory-file-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="memory-file-modal-title">
+  <div class="bg-gray-900 border border-gray-700 rounded-xl max-w-3xl w-full max-h-[80vh] flex flex-col">
+    <div class="flex items-center justify-between p-4 border-b border-gray-800">
+      <h3 id="memory-file-modal-title" class="text-lg font-bold"></h3>
+      <button onclick="closeMemoryFileEditor()" class="text-gray-400 hover:text-white" aria-label="关闭"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="flex-1 p-4 overflow-hidden">
+      <textarea id="memory-file-editor" rows="20" class="w-full h-full bg-gray-950 border border-gray-800 rounded-lg p-3 text-sm font-mono text-gray-300 resize-none focus:outline-none focus:border-blue-500"></textarea>
+    </div>
+    <div class="flex justify-end gap-2 p-4 border-t border-gray-800">
+      <button onclick="closeMemoryFileEditor()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm">取消</button>
+      <button id="memory-file-save-btn" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm">保存</button>
+    </div>
+  </div>
+</div>
+
+  <!-- Hidden file input -->
+  <input type="file" id="file-input" multiple class="hidden" onchange="handleFileSelect(this.files)">
+
+  <!-- Global drag-drop overlay -->
+  <div id="drag-overlay" class="hidden fixed inset-0 bg-blue-900/40 z-50 flex items-center justify-center backdrop-blur-sm transition-opacity duration-200">
+    <div class="pointer-events-none text-center bg-gray-900/80 border-2 border-blue-400 border-dashed rounded-2xl px-12 py-10">
+      <i class="fas fa-cloud-upload-alt text-6xl text-blue-400 mb-4 animate-bounce"></i>
+      <p class="text-2xl font-bold text-white">释放以上传文件</p>
+      <p class="text-sm text-blue-200 mt-2">支持图片、视频、音频、文档等任意文件</p>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
