@@ -588,9 +588,35 @@ async function loadMemory() {
   showLoading('memory-files', '加载记忆文件...');
 
   try {
+    // Fetch embedder status in parallel
+    let embedderStatus = null;
+    try {
+      const diagRes = await fetch('/api/diag');
+      if (diagRes.ok) {
+        const diag = await diagRes.json();
+        embedderStatus = diag.embedder || null;
+      }
+    } catch (_) {}
+
     const res = await fetch('/api/memory/enhanced');
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
+
+    // Show embedder status
+    const statusEl = document.getElementById('memory-embedder-status');
+    if (statusEl && embedderStatus) {
+      statusEl.classList.remove('hidden');
+      if (embedderStatus.active) {
+        statusEl.className = 'text-xs px-2 py-1 rounded bg-green-900/40 text-green-400';
+        statusEl.innerHTML = '<i class="fas fa-microchip mr-1"></i>' + escapeHtml(embedderStatus.provider);
+      } else if (embedderStatus.fallback) {
+        statusEl.className = 'text-xs px-2 py-1 rounded bg-yellow-900/40 text-yellow-400';
+        statusEl.innerHTML = '<i class="fas fa-exclamation-triangle mr-1"></i>降级: ' + escapeHtml(embedderStatus.fallback);
+      } else {
+        statusEl.className = 'text-xs px-2 py-1 rounded bg-gray-800 text-gray-400';
+        statusEl.textContent = escapeHtml(embedderStatus.provider);
+      }
+    }
 
     // Active context
     const ctxEl = document.getElementById('memory-context');

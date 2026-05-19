@@ -17,7 +17,7 @@ from js.config import JSSettings
 from js.evolution.learner import SelfLearner
 from js.evolution.metacognition import MetacognitionLoop
 from js.evolution.optimizer import PromptOptimizer
-from js.memory.embeddings import Embedder, KeywordEmbedder, LLMEmbedder
+from js.memory.embeddings import Embedder, HybridEmbedder, KeywordEmbedder, LLMEmbedder
 from js.memory.scheduler import DreamScheduler
 from js.memory.store import MemoryStore
 from js.models.provider_manager import ProviderManager
@@ -225,22 +225,29 @@ Key rules:
     def _setup_embedder(self) -> Embedder:
         """Select the best available embedding provider.
 
-        Tries LLM-based embedding first, but falls back to KeywordEmbedder
-        if the API does not support embeddings (e.g. LM Studio).
+        Tries LLM-based embedding first, wrapped in a HybridEmbedder so
+        that API failures at runtime automatically fall back to
+        KeywordEmbedder without crashing memory operations.
         """
         for cfg in self.settings.providers:
             if cfg.base_url:
                 try:
                     model = getattr(cfg, "embedding_model", "text-embedding-3-small")
-                    embedder = LLMEmbedder(
+                    primary = LLMEmbedder(
                         base_url=cfg.base_url,
                         api_key=cfg.api_key or "dummy",
                         model=model,
                     )
                     # Health-check: try a dummy embed to verify the endpoint works
-                    _ = embedder.embed("test")
-                    self.logger.info(f"Using LLMEmbedder via {cfg.name}")
-                    return embedder
+                    _ = primary.embed("test")
+                    hybrid = HybridEmbedder(
+                        primary=primary,
+                        fallback=KeywordEmbedder(),
+                        failure_threshold=2,
+                        recovery_timeout=60.0,
+                    )
+                    self.logger.info(f"Using HybridEmbedder (primary={cfg.name})")
+                    return hybrid
                 except Exception:
                     self.logger.debug(
                         f"Provider {cfg.name} does not support embeddings, falling back",

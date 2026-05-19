@@ -42,6 +42,11 @@ class MemoryStore:
         self.enhanced = EnhancedMemoryStore(self.state_dir, self.config, embedder)
         self._ensure_memory_files()
 
+    @property
+    def embedder(self) -> Any:
+        """Expose the embedder for health-check endpoints."""
+        return self.enhanced.embedder
+
     def _ensure_memory_files(self) -> None:
         """Create OpenClaw-style memory files if they don't exist."""
         memory_dir = self.state_dir / "memory"

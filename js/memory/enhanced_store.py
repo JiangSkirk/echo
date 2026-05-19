@@ -418,7 +418,12 @@ class EnhancedMemoryStore:
         source: str = "",
     ) -> None:
         now = time.time()
-        embedding_json = self.embedder.to_json(self.embedder.embed(f"{key} {value}"))
+        try:
+            embedding = self.embedder.embed(f"{key} {value}")
+            embedding_json = self.embedder.to_json(embedding)
+        except Exception:
+            logger.warning("Embedding failed for semantic store, using empty vector", exc_info=True)
+            embedding_json = ""
         with db_connection(self.db_path) as conn:
             conn.execute(
                 """
@@ -457,7 +462,11 @@ class EnhancedMemoryStore:
         )
 
     def search_semantic(self, query: str, category: str | None = None, limit: int = 10) -> list[SemanticMemory]:
-        query_vec = self.embedder.embed(query)
+        try:
+            query_vec = self.embedder.embed(query)
+        except Exception:
+            logger.warning("Query embedding failed, falling back to text search", exc_info=True)
+            query_vec = None
 
         # Phase 1: Fast pre-filter with LIKE to avoid loading all rows
         safe_query = query.replace("%", "\\%").replace("_", "\\_")
@@ -494,11 +503,11 @@ class EnhancedMemoryStore:
                     (candidate_limit,),
                 ).fetchall()
 
-        # Phase 3: Score candidates by embedding similarity
+        # Phase 3: Score candidates by embedding similarity (or text match if no vec)
         scored: list[tuple[float, sqlite3.Row]] = []
         for r in rows:
             emb_raw = r["embedding"]
-            if emb_raw:
+            if query_vec is not None and emb_raw:
                 try:
                     vec = self.embedder.from_json(emb_raw)
                     score = cosine_similarity(query_vec, vec)

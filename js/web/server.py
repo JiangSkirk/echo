@@ -138,6 +138,7 @@ def create_app() -> FastAPI:
             "compression_feedback": agent.compression_feedback is not None,
             "dream_scheduler": agent._dream_scheduler is not None,
         }
+        embedder_health = agent.memory.embedder.health()
         return {
             "version": SERVER_VERSION,
             "routes": sorted(routes, key=lambda x: x["path"]),
@@ -145,6 +146,12 @@ def create_app() -> FastAPI:
             "has_evolution_api": any(
                 r["path"] == "/api/evolution/run" for r in routes
             ),
+            "embedder": {
+                "provider": embedder_health.provider,
+                "active": embedder_health.active,
+                "fallback": embedder_health.fallback_provider,
+                "failures": embedder_health.failure_count,
+            },
         }
 
     @app.get("/api/memory")
