@@ -357,10 +357,8 @@ class TestSkillWebAPI:
 
     def test_trust_skill_api_invalid_level(self, client: TestClient) -> None:
         resp = client.post("/api/skills/test-skill/trust", json={"level": "invalid"})
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["success"] is False
-        assert "Invalid" in data["error"]
+        assert resp.status_code == 400
+        assert "Invalid" in resp.json()["detail"]
 
 
 class TestSkillManagerFeedbackLoops:

@@ -54,7 +54,7 @@ _agent_config: dict[str, str] = {
 
 def get_agent() -> JSAgent:
     if _agent is None:
-        raise RuntimeError("Agent not initialized")
+        raise HTTPException(503, "Agent not initialized yet. Please wait for startup to complete.")
     return _agent
 
 
@@ -63,7 +63,16 @@ def get_fleet() -> AgentFleet:
     if _fleet is None:
         from js.orchestration.fleet import AgentFleet
 
-        _fleet = AgentFleet(_settings or JSSettings.from_file())
+        settings = _settings
+        if settings is None:
+            try:
+                settings = JSSettings.from_file()
+            except Exception as e:
+                raise HTTPException(503, f"Settings not loaded: {e}") from e
+        try:
+            _fleet = AgentFleet(settings)
+        except Exception as e:
+            raise HTTPException(500, f"Failed to initialize fleet: {e}") from e
     return _fleet
 
 
@@ -467,7 +476,13 @@ def create_app() -> FastAPI:
     async def evolution_reflect() -> dict[str, Any]:
         """Trigger an immediate metacognition reflection."""
         agent = get_agent()
-        report = await asyncio.to_thread(agent.metacognition.reflect)
+        if agent.metacognition is None:
+            raise HTTPException(503, "Metacognition subsystem not ready")
+        try:
+            report = await asyncio.to_thread(agent.metacognition.reflect)
+        except Exception as e:
+            logger.error(f"Metacognition reflect failed: {e}", exc_info=True)
+            raise HTTPException(500, f"Reflection failed: {e}") from e
         return {
             "health_score": report.overall_health_score,
             "proposals": len(report.proposals),
@@ -520,7 +535,7 @@ def create_app() -> FastAPI:
         agent = get_agent()
         detail = agent.skills.view_skill(skill_id)
         if not detail:
-            return {"error": "Skill not found"}
+            raise HTTPException(404, f"Skill '{skill_id}' not found")
         return detail
 
     @app.post("/api/skills/install")
@@ -536,15 +551,18 @@ def create_app() -> FastAPI:
                 "trust_level": spec.trust_level.value,
                 "risk_flags": spec.risk_flags,
             }
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logger.error(f"Skill install failed: {e}", exc_info=True)
+            raise HTTPException(500, f"Failed to install skill: {e}") from e
 
     @app.delete("/api/skills/{skill_id}")
     async def skill_uninstall(skill_id: str) -> dict[str, Any]:
         agent = get_agent()
         if await agent.skills.uninstall(skill_id):
             return {"success": True}
-        return {"success": False, "error": "Skill not found or is built-in"}
+        raise HTTPException(404, "Skill not found or is built-in")
 
     @app.post("/api/skills/{skill_id}/trust")
     async def skill_trust(skill_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -555,10 +573,10 @@ def create_app() -> FastAPI:
         try:
             trust_level = TrustLevel(level)
         except ValueError:
-            return {"success": False, "error": f"Invalid trust level: {level}"}
+            raise HTTPException(400, f"Invalid trust level: {level}") from None
         if agent.skills.trust_skill(skill_id, trust_level):
             return {"success": True, "skill_id": skill_id, "trust_level": level}
-        return {"success": False, "error": "Skill not found"}
+        raise HTTPException(404, f"Skill '{skill_id}' not found")
 
     @app.get("/api/skills/discover")
     async def skill_discover(query: str = "") -> dict[str, Any]:
@@ -569,7 +587,11 @@ def create_app() -> FastAPI:
 
             agent._clawhub = ClawHubClient(agent.settings.state_dir)
 
-        index = await agent._clawhub.fetch_index()
+        try:
+            index = await agent._clawhub.fetch_index()
+        except Exception as e:
+            logger.error(f"ClawHub fetch failed: {e}", exc_info=True)
+            raise HTTPException(502, f"Failed to fetch ClawHub index: {e}") from e
         results = agent._clawhub.search_index(query) if query else index
         return {
             "success": True,
@@ -584,7 +606,7 @@ def create_app() -> FastAPI:
 
         skill_id = payload.get("skill_id", "")
         if not skill_id:
-            return {"success": False, "error": "skill_id is required"}
+            raise HTTPException(400, "skill_id is required")
 
         agent = get_agent()
         clawhub = getattr(agent, "_clawhub", None) or ClawHubClient(agent.settings.state_dir)
@@ -592,7 +614,7 @@ def create_app() -> FastAPI:
 
         source = clawhub.get_skill_source(skill_id)
         if not source:
-            return {"success": False, "error": f"Skill {skill_id} not found in ClawHub index"}
+            raise HTTPException(404, f"Skill '{skill_id}' not found in ClawHub index")
 
         try:
             spec = await agent.skills.install(source, skill_id)
@@ -601,14 +623,17 @@ def create_app() -> FastAPI:
                 "skill_id": spec.id,
                 "trust_level": spec.trust_level.value,
             }
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logger.error(f"ClawHub install failed: {e}", exc_info=True)
+            raise HTTPException(500, f"Failed to install skill: {e}") from e
 
     @app.post("/api/upload")
     async def upload_file(file: UploadFile | None = None) -> dict[str, Any]:
+        """Upload a file to the workspace/uploads directory."""
         if file is None:
             raise HTTPException(400, "No file provided")
-        """Upload a file to the workspace/uploads directory."""
         agent = get_agent()
         uploads_dir = agent.settings.workspace / "uploads"
         uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -680,11 +705,11 @@ def create_app() -> FastAPI:
         try:
             target.relative_to(agent.settings.workspace / "uploads")
         except ValueError:
-            return {"success": False, "error": "Invalid filename"}
+            raise HTTPException(400, "Invalid filename") from None
         if target.exists():
             target.unlink()
             return {"success": True}
-        return {"success": False, "error": "File not found"}
+        raise HTTPException(404, "File not found")
 
     @app.get("/api/file-preview")
     async def file_preview(path: str) -> dict[str, Any]:
@@ -900,56 +925,81 @@ def create_app() -> FastAPI:
 
     @app.get("/api/fleet/status")
     async def fleet_status() -> dict[str, Any]:
-        fleet = get_fleet()
-        return fleet.get_status()
+        try:
+            fleet = get_fleet()
+            return fleet.get_status()
+        except Exception:
+            raise
 
     @app.post("/api/fleet/spawn")
     async def fleet_spawn(payload: dict[str, Any]) -> dict[str, Any]:
         from js.orchestration.fleet import AgentRole
 
-        fleet = get_fleet()
-        role = AgentRole(payload.get("role", "generalist"))
-        agent = fleet.spawn(
-            name=payload.get("name", f"agent-{role.value}"),
-            role=role,
-            model=payload.get("model"),
-        )
-        return {"success": True, "agent_id": agent.id, "role": role.value}
+        try:
+            fleet = get_fleet()
+            role = AgentRole(payload.get("role", "generalist"))
+            agent = fleet.spawn(
+                name=payload.get("name", f"agent-{role.value}"),
+                role=role,
+                model=payload.get("model"),
+            )
+            return {"success": True, "agent_id": agent.id, "role": role.value}
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:
+            logger.error(f"Fleet spawn failed: {e}", exc_info=True)
+            raise HTTPException(500, f"Fleet spawn failed: {e}") from e
 
     @app.post("/api/fleet/dispatch")
     async def fleet_dispatch(payload: dict[str, Any]) -> dict[str, Any]:
         from js.orchestration.fleet import AgentRole, Task
 
-        fleet = get_fleet()
-        task = Task(
-            id=str(uuid.uuid4()),
-            description=payload.get("description", ""),
-            role_hint=AgentRole(payload.get("role", "generalist")),
-            priority=payload.get("priority", 5),
-        )
-        task_id = await fleet.dispatch(task)
-        return {"success": True, "task_id": task_id}
+        try:
+            fleet = get_fleet()
+            task = Task(
+                id=str(uuid.uuid4()),
+                description=payload.get("description", ""),
+                role_hint=AgentRole(payload.get("role", "generalist")),
+                priority=payload.get("priority", 5),
+            )
+            task_id = await fleet.dispatch(task)
+            return {"success": True, "task_id": task_id}
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:
+            logger.error(f"Fleet dispatch failed: {e}", exc_info=True)
+            raise HTTPException(500, f"Fleet dispatch failed: {e}") from e
 
     @app.post("/api/fleet/collaborate")
     async def fleet_collaborate(payload: dict[str, Any]) -> dict[str, Any]:
         from js.orchestration.fleet import AgentRole
 
-        fleet = get_fleet()
-        subtasks_raw = payload.get("subtasks", [])
-        subtasks: list[tuple[str, AgentRole]] = []
-        for st in subtasks_raw:
-            subtasks.append((st.get("description", ""), AgentRole(st.get("role", "generalist"))))
-        result = await fleet.collaborate(
-            main_task=payload.get("task", ""),
-            subtasks=subtasks,
-        )
-        return {"success": True, "result": result}
+        try:
+            fleet = get_fleet()
+            subtasks_raw = payload.get("subtasks", [])
+            subtasks: list[tuple[str, AgentRole]] = []
+            for st in subtasks_raw:
+                subtasks.append((st.get("description", ""), AgentRole(st.get("role", "generalist"))))
+            result = await fleet.collaborate(
+                main_task=payload.get("task", ""),
+                subtasks=subtasks,
+            )
+            return {"success": True, "result": result}
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:
+            logger.error(f"Fleet collaborate failed: {e}", exc_info=True)
+            raise HTTPException(500, f"Fleet collaborate failed: {e}") from e
 
     @app.post("/api/fleet/broadcast")
     async def fleet_broadcast(payload: dict[str, Any]) -> dict[str, Any]:
-        fleet = get_fleet()
-        await fleet.broadcast(payload.get("message", ""))
-        return {"success": True}
+        try:
+            fleet = get_fleet()
+            await fleet.broadcast(payload.get("message", ""))
+            return {"success": True}
+        except Exception as e:
+            logger.error(f"Fleet broadcast failed: {e}", exc_info=True)
+            raise HTTPException(500, f"Fleet broadcast failed: {e}") from e
 
     return app
 

@@ -328,34 +328,37 @@ Key rules:
                 self.logger.debug("Failed to select prompt variant", exc_info=True)
 
         if self.settings.memory.enabled:
-            memory_context = self.memory.get_context_string(
-                query=query,
-                session_id=session_id,
-                max_chars=self.settings.memory.max_memory_chars,
-            )
-            if memory_context:
-                # Security scan memory context before injection
-                memory_context = self.secrets.detect_and_redact(
-                    memory_context, "memory_context"
+            try:
+                memory_context = self.memory.get_context_string(
+                    query=query,
+                    session_id=session_id,
+                    max_chars=self.settings.memory.max_memory_chars,
                 )
-                scan = self.guard.check_tool_result(memory_context)
-                if scan.decision.value in ("block", "warn"):
-                    self.logger.warning(
-                        f"Memory context security scan {scan.decision.value}: {scan.reason}"
-                    )
-                    self.audit.log(
-                        AuditEventType.SECURITY_ALERT,
-                        session_id or "",
-                        "",
-                        "agent",
-                        "memory_scan",
-                        {"decision": scan.decision.value, "reason": scan.reason},
-                    )
-                    # Degrade to empty context on block
-                    if scan.decision.value == "block":
-                        memory_context = ""
                 if memory_context:
-                    parts.append(f"\n## Relevant Context\n{memory_context}")
+                    # Security scan memory context before injection
+                    memory_context = self.secrets.detect_and_redact(
+                        memory_context, "memory_context"
+                    )
+                    scan = self.guard.check_tool_result(memory_context)
+                    if scan.decision.value in ("block", "warn"):
+                        self.logger.warning(
+                            f"Memory context security scan {scan.decision.value}: {scan.reason}"
+                        )
+                        self.audit.log(
+                            AuditEventType.SECURITY_ALERT,
+                            session_id or "",
+                            "",
+                            "agent",
+                            "memory_scan",
+                            {"decision": scan.decision.value, "reason": scan.reason},
+                        )
+                        # Degrade to empty context on block
+                        if scan.decision.value == "block":
+                            memory_context = ""
+                    if memory_context:
+                        parts.append(f"\n## Relevant Context\n{memory_context}")
+            except Exception:
+                self.logger.debug("Failed to build memory context", exc_info=True)
 
         return "\n".join(parts)
 
@@ -799,16 +802,16 @@ Key rules:
         start = time.perf_counter()
         self.logger.info("Starting evolution cycle")
         report: dict[str, Any] = {
-            "profile_update": {"ok": False, "error": None},
+            "profile_update": {"ok": True, "skipped": True, "error": None},
             "dreaming": {"ok": False, "error": None},
             "skill_evolution": {"ok": False, "error": None, "evolved": []},
         }
         if conversation_buffer:
             try:
                 await self._auto_update_profiles(conversation_buffer)
-                report["profile_update"]["ok"] = True
+                report["profile_update"] = {"ok": True, "skipped": False, "error": None}
             except Exception as e:
-                report["profile_update"]["error"] = str(e)
+                report["profile_update"] = {"ok": False, "skipped": False, "error": str(e)}
                 self.logger.warning(f"Profile update failed: {e}", exc_info=True)
         try:
             await self._run_dreaming()
@@ -831,8 +834,12 @@ Key rules:
 
     async def _auto_update_profiles(self, conversation_buffer: list[dict[str, str]]) -> None:
         """Use LLM to analyze recent conversation and update USER.md + IDENTITY.md."""
-        current_user = self.memory.read_memory_file("user")
-        current_identity = self.memory.read_memory_file("identity")
+        try:
+            current_user = self.memory.read_memory_file("user")
+            current_identity = self.memory.read_memory_file("identity")
+        except Exception as e:
+            self.logger.debug(f"Failed to read profile files: {e}", exc_info=True)
+            return
 
         transcript = "\n\n".join(
             f"User: {turn['user']}\nAssistant: {turn['assistant']}"
