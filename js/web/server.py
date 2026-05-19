@@ -33,6 +33,9 @@ HTTPXClientInstrumentor().instrument()
 
 logger = get_logger("js.web")
 
+# Server version (bump when adding new API surfaces)
+SERVER_VERSION = "0.1.0+evolution"
+
 # Global agent instance
 _agent: JSAgent | None = None
 _settings: JSSettings | None = None
@@ -108,6 +111,31 @@ def create_app() -> FastAPI:
             "defense_mode": agent.settings.security.defense_mode.value,
             "tool_stats": agent.registry.get_stats(),
             "secret_stats": agent.secrets.get_stats(),
+        }
+
+    @app.get("/api/diag")
+    async def diag() -> dict[str, Any]:
+        """Diagnostic endpoint to verify server version, routes and subsystem health."""
+        agent = get_agent()
+        routes = []
+        for r in app.routes:
+            if hasattr(r, "methods") and hasattr(r, "path"):
+                routes.append({"path": r.path, "methods": list(r.methods)})
+        subsystems = {
+            "metacognition": agent.metacognition is not None,
+            "learner": agent.learner is not None,
+            "optimizer": agent.optimizer is not None,
+            "evolver": agent.evolver is not None,
+            "compression_feedback": agent.compression_feedback is not None,
+            "dream_scheduler": agent._dream_scheduler is not None,
+        }
+        return {
+            "version": SERVER_VERSION,
+            "routes": sorted(routes, key=lambda x: x["path"]),
+            "subsystems": subsystems,
+            "has_evolution_api": any(
+                r["path"] == "/api/evolution/run" for r in routes
+            ),
         }
 
     @app.get("/api/memory")
@@ -395,10 +423,43 @@ def create_app() -> FastAPI:
     @app.post("/api/evolution/run")
     async def evolution_run() -> dict[str, Any]:
         agent = get_agent()
+
+        # Pre-flight readiness check
+        if not hasattr(agent, "_run_evolution_cycle"):
+            raise HTTPException(
+                501,
+                "Agent does not support evolution cycles. Please restart the server with the latest code.",
+            )
+        missing = [
+            name for name, ok in {
+                "metacognition": agent.metacognition is not None,
+                "learner": agent.learner is not None,
+                "optimizer": agent.optimizer is not None,
+                "evolver": agent.evolver is not None,
+            }.items() if not ok
+        ]
+        if missing:
+            raise HTTPException(
+                503,
+                f"Evolution subsystems not ready: {', '.join(missing)}. Please wait for startup to complete.",
+            )
+
         try:
-            await agent._run_evolution_cycle([])
-            return {"success": True, "message": "Evolution cycle completed"}
+            report = await agent._run_evolution_cycle([])
+            return {
+                "success": True,
+                "message": "Evolution cycle completed",
+                "report": report,
+            }
         except Exception as e:
+            # If the exception already carries an HTTP-like code in its message,
+            # surface a more specific error. Otherwise return generic 500.
+            msg = str(e)
+            if "404" in msg and "model" in msg.lower():
+                raise HTTPException(
+                    502,
+                    "LLM API returned 404 (model not found). Check your model configuration in settings.",
+                ) from e
             logger.error(f"Evolution cycle failed: {e}", exc_info=True)
             raise HTTPException(500, f"Evolution cycle failed: {e}") from e
 

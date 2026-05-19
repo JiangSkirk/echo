@@ -790,12 +790,61 @@ async function runEvolutionNow() {
   const btn = document.querySelector('#tab-evolution button[onclick="runEvolutionNow()"]');
   if (btn) {
     btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin text-xs"></i> 检查中...';
+  }
+
+  // Pre-flight diagnostic to catch stale server versions gracefully
+  try {
+    const diagRes = await fetch('/api/diag');
+    if (diagRes.ok) {
+      const diag = await diagRes.json();
+      if (!diag.has_evolution_api) {
+        showToast('服务器版本过旧，请重启服务器以支持自主进化', true);
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fas fa-play text-xs"></i> 立即运行';
+        }
+        return;
+      }
+    }
+  } catch (_) {
+    // Proceed anyway; the main call will surface real errors
+  }
+
+  if (btn) {
     btn.innerHTML = '<i class="fas fa-spinner fa-spin text-xs"></i> 运行中...';
   }
+
   try {
     const res = await fetch('/api/evolution/run', { method: 'POST' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    showToast('进化周期已完成');
+    if (!res.ok) {
+      let detail = '';
+      try {
+        const errData = await res.json();
+        detail = errData.detail || '';
+      } catch (_) {}
+      if (res.status === 404) {
+        throw new Error('404 — 服务器未暴露进化接口，请重启服务器');
+      } else if (res.status === 501) {
+        throw new Error('501 — ' + (detail || 'Agent 不支持进化，请更新代码并重启'));
+      } else if (res.status === 502) {
+        throw new Error('502 — ' + (detail || 'LLM API 错误，请检查模型配置'));
+      } else if (res.status === 503) {
+        throw new Error('503 — ' + (detail || '进化子系统未就绪，请稍后再试'));
+      } else {
+        throw new Error('HTTP ' + res.status + (detail ? ': ' + detail : ''));
+      }
+    }
+    const data = await res.json();
+    const report = data.report || {};
+    const parts = [];
+    if (report.profile_update && report.profile_update.ok) parts.push('画像更新');
+    if (report.dreaming && report.dreaming.ok) parts.push('记忆整合');
+    if (report.skill_evolution && report.skill_evolution.evolved && report.skill_evolution.evolved.length) {
+      parts.push('技能进化(' + report.skill_evolution.evolved.length + ')');
+    }
+    const msg = parts.length ? '进化完成: ' + parts.join('、') : '进化周期已完成';
+    showToast(msg);
     loadEvolution();
   } catch (e) {
     showToast('运行失败: ' + e.message, true);

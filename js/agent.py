@@ -786,31 +786,48 @@ Key rules:
         """Stop background scheduling loops."""
         self._dream_scheduler.stop()
 
-    async def _run_evolution_cycle(self, conversation_buffer: list[dict[str, str]]) -> None:
+    async def _run_evolution_cycle(
+        self, conversation_buffer: list[dict[str, str]]
+    ) -> dict[str, Any]:
         """Full background evolution: profile update + dreaming + skill evolution.
 
         Each step is wrapped in its own try/except so that a failure in one
         does not prevent the others from running.
+        Returns an execution report dict for the API layer.
         """
         import time
         start = time.perf_counter()
         self.logger.info("Starting evolution cycle")
+        report: dict[str, Any] = {
+            "profile_update": {"ok": False, "error": None},
+            "dreaming": {"ok": False, "error": None},
+            "skill_evolution": {"ok": False, "error": None, "evolved": []},
+        }
         if conversation_buffer:
             try:
                 await self._auto_update_profiles(conversation_buffer)
+                report["profile_update"]["ok"] = True
             except Exception as e:
+                report["profile_update"]["error"] = str(e)
                 self.logger.warning(f"Profile update failed: {e}", exc_info=True)
         try:
             await self._run_dreaming()
+            report["dreaming"]["ok"] = True
         except Exception as e:
+            report["dreaming"]["error"] = str(e)
             self.logger.warning(f"Dreaming failed: {e}", exc_info=True)
         # Trigger skill evolution for underperforming skills
         try:
-            await self._run_skill_evolution()
+            evolved = await self._run_skill_evolution()
+            report["skill_evolution"]["ok"] = True
+            report["skill_evolution"]["evolved"] = evolved
         except Exception as e:
+            report["skill_evolution"]["error"] = str(e)
             self.logger.warning(f"Skill evolution failed: {e}", exc_info=True)
         elapsed = time.perf_counter() - start
+        report["elapsed_seconds"] = round(elapsed, 2)
         self.logger.info(f"Evolution cycle completed in {elapsed:.2f}s")
+        return report
 
     async def _auto_update_profiles(self, conversation_buffer: list[dict[str, str]]) -> None:
         """Use LLM to analyze recent conversation and update USER.md + IDENTITY.md."""
@@ -870,14 +887,20 @@ Key rules:
         except Exception as e:
             self.logger.debug(f"Auto-profile update failed: {e}", exc_info=True)
 
-    async def _run_skill_evolution(self) -> None:
-        """Evolve underperforming skills using LLM-powered rewriting."""
+    async def _run_skill_evolution(self) -> list[str]:
+        """Evolve underperforming skills using LLM-powered rewriting.
+
+        Returns list of skill IDs that were evolved.
+        """
+        evolved: list[str] = []
         if not self.evolver:
-            return
+            return evolved
         for skill_id, spec in self.skills.get_all().items():
             if not self.evolver.should_evolve(skill_id):
                 continue
             await self._run_skill_evolution_for(skill_id, spec)
+            evolved.append(skill_id)
+        return evolved
 
     async def _run_skill_evolution_for(
         self, skill_id: str, spec: Any | None = None
