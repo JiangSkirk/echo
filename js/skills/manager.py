@@ -105,6 +105,10 @@ class SkillManager:
         """Set the sandbox executor for untrusted code skills."""
         self._sandbox = sandbox
 
+    def set_evolver(self, evolver: Any | None) -> None:
+        """Set the skill evolver for feedback loop."""
+        self._evolver = evolver
+
     # ------------------------------------------------------------------
     # Discovery
     # ------------------------------------------------------------------
@@ -451,10 +455,21 @@ entry: main.py
             exec_result = {"success": False, "error": str(e)}
 
         latency = (time.time() - start) * 1000
-        self._record_usage(skill_id, spec.type.value, exec_result.get("success", False), latency)
+        success = exec_result.get("success", False)
+        self._record_usage(skill_id, spec.type.value, success, latency)
+
+        # Record evolution feedback
+        if hasattr(self, "_evolver") and self._evolver:
+            try:
+                best = self._evolver.select_best_variant(skill_id)
+                if best:
+                    score = 1.0 if success else 0.0
+                    self._evolver.record_result(best.id, success, score)
+            except Exception:
+                logger.debug(f"Failed to record evolution result for {skill_id}", exc_info=True)
 
         # Record composition chain for learning
-        self._record_chain(skill_id, exec_result.get("success", False))
+        self._record_chain(skill_id, success)
 
         return exec_result
 

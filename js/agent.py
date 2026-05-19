@@ -123,9 +123,13 @@ Key rules:
 
         # Execution & safety
         self.skills.set_sandbox(SandboxExecutor(settings.workspace))
+        self.skills.set_evolver(self.evolver)
         self.approvals = ApprovalQueue(default_mode=ApprovalMode.MANUAL)
         self.defense_strategies = build_default_strategies()
         self._setup_tools()
+
+        # Register default prompt variant for optimization
+        self._init_default_prompt_variant()
 
     async def _summarize_context(self, messages: list[ChatMessage], identifiers: list[str] | None = None) -> str:
         """Generate an LLM-powered summary of conversation turns."""
@@ -243,6 +247,17 @@ Key rules:
 
         return "\n".join(parts)
 
+    def _init_default_prompt_variant(self) -> None:
+        """Register the base system prompt as a variant for A/B optimization."""
+        if not self.optimizer:
+            return
+        try:
+            variant = self.optimizer.select_variant("system")
+            if variant is None:
+                self.optimizer.register_variant("system", self.SYSTEM_PROMPT, "baseline")
+        except Exception:
+            self.logger.debug("Failed to register default prompt variant", exc_info=True)
+
     def _build_system_message(self, query: str = "", session_id: str = "", attachments: list[str] | None = None) -> str:
         """Build system message with rich multi-layer memory context."""
         parts = [self.SYSTEM_PROMPT]
@@ -252,6 +267,17 @@ Key rules:
             hint = self.learner.generate_context_hint(query)
             if hint:
                 parts.append(f"\n## Learned Insight\n{hint}")
+
+        # A/B test prompt variant
+        if self.optimizer:
+            try:
+                variant = self.optimizer.select_variant("system")
+                if variant:
+                    variant_id, prompt_template = variant
+                    parts.append(f"\n## Optimization Variant\n{prompt_template}")
+                    self._last_system_variant_id = variant_id
+            except Exception:
+                self.logger.debug("Failed to select prompt variant", exc_info=True)
 
         if self.settings.memory.enabled:
             memory_context = self.memory.get_context_string(
@@ -623,6 +649,20 @@ Key rules:
                     )
                 except Exception:
                     self.logger.debug("Failed to record compression outcome", exc_info=True)
+
+                # Record prompt optimization result
+                try:
+                    if hasattr(self, "_last_system_variant_id"):
+                        await asyncio.to_thread(
+                            self.optimizer.record_result,
+                            self._last_system_variant_id,
+                            state.status == "completed",
+                            1.0 if state.status == "completed" else 0.0,
+                            context="system",
+                        )
+                        delattr(self, "_last_system_variant_id")
+                except Exception:
+                    self.logger.debug("Failed to record prompt optimization result", exc_info=True)
 
                 # Trigger metacognition if interval reached
                 try:
