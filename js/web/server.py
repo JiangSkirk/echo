@@ -486,6 +486,50 @@ def create_app() -> FastAPI:
             return {"success": True, "skill_id": skill_id, "trust_level": level}
         return {"success": False, "error": "Skill not found"}
 
+    @app.get("/api/skills/discover")
+    async def skill_discover(query: str = "") -> dict[str, Any]:
+        """Search the ClawHub skill marketplace."""
+        agent = get_agent()
+        if not hasattr(agent, "_clawhub") or agent._clawhub is None:
+            from js.skills.clawhub import ClawHubClient
+
+            agent._clawhub = ClawHubClient(agent.settings.state_dir)
+
+        index = await agent._clawhub.fetch_index()
+        results = agent._clawhub.search_index(query) if query else index
+        return {
+            "success": True,
+            "total": len(index),
+            "results": results[:50],  # Limit to 50 results
+        }
+
+    @app.post("/api/skills/discover/install")
+    async def skill_discover_install(payload: dict[str, Any]) -> dict[str, Any]:
+        """Install a skill from the ClawHub marketplace."""
+        from js.skills.clawhub import ClawHubClient
+
+        skill_id = payload.get("skill_id", "")
+        if not skill_id:
+            return {"success": False, "error": "skill_id is required"}
+
+        agent = get_agent()
+        clawhub = getattr(agent, "_clawhub", None) or ClawHubClient(agent.settings.state_dir)
+        agent._clawhub = clawhub
+
+        source = clawhub.get_skill_source(skill_id)
+        if not source:
+            return {"success": False, "error": f"Skill {skill_id} not found in ClawHub index"}
+
+        try:
+            spec = await agent.skills.install(source, skill_id)
+            return {
+                "success": True,
+                "skill_id": spec.id,
+                "trust_level": spec.trust_level.value,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     @app.post("/api/upload")
     async def upload_file(file: UploadFile | None = None) -> dict[str, Any]:
         if file is None:

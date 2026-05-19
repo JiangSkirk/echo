@@ -1,5 +1,4 @@
-"""Transparent filesystem snapshots using git shadow repos."""
+"""Checkpoints package — currently empty.
 
-from js.checkpoints.manager import CheckpointManager
-
-__all__ = ["CheckpointManager"]
+CheckpointManager was removed in Phase 1 cleanup. See manager.py for details.
+"""

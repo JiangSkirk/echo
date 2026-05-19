@@ -132,6 +132,9 @@ Key rules:
         self.defense_strategies = build_default_strategies()
         self._setup_tools()
 
+        # Register skills as callable tools
+        self.skills.register_as_tools(self.registry)
+
         # Register default prompt variant for optimization
         self._init_default_prompt_variant()
 

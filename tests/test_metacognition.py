@@ -71,3 +71,37 @@ class TestMetacognitionLoop:
         loop.reflect()
         proposals = loop.get_proposals()
         assert isinstance(proposals, list)
+
+
+class TestMetacognitionComposerIntegration:
+    """Verify Phase 1 wiring: composer parameter and composition analysis."""
+
+    def test_composer_parameter_accepted(self, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock
+
+        composer = MagicMock()
+        loop = MetacognitionLoop(
+            tmp_path,
+            composer=composer,
+        )
+        assert loop.composer is composer
+
+    def test_reflect_includes_composition_analysis(self, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock
+
+        composer = MagicMock()
+        chain = MagicMock()
+        chain.id = "auto_a_to_b"
+        chain.name = "a → b"
+        composer.discover_chains.return_value = [chain]
+
+        loop = MetacognitionLoop(
+            tmp_path,
+            composer=composer,
+        )
+        report = loop.reflect()
+
+        composer.discover_chains.assert_called_once_with(min_frequency=3)
+        composition_actions = [a for a in report.actions_taken if a["area"] == "composition"]
+        assert len(composition_actions) == 1
+        assert composition_actions[0]["chain_id"] == "auto_a_to_b"

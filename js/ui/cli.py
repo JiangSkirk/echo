@@ -564,5 +564,61 @@ def skill_trust(skill_id: str, level: str, config: str | None) -> None:
         console.print(f"[red]Skill not found: {skill_id}[/red]")
 
 
+@skill.command("discover")
+@click.argument("query", default="")
+@click.option("--install", "-i", help="Install a skill by ID from search results")
+@click.option("--config", "-c", type=click.Path(), help="Config file path")
+def skill_discover(query: str, install: str | None, config: str | None) -> None:
+    """Search the ClawHub skill marketplace."""
+    import asyncio
+
+    from js.skills.clawhub import ClawHubClient
+
+    settings = JSSettings.from_file(config)
+    cli = JSCLI(settings)
+    asyncio.run(cli.init())
+    if not cli.agent:
+        console.print("[red]Agent not initialized[/red]")
+        return
+
+    clawhub = ClawHubClient(settings.state_dir)
+
+    if install:
+        source = clawhub.get_skill_source(install)
+        if not source:
+            console.print(f"[red]Skill {install} not found in ClawHub index[/red]")
+            return
+        try:
+            spec = asyncio.run(cli.agent.skills.install(source, install))
+            console.print(f"[green]Installed {spec.id} from ClawHub[/green]")
+        except Exception as e:
+            console.print(f"[red]Install failed: {e}[/red]")
+        return
+
+    async def _search() -> None:
+        await clawhub.fetch_index()
+        results = clawhub.search_index(query) if query else clawhub._index
+        if not results:
+            console.print("[yellow]No skills found.[/yellow]")
+            return
+        table = Table(title=f"ClawHub Skills ({len(results)} results)")
+        table.add_column("ID", style="cyan")
+        table.add_column("Name")
+        table.add_column("Description", max_width=40)
+        table.add_column("Version")
+        table.add_column("Author")
+        for sk in results[:20]:
+            table.add_row(
+                sk.get("id", ""),
+                sk.get("name", ""),
+                sk.get("description", "")[:40],
+                sk.get("version", ""),
+                sk.get("author", ""),
+            )
+        console.print(table)
+
+    asyncio.run(_search())
+
+
 if __name__ == "__main__":
     main()

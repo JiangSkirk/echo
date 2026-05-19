@@ -6,7 +6,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from js.config import MemoryConfig
 from js.utils.db import db_connection
@@ -176,7 +176,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
                     (time.time(), key),
                 )
                 conn.commit()
-            return row["value"]
+            return cast("str", row["value"])
 
         return None
 

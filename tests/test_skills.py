@@ -361,3 +361,73 @@ class TestSkillWebAPI:
         data = resp.json()
         assert data["success"] is False
         assert "Invalid" in data["error"]
+
+
+class TestSkillManagerFeedbackLoops:
+    """Verify Phase 1 wiring: evolver and composer feedback in execute()."""
+
+    @pytest.fixture
+    def manager(self, tmp_path: Path) -> SkillManager:
+        return SkillManager(tmp_path, tmp_path / "workspace")
+
+    @pytest.mark.anyio
+    async def test_set_evolver_and_record_result(self, manager: SkillManager, tmp_path: Path) -> None:
+        """execute() should feed results back to the evolver's best variant."""
+        from unittest.mock import MagicMock
+
+        mock_evolver = MagicMock()
+        mock_variant = MagicMock()
+        mock_variant.id = "v1"
+        mock_evolver.select_best_variant.return_value = mock_variant
+        manager.set_evolver(mock_evolver)
+
+        src = tmp_path / "test_skill"
+        src.mkdir()
+        (src / "SKILL.md").write_text("---\nid: test\nname: Test\ntype: code\nentry: main.py\n---\n")
+        (src / "main.py").write_text("print('ok')")
+
+        await manager.install(str(src), "test")
+        result = await manager.execute("test", {}, session_id="sess-1")
+
+        assert result.get("success") is True
+        mock_evolver.select_best_variant.assert_called_once_with("test")
+        mock_evolver.record_result.assert_called_once_with("v1", True, 1.0)
+
+    @pytest.mark.anyio
+    async def test_set_composer_and_record_transition(self, manager: SkillManager, tmp_path: Path) -> None:
+        """Two skills executed in the same session should record a transition."""
+        from unittest.mock import MagicMock
+
+        mock_composer = MagicMock()
+        manager.set_composer(mock_composer)
+
+        src = tmp_path / "skills_src"
+        src.mkdir(exist_ok=True)
+        for sk_id in ("skill_a", "skill_b"):
+            sk_dir = src / sk_id
+            sk_dir.mkdir()
+            (sk_dir / "SKILL.md").write_text(f"---\nid: {sk_id}\nname: {sk_id}\ntype: code\nentry: main.py\n---\n")
+            (sk_dir / "main.py").write_text("print('ok')")
+            await manager.install(str(sk_dir), sk_id)
+
+        await manager.execute("skill_a", {}, session_id="sess-1")
+        await manager.execute("skill_b", {}, session_id="sess-1")
+
+        mock_composer.record_transition.assert_called_once_with("skill_a", "skill_b", "sess-1")
+
+    @pytest.mark.anyio
+    async def test_execute_without_session_id_does_not_record_chain(self, manager: SkillManager, tmp_path: Path) -> None:
+        """Without session_id, composer should not be called."""
+        from unittest.mock import MagicMock
+
+        mock_composer = MagicMock()
+        manager.set_composer(mock_composer)
+
+        src = tmp_path / "skill_x"
+        src.mkdir()
+        (src / "SKILL.md").write_text("---\nid: x\nname: X\ntype: code\nentry: main.py\n---\n")
+        (src / "main.py").write_text("print('ok')")
+        await manager.install(str(src), "x")
+
+        await manager.execute("x", {})
+        mock_composer.record_transition.assert_not_called()

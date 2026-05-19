@@ -20,6 +20,7 @@ from js.skills.spec import (
     TrustLevel,
     parse_skill_manifest,
 )
+from js.tools.registry import ToolParam, ToolResult, ToolSpec
 from js.utils.db import db_connection
 from js.utils.log import get_logger
 
@@ -58,6 +59,7 @@ class SkillManager:
         self._sandbox: SandboxExecutor | None = None
         self._composer: Any | None = None
         self._last_skill_by_session: dict[str, str] = {}
+        self._tool_registry: Any | None = None
         self._load_all()
 
     def _init_db(self) -> None:
@@ -114,6 +116,67 @@ class SkillManager:
     def set_composer(self, composer: Any | None) -> None:
         """Set the skill composer for chain discovery."""
         self._composer = composer
+
+    def register_as_tools(self, registry: Any) -> None:
+        """Register all loaded skills as callable tools in the agent's registry."""
+        self._tool_registry = registry
+        for spec in self._skills.values():
+            self._register_skill_as_tool(spec)
+
+    def _register_skill_as_tool(self, spec: SkillSpec) -> None:
+        if not self._tool_registry:
+            return
+
+        tool_name = f"skill_{spec.id}"
+
+        # Build parameters from metadata if available, otherwise generic args
+        params_meta = spec.metadata.get("parameters", []) if spec.metadata else []
+        if params_meta:
+            parameters = [
+                ToolParam(
+                    name=p["name"],
+                    type=p.get("type", "string"),
+                    description=p.get("description", ""),
+                    required=p.get("required", True),
+                    enum=p.get("enum"),
+                )
+                for p in params_meta
+            ]
+        else:
+            parameters = [
+                ToolParam(
+                    name="args",
+                    type="object",
+                    description=f"Arguments for skill {spec.name}",
+                    required=False,
+                )
+            ]
+
+        tool_spec = ToolSpec(
+            name=tool_name,
+            description=spec.description or f"Execute skill: {spec.name}",
+            parameters=parameters,
+            dangerous=spec.trust_level == TrustLevel.QUARANTINE,
+            read_only=spec.type == SkillType.PROMPT,
+        )
+
+        async def _handler(**kwargs: Any) -> ToolResult:
+            args = kwargs.get("args", {}) if "args" in kwargs else kwargs
+            result = await self.execute(spec.id, args)
+            return ToolResult(
+                success=result.get("success", False),
+                output=result.get("output", ""),
+                error=result.get("error", ""),
+                metadata={"skill_id": spec.id, "skill_type": spec.type.value},
+            )
+
+        self._tool_registry.register(tool_spec, _handler)
+        logger.debug(f"Registered skill as tool: {tool_name}")
+
+    def _unregister_skill_as_tool(self, skill_id: str) -> None:
+        if self._tool_registry:
+            self._tool_registry.unregister(f"skill_{skill_id}")
+            logger.debug(f"Unregistered skill tool: skill_{skill_id}")
 
     # ------------------------------------------------------------------
     # Discovery
@@ -383,6 +446,7 @@ entry: main.py
             await asyncio.wait_for(proc.communicate(), timeout=120)
 
         logger.info(f"Installed skill: {spec.id} (trust={spec.trust_level.value})")
+        self._register_skill_as_tool(spec)
         return spec
 
     async def uninstall(self, skill_id: str) -> bool:
@@ -391,6 +455,7 @@ entry: main.py
         spec = self._skills.pop(skill_id)
         if spec.path and spec.path.exists() and not self._is_builtin(spec):
             await asyncio.to_thread(shutil.rmtree, spec.path)
+        self._unregister_skill_as_tool(skill_id)
         logger.info(f"Uninstalled skill: {skill_id}")
         return True
 
