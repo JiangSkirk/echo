@@ -223,18 +223,30 @@ Key rules:
         return f"{size:.1f} TB"
 
     def _setup_embedder(self) -> Embedder:
-        """Select the best available embedding provider."""
+        """Select the best available embedding provider.
+
+        Tries LLM-based embedding first, but falls back to KeywordEmbedder
+        if the API does not support embeddings (e.g. LM Studio).
+        """
         for cfg in self.settings.providers:
             if cfg.base_url:
                 try:
                     model = getattr(cfg, "embedding_model", "text-embedding-3-small")
-                    return LLMEmbedder(
+                    embedder = LLMEmbedder(
                         base_url=cfg.base_url,
                         api_key=cfg.api_key or "dummy",
                         model=model,
                     )
+                    # Health-check: try a dummy embed to verify the endpoint works
+                    _ = embedder.embed("test")
+                    self.logger.info(f"Using LLMEmbedder via {cfg.name}")
+                    return embedder
                 except Exception:
-                    self.logger.debug("Failed to create LLMEmbedder", exc_info=True)
+                    self.logger.debug(
+                        f"Provider {cfg.name} does not support embeddings, falling back",
+                        exc_info=True,
+                    )
+        self.logger.info("Using KeywordEmbedder (no embedding API available)")
         return KeywordEmbedder()
 
     def _build_attachment_context(self, attachments: list[str]) -> str:
