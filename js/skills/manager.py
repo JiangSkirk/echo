@@ -56,6 +56,8 @@ class SkillManager:
         self._skills: dict[str, SkillSpec] = {}
         self._scan_cache: dict[str, ScanResult] = {}
         self._sandbox: SandboxExecutor | None = None
+        self._composer: Any | None = None
+        self._last_skill_by_session: dict[str, str] = {}
         self._load_all()
 
     def _init_db(self) -> None:
@@ -108,6 +110,10 @@ class SkillManager:
     def set_evolver(self, evolver: Any | None) -> None:
         """Set the skill evolver for feedback loop."""
         self._evolver = evolver
+
+    def set_composer(self, composer: Any | None) -> None:
+        """Set the skill composer for chain discovery."""
+        self._composer = composer
 
     # ------------------------------------------------------------------
     # Discovery
@@ -409,6 +415,7 @@ entry: main.py
         skill_id: str,
         args: dict[str, Any],
         llm_caller: LLMCaller | None = None,
+        session_id: str = "",
     ) -> dict[str, Any]:
         """Execute a skill with full lifecycle tracking."""
 
@@ -469,7 +476,7 @@ entry: main.py
                 logger.debug(f"Failed to record evolution result for {skill_id}", exc_info=True)
 
         # Record composition chain for learning
-        self._record_chain(skill_id, success)
+        self._record_chain(skill_id, success, session_id)
 
         return exec_result
 
@@ -525,11 +532,19 @@ entry: main.py
                 spec.success_rate = (total[1] or 0) / total[0]
                 spec.avg_latency_ms = avg_lat[0] or 0.0
 
-    def _record_chain(self, skill_id: str, success: bool) -> None:
+    def _record_chain(self, skill_id: str, success: bool, session_id: str = "") -> None:
         """Record skill execution for composition chain discovery."""
-        # Simple: just track that this skill was executed
-        # Chain discovery happens in batch via metacognition
-        pass
+        if not session_id or not self._composer:
+            return
+
+        last_skill = self._last_skill_by_session.get(session_id)
+        if last_skill and last_skill != skill_id:
+            try:
+                self._composer.record_transition(last_skill, skill_id, session_id)
+            except Exception:
+                logger.debug(f"Failed to record transition {last_skill} -> {skill_id}", exc_info=True)
+
+        self._last_skill_by_session[session_id] = skill_id
 
     # ------------------------------------------------------------------
     # Composition Chain Discovery

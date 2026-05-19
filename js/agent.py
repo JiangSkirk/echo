@@ -27,6 +27,7 @@ from js.security.guard import BehaviorGuard
 from js.security.sandbox import SandboxExecutor
 from js.security.secrets import SecretManager
 from js.security.strategies import build_default_strategies
+from js.skills.composer import SkillComposer
 from js.skills.curator import SkillCurator
 from js.skills.evolver import SkillEvolver
 from js.skills.manager import SkillManager
@@ -108,6 +109,7 @@ Key rules:
         self.learner = SelfLearner(settings.state_dir)
         self.optimizer = PromptOptimizer(settings.state_dir)
         self.evolver = SkillEvolver(settings.state_dir)
+        self.composer = SkillComposer(settings.state_dir)
         self.compression_config = CompressionConfig()
         self.compressor = ContextCompressor(self.compression_config, summarizer=self._summarize_context)
         self.compression_feedback = CompressionFeedback(settings.state_dir)
@@ -118,10 +120,12 @@ Key rules:
             evolver=self.evolver,
             compression_feedback=self.compression_feedback,
             compression_config=self.compression_config,
+            composer=self.composer,
         )
         self.curator = SkillCurator(settings.state_dir)
 
         # Execution & safety
+        self.skills.set_composer(self.composer)
         self.skills.set_sandbox(SandboxExecutor(settings.workspace))
         self.skills.set_evolver(self.evolver)
         self.approvals = ApprovalQueue(default_mode=ApprovalMode.MANUAL)

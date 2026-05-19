@@ -10,7 +10,7 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from js.compression.compressor import CompressionConfig
 from js.compression.feedback import CompressionFeedback
@@ -19,6 +19,9 @@ from js.evolution.optimizer import PromptOptimizer
 from js.skills.evolver import SkillEvolver
 from js.utils.db import db_connection
 from js.utils.log import get_logger
+
+if TYPE_CHECKING:
+    from js.skills.composer import SkillComposer
 
 logger = get_logger("js.metacognition")
 
@@ -54,6 +57,7 @@ class MetacognitionLoop:
         evolver: SkillEvolver | None = None,
         compression_feedback: CompressionFeedback | None = None,
         compression_config: CompressionConfig | None = None,
+        composer: SkillComposer | None = None,
         auto_apply: bool = True,
     ) -> None:
         self.state_dir = state_dir
@@ -63,6 +67,7 @@ class MetacognitionLoop:
         self.evolver = evolver
         self.compression_feedback = compression_feedback
         self.compression_config = compression_config
+        self.composer = composer
         self.auto_apply = auto_apply
         self._interaction_count = 0
         self._last_reflect_time: float = time.time()
@@ -147,6 +152,15 @@ class MetacognitionLoop:
                     "proposal": f"Trigger auto-evolution for {stat['skill_id']} (current best: {stat['best_success_rate']*100:.0f}%)",
                 })
 
+        # 5. Analyze composition chains
+        composition_stats = self._analyze_composition()
+        for chain in composition_stats.get("discovered", []):
+            actions_taken.append({
+                "area": "composition",
+                "action": f"Discovered chain: {chain.name}",
+                "chain_id": chain.id,
+            })
+
         # Compute overall health score
         scores: list[float] = []
         if compression_quality.get("total_events", 0) > 0:
@@ -202,6 +216,17 @@ class MetacognitionLoop:
         if self.optimizer:
             return self.optimizer.get_report()
         return {}
+
+    def _analyze_composition(self) -> dict[str, Any]:
+        """Discover skill composition chains from transition logs."""
+        if not self.composer:
+            return {"discovered": []}
+        try:
+            chains = self.composer.discover_chains(min_frequency=3)
+            return {"discovered": chains, "total_chains": len(chains)}
+        except Exception:
+            logger.debug("Composition analysis failed", exc_info=True)
+            return {"discovered": []}
 
     def _analyze_evolution(self) -> list[dict[str, Any]]:
         """Analyze skill evolution status by querying the evolver's DB."""
