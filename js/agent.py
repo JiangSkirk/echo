@@ -17,6 +17,7 @@ from js.config import JSSettings
 from js.evolution.learner import SelfLearner
 from js.evolution.metacognition import MetacognitionLoop
 from js.evolution.optimizer import PromptOptimizer
+from js.memory.embeddings import KeywordEmbedder
 from js.memory.scheduler import DreamScheduler
 from js.memory.store import MemoryStore
 from js.models.provider_manager import ProviderManager
@@ -97,7 +98,7 @@ Key rules:
         self.guard = BehaviorGuard(settings.security, settings.workspace)
         self.audit = AuditLogger(settings.state_dir, settings.security.audit_retention_days)
         self.secrets = SecretManager(settings.state_dir)
-        self.memory = MemoryStore(settings.state_dir, settings.memory)
+        self.memory = MemoryStore(settings.state_dir, settings.memory, KeywordEmbedder())
         self._dream_scheduler = DreamScheduler(self)
 
         # Tooling layer
@@ -110,6 +111,7 @@ Key rules:
         self.optimizer = PromptOptimizer(settings.state_dir)
         self.evolver = SkillEvolver(settings.state_dir)
         self.composer = SkillComposer(settings.state_dir)
+        self._clawhub: Any | None = None
         self.compression_config = CompressionConfig()
         self.compressor = ContextCompressor(self.compression_config, summarizer=self._summarize_context)
         self.compression_feedback = CompressionFeedback(settings.state_dir)
@@ -293,7 +295,28 @@ Key rules:
                 max_chars=self.settings.memory.max_memory_chars,
             )
             if memory_context:
-                parts.append(f"\n## Relevant Context\n{memory_context}")
+                # Security scan memory context before injection
+                memory_context = self.secrets.detect_and_redact(
+                    memory_context, "memory_context"
+                )
+                scan = self.guard.check_tool_result(memory_context)
+                if scan.decision.value in ("block", "warn"):
+                    self.logger.warning(
+                        f"Memory context security scan {scan.decision.value}: {scan.reason}"
+                    )
+                    self.audit.log(
+                        AuditEventType.SECURITY_ALERT,
+                        session_id or "",
+                        "",
+                        "agent",
+                        "memory_scan",
+                        {"decision": scan.decision.value, "reason": scan.reason},
+                    )
+                    # Degrade to empty context on block
+                    if scan.decision.value == "block":
+                        memory_context = ""
+                if memory_context:
+                    parts.append(f"\n## Relevant Context\n{memory_context}")
 
         return "\n".join(parts)
 

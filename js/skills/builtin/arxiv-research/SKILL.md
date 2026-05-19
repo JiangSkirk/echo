@@ -11,6 +11,12 @@ trust_level: builtin
 platforms: [macos, linux, windows]
 prerequisites:
   commands: [curl]
+metadata:
+  parameters:
+    - name: query
+      type: string
+      description: Search query term or arXiv paper ID
+      required: true
 ---
 
 # arXiv Research

@@ -9,6 +9,16 @@ category: software-development
 tags: [code, review, quality, security]
 trust_level: builtin
 platforms: [macos, linux, windows]
+metadata:
+  parameters:
+    - name: code
+      type: string
+      description: The code to review
+      required: true
+    - name: language
+      type: string
+      description: Programming language of the code
+      required: false
 ---
 
 # Code Review Assistant

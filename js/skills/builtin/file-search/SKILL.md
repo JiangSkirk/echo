@@ -12,6 +12,20 @@ trust_level: builtin
 platforms: [macos, linux, windows]
 prerequisites:
   commands: [find, grep]
+metadata:
+  parameters:
+    - name: pattern
+      type: string
+      description: File name pattern to search for (e.g., '*.py')
+      required: false
+    - name: content
+      type: string
+      description: Text content to search within files
+      required: false
+    - name: path
+      type: string
+      description: Directory path to search in
+      required: false
 ---
 
 # Advanced File Search

@@ -22,6 +22,7 @@ class AuditEventType(StrEnum):
     MODEL_RESPONSE = "model_response"
     SECURITY_BLOCK = "security_block"
     SECURITY_WARN = "security_warn"
+    SECURITY_ALERT = "security_alert"
     CONFIG_CHANGE = "config_change"
     USER_MESSAGE = "user_message"
     AGENT_MESSAGE = "agent_message"

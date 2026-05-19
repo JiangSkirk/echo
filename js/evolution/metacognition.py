@@ -16,6 +16,7 @@ from js.compression.compressor import CompressionConfig
 from js.compression.feedback import CompressionFeedback
 from js.evolution.learner import SelfLearner
 from js.evolution.optimizer import PromptOptimizer
+from js.skills.auto_creator import AutoSkillCreator
 from js.skills.evolver import SkillEvolver
 from js.utils.db import db_connection
 from js.utils.log import get_logger
@@ -68,6 +69,7 @@ class MetacognitionLoop:
         self.compression_feedback = compression_feedback
         self.compression_config = compression_config
         self.composer = composer
+        self.auto_creator = AutoSkillCreator(state_dir)
         self.auto_apply = auto_apply
         self._interaction_count = 0
         self._last_reflect_time: float = time.time()
@@ -161,6 +163,15 @@ class MetacognitionLoop:
                 "chain_id": chain.id,
             })
 
+        # 6. Auto-generate skills from high-confidence patterns
+        auto_skills = self._analyze_auto_skills()
+        for spec in auto_skills:
+            actions_taken.append({
+                "area": "auto_skill",
+                "action": f"Created auto-skill: {spec.id}",
+                "skill_id": spec.id,
+            })
+
         # Compute overall health score
         scores: list[float] = []
         if compression_quality.get("total_events", 0) > 0:
@@ -227,6 +238,33 @@ class MetacognitionLoop:
         except Exception:
             logger.debug("Composition analysis failed", exc_info=True)
             return {"discovered": []}
+
+    def _analyze_auto_skills(self) -> list[Any]:
+        """Create auto-skills from high-confidence learned patterns."""
+        created: list[Any] = []
+        if not self.learner:
+            return created
+        try:
+            with db_connection(self.learner.db_path) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT pattern, frequency, success_rate
+                    FROM learned_patterns
+                    WHERE frequency >= ? AND success_rate >= ?
+                    ORDER BY frequency DESC, success_rate DESC
+                    LIMIT 5
+                    """,
+                    (10, 0.8),
+                ).fetchall()
+
+            for pattern, frequency, success_rate in rows:
+                if self.auto_creator.should_create(frequency, success_rate):
+                    spec = self.auto_creator.create_from_pattern(pattern)
+                    if spec:
+                        created.append(spec)
+        except Exception:
+            logger.debug("Auto-skill analysis failed", exc_info=True)
+        return created
 
     def _analyze_evolution(self) -> list[dict[str, Any]]:
         """Analyze skill evolution status by querying the evolver's DB."""

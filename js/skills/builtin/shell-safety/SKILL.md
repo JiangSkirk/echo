@@ -9,6 +9,12 @@ category: devops
 tags: [security, shell, safety, review]
 trust_level: builtin
 platforms: [macos, linux, windows]
+metadata:
+  parameters:
+    - name: command
+      type: string
+      description: The shell command to analyze for safety
+      required: true
 ---
 
 # Shell Command Safety Checker

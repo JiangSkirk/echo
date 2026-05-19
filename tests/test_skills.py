@@ -431,3 +431,66 @@ class TestSkillManagerFeedbackLoops:
 
         await manager.execute("x", {})
         mock_composer.record_transition.assert_not_called()
+
+
+class TestSkillAsToolBridge:
+    """Verify skills are registered as callable tools."""
+
+    def test_skills_registered_as_tools(self, tmp_path: Path) -> None:
+        from js.config import ToolLimits
+        from js.security.guard import BehaviorGuard
+        from js.skills.manager import SkillManager
+        from js.tools.registry import ToolRegistry
+
+        guard = BehaviorGuard.__new__(BehaviorGuard)
+        registry = ToolRegistry(ToolLimits(), guard)
+        manager = SkillManager(tmp_path, tmp_path / "workspace")
+        manager.register_as_tools(registry)
+
+        # Builtin skills should appear as tools
+        tool_names = {t.name for t in registry.list_tools()}
+        assert "skill_arxiv-research" in tool_names
+        assert "skill_code-review" in tool_names
+        assert "skill_file-search" in tool_names
+        assert "skill_shell-safety" in tool_names
+        assert "skill_web-fetch" in tool_names
+
+    @pytest.mark.anyio
+    async def test_skill_tool_unregister_on_uninstall(self, tmp_path: Path) -> None:
+        from js.config import ToolLimits
+        from js.security.guard import BehaviorGuard
+        from js.skills.manager import SkillManager
+        from js.tools.registry import ToolRegistry
+
+        guard = BehaviorGuard.__new__(BehaviorGuard)
+        registry = ToolRegistry(ToolLimits(), guard)
+        manager = SkillManager(tmp_path, tmp_path / "workspace")
+        manager.register_as_tools(registry)
+
+        assert registry.get("skill_arxiv-research") is not None
+        await manager.uninstall("arxiv-research")
+        assert registry.get("skill_arxiv-research") is None
+
+    @pytest.mark.anyio
+    async def test_skill_tool_handler(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from js.config import ToolLimits
+        from js.security.guard import BehaviorGuard
+        from js.skills.manager import SkillManager
+        from js.tools.registry import ToolRegistry
+
+        guard = BehaviorGuard.__new__(BehaviorGuard)
+        registry = ToolRegistry(ToolLimits(), guard)
+        manager = SkillManager(tmp_path, tmp_path / "workspace")
+        manager.register_as_tools(registry)
+
+        handler = registry.get_handler("skill_shell-safety")
+        assert handler is not None
+
+        # Mock execute to avoid actual LLM/tool calls
+        with patch.object(manager, "execute", new_callable=AsyncMock, return_value={"success": True, "output": "Safe"}):
+            result = await handler(command="echo hello")
+            assert result.success is True
+            assert result.output == "Safe"
+            assert result.metadata.get("skill_id") == "shell-safety"

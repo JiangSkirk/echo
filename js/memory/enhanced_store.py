@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from js.config import MemoryConfig
+from js.memory.embeddings import Embedder, KeywordEmbedder, cosine_similarity
 from js.utils.db import db_connection
 from js.utils.log import get_logger
 
@@ -44,10 +45,11 @@ class SemanticMemory:
 class EnhancedMemoryStore:
     """Multi-layer memory: working -> episodic -> semantic, with dreaming consolidation."""
 
-    def __init__(self, state_dir: Path, config: MemoryConfig) -> None:
+    def __init__(self, state_dir: Path, config: MemoryConfig, embedder: Embedder | None = None) -> None:
         self.state_dir = state_dir
         self.config = config
         self.db_path = state_dir / "memory_enhanced.db"
+        self.embedder = embedder or KeywordEmbedder()
         self._init_db()
         self._working_cache: dict[str, dict[str, Any]] = {}
         self._last_dream: float = 0.0
@@ -100,6 +102,7 @@ class EnhancedMemoryStore:
                     created_at REAL NOT NULL,
                     last_accessed REAL NOT NULL,
                     access_count INTEGER DEFAULT 0,
+                    embedding TEXT,
                     UNIQUE(key)
                 )
             """)
@@ -415,19 +418,21 @@ class EnhancedMemoryStore:
         source: str = "",
     ) -> None:
         now = time.time()
+        embedding_json = self.embedder.to_json(self.embedder.embed(f"{key} {value}"))
         with db_connection(self.db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO semantic_memories (key, value, category, confidence, source, created_at, last_accessed, access_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                INSERT INTO semantic_memories (key, value, category, confidence, source, created_at, last_accessed, access_count, embedding)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
                 ON CONFLICT(key) DO UPDATE SET
                     value=excluded.value,
                     category=excluded.category,
                     confidence=excluded.confidence,
                     source=excluded.source,
-                    last_accessed=?
+                    last_accessed=?,
+                    embedding=excluded.embedding
                 """,
-                (key, value, category, confidence, source, now, now, now),
+                (key, value, category, confidence, source, now, now, embedding_json, now),
             )
             conn.commit()
 
@@ -452,9 +457,13 @@ class EnhancedMemoryStore:
         )
 
     def search_semantic(self, query: str, category: str | None = None, limit: int = 10) -> list[SemanticMemory]:
-        # Escape SQL LIKE wildcards
+        query_vec = self.embedder.embed(query)
+
+        # Phase 1: Fast pre-filter with LIKE to avoid loading all rows
         safe_query = query.replace("%", "\\%").replace("_", "\\_")
         pattern = f"%{safe_query}%"
+        candidate_limit = max(limit * 5, 50)
+
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             if category:
@@ -462,21 +471,47 @@ class EnhancedMemoryStore:
                     """
                     SELECT * FROM semantic_memories
                     WHERE (key LIKE ? ESCAPE '\\' OR value LIKE ? ESCAPE '\\') AND category = ?
-                    ORDER BY confidence DESC, last_accessed DESC
                     LIMIT ?
                     """,
-                    (pattern, pattern, category, limit),
+                    (pattern, pattern, category, candidate_limit),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     """
                     SELECT * FROM semantic_memories
                     WHERE key LIKE ? ESCAPE '\\' OR value LIKE ? ESCAPE '\\'
-                    ORDER BY confidence DESC, last_accessed DESC
                     LIMIT ?
                     """,
-                    (pattern, pattern, limit),
+                    (pattern, pattern, candidate_limit),
                 ).fetchall()
+
+        # Phase 2: If no LIKE matches, scan recent entries by embedding
+        if not rows:
+            with db_connection(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM semantic_memories ORDER BY last_accessed DESC LIMIT ?",
+                    (candidate_limit,),
+                ).fetchall()
+
+        # Phase 3: Score candidates by embedding similarity
+        scored: list[tuple[float, sqlite3.Row]] = []
+        for r in rows:
+            emb_raw = r["embedding"]
+            if emb_raw:
+                try:
+                    vec = self.embedder.from_json(emb_raw)
+                    score = cosine_similarity(query_vec, vec)
+                except Exception:
+                    score = 0.0
+            else:
+                q = query.lower()
+                text = f"{r['key']} {r['value']}".lower()
+                score = 1.0 if q in text else 0.0
+            scored.append((score, r))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
         return [
             SemanticMemory(
                 id=r["id"],
@@ -489,7 +524,7 @@ class EnhancedMemoryStore:
                 last_accessed=r["last_accessed"],
                 access_count=r["access_count"],
             )
-            for r in rows
+            for _score, r in scored[:limit]
         ]
 
     # ------------------------------------------------------------------

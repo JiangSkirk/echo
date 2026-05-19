@@ -11,6 +11,16 @@ trust_level: builtin
 platforms: [macos, linux, windows]
 prerequisites:
   commands: [curl]
+metadata:
+  parameters:
+    - name: url
+      type: string
+      description: The URL to fetch content from
+      required: true
+    - name: max_length
+      type: integer
+      description: Maximum characters to return
+      required: false
 ---
 
 # Web Content Fetcher

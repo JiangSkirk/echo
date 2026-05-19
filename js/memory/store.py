@@ -29,17 +29,17 @@ class MemoryEntry:
 class MemoryStore:
     """SQLite-backed memory with LRU eviction, compression, and dreaming consolidation."""
 
-    def __init__(self, state_dir: Path, config: MemoryConfig) -> None:
+    def __init__(self, state_dir: Path, config: MemoryConfig, embedder: Any | None = None) -> None:
         self.state_dir = state_dir
         self.config = config
         self.db_path = state_dir / "memory.db"
         self._init_db()
-        self._init_enhanced()
+        self._init_enhanced(embedder)
 
-    def _init_enhanced(self) -> None:
+    def _init_enhanced(self, embedder: Any | None = None) -> None:
         from js.memory.enhanced_store import EnhancedMemoryStore
 
-        self.enhanced = EnhancedMemoryStore(self.state_dir, self.config)
+        self.enhanced = EnhancedMemoryStore(self.state_dir, self.config, embedder)
         self._ensure_memory_files()
 
     def _ensure_memory_files(self) -> None:
