@@ -1,0 +1,42 @@
+{
+  "version": "1.0",
+  "source": "JS Agent Example Marketplace",
+  "skills": [
+    {
+      "id": "todo-manager",
+      "name": "Todo Manager",
+      "description": "Manage todo lists with priorities, deadlines, and categories.",
+      "version": "1.0.0",
+      "author": "JS Agent Community",
+      "source": "git+https://github.com/js-agent-community/todo-manager.git",
+      "type": "code",
+      "category": "productivity",
+      "tags": ["todo", "task", "productivity"],
+      "trust_level": "community"
+    },
+    {
+      "id": "git-helper",
+      "name": "Git Helper",
+      "description": "Analyze git history, suggest commits, and resolve merge conflicts.",
+      "version": "1.0.0",
+      "author": "JS Agent Community",
+      "source": "git+https://github.com/js-agent-community/git-helper.git",
+      "type": "prompt",
+      "category": "software-development",
+      "tags": ["git", "version-control", "devops"],
+      "trust_level": "community"
+    },
+    {
+      "id": "markdown-formatter",
+      "name": "Markdown Formatter",
+      "description": "Format and lint Markdown files with consistent style.",
+      "version": "1.0.0",
+      "author": "JS Agent Community",
+      "source": "git+https://github.com/js-agent-community/markdown-formatter.git",
+      "type": "code",
+      "category": "software-development",
+      "tags": ["markdown", "formatting", "documentation"],
+      "trust_level": "community"
+    }
+  ]
+}

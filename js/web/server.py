@@ -9,7 +9,10 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from js.orchestration.fleet import AgentFleet
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
@@ -34,6 +37,7 @@ logger = get_logger("js.web")
 _agent: JSAgent | None = None
 _settings: JSSettings | None = None
 _stats_store: TokenStatsStore | None = None
+_fleet: Any | None = None
 
 # Agent fleet model assignment config: role -> model_id
 _agent_config: dict[str, str] = {
@@ -49,6 +53,15 @@ def get_agent() -> JSAgent:
     if _agent is None:
         raise RuntimeError("Agent not initialized")
     return _agent
+
+
+def get_fleet() -> AgentFleet:
+    global _fleet
+    if _fleet is None:
+        from js.orchestration.fleet import AgentFleet
+
+        _fleet = AgentFleet(_settings or JSSettings.from_file())
+    return _fleet
 
 
 @asynccontextmanager
@@ -820,12 +833,69 @@ def create_app() -> FastAPI:
             except Exception:
                 logger.debug("Failed to send error to websocket", exc_info=True)
 
+    # ------------------------------------------------------------------
+    # Fleet API
+    # ------------------------------------------------------------------
+
+    @app.get("/api/fleet/status")
+    async def fleet_status() -> dict[str, Any]:
+        fleet = get_fleet()
+        return fleet.get_status()
+
+    @app.post("/api/fleet/spawn")
+    async def fleet_spawn(payload: dict[str, Any]) -> dict[str, Any]:
+        from js.orchestration.fleet import AgentRole
+
+        fleet = get_fleet()
+        role = AgentRole(payload.get("role", "generalist"))
+        agent = fleet.spawn(
+            name=payload.get("name", f"agent-{role.value}"),
+            role=role,
+            model=payload.get("model"),
+        )
+        return {"success": True, "agent_id": agent.id, "role": role.value}
+
+    @app.post("/api/fleet/dispatch")
+    async def fleet_dispatch(payload: dict[str, Any]) -> dict[str, Any]:
+        from js.orchestration.fleet import AgentRole, Task
+
+        fleet = get_fleet()
+        task = Task(
+            id=str(uuid.uuid4()),
+            description=payload.get("description", ""),
+            role_hint=AgentRole(payload.get("role", "generalist")),
+            priority=payload.get("priority", 5),
+        )
+        task_id = await fleet.dispatch(task)
+        return {"success": True, "task_id": task_id}
+
+    @app.post("/api/fleet/collaborate")
+    async def fleet_collaborate(payload: dict[str, Any]) -> dict[str, Any]:
+        from js.orchestration.fleet import AgentRole
+
+        fleet = get_fleet()
+        subtasks_raw = payload.get("subtasks", [])
+        subtasks: list[tuple[str, AgentRole]] = []
+        for st in subtasks_raw:
+            subtasks.append((st.get("description", ""), AgentRole(st.get("role", "generalist"))))
+        result = await fleet.collaborate(
+            main_task=payload.get("task", ""),
+            subtasks=subtasks,
+        )
+        return {"success": True, "result": result}
+
+    @app.post("/api/fleet/broadcast")
+    async def fleet_broadcast(payload: dict[str, Any]) -> dict[str, Any]:
+        fleet = get_fleet()
+        await fleet.broadcast(payload.get("message", ""))
+        return {"success": True}
+
     return app
 
 
 
-_TEMPLATE_DIR = Path(__file__).parent / 'templates'
-_STATIC_DIR = Path(__file__).parent / 'static'
+_TEMPLATE_DIR = Path(__file__).parent / "templates"
+_STATIC_DIR = Path(__file__).parent / "static"
 
 def _load_index_html() -> str:
     path = _TEMPLATE_DIR / 'index.html'

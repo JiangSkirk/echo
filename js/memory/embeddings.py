@@ -11,6 +11,8 @@ import math
 from abc import ABC, abstractmethod
 from typing import cast
 
+import httpx
+
 
 class Embedder(ABC):
     """Abstract embedding provider."""
@@ -65,3 +67,43 @@ class KeywordEmbedder(Embedder):
         return vec
 
 
+class LLMEmbedder(Embedder):
+    """Embedding provider using an OpenAI-compatible embeddings API.
+
+    Uses a synchronous httpx client so it can be called from the
+    synchronous MemoryStore methods.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str = "text-embedding-3-small",
+        dims: int | None = None,
+    ) -> None:
+        self.client = httpx.Client(
+            base_url=base_url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=httpx.Timeout(30.0),
+        )
+        self.model = model
+        self.dims = dims
+
+    def embed(self, text: str) -> list[float]:
+        result = self.embed_batch([text])
+        return result[0]
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        try:
+            response = self.client.post(
+                "/embeddings",
+                json={"model": self.model, "input": texts},
+            )
+            response.raise_for_status()
+            data = response.json()
+            vectors = [item["embedding"] for item in data["data"]]
+            if self.dims:
+                vectors = [v[: self.dims] for v in vectors]
+            return vectors
+        except Exception as e:
+            raise RuntimeError(f"Embedding API failed: {e}") from e

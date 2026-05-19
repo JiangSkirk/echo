@@ -17,7 +17,7 @@ from js.config import JSSettings
 from js.evolution.learner import SelfLearner
 from js.evolution.metacognition import MetacognitionLoop
 from js.evolution.optimizer import PromptOptimizer
-from js.memory.embeddings import KeywordEmbedder
+from js.memory.embeddings import Embedder, KeywordEmbedder, LLMEmbedder
 from js.memory.scheduler import DreamScheduler
 from js.memory.store import MemoryStore
 from js.models.provider_manager import ProviderManager
@@ -98,7 +98,7 @@ Key rules:
         self.guard = BehaviorGuard(settings.security, settings.workspace)
         self.audit = AuditLogger(settings.state_dir, settings.security.audit_retention_days)
         self.secrets = SecretManager(settings.state_dir)
-        self.memory = MemoryStore(settings.state_dir, settings.memory, KeywordEmbedder())
+        self.memory = MemoryStore(settings.state_dir, settings.memory, self._setup_embedder())
         self._dream_scheduler = DreamScheduler(self)
 
         # Tooling layer
@@ -222,6 +222,21 @@ Key rules:
             size /= 1024
         return f"{size:.1f} TB"
 
+    def _setup_embedder(self) -> Embedder:
+        """Select the best available embedding provider."""
+        for cfg in self.settings.providers:
+            if cfg.base_url:
+                try:
+                    model = getattr(cfg, "embedding_model", "text-embedding-3-small")
+                    return LLMEmbedder(
+                        base_url=cfg.base_url,
+                        api_key=cfg.api_key or "dummy",
+                        model=model,
+                    )
+                except Exception:
+                    self.logger.debug("Failed to create LLMEmbedder", exc_info=True)
+        return KeywordEmbedder()
+
     def _build_attachment_context(self, attachments: list[str]) -> str:
         """Build context text describing uploaded attachments."""
         if not attachments:
@@ -266,6 +281,30 @@ Key rules:
                 self.optimizer.register_variant("system", self.SYSTEM_PROMPT, "baseline")
         except Exception:
             self.logger.debug("Failed to register default prompt variant", exc_info=True)
+
+    def _build_vision_content(
+        self,
+        user_input: str,
+        attachments: list[str],
+        supports_vision: bool,
+    ) -> str | list[dict[str, Any]]:
+        """Build user message content, using multimodal format for vision models."""
+        if not supports_vision or not attachments:
+            return ""
+
+        from js.tools.images import create_image_message, is_image
+
+        parts: list[dict[str, Any]] = [{"type": "text", "text": user_input}]
+        for path_str in attachments:
+            path = self.settings.workspace / path_str
+            if path.exists() and is_image(path):
+                try:
+                    parts.append(create_image_message(path))
+                except Exception as e:
+                    self.logger.warning(f"Failed to encode image {path}: {e}")
+        if len(parts) > 1:
+            return parts
+        return ""
 
     def _build_system_message(self, query: str = "", session_id: str = "", attachments: list[str] | None = None) -> str:
         """Build system message with rich multi-layer memory context."""
@@ -383,7 +422,15 @@ Key rules:
                 ),
             ),
         )
-        state.messages.append(ChatMessage(role="user", content=user_input + attachment_ctx))
+
+        # Build user message: support multimodal for vision models
+        model_config = self.router.get_model_config(model or "")
+        supports_vision = model_config.supports_vision if model_config else False
+        vision_parts = self._build_vision_content(user_input, attachments, supports_vision)
+        if isinstance(vision_parts, list):
+            state.messages.append(ChatMessage(role="user", content=vision_parts))
+        else:
+            state.messages.append(ChatMessage(role="user", content=user_input + attachment_ctx))
 
         # Store working memory for this interaction
         await asyncio.to_thread(

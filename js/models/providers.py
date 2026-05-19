@@ -96,7 +96,11 @@ class OpenAICompatibleProvider(ModelProvider):
     def _convert_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         for m in messages:
-            msg: dict[str, Any] = {"role": m.role, "content": m.content}
+            msg: dict[str, Any] = {"role": m.role}
+            if isinstance(m.content, list):
+                msg["content"] = m.content
+            else:
+                msg["content"] = m.content
             if m.tool_calls:
                 msg["tool_calls"] = m.tool_calls
             if m.tool_call_id:
@@ -246,6 +250,24 @@ class OpenAICompatibleProvider(ModelProvider):
 
         self._last_health_check = time.time()
         return self._health_status
+
+    async def embed(
+        self,
+        texts: list[str],
+        model: str | None = None,
+    ) -> list[list[float]]:
+        """Generate embeddings for a batch of texts."""
+        if not self.circuit.can_execute():
+            raise RuntimeError(f"Circuit breaker OPEN for {self.config.name}")
+        try:
+            response = await self.client.embeddings.create(
+                model=model or self.config.models[0].id if self.config.models else "text-embedding-3-small",
+                input=texts,
+            )
+            return [item.embedding for item in response.data]
+        except Exception:
+            self.circuit.record_failure()
+            raise
 
     async def close(self) -> None:
         await self.client.close()

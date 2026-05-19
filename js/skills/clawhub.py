@@ -37,10 +37,14 @@ class ClawHubClient:
             return self._load_cached_index()
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(self.index_url)
-                response.raise_for_status()
-                data = response.json()
+            if self.index_url.startswith("file://"):
+                local_path = Path(self.index_url[7:])
+                data = json.loads(local_path.read_text(encoding="utf-8"))
+            else:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.get(self.index_url)
+                    response.raise_for_status()
+                    data = response.json()
         except Exception as e:
             logger.warning(f"Failed to fetch ClawHub index: {e}")
             # Fall back to cached index if available
