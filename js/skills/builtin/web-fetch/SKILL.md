@@ -35,16 +35,41 @@ Fetch content from URLs and return clean text.
 
 ## How to Use
 
-Use `curl` to fetch the page, then strip HTML:
+Use `curl` to fetch the page, then strip HTML. The URL is read from `JS_SKILL_ARGS`:
 
-```bash
-curl -s -L "$URL" | python3 -c "
-import sys, re
-html = sys.stdin.read()
+```python
+import json, os, re, subprocess, sys
+
+args = json.loads(os.environ.get("JS_SKILL_ARGS", "{}"))
+url = args.get("url", "")
+max_length = int(args.get("max_length", 5000))
+
+if not url:
+    print("Error: No URL provided")
+    sys.exit(1)
+
+# Validate URL scheme
+if not url.startswith(("http://", "https://")):
+    print("Error: URL must start with http:// or https://")
+    sys.exit(1)
+
+# Block private IPs
+if any(url.startswith(prefix) for prefix in ["http://127.", "http://192.168.", "http://10.", "http://0.", "http://localhost"]):
+    print("Error: Private IP addresses are not allowed")
+    sys.exit(1)
+
+result = subprocess.run(
+    ["curl", "-s", "-L", "--max-time", "30", "-A", "JS-Agent/1.0", url],
+    capture_output=True, text=True
+)
+if result.returncode != 0:
+    print(f"Error: Failed to fetch {url}: {result.stderr}")
+    sys.exit(1)
+
+html = result.stdout
 text = re.sub(r'<[^>]+>', ' ', html)
 text = re.sub(r'\s+', ' ', text).strip()
-print(text[:5000])
-"
+print(text[:max_length])
 ```
 
 ## Safety Rules

@@ -40,17 +40,32 @@ The API returns Atom XML. Parse with Python for clean output.
 curl -s "https://export.arxiv.org/api/query?search_query=all:QUERY&max_results=5&sortBy=submittedDate&sortOrder=descending" | python3 -c "
 import sys, xml.etree.ElementTree as ET
 ns = {'a': 'http://www.w3.org/2005/Atom'}
-root = ET.parse(sys.stdin).getroot()
-for i, entry in enumerate(root.findall('a:entry', ns)):
-    title = entry.find('a:title', ns).text.strip().replace('\n', ' ')
-    arxiv_id = entry.find('a:id', ns).text.strip().split('/abs/')[-1]
-    published = entry.find('a:published', ns).text[:10]
-    authors = ', '.join(a.find('a:name', ns).text for a in entry.findall('a:author', ns))
-    summary = entry.find('a:summary', ns).text.strip()[:200]
-    print(f'{i+1}. [{arxiv_id}] {title}')
-    print(f'   Authors: {authors} | Published: {published}')
-    print(f'   Summary: {summary}...')
-    print()
+try:
+    root = ET.parse(sys.stdin).getroot()
+    entries = root.findall('a:entry', ns)
+    if not entries:
+        print('No results found for this query.')
+        sys.exit(0)
+    for i, entry in enumerate(entries):
+        title_el = entry.find('a:title', ns)
+        title = (title_el.text or '').strip().replace('\n', ' ') if title_el is not None else 'N/A'
+        id_el = entry.find('a:id', ns)
+        arxiv_id = (id_el.text or '').strip().split('/abs/')[-1] if id_el is not None else 'N/A'
+        pub_el = entry.find('a:published', ns)
+        published = (pub_el.text or '')[:10] if pub_el is not None else 'N/A'
+        authors_els = entry.findall('a:author', ns)
+        authors = ', '.join(
+            (a.find('a:name', ns).text or 'Unknown') for a in authors_els
+        ) if authors_els else 'Unknown'
+        sum_el = entry.find('a:summary', ns)
+        summary = (sum_el.text or '').strip()[:200] if sum_el is not None else 'N/A'
+        print(f'{i+1}. [{arxiv_id}] {title}')
+        print(f'   Authors: {authors} | Published: {published}')
+        print(f'   Summary: {summary}...')
+        print()
+except Exception as e:
+    print(f'Error parsing arXiv response: {e}', file=sys.stderr)
+    sys.exit(1)
 "
 ```
 

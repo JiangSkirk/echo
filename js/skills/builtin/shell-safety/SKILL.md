@@ -43,6 +43,10 @@ Flag these as MEDIUM:
 - `rm -rf $DIR` (variable could be empty)
 - Hardcoded credentials in commands
 
+## Input Parameters
+
+- `command` (required): The shell command to analyze
+
 ## Output Format
 
 ```
@@ -52,3 +56,7 @@ Mitigation: safer alternative
 ```
 
 If safe, output: `[OK] No dangerous patterns detected.`
+
+## Execution
+
+Analyze the provided `command` against all danger patterns listed above. Output findings in the format specified. If no dangerous patterns are found, output `[OK] No dangerous patterns detected.`
