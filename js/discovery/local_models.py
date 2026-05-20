@@ -34,6 +34,9 @@ class LocalModelDiscovery:
         {"name": "ollama-alt", "url": "http://localhost:11434/v1", "api_key": "ollama"},
     ]
 
+    # Common ports used by local LLM servers
+    COMMON_PORTS = [1234, 11434, 8080, 5000, 8000, 3000, 5001]
+
     def __init__(self, timeout: float = 3.0) -> None:
         self.timeout = timeout
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(timeout))
@@ -55,6 +58,95 @@ class LocalModelDiscovery:
                 discovered.append(provider)
 
         return discovered
+
+    async def scan_lan(self, subnet_prefix: str = "192.168") -> list[DiscoveredProvider]:
+        """Scan the local network for model servers on common ports.
+
+        Args:
+            subnet_prefix: e.g. '192.168' or '10.0'
+        """
+        # Detect our own subnet
+        own_ip = self._get_own_ip(subnet_prefix)
+        if not own_ip:
+            logger.warning(f"Could not detect own IP in subnet {subnet_prefix}")
+            return []
+
+        # Build IP range (e.g. 192.168.31.x)
+        parts = own_ip.split(".")
+        if len(parts) != 4:
+            return []
+        base = ".".join(parts[:3])
+
+        # Probe .1 to .254 on common ports
+        probes: list[dict[str, str]] = []
+        for port in self.COMMON_PORTS:
+            for host in range(1, 255):
+                ip = f"{base}.{host}"
+                probes.append({
+                    "name": f"lan-{ip}-{port}",
+                    "url": f"http://{ip}:{port}/v1",
+                    "api_key": "",
+                })
+
+        # Limit concurrent probes to avoid flooding the network
+        semaphore = asyncio.Semaphore(50)
+        discovered: list[DiscoveredProvider] = []
+        seen_urls: set[str] = set()
+
+        async def _probe_lan(p: dict[str, str]) -> DiscoveredProvider | None:
+            async with semaphore:
+                return await self._probe(p)
+
+        # Probe in batches to avoid overwhelming the event loop
+        batch_size = 200
+        for i in range(0, len(probes), batch_size):
+            batch = probes[i:i + batch_size]
+            results = await asyncio.gather(*[_probe_lan(p) for p in batch], return_exceptions=True)
+            for r in results:
+                if not isinstance(r, DiscoveredProvider) or r is None:
+                    continue
+                if r.healthy and r.base_url not in seen_urls:
+                    seen_urls.add(r.base_url)
+                    discovered.append(r)
+
+        logger.info(f"LAN scan found {len(discovered)} providers in subnet {base}.x")
+        return discovered
+
+    def _get_own_ip(self, subnet_prefix: str) -> str | None:
+        """Get the local IP address that belongs to the given subnet prefix."""
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(1)
+            # Connect to a dummy address to trigger interface selection
+            s.connect(("8.8.8.8", 80))
+            ip_str: str = s.getsockname()[0]
+            s.close()
+            if ip_str.startswith(subnet_prefix):
+                return ip_str
+            # If primary IP doesn't match prefix, try to find one that does
+            return self._find_ip_in_subnet(subnet_prefix)
+        except Exception:
+            return self._find_ip_in_subnet(subnet_prefix)
+
+    def _find_ip_in_subnet(self, subnet_prefix: str) -> str | None:
+        import socket
+        from typing import cast
+        try:
+            hostname = socket.gethostname()
+            addrs = socket.getaddrinfo(hostname, None, socket.AF_INET)
+            for addr in addrs:
+                ip_str = cast("str", addr[4][0])
+                if ip_str.startswith(subnet_prefix):
+                    return ip_str
+            # Fallback: return any non-loopback IP
+            for addr in addrs:
+                ip_str = cast("str", addr[4][0])
+                if not ip_str.startswith("127."):
+                    return ip_str
+        except Exception:
+            pass
+        return None
 
     async def _probe(self, probe: dict[str, str]) -> DiscoveredProvider | None:
         import time

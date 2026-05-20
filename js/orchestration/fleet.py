@@ -86,8 +86,14 @@ class AgentFleet:
         return instance
 
     def _role_settings(self, role: AgentRole) -> JSSettings:
-        """Create specialized settings for different roles."""
-        settings = JSSettings.from_file()
+        """Create specialized settings for different roles.
+
+        Uses the fleet's current settings (which include dynamically-added
+        providers) rather than reloading from disk.
+        """
+        from copy import deepcopy
+
+        settings = deepcopy(self.settings)
         if role == AgentRole.CODER:
             settings.max_turns = 80
         elif role == AgentRole.REVIEWER:

@@ -416,6 +416,102 @@ def create_app() -> FastAPI:
                 _agent_config[role] = ""
         return {"success": True}
 
+    @app.get("/api/providers/cloud-presets")
+    async def cloud_presets() -> dict[str, Any]:
+        """List all built-in cloud provider presets."""
+        from js.models.cloud_providers import list_presets
+        return {"presets": list_presets()}
+
+    @app.post("/api/providers/add-cloud")
+    async def add_cloud_provider(payload: dict[str, Any]) -> dict[str, Any]:
+        """One-click add a cloud provider from presets."""
+        from js.models.cloud_providers import build_provider_config, get_preset
+
+        preset_id = payload.get("preset_id", "").strip()
+        api_key = payload.get("api_key", "").strip()
+
+        if not preset_id:
+            raise HTTPException(400, "preset_id is required")
+
+        preset = get_preset(preset_id)
+        if not preset:
+            raise HTTPException(404, f"Unknown preset: {preset_id}")
+
+        if not api_key:
+            # Try to load from environment
+            import os
+            api_key = os.getenv(preset.api_key_env, "")
+            if not api_key:
+                raise HTTPException(
+                    400,
+                    f"API key required. Set {preset.api_key_env} environment variable or pass api_key in payload."
+                )
+
+        cfg = build_provider_config(preset, api_key)
+        agent = get_agent()
+
+        # Prevent overriding static config
+        static_names = {p.name for p in agent.settings.providers}
+        dyn_names = {p.name for p in agent.provider_manager.get_all()}
+        true_static = static_names - dyn_names
+        if preset_id in true_static:
+            raise HTTPException(409, f"Provider '{preset_id}' conflicts with static config")
+
+        try:
+            agent.provider_manager.add(cfg)
+            agent.settings.providers = [
+                p for p in agent.settings.providers if p.name != preset_id
+            ]
+            agent.settings.providers.append(cfg)
+            agent.router.add_provider(cfg.name, OpenAICompatibleProvider(cfg), cfg.models)
+        except Exception as e:
+            try:
+                agent.provider_manager.remove(preset_id)
+            except Exception:
+                pass
+            agent.settings.providers = [
+                p for p in agent.settings.providers if p.name != preset_id
+            ]
+            agent.router.remove_provider(preset_id)
+            raise HTTPException(500, f"Failed to add provider: {e}") from e
+
+        return {
+            "success": True,
+            "provider": preset_id,
+            "name": preset.name,
+            "models_added": len(cfg.models),
+        }
+
+    @app.post("/api/providers/scan-lan")
+    async def scan_lan(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Scan the local network for model servers."""
+        from js.discovery.local_models import LocalModelDiscovery
+
+        subnet = (payload or {}).get("subnet", "192.168")
+        discovery = LocalModelDiscovery(timeout=2.0)
+        try:
+            discovered = await discovery.scan_lan(subnet_prefix=subnet)
+            return {
+                "success": True,
+                "subnet": subnet,
+                "found": len(discovered),
+                "providers": [
+                    {
+                        "name": d.name,
+                        "type": d.provider_type,
+                        "base_url": d.base_url,
+                        "models": [{"id": m.id, "name": m.name} for m in d.models],
+                        "latency_ms": round(d.latency_ms, 1),
+                    }
+                    for d in discovered
+                ],
+            }
+        except Exception as e:
+            logger.error(f"LAN scan failed: {e}", exc_info=True)
+            raise HTTPException(500, f"LAN scan failed: {e}") from e
+        finally:
+            await discovery.close()
+
     @app.get("/api/stats/tokens")
     async def token_stats(days: int = 30) -> dict[str, Any]:
         if _stats_store is None:
@@ -510,14 +606,39 @@ def create_app() -> FastAPI:
 
     @app.get("/api/agents/config")
     async def get_agent_config() -> dict[str, Any]:
-        return {"config": _agent_config}
+        agent = get_agent()
+        # Build available models list for the UI
+        available_models: list[dict[str, Any]] = []
+        for p in agent.settings.providers:
+            for m in p.models:
+                available_models.append({
+                    "id": f"{p.name}/{m.id}",
+                    "provider": p.name,
+                    "model_id": m.id,
+                    "model_name": m.name or m.id,
+                    "context_window": m.context_window,
+                })
+        return {
+            "config": _agent_config,
+            "available_models": available_models,
+            "roles": list(_agent_config.keys()),
+        }
 
     @app.post("/api/agents/config")
     async def set_agent_config(payload: dict[str, Any]) -> dict[str, Any]:
         global _agent_config
         new_config = payload.get("config", {})
+        agent = get_agent()
+        # Validate model IDs against available providers
+        valid_models = {
+            f"{p.name}/{m.id}"
+            for p in agent.settings.providers
+            for m in p.models
+        }
         for role, model in new_config.items():
             if role in _agent_config:
+                if model and model not in valid_models and model != "":
+                    raise HTTPException(400, f"Invalid model '{model}' for role '{role}'")
                 _agent_config[role] = model
         return {"success": True, "config": _agent_config}
 
@@ -988,6 +1109,23 @@ def create_app() -> FastAPI:
         except Exception:
             raise
 
+    @app.get("/api/fleet/models")
+    async def fleet_models() -> dict[str, Any]:
+        """List all models available for fleet agents."""
+        agent = get_agent()
+        models: list[dict[str, Any]] = []
+        for p in agent.settings.providers:
+            for m in p.models:
+                models.append({
+                    "id": f"{p.name}/{m.id}",
+                    "provider": p.name,
+                    "model_id": m.id,
+                    "name": m.name or m.id,
+                    "context_window": m.context_window,
+                    "supports_vision": m.supports_vision,
+                })
+        return {"models": models}
+
     @app.post("/api/fleet/spawn")
     async def fleet_spawn(payload: dict[str, Any]) -> dict[str, Any]:
         from js.orchestration.fleet import AgentRole
@@ -995,14 +1133,37 @@ def create_app() -> FastAPI:
         try:
             fleet = get_fleet()
             role = AgentRole(payload.get("role", "generalist"))
-            agent = fleet.spawn(
+            model = payload.get("model")
+
+            # Validate model against available providers
+            if model:
+                agent = get_agent()
+                valid_models = {
+                    f"{p.name}/{m.id}"
+                    for p in agent.settings.providers
+                    for m in p.models
+                }
+                if model not in valid_models:
+                    raise HTTPException(
+                        400,
+                        f"Invalid model '{model}'. Use /api/fleet/models to see available models."
+                    )
+
+            instance = fleet.spawn(
                 name=payload.get("name", f"agent-{role.value}"),
                 role=role,
-                model=payload.get("model"),
+                model=model,
             )
-            return {"success": True, "agent_id": agent.id, "role": role.value}
+            return {
+                "success": True,
+                "agent_id": instance.id,
+                "role": role.value,
+                "model": model,
+            }
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Fleet spawn failed: {e}", exc_info=True)
             raise HTTPException(500, f"Fleet spawn failed: {e}") from e
