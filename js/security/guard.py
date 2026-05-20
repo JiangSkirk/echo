@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from js.config import SecurityConfig
 
@@ -27,7 +28,14 @@ class SecurityDecision:
 
 
 class BehaviorGuard:
-    """Multi-layer behavioral guard."""
+    """Multi-layer behavioral guard.
+
+    Inspired by Hermes Agent's defense-in-depth security model:
+    - Hardline blocklist: irreversible operations blocked even in yolo/off mode
+    - Loop detection: prevents stuck retry loops
+    - Repeated failure guard: stops same-tool failure spirals
+    - Encoding detection: decodes and re-scans obfuscated payloads
+    """
 
     ENCODING_PATTERNS = {
         "base64": re.compile(r"(?:[A-Za-z0-9+/]{4}){10,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?"),
@@ -35,6 +43,7 @@ class BehaviorGuard:
         "url_encoded": re.compile(r"(?:%[0-9a-fA-F]{2}){10,}"),
     }
 
+    # High-risk patterns — blocked when defense_mode != "off"
     HIGH_RISK_COMMANDS = [
         r"rm\s+-rf\s+/",
         r"dd\s+if=/dev/zero",
@@ -48,16 +57,54 @@ class BehaviorGuard:
         r"chmod\s+-R\s+777\s+/",
     ]
 
+    # Hardline blocklist — irreversible operations NEVER allowed, even in yolo mode.
+    # These protect against catastrophic data loss regardless of user configuration.
+    HARDLINE_PATTERNS = [
+        r"rm\s+-rf\s+/\s*($|\s|;)",
+        r"rm\s+-rf\s+/\s*\.",
+        r"rm\s+(-r\s+|-f\s+)*\/\s*($|\s|;)",
+        r"dd\s+if=[^\s]*\s+of=/dev/sd[a-z]",
+        r"dd\s+if=/dev/zero\s+of=/dev/sd[a-z]",
+        r"mkfs\.[a-z0-9]+\s+/dev/sd[a-z]",
+        r"mkfs\.[a-z0-9]+\s+/dev/hd[a-z]",
+        r"mkfs\.[a-z0-9]+\s+/dev/nvme",
+        r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\};\s*:",
+        r"shutdown\s+-h\s+now",
+        r"halt\s+-p",
+        r"reboot\s+-f",
+        r"init\s+0",
+        r"poweroff\s+-f",
+        r"chmod\s+-R\s+777\s+/\s*($|\s|;)",
+        r"chmod\s+-R\s+000\s+/\s*($|\s|;)",
+    ]
+
     def __init__(self, config: SecurityConfig, workspace: Path) -> None:
         self.config = config
         self.workspace = workspace.resolve()
         self._command_patterns = [re.compile(p) for p in self.HIGH_RISK_COMMANDS]
+        self._hardline_patterns = [re.compile(p) for p in self.HARDLINE_PATTERNS]
         self._protected_pattern = [re.compile(p) for p in config.protected_commands]
         self._loop_counters: dict[str, int] = {}
+        self._failure_counters: dict[str, int] = {}
         self._script_artifacts: set[str] = set()
+
+    def _check_hardline(self, command: str) -> SecurityDecision | None:
+        """Check hardline blocklist — irreversible ops blocked even in off/yolo mode."""
+        for pattern in self._hardline_patterns:
+            if pattern.search(command):
+                return SecurityDecision(
+                    SecurityDecisionType.BLOCK,
+                    f"Hardline block: irreversible operation detected: {pattern.pattern}",
+                )
+        return None
 
     def check_command(self, command: str, cwd: str = ".") -> SecurityDecision:
         """Check if a shell command is safe to execute."""
+        # Hardline check FIRST — always runs regardless of defense_mode
+        hardline = self._check_hardline(command)
+        if hardline:
+            return hardline
+
         if self.config.defense_mode.value == "off":
             return SecurityDecision(SecurityDecisionType.ALLOW)
 
@@ -85,6 +132,10 @@ class BehaviorGuard:
         # Decode and re-check: attackers may encode dangerous commands
         decoded = self._decode_command(command)
         if decoded != command:
+            # Re-check hardline on decoded content
+            hardline_decoded = self._check_hardline(decoded)
+            if hardline_decoded:
+                return hardline_decoded
             for pattern in self._command_patterns:
                 if pattern.search(decoded):
                     return SecurityDecision(
@@ -272,12 +323,49 @@ class BehaviorGuard:
             except (ValueError, UnicodeDecodeError):
                 continue
         # URL-encoded
-        from urllib.parse import unquote
         decoded += " " + unquote(command)
         return decoded
 
+    def check_repeated_failure(self, run_id: str, tool_name: str, success: bool) -> SecurityDecision:
+        """Check if the same tool is failing repeatedly in a run.
+
+        Hermes-style tool guardrail: if a tool fails N consecutive times,
+        block further calls to prevent failure spirals.
+        """
+        if self.config.defense_mode.value == "off":
+            return SecurityDecision(SecurityDecisionType.ALLOW)
+
+        key = f"{run_id}:{tool_name}"
+        if success:
+            # Reset on success
+            self._failure_counters.pop(key, None)
+            return SecurityDecision(SecurityDecisionType.ALLOW)
+
+        count = self._failure_counters.get(key, 0) + 1
+        self._failure_counters[key] = count
+        # Prune old counters
+        if len(self._failure_counters) > 10_000:
+            self._failure_counters.clear()
+
+        threshold = max(3, self.config.max_loop_iterations // 2)
+        if count >= threshold:
+            return SecurityDecision(
+                SecurityDecisionType.BLOCK,
+                f"Repeated failure guard: {tool_name} failed {count} consecutive times in this run",
+            )
+        elif count >= 2:
+            return SecurityDecision(
+                SecurityDecisionType.WARN,
+                f"{tool_name} has failed {count} times — may be stuck",
+            )
+
+        return SecurityDecision(SecurityDecisionType.ALLOW)
+
     def reset_loop_counters(self, run_id: str) -> None:
-        """Clear loop counters for a run."""
+        """Clear loop and failure counters for a run."""
         keys_to_remove = [k for k in self._loop_counters if k.startswith(f"{run_id}:")]
         for k in keys_to_remove:
             del self._loop_counters[k]
+        f_keys = [k for k in self._failure_counters if k.startswith(f"{run_id}:")]
+        for k in f_keys:
+            del self._failure_counters[k]

@@ -539,16 +539,15 @@ Key rules:
                             state.status = "completed"
                             break
 
-                        # Execute tools
-                        tool_messages: list[ChatMessage] = []
-                        for tc in response.tool_calls:
+                        # Execute tools (parallel when safe)
+                        async def _execute_single_tool(tc: dict[str, Any]) -> ChatMessage:
+                            """Execute a single tool call and return the tool message."""
                             func = tc.get("function", {}) if isinstance(tc, dict) else {}
                             tool_name = func.get("name", "") if isinstance(func, dict) else ""
                             raw_args = func.get("arguments", "{}") if isinstance(func, dict) else "{}"
                             tool_call_id = tc.get("id", "") if isinstance(tc, dict) else ""
                             if not tool_name:
-                                self.logger.warning("Tool call missing name, skipping")
-                                continue
+                                return ChatMessage(role="tool", content="Error: Tool call missing name", tool_call_id=tool_call_id, name="unknown")
                             try:
                                 arguments = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args if isinstance(raw_args, dict) else {})
                             except json.JSONDecodeError:
@@ -566,22 +565,14 @@ Key rules:
                             )
                             defense_result = self.defense_strategies.evaluate(defense_ctx)
                             if defense_result.blocked:
-                                result = ToolResult(
-                                    success=False,
-                                    error=f"Security blocked: {defense_result.reason}",
+                                return ChatMessage(
+                                    role="tool",
+                                    content=f"Error: Security blocked: {defense_result.reason}",
+                                    tool_call_id=tool_call_id,
+                                    name=tool_name,
                                 )
-                                state.tool_results.append(result)
-                                tool_messages.append(
-                                    ChatMessage(
-                                        role="tool",
-                                        content=result.to_text(),
-                                        tool_call_id=tool_call_id,
-                                        name=tool_name,
-                                    )
-                                )
-                                continue
 
-                            # Approval check for dangerous tools
+                            # Approval check for dangerous tools (must be awaited, so runs inline)
                             spec = self.registry.get(tool_name)
                             if spec and spec.dangerous:
                                 approved = await asyncio.to_thread(
@@ -591,20 +582,12 @@ Key rules:
                                     context="cli",
                                 )
                                 if not approved:
-                                    result = ToolResult(
-                                        success=False,
-                                        error="Operation denied: approval required but not granted",
+                                    return ChatMessage(
+                                        role="tool",
+                                        content="Error: Operation denied: approval required but not granted",
+                                        tool_call_id=tool_call_id,
+                                        name=tool_name,
                                     )
-                                    state.tool_results.append(result)
-                                    tool_messages.append(
-                                        ChatMessage(
-                                            role="tool",
-                                            content=result.to_text(),
-                                            tool_call_id=tool_call_id,
-                                            name=tool_name,
-                                        )
-                                    )
-                                    continue
 
                             self.audit.log(
                                 AuditEventType.TOOL_CALL,
@@ -616,21 +599,26 @@ Key rules:
                             )
 
                             result = await self.registry.execute(run_id, tool_name, arguments)
-                            state.tool_results.append(result)
+
+                            # Repeated failure guard (Hermes-style)
+                            fail_check = self.guard.check_repeated_failure(run_id, tool_name, result.success)
+                            if fail_check.decision == "block":
+                                result = ToolResult(success=False, error=f"Security: {fail_check.reason}")
 
                             # Redact secrets in output
                             if result.output:
                                 result.output = self.secrets.detect_and_redact(result.output, f"tool:{tool_name}")
 
-                            tool_messages.append(
-                                ChatMessage(
-                                    role="tool",
-                                    content=result.to_text(),
-                                    tool_call_id=tool_call_id,
-                                    name=tool_name,
-                                )
+                            return ChatMessage(
+                                role="tool",
+                                content=result.to_text(),
+                                tool_call_id=tool_call_id,
+                                name=tool_name,
                             )
 
+                        # Parallel execution: fire all tool calls concurrently
+                        tool_tasks = [_execute_single_tool(tc) for tc in response.tool_calls]
+                        tool_messages = await asyncio.gather(*tool_tasks)
                         state.messages.extend(tool_messages)
                     finally:
                         turn_latency = time.perf_counter() - turn_start

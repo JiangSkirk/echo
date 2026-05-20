@@ -139,6 +139,13 @@ def create_app() -> FastAPI:
             "dream_scheduler": agent._dream_scheduler is not None,
         }
         embedder_health = agent.memory.embedder.health()
+
+        # Hermes bridge stats
+        hermes_count: int = sum(
+            1 for s in agent.skills.get_all().values()
+            if s.id.startswith("hermes:")
+        )
+
         return {
             "version": SERVER_VERSION,
             "routes": sorted(routes, key=lambda x: x["path"]),
@@ -151,6 +158,10 @@ def create_app() -> FastAPI:
                 "active": embedder_health.active,
                 "fallback": embedder_health.fallback_provider,
                 "failures": embedder_health.failure_count,
+            },
+            "hermes_bridge": {
+                "enabled": hermes_count > 0,
+                "skills_loaded": hermes_count,
             },
         }
 
@@ -536,6 +547,35 @@ def create_app() -> FastAPI:
             "categories": agent.skills.list_categories(),
             "global_stats": agent.skills.get_global_stats(),
         }
+
+    # Hermes-specific endpoints MUST be defined BEFORE /api/skills/{skill_id}
+    # to avoid "hermes" being captured as a skill_id path parameter.
+    @app.get("/api/skills/hermes")
+    async def hermes_skills_list() -> dict[str, Any]:
+        """List all Hermes skills with bridge diagnostics."""
+        agent = get_agent()
+        from js.skills.hermes_bridge import get_bridge_stats, is_hermes_skill
+
+        hermes_skills = [
+            s.to_summary_dict()
+            for s in agent.skills.get_all().values()
+            if is_hermes_skill(s.id)
+        ]
+        stats = get_bridge_stats()
+        return {
+            "skills": hermes_skills,
+            "count": len(hermes_skills),
+            "stats": stats.to_dict(),
+        }
+
+    @app.post("/api/skills/hermes/refresh")
+    async def hermes_skills_refresh() -> dict[str, Any]:
+        """Refresh Hermes skills from disk without restarting the server."""
+        agent = get_agent()
+        result = agent.skills.refresh_hermes_skills()
+        if result.get("success"):
+            return result
+        raise HTTPException(500, result.get("error", "Refresh failed"))
 
     @app.get("/api/skills/{skill_id}")
     async def skill_detail(skill_id: str) -> dict[str, Any]:

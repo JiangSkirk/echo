@@ -13,6 +13,12 @@ from typing import Any
 
 from js.security.sandbox import SandboxExecutor
 from js.skills.executor import execute_skill
+from js.skills.hermes_bridge import (
+    discover_hermes_skills,
+    enhanced_scan_hermes_skill,
+    get_bridge_stats,
+    load_hermes_skill,
+)
 from js.skills.security import ScanResult, scan_skill, verify_integrity
 from js.skills.spec import (
     SkillSpec,
@@ -183,7 +189,7 @@ class SkillManager:
     # ------------------------------------------------------------------
 
     def _load_all(self) -> None:
-        """Load builtin + installed skills."""
+        """Load builtin + installed + Hermes skills."""
         # 1. Builtin skills (shipped with agent)
         if self.BUILTIN_DIR.exists():
             self._scan_directory(self.BUILTIN_DIR, trust_override=TrustLevel.BUILTIN)
@@ -191,7 +197,100 @@ class SkillManager:
         # 2. User-installed skills
         self._scan_directory(self.skills_dir)
 
+        # 3. Hermes skills (seamless integration)
+        self._load_hermes_skills()
+
         logger.info(f"Loaded {len(self._skills)} skills")
+
+    def _load_hermes_skills(self) -> None:
+        """Load skills from the Hermes skills directory (~/.hermes/skills/).
+
+        This enables JS Agent to use all skills already installed by
+        OpenClaw Hermes without any migration or re-installation.
+        """
+        from js.skills.hermes_bridge import HERMES_SKILLS_DIR
+
+        if not HERMES_SKILLS_DIR.exists():
+            logger.debug("Hermes skills directory not found, skipping Hermes bridge")
+            return
+
+        stats = get_bridge_stats()
+        stats.failed_loads = 0
+        stats.total_loaded = 0
+        stats.prompt_count = 0
+        stats.code_count = 0
+
+        try:
+            manifests = discover_hermes_skills(HERMES_SKILLS_DIR)
+            for manifest in manifests:
+                try:
+                    spec = load_hermes_skill(manifest)
+
+                    # Skip if a JS Agent skill with the same ID already exists
+                    if spec.id in self._skills:
+                        logger.debug(f"Skipping Hermes skill {spec.id}: ID conflict with existing skill")
+                        continue
+
+                    # Security scan (with optional Hermes guard enhancement)
+                    cached = self._load_cached_scan(spec.id, spec.content_hash)
+                    if cached:
+                        spec.risk_flags = cached.risk_flags
+                        spec.trust_level = cached.trust_level
+                    else:
+                        result = enhanced_scan_hermes_skill(spec)
+                        spec.risk_flags = result.risk_flags
+                        spec.trust_level = result.trust_level
+                        self._save_scan_cache(result)
+
+                    self._skills[spec.id] = spec
+                    stats.total_loaded += 1
+                    if spec.type == SkillType.PROMPT:
+                        stats.prompt_count += 1
+                    elif spec.type == SkillType.CODE:
+                        stats.code_count += 1
+
+                    # Auto-register as tool if registry is available
+                    self._register_skill_as_tool(spec)
+                except Exception as e:
+                    stats.failed_loads += 1
+                    logger.warning(f"Failed to load Hermes skill from {manifest}: {e}")
+
+            stats.last_refresh_time = time.time()
+            stats.refresh_count += 1
+            logger.info(
+                f"Hermes bridge loaded {stats.total_loaded} skills "
+                f"({stats.prompt_count} prompt, {stats.code_count} code, "
+                f"{stats.failed_loads} failed)"
+            )
+        except Exception as e:
+            logger.warning(f"Hermes bridge initialization failed: {e}")
+
+    def refresh_hermes_skills(self) -> dict[str, Any]:
+        """Refresh Hermes skills from disk without restarting.
+
+        Removes stale Hermes skills, reloads changed ones, and discovers new ones.
+        """
+        from js.skills.hermes_bridge import HERMES_SKILLS_DIR
+
+        if not HERMES_SKILLS_DIR.exists():
+            return {"success": False, "error": "Hermes skills directory not found"}
+
+        # 1. Remove all existing Hermes skills
+        hermes_ids = [sid for sid in self._skills if sid.startswith("hermes:")]
+        for sid in hermes_ids:
+            del self._skills[sid]
+            self._unregister_skill_as_tool(sid)
+
+        # 2. Re-load from disk
+        self._load_hermes_skills()
+
+        stats = get_bridge_stats()
+        return {
+            "success": True,
+            "reloaded": stats.total_loaded,
+            "failed": stats.failed_loads,
+            "total_hermes": sum(1 for s in self._skills.values() if s.id.startswith("hermes:")),
+        }
 
     def _scan_directory(self, root: Path, trust_override: TrustLevel | None = None) -> None:
         """Recursively scan a directory for skills.
@@ -575,10 +674,11 @@ entry: main.py
         return results
 
     def _record_usage(self, skill_id: str, skill_type: str, success: bool, latency_ms: float) -> None:
+        source = "hermes" if skill_id.startswith("hermes:") else "native"
         with db_connection(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO skill_usage (skill_id, skill_type, success, latency_ms) VALUES (?, ?, ?, ?)",
-                (skill_id, skill_type, int(success), latency_ms),
+                "INSERT INTO skill_usage (skill_id, skill_type, success, latency_ms, context) VALUES (?, ?, ?, ?, ?)",
+                (skill_id, skill_type, int(success), latency_ms, source),
             )
             conn.commit()
 

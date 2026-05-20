@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from js.security.sandbox import SandboxExecutor
+from js.skills.security import runtime_security_check
 from js.skills.spec import SkillSpec, SkillType
 from js.utils.log import get_logger
 
@@ -49,6 +50,33 @@ async def execute_skill(
         return {"success": False, "error": f"Unknown skill type: {spec.type}"}
 
 
+def _build_hermes_cli_args(args: dict[str, Any]) -> list[str]:
+    """Convert JS_SKILL_ARGS dict to CLI args for Hermes scripts.
+
+    Supports both argparse and manual sys.argv parsers.
+    Named args become --key value (space-separated, works for both styles).
+    Use __args__ for positional arguments.
+    """
+    cli_args: list[str] = []
+    pos_args = args.get("__args__")
+    if pos_args is not None:
+        if isinstance(pos_args, list):
+            cli_args.extend(str(a) for a in pos_args)
+        else:
+            cli_args.append(str(pos_args))
+    for k, v in args.items():
+        if k.startswith("_") or k == "__args__":
+            continue
+        flag = f"--{k.replace('_', '-')}"
+        if isinstance(v, bool):
+            if v:
+                cli_args.append(flag)
+        else:
+            cli_args.append(flag)
+            cli_args.append(str(v))
+    return cli_args
+
+
 async def _execute_code(
     spec: SkillSpec,
     args: dict[str, Any],
@@ -63,9 +91,27 @@ async def _execute_code(
     if not entry_path.exists():
         return {"success": False, "error": f"Entry file not found: {spec.entry}"}
 
+    # Runtime security check (lightweight, runs on every execution)
+    ok, warnings = runtime_security_check(spec)
+    if not ok:
+        logger.warning(f"Runtime security check blocked {spec.id}: {warnings}")
+        return {
+            "success": False,
+            "error": f"Security check failed: {'; '.join(warnings)}",
+            "security_blocked": True,
+        }
+    if warnings:
+        logger.info(f"Runtime security warnings for {spec.id}: {warnings}")
+
     env = os.environ.copy()
     env["JS_SKILL_ARGS"] = json.dumps(args)
     env["JS_SKILL_WORKSPACE"] = str(workspace)
+
+    # Hermes bridge: inject HERMES_HOME and adapt CLI args
+    is_hermes = spec.id.startswith("hermes:")
+    if is_hermes:
+        from js.skills.hermes_bridge import _get_hermes_home
+        env["HERMES_HOME"] = str(_get_hermes_home())
 
     # Determine interpreter
     is_python = spec.entry.endswith(".py")
@@ -79,6 +125,10 @@ async def _execute_code(
             env[f"JS_ARG_{k.upper()}"] = str(v)
     else:
         return {"success": False, "error": f"Unsupported entry type: {spec.entry}"}
+
+    # Append Hermes-style CLI args for CODE skills
+    if is_hermes and (is_python or is_shell):
+        cmd.extend(_build_hermes_cli_args(args))
 
     # Use sandbox if available and appropriate
     if sandbox and spec.trust_level.value in ("community", "quarantine"):
@@ -146,6 +196,46 @@ async def _execute_code(
         return {"success": False, "error": f"Execution failed: {e}"}
 
 
+def _substitute_hermes_vars(content: str, spec: SkillSpec, args: dict[str, Any]) -> str:
+    """Replace Hermes template variables with actual values.
+
+    Supported variables:
+      - ${HERMES_SKILL_DIR} → skill directory path
+      - ${HERMES_SESSION_ID} → session_id from args or empty
+    """
+    if "${HERMES_SKILL_DIR}" in content:
+        skill_dir = str(spec.path) if spec.path else "."
+        content = content.replace("${HERMES_SKILL_DIR}", skill_dir)
+    if "${HERMES_SESSION_ID}" in content:
+        session_id = args.get("session_id", args.get("_session_id", ""))
+        content = content.replace("${HERMES_SESSION_ID}", str(session_id))
+    return content
+
+
+# Mapping from Hermes tool names to JS Agent equivalents.
+# Applied to PROMPT skill content before serving to LLM.
+# Only simple 1:1 function-name replacements that preserve call structure.
+HERMES_TOOL_MAP = {
+    "web_extract(": "browser_fetch(",
+    "write_file(": "file_write(",
+    "read_file(": "file_read(",
+    "terminal(": "shell(",
+    "execute_code(": "python(",
+}
+
+
+def _remap_hermes_tools(content: str) -> str:
+    """Replace Hermes-specific tool calls with JS Agent equivalents."""
+    for hermes_tool, js_tool in HERMES_TOOL_MAP.items():
+        content = content.replace(hermes_tool, js_tool)
+    # Replace skill_view("name") and skills_list() with comments to avoid
+    # leaving unmatched parentheses from simple string replacement.
+    import re
+    content = re.sub(r'skill_view\s*\(\s*["\'][^"\']+["\']\s*\)', '# Skill viewed', content)
+    content = re.sub(r'skills_list\s*\(\s*\)', '# Skills listed', content)
+    return content
+
+
 async def _execute_prompt(
     spec: SkillSpec,
     args: dict[str, Any],
@@ -164,6 +254,12 @@ async def _execute_prompt(
     arg_context = "\n".join(f"{k}: {v}" for k, v in args.items())
 
     content = spec.full_content
+
+    # Substitute Hermes template variables
+    content = _substitute_hermes_vars(content, spec, args)
+
+    # Remap Hermes-specific tool calls to JS Agent equivalents
+    content = _remap_hermes_tools(content)
 
     # Load referenced files if available
     if spec.references_dir and spec.references_dir.exists():

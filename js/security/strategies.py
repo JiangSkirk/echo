@@ -36,6 +36,12 @@ class DefenseResult:
 DefenseStrategy = Callable[[DefenseContext], DefenseResult]
 
 
+def _get_defense_mode(ctx: DefenseContext) -> str:
+    """Normalize defense_mode to a string value."""
+    raw_mode = ctx.config.defense_mode
+    return raw_mode.value if hasattr(raw_mode, "value") else str(raw_mode)
+
+
 class StrategyRegistry:
     """Registry of defense strategies applied in order."""
 
@@ -88,8 +94,7 @@ def command_block_strategy(ctx: DefenseContext) -> DefenseResult:
         "mkfs.",
         ":(){ :|:& };:",
     ]
-    raw_mode = ctx.config.defense_mode
-    mode = raw_mode.value if hasattr(raw_mode, "value") else str(raw_mode)
+    mode = _get_defense_mode(ctx)
     for pattern in high_risk:
         if pattern in command:
             return DefenseResult(
@@ -110,8 +115,7 @@ def path_protection_strategy(ctx: DefenseContext) -> DefenseResult:
         return DefenseResult(blocked=False)
     path = str(raw)
     protected = ["/etc", "/usr", "/bin", "/sys", "/dev", "/proc"]
-    raw_mode = ctx.config.defense_mode
-    mode = raw_mode.value if hasattr(raw_mode, "value") else str(raw_mode)
+    mode = _get_defense_mode(ctx)
     for p in protected:
         if path.startswith(p):
             return DefenseResult(

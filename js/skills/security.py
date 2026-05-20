@@ -6,6 +6,7 @@ Inspired by OpenClaw's ClawAegis skill security model.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 
 from js.skills.spec import SkillSpec, TrustLevel
@@ -35,6 +36,12 @@ RISK_PATTERNS = {
         r"(base64\.b64decode\s*\(|__import__\s*\(|getattr\s*\(.*__builtins)",
         re.I,
     ),
+    "sensitive_path_access": re.compile(
+        r"(~/.ssh|~/.aws|~/.gnupg|~/.kube|~/.docker|~/.hermes/\.env|"
+        r"\$HOME/\.ssh|\$HOME/\.aws|\$HOME/\.gnupg|"
+        r"id_rsa|\.pgpass|\.netrc|credentials\.json|\.npmrc|\.pypirc)",
+        re.I,
+    ),
 }
 
 TRUSTED_AUTHORS = {"JS Team", "hermes-agent", "openclaw"}
@@ -57,8 +64,6 @@ def scan_skill(spec: SkillSpec) -> ScanResult:
 
     Fail-open: if scan itself crashes, return community-level result.
     """
-    import time
-
     start = time.time()
     risk_flags: list[str] = []
 
@@ -129,3 +134,43 @@ def verify_integrity(spec: SkillSpec) -> bool:
         return True  # No hash to verify
     current_hash = spec.compute_hash()
     return current_hash == spec.content_hash
+
+
+def runtime_security_check(spec: SkillSpec) -> tuple[bool, list[str]]:
+    """Fast runtime security check before executing a skill.
+
+    Returns (ok, warnings) where ok=True means execution should proceed.
+    This is a lightweight check designed to run on every execute() call.
+    """
+    warnings: list[str] = []
+
+    # Integrity check
+    if not verify_integrity(spec):
+        warnings.append("Skill content has changed since last scan — rescan recommended")
+
+    # Hermes-specific: check if skill originates from quarantine
+    if spec.id.startswith("hermes:") and spec.path:
+        quarantine_marker = spec.path / ".quarantine"
+        path_str = str(spec.path)
+        if (
+            quarantine_marker.exists()
+            or ".hub/quarantine" in path_str
+            or path_str.endswith("/quarantine")
+            or "/quarantine/" in path_str
+        ):
+            warnings.append("Skill originates from quarantine directory")
+            return False, warnings
+
+    # Sensitive path access check in scripts
+    if spec.path and spec.type.value == "code":
+        entry = spec.path / spec.entry
+        if entry.exists():
+            try:
+                content = entry.read_text(errors="ignore")
+                sensitive_pattern = RISK_PATTERNS.get("sensitive_path_access")
+                if sensitive_pattern and sensitive_pattern.search(content):
+                    warnings.append("Script references sensitive paths (SSH keys, credentials, etc.)")
+            except Exception:
+                pass
+
+    return len(warnings) == 0 or spec.trust_level != TrustLevel.QUARANTINE, warnings
