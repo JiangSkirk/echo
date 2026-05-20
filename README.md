@@ -1,5 +1,9 @@
 # JS Agent
 
+> **⚠️ 当前版本: v0.1.0-alpha — API 可能变更，欢迎反馈！**
+>
+> [English README](README_en.md)
+
 一个比 OpenClaw/Hermes 更**稳定、好用、安全、方便**的 AI Agent 框架，融合了二者的架构精华并超越了它们。
 
 ## 核心特性
@@ -33,10 +37,6 @@
 - **GIT 环境隔离**: 完全独立于用户全局 git 配置
 - **每轮去重**: 同一目录每轮最多一个快照
 - **安全回滚**: 一键恢复到任意历史状态
-
-### ⚡ 配置缓存 (from Hermes)
-- **Stat-Based 热重载**: 文件未变更时跳过 YAML 解析
-- **版本迁移**: 支持配置结构升级
 
 ### ✅ 增强审批系统 (from Hermes)
 - **分层模式**: 手动 / 自动通过 / 自动拒绝 / 定时任务拒绝
@@ -96,7 +96,7 @@ js search "最新的 AI 发展"
 | 安全 | 外部插件 (ClawAegis) | Tirith + 审批 | **内置 + 策略模式 + Fail-Open** |
 | 上下文压缩 | ❌ | ✅ 最强 | ✅ **Hermes 式压缩器** |
 | Checkpoint | ❌ | ✅ Git Shadow | ✅ **Git Shadow Repo** |
-| 配置缓存 | ❌ | ✅ Stat-based | ✅ **Stat-based** |
+| 配置缓存 | ❌ | ✅ Stat-based | ⚠️ 已移除 (YAGNI) |
 | 断路器 | ❌ | ❌ | ✅ **自动恢复探测** |
 | 模型发现 | ❌ 手动配置 | ❌ 手动配置 | ✅ **自动探测** |
 | 搜索 | ❌ 需插件 | Tavily 需配置 | ✅ **DuckDuckGo 开箱即用** |
@@ -179,7 +179,12 @@ Web 界面的 Skills 面板支持：
 pytest tests/ -v
 ```
 
-**103 个测试**覆盖所有模块，Ruff 零错误，mypy strict 零错误。
+**319 个测试**覆盖所有模块，Ruff 零错误，mypy strict 零错误。
+
+## 已知限制
+
+- **WebSocket stream 模式**: 纯文本流式输出，暂不支持工具调用；需要工具调用请使用 message 模式。
+- **LM Studio Embeddings**: 需手动在 LM Studio 中开启 Embedding 服务端点，否则自动降级为关键词匹配。
 
 ## 生产部署
 
@@ -190,3 +195,7 @@ js web --host 0.0.0.0 --port 8080
 # 或 Gunicorn + Uvicorn
 gunicorn "js.web:create_app()" -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8080
 ```
+
+## License
+
+MIT License — 详见 [LICENSE](LICENSE) 文件。

@@ -32,7 +32,7 @@ from js.skills.composer import SkillComposer
 from js.skills.curator import SkillCurator
 from js.skills.evolver import SkillEvolver
 from js.skills.manager import SkillManager
-from js.tools.registry import ToolRegistry, ToolResult
+from js.tools.registry import ParallelToolExecutor, ToolRegistry, ToolResult
 from js.utils.log import get_logger
 from js.utils.metrics import get_metrics, start_span
 
@@ -253,7 +253,15 @@ Key rules:
                         f"Provider {cfg.name} does not support embeddings, falling back",
                         exc_info=True,
                     )
-        self.logger.info("Using KeywordEmbedder (no embedding API available)")
+                    if "1234" in cfg.base_url:
+                        self.logger.warning(
+                            f"LM Studio detected at {cfg.base_url} but embeddings endpoint is not available. "
+                            "To enable semantic memory: open LM Studio → 'Developer' tab → 'Embedding Model' → load a model."
+                        )
+        self.logger.info(
+            "Using KeywordEmbedder (no embedding API available). "
+            "Semantic memory will use keyword matching instead of vector similarity."
+        )
         return KeywordEmbedder()
 
     def _build_attachment_context(self, attachments: list[str]) -> str:
@@ -616,10 +624,16 @@ Key rules:
                                 name=tool_name,
                             )
 
-                        # Parallel execution: fire all tool calls concurrently
-                        tool_tasks = [_execute_single_tool(tc) for tc in response.tool_calls]
-                        tool_messages = await asyncio.gather(*tool_tasks)
-                        state.messages.extend(tool_messages)
+                        # Parallel execution: group by safety, run batches sequentially
+                        parallel = ParallelToolExecutor()
+                        batches = parallel.group(response.tool_calls)
+                        self.logger.debug(
+                            f"Tool batches: {len(batches)} for {len(response.tool_calls)} calls"
+                        )
+                        for batch in batches:
+                            batch_tasks = [_execute_single_tool(tc) for tc in batch]
+                            batch_messages = await asyncio.gather(*batch_tasks)
+                            state.messages.extend(batch_messages)
                     finally:
                         turn_latency = time.perf_counter() - turn_start
                         try:

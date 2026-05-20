@@ -909,14 +909,24 @@ def create_app() -> FastAPI:
 
                     await websocket.send_json({"type": "status", "content": "streaming..."})
 
-                    assistant_msg = ""
-                    async for token in agent.chat_stream(user_msg, session_id=session_id, model=model, attachments=attachments):
-                        await websocket.send_json({"type": "token", "content": token})
-                        assistant_msg += token
+                    # Use agent.run() for full tool-calling support,
+                    # then simulate token-by-token delivery for UI smoothness.
+                    state = await agent.run(user_msg, session_id=session_id, model=model, attachments=attachments)
+                    session_id = state.session_id
 
-                    # Ensure session_id is stable for storage and client tracking
-                    if not session_id:
-                        session_id = str(uuid.uuid4())
+                    assistant_msg = ""
+                    for msg in reversed(state.messages):
+                        if msg.role == "assistant" and isinstance(msg.content, str) and msg.content:
+                            assistant_msg = msg.content
+                            break
+
+                    # Simulate streaming by sending characters in chunks
+                    chunk_size = 3
+                    for i in range(0, len(assistant_msg), chunk_size):
+                        await websocket.send_json(
+                            {"type": "token", "content": assistant_msg[i:i + chunk_size]}
+                        )
+                        await asyncio.sleep(0.005)  # Tiny delay for visual smoothness
 
                     await websocket.send_json({"type": "done", "session_id": session_id})
 

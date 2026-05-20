@@ -232,3 +232,88 @@ class ToolRegistry:
 
     def get_stats(self) -> dict[str, int]:
         return dict(self._call_counts)
+
+
+class ParallelToolExecutor:
+    """Intelligent parallel execution scheduler for tool calls.
+
+    Groups tool calls so that:
+    - Independent read-only tools run in parallel
+    - Mutating tools or tools touching the same path run sequentially
+    - NEVER_PARALLEL_TOOLS (shell, file_write, etc.) never run concurrently
+    """
+
+    NEVER_PARALLEL_TOOLS: set[str] = {
+        "file_write",
+        "shell",
+        "python",
+        "code_execute",
+        "file_delete",
+    }
+
+    def __init__(self, max_parallel: int = 4) -> None:
+        self.max_parallel = max_parallel
+
+    @staticmethod
+    def _get_tool_name(call: dict[str, Any]) -> str:
+        func = call.get("function", {}) if isinstance(call, dict) else {}
+        return func.get("name", "") if isinstance(func, dict) else ""
+
+    @staticmethod
+    def _get_arguments(call: dict[str, Any]) -> dict[str, Any]:
+        func = call.get("function", {}) if isinstance(call, dict) else {}
+        raw = func.get("arguments", "{}") if isinstance(func, dict) else "{}"
+        if isinstance(raw, dict):
+            return raw
+        try:
+            import json
+            result: dict[str, Any] = json.loads(raw)
+            return result
+        except Exception:
+            return {}
+
+    def _has_path_overlap(self, call1: dict[str, Any], call2: dict[str, Any]) -> bool:
+        """Check if two tool calls target the same file path."""
+        args1 = self._get_arguments(call1)
+        args2 = self._get_arguments(call2)
+        for key in ("path", "file", "filename", "dest"):
+            p1 = args1.get(key)
+            p2 = args2.get(key)
+            if p1 and p2 and str(p1) == str(p2):
+                return True
+        return False
+
+    def _is_safe_parallel(self, call: dict[str, Any]) -> bool:
+        """Determine if a single tool call can safely run in parallel with others."""
+        return self._get_tool_name(call) not in self.NEVER_PARALLEL_TOOLS
+
+    def group(self, tool_calls: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+        """Group tool_calls into batches that can run concurrently.
+
+        Returns a list of batches. Each batch is safe to asyncio.gather().
+        Batches must be executed sequentially.
+        """
+        if not tool_calls:
+            return []
+
+        # If any call is in NEVER_PARALLEL, run everything sequentially
+        if any(not self._is_safe_parallel(tc) for tc in tool_calls):
+            return [[tc] for tc in tool_calls]
+
+        batches: list[list[dict[str, Any]]] = []
+        pending = list(tool_calls)
+
+        while pending:
+            batch = [pending.pop(0)]
+            i = 0
+            while i < len(pending) and len(batch) < self.max_parallel:
+                candidate = pending[i]
+                # Check overlap with every member of current batch
+                if not any(self._has_path_overlap(candidate, member) for member in batch):
+                    batch.append(candidate)
+                    pending.pop(i)
+                else:
+                    i += 1
+            batches.append(batch)
+
+        return batches
