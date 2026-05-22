@@ -52,8 +52,13 @@ class Task:
 class AgentFleet:
     """Manages a pool of specialized agents with message passing."""
 
-    def __init__(self, settings: JSSettings) -> None:
+    def __init__(
+        self,
+        settings: JSSettings,
+        agent_config: dict[str, str] | None = None,
+    ) -> None:
         self.settings = settings
+        self.agent_config = agent_config or {}
         self.agents: dict[str, AgentInstance] = {}
         self.tasks: dict[str, Task] = {}
         self._bus: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -68,8 +73,17 @@ class AgentFleet:
         model: str | None = None,
         capabilities: list[str] | None = None,
     ) -> AgentInstance:
-        """Create a new agent in the fleet."""
+        """Create a new agent in the fleet.
+
+        If *model* is not provided, the fleet's agent_config is consulted
+        for a role-to-model mapping.  Explicit *model* always wins.
+        """
         agent_id = str(uuid.uuid4())
+        # Auto-resolve model from fleet config when not explicitly given
+        resolved_model = model
+        if resolved_model is None and self.agent_config:
+            resolved_model = self.agent_config.get(role.value, "") or None
+
         # Customize settings per role
         role_settings = self._role_settings(role)
         agent = JSAgent(role_settings)
@@ -78,7 +92,7 @@ class AgentFleet:
             name=name,
             role=role,
             agent=agent,
-            model=model,
+            model=resolved_model,
             capabilities=capabilities or [],
         )
         self.agents[agent_id] = instance

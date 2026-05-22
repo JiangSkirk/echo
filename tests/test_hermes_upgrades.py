@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from js.config import DefenseMode
 from js.security.guard import BehaviorGuard, SecurityDecisionType
 from js.tools.registry import ToolRegistry, ToolResult, ToolSpec
 
@@ -13,7 +14,7 @@ class MockSecurityConfig:
     """Mock security config for testing."""
 
     def __init__(self, mode: str = "enforce") -> None:
-        self.defense_mode = type("Obj", (), {"value": mode})()
+        self.defense_mode = DefenseMode(mode)
         self.protected_commands: list[str] = []
         self.protected_paths: list[str] = []
         self.allow_workspace_delete = False

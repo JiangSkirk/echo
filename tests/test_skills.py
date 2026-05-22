@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from js.config import DefenseMode
 from js.skills.evolver import SkillEvolver
 from js.skills.manager import SkillManager
 from js.skills.security import scan_skill, verify_integrity
@@ -231,6 +232,64 @@ entry: main.py
         spec = manager.get_skill("bad")
         assert spec is not None
 
+    @pytest.mark.anyio
+    async def test_install_openclaw_prompt_inference(self, manager: SkillManager, tmp_path: Path) -> None:
+        """OpenClaw skills without scripts/ dir are inferred as prompt type."""
+        src = tmp_path / "openclaw_prompt"
+        src.mkdir()
+        # No 'type' in frontmatter — OpenClaw style
+        (src / "SKILL.md").write_text("""---
+name: copywriting
+description: Marketing copy skill
+---
+
+# Copywriting
+
+Write compelling copy.
+""")
+        spec = await manager.install(str(src), "openclaw_prompt")
+        assert spec.type == SkillType.PROMPT
+        assert spec.id == "openclaw_prompt"
+        await manager.uninstall("openclaw_prompt")
+
+    @pytest.mark.anyio
+    async def test_install_openclaw_code_inference(self, manager: SkillManager, tmp_path: Path) -> None:
+        """OpenClaw skills with scripts/ dir are inferred as code type."""
+        src = tmp_path / "openclaw_code"
+        src.mkdir()
+        (src / "SKILL.md").write_text("""---
+name: data-processor
+description: Process data files
+---
+""")
+        scripts = src / "scripts"
+        scripts.mkdir()
+        (scripts / "process.py").write_text("print('ok')")
+
+        spec = await manager.install(str(src), "openclaw_code")
+        assert spec.type == SkillType.CODE
+        assert spec.id == "openclaw_code"
+        await manager.uninstall("openclaw_code")
+
+    @pytest.mark.anyio
+    async def test_install_explicit_type_not_overridden(self, manager: SkillManager, tmp_path: Path) -> None:
+        """If manifest explicitly declares type, inference is skipped."""
+        src = tmp_path / "explicit_type"
+        src.mkdir()
+        (src / "SKILL.md").write_text("""---
+name: explicit
+description: Has scripts but declared prompt
+type: prompt
+---
+""")
+        scripts = src / "scripts"
+        scripts.mkdir()
+        (scripts / "helper.py").write_text("# helper")
+
+        spec = await manager.install(str(src), "explicit_type")
+        assert spec.type == SkillType.PROMPT
+        await manager.uninstall("explicit_type")
+
 
 class TestSkillEvolver:
     @pytest.fixture
@@ -275,7 +334,7 @@ class TestSkillWebAPI:
         mock_agent.settings.workspace = tmp_path / "workspace"
         mock_agent.settings.state_dir = tmp_path / "state"
         mock_agent.settings.max_turns = 10
-        mock_agent.settings.security.defense_mode.value = "standard"
+        mock_agent.settings.security.defense_mode = DefenseMode.ENFORCE
         mock_agent.registry.get_stats.return_value = {}
         mock_agent.secrets.get_stats.return_value = {"stored_secrets": 0, "detected_leaks": 0}
 

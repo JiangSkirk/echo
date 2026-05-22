@@ -58,6 +58,7 @@ class ShellTool:
             command,
             cwd=cwd,
             timeout=timeout or self.limits.shell_timeout,
+            fs_restricted=True,
         )
 
         output = result.stdout

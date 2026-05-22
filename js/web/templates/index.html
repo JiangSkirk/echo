@@ -88,6 +88,9 @@
     <button onclick="switchTab('status')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-status">
       <i class="fas fa-chart-line w-5"></i> 状态
     </button>
+    <button onclick="switchTab('cron')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-cron">
+      <i class="fas fa-clock w-5"></i> 定时任务
+    </button>
   </nav>
   <div class="p-4 border-t border-gray-800 text-xs text-gray-500">
     <div id="conn-status" class="flex items-center gap-2">
@@ -104,7 +107,7 @@
       <i class="fas fa-bars"></i>
     </button>
     <div class="flex items-center gap-3">
-      <select id="current-model" onchange="setCurrentModel(this.value)" class="text-xs bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-300 focus:outline-none focus:border-blue-500">
+      <select id="current-model" onchange="switchModel(this.value)" class="text-xs bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-300 focus:outline-none focus:border-blue-500">
         <option value="">默认模型</option>
       </select>
       <button onclick="newSession()" class="text-xs bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded transition">
@@ -112,6 +115,71 @@
       </button>
     </div>
   </header>
+
+  <!-- First-Start Wizard -->
+  <div id="setup-wizard" class="hidden fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
+    <div class="bg-gray-900 border border-gray-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl">
+      <!-- Step 1: Welcome -->
+      <div id="wizard-step-1">
+        <div class="text-center mb-6">
+          <div class="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <i class="fas fa-robot text-white text-2xl"></i>
+          </div>
+          <h2 class="text-2xl font-bold mb-2">欢迎使用 JS Agent</h2>
+          <p class="text-gray-400">只需几步即可完成初始设置，开始您的 AI 助手之旅。</p>
+        </div>
+        <div class="bg-gray-800 rounded-xl p-4 mb-6 text-sm text-gray-300 space-y-2">
+          <div class="flex items-center gap-2"><i class="fas fa-check-circle text-green-400"></i> 智能对话与工具调用</div>
+          <div class="flex items-center gap-2"><i class="fas fa-check-circle text-green-400"></i> 长期记忆与情景回溯</div>
+          <div class="flex items-center gap-2"><i class="fas fa-check-circle text-green-400"></i> 自主进化与技能扩展</div>
+        </div>
+        <button onclick="wizardNext()" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-xl font-medium transition">
+          开始设置 <i class="fas fa-arrow-right ml-1"></i>
+        </button>
+      </div>
+
+      <!-- Step 2: Choose Model -->
+      <div id="wizard-step-2" class="hidden">
+        <div class="flex items-center gap-2 mb-4 text-gray-400 text-sm">
+          <span class="text-blue-400 font-medium">步骤 2 / 3</span>
+          <span>选择默认模型</span>
+        </div>
+        <h2 class="text-xl font-bold mb-2">选择模型</h2>
+        <p class="text-gray-400 text-sm mb-4">请选择一个要使用的 AI 模型作为默认助手。</p>
+        <div id="wizard-model-list" class="space-y-2 max-h-64 overflow-y-auto mb-4">
+          <div class="text-gray-400 text-sm"><i class="fas fa-spinner fa-spin mr-2"></i>加载模型列表...</div>
+        </div>
+        <div class="flex gap-3">
+          <button onclick="wizardPrev()" class="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-2 rounded-xl transition">
+            <i class="fas fa-arrow-left mr-1"></i> 上一步
+          </button>
+          <button onclick="wizardNext()" id="wizard-next-2" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-xl transition disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+            下一步 <i class="fas fa-arrow-right ml-1"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Step 3: Done -->
+      <div id="wizard-step-3" class="hidden">
+        <div class="text-center mb-6">
+          <div class="w-16 h-16 bg-green-600 rounded-full flex items-center justify-center mx-auto mb-4">
+            <i class="fas fa-check text-white text-2xl"></i>
+          </div>
+          <h2 class="text-2xl font-bold mb-2">设置完成</h2>
+          <p class="text-gray-400">您已完成初始设置，可以开始使用 JS Agent 了。</p>
+        </div>
+        <div class="bg-gray-800 rounded-xl p-4 mb-6 text-sm">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-gray-400">默认模型</span>
+            <span id="wizard-selected-model" class="text-blue-400 font-medium">未选择</span>
+          </div>
+        </div>
+        <button onclick="wizardComplete()" class="w-full bg-green-600 hover:bg-green-700 text-white py-2.5 rounded-xl font-medium transition">
+          开始使用 <i class="fas fa-rocket ml-1"></i>
+        </button>
+      </div>
+    </div>
+  </div>
 
   <!-- Chat Tab -->
   <div id="tab-chat" class="tab-content flex-1 flex flex-col">
@@ -156,6 +224,9 @@
           <i class="fas fa-sync-alt text-xs"></i> 刷新
         </button>
         <span id="memory-embedder-status" class="text-xs px-2 py-1 rounded bg-gray-800 text-gray-400 hidden"></span>
+        <button id="memory-embedder-recover" onclick="recoverEmbedder()" class="text-xs bg-blue-900/40 hover:bg-blue-800/60 text-blue-400 px-2 py-1 rounded hidden transition">
+          <i class="fas fa-undo mr-1"></i>恢复嵌入器
+        </button>
       </div>
 
       <!-- Active Context -->
@@ -284,6 +355,18 @@
     <div class="max-w-4xl mx-auto">
       <h2 class="text-xl font-bold mb-4">模型管理</h2>
 
+      <!-- Active Model Card -->
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-4">
+        <h3 class="font-bold text-sm mb-3"><i class="fas fa-bolt text-yellow-400 mr-2"></i>当前活跃模型</h3>
+        <div id="active-model-display" class="flex items-center justify-between bg-gray-800 rounded-lg px-4 py-3">
+          <div>
+            <div id="active-model-name" class="text-sm font-medium">加载中...</div>
+            <div id="active-model-meta" class="text-xs text-gray-500 mt-0.5">--</div>
+          </div>
+          <span id="active-model-badge" class="text-xs bg-blue-900 text-blue-400 px-2 py-1 rounded">当前使用</span>
+        </div>
+      </div>
+
       <!-- Add Provider Card -->
       <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-4">
         <div class="flex items-center justify-between mb-3 cursor-pointer" onclick="toggleAddProvider()">
@@ -350,6 +433,135 @@
     <div class="max-w-4xl mx-auto">
       <h2 class="text-xl font-bold mb-4">系统状态</h2>
       <pre id="status-content" class="bg-gray-900 border border-gray-800 rounded-xl p-4 text-sm font-mono"></pre>
+    </div>
+  </div>
+
+  <!-- Cron / Scheduled Tasks Tab -->
+  <div id="tab-cron" class="tab-content flex-1 hidden p-4 overflow-y-auto">
+    <div class="max-w-5xl mx-auto">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xl font-bold">定时任务</h2>
+        <div class="flex gap-2">
+          <button onclick="refreshCronJobs()" class="text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded transition">
+            <i class="fas fa-sync-alt mr-1"></i>刷新
+          </button>
+          <button onclick="showCronCreateModal()" class="text-xs bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded transition">
+            <i class="fas fa-plus mr-1"></i>新建任务
+          </button>
+        </div>
+      </div>
+
+      <!-- Stats Cards -->
+      <div id="cron-stats" class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-3">
+          <div class="text-xs text-gray-500">总任务数</div>
+          <div class="text-xl font-bold" id="cron-stat-total">-</div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-3">
+          <div class="text-xs text-gray-500">运行中</div>
+          <div class="text-xl font-bold text-green-400" id="cron-stat-active">-</div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-3">
+          <div class="text-xs text-gray-500">总执行次数</div>
+          <div class="text-xl font-bold" id="cron-stat-runs">-</div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-3">
+          <div class="text-xs text-gray-500">成功率</div>
+          <div class="text-xl font-bold text-blue-400" id="cron-stat-rate">-</div>
+        </div>
+      </div>
+
+      <!-- Jobs Table -->
+      <div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-800 text-gray-400 text-xs">
+            <tr>
+              <th class="text-left p-3">状态</th>
+              <th class="text-left p-3">名称</th>
+              <th class="text-left p-3">调度</th>
+              <th class="text-left p-3">类型</th>
+              <th class="text-left p-3">下次运行</th>
+              <th class="text-left p-3">执行次数</th>
+              <th class="text-right p-3">操作</th>
+            </tr>
+          </thead>
+          <tbody id="cron-jobs-list" class="divide-y divide-gray-800">
+            <tr><td colspan="7" class="p-4 text-gray-500 text-center">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- History -->
+      <div class="mt-4">
+        <h3 class="text-lg font-bold mb-2">执行历史</h3>
+        <div id="cron-history-list" class="space-y-1">
+          <div class="text-gray-500 text-sm">选择一个任务查看历史</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cron Create Modal -->
+  <div id="cron-create-modal" class="hidden fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
+    <div class="bg-gray-900 border border-gray-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-bold">新建定时任务</h3>
+        <button onclick="hideCronCreateModal()" class="text-gray-400 hover:text-white"><i class="fas fa-times"></i></button>
+      </div>
+
+      <!-- Template Selection -->
+      <div class="mb-4">
+        <label class="block text-sm text-gray-400 mb-1">从模板创建</label>
+        <select id="cron-template-select" onchange="onCronTemplateChange()" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+          <option value="">-- 自定义 --</option>
+        </select>
+      </div>
+
+      <!-- Name -->
+      <div class="mb-4">
+        <label class="block text-sm text-gray-400 mb-1">任务名称</label>
+        <input id="cron-name" type="text" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" placeholder="例如：每日健康检查">
+      </div>
+
+      <!-- Schedule -->
+      <div class="mb-4">
+        <label class="block text-sm text-gray-400 mb-1">调度规则</label>
+        <div class="flex gap-2 mb-2">
+          <input id="cron-expr" type="text" class="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-blue-500" placeholder="0 8 * * *">
+          <button onclick="parseCronNatural()" class="bg-gray-700 hover:bg-gray-600 px-3 rounded-lg text-sm"><i class="fas fa-wand-magic-sparkles"></i></button>
+        </div>
+        <input id="cron-natural" type="text" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" placeholder="或输入自然语言：每天早上8点">
+        <div id="cron-parse-result" class="text-xs mt-1 text-green-400 hidden"></div>
+      </div>
+
+      <!-- Task Type -->
+      <div class="mb-4">
+        <label class="block text-sm text-gray-400 mb-1">任务类型</label>
+        <select id="cron-task-type" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+          <option value="custom">自定义</option>
+          <option value="health_check">健康检查</option>
+          <option value="cleanup">清理</option>
+          <option value="dream">记忆巩固</option>
+          <option value="backup">备份</option>
+          <option value="report">报告</option>
+          <option value="search">搜索</option>
+          <option value="skill_evolve">技能进化</option>
+          <option value="shell">Shell 命令</option>
+          <option value="chat">对话任务</option>
+        </select>
+      </div>
+
+      <!-- Payload (JSON) -->
+      <div class="mb-4">
+        <label class="block text-sm text-gray-400 mb-1">参数 (JSON)</label>
+        <textarea id="cron-payload" rows="3" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-blue-500">{}</textarea>
+      </div>
+
+      <!-- Actions -->
+      <div class="flex justify-end gap-2">
+        <button onclick="hideCronCreateModal()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm">取消</button>
+        <button onclick="submitCronJob()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm">创建</button>
+      </div>
     </div>
   </div>
 </main>

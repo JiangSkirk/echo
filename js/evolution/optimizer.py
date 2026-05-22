@@ -65,6 +65,13 @@ class PromptOptimizer:
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_variants_context ON prompt_variants(context)
             """)
+            # Migrate old tables missing mutation_type column
+            cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(prompt_variants)")
+            }
+            if "mutation_type" not in cols:
+                conn.execute("ALTER TABLE prompt_variants ADD COLUMN mutation_type TEXT")
             conn.commit()
 
     def register_variant(

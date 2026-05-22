@@ -13,7 +13,7 @@ import httpx
 from openai import AsyncOpenAI
 from tenacity import (
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
@@ -22,6 +22,15 @@ from js.config import ModelProviderConfig
 from js.models.circuit_breaker import CircuitBreaker
 from js.utils.log import get_logger
 from js.utils.metrics import get_metrics, start_span
+
+
+def _is_retryable_exception(exc: BaseException) -> bool:
+    """Retry on network errors, timeouts, 5xx, and 429 rate limits."""
+    if isinstance(exc, (httpx.NetworkError, httpx.TimeoutException, asyncio.TimeoutError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500 or exc.response.status_code == 429
+    return False
 
 logger = get_logger("js.models")
 
@@ -87,11 +96,12 @@ class OpenAICompatibleProvider(ModelProvider):
         self.client = AsyncOpenAI(
             base_url=config.base_url,
             api_key=config.api_key or "dummy",
-            timeout=httpx.Timeout(config.timeout),
+            timeout=httpx.Timeout(config.timeout, connect=5.0, read=config.timeout),
             max_retries=0,  # We handle retries ourselves
         )
         self._last_health_check = 0.0
         self._health_status = False
+        self._health_lock = asyncio.Lock()
 
     def _convert_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
@@ -113,7 +123,7 @@ class OpenAICompatibleProvider(ModelProvider):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type((httpx.NetworkError, httpx.TimeoutException, asyncio.TimeoutError)),
+        retry=retry_if_exception(_is_retryable_exception),
     )
     async def chat(
         self,
@@ -123,10 +133,10 @@ class OpenAICompatibleProvider(ModelProvider):
         temperature: float = 0.7,
         max_tokens: int | None = None,
     ) -> ChatResponse:
-        if not self.circuit.can_execute():
+        if not await self.circuit.can_execute():
             raise RuntimeError(f"Circuit breaker OPEN for {self.config.name}")
 
-        try:
+        async def _do_chat() -> ChatResponse:
             kwargs: dict[str, Any] = {
                 "model": model,
                 "messages": self._convert_messages(messages),
@@ -146,7 +156,7 @@ class OpenAICompatibleProvider(ModelProvider):
                             model=model, provider=self.config.name
                         ).inc()
                     except Exception:
-                        logger.debug("Suppressed error", exc_info=True)
+                        logger.warning("Suppressed error", exc_info=True)
                     response = await self.client.chat.completions.create(**kwargs)
 
                     choice = response.choices[0]
@@ -170,14 +180,13 @@ class OpenAICompatibleProvider(ModelProvider):
                         "total_tokens": response.usage.total_tokens if response.usage else 0,
                     }
 
-                    self.circuit.record_success()
                     latency = time.perf_counter() - start
                     try:
                         get_metrics().model_latency_seconds.labels(
                             model=model, provider=self.config.name
                         ).observe(latency)
                     except Exception:
-                        logger.debug("Suppressed error", exc_info=True)
+                        logger.warning("Suppressed error", exc_info=True)
                     return ChatResponse(
                         content=message.content or "",
                         tool_calls=tool_calls,
@@ -195,10 +204,12 @@ class OpenAICompatibleProvider(ModelProvider):
                             model=model, provider=self.config.name
                         ).inc()
                     except Exception:
-                        logger.debug("Suppressed error", exc_info=True)
+                        logger.warning("Suppressed error", exc_info=True)
                     raise
+
+        try:
+            return await self.circuit.execute(_do_chat())  # type: ignore[no-any-return]
         except Exception:
-            self.circuit.record_failure()
             raise
 
     async def chat_stream(
@@ -209,7 +220,7 @@ class OpenAICompatibleProvider(ModelProvider):
         temperature: float = 0.7,
         max_tokens: int | None = None,
     ) -> AsyncIterator[str]:
-        if not self.circuit.can_execute():
+        if not await self.circuit.can_execute():
             raise RuntimeError(f"Circuit breaker OPEN for {self.config.name}")
 
         kwargs: dict[str, Any] = {
@@ -224,53 +235,75 @@ class OpenAICompatibleProvider(ModelProvider):
         if max_tokens:
             kwargs["max_tokens"] = max_tokens
 
-        try:
-            stream = await self.client.chat.completions.create(**kwargs)
-            async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
-            self.circuit.record_success()
-        except Exception:
-            self.circuit.record_failure()
-            raise
+        # Retry wrapper for stream initialization
+        last_error = None
+        max_retries = getattr(self.config, 'max_retries', 3)
+        for attempt in range(max_retries):
+            try:
+                stream = await self.client.chat.completions.create(**kwargs)
+                async for chunk in stream:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        yield chunk.choices[0].delta.content
+                await self.circuit.record_success()
+                return
+            except Exception as e:
+                last_error = e
+                if not _is_retryable_exception(e):
+                    break
+                if attempt < max_retries - 1:
+                    wait = min(2 ** attempt, 30)
+                    logger.warning(f"Stream retry {attempt + 1} for {self.config.name} after {wait}s: {e}")
+                    await asyncio.sleep(wait)
+        await self.circuit.record_failure()
+        raise last_error or RuntimeError(f"Stream failed for {self.config.name}")
 
     async def health_check(self) -> bool:
-        import time
-        # Cache health check for 5 seconds
-        if time.time() - self._last_health_check < 5.0:
+        # Fast path: return cached result without lock
+        now = time.time()
+        if now - self._last_health_check < 5.0:
             return self._health_status
 
-        try:
-            await self.client.models.list()
-            self._health_status = True
-            self.circuit.record_success()
-        except Exception:
-            self._health_status = False
-            self.circuit.record_failure()
+        # Use lock to prevent concurrent health checks from racing
+        async with self._health_lock:
+            # Double-check after acquiring lock
+            now = time.time()
+            if now - self._last_health_check < 5.0:
+                return self._health_status
 
-        self._last_health_check = time.time()
-        return self._health_status
+            try:
+                # Use a short timeout for health checks to avoid hanging
+                await self.client.models.list(timeout=8.0)
+                self._health_status = True
+                await self.circuit.record_success()
+            except Exception:
+                self._health_status = False
+                await self.circuit.record_failure()
 
+            self._last_health_check = time.time()
+            return self._health_status
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception(_is_retryable_exception),
+    )
     async def embed(
         self,
         texts: list[str],
         model: str | None = None,
     ) -> list[list[float]]:
         """Generate embeddings for a batch of texts."""
-        if not self.circuit.can_execute():
+        if not await self.circuit.can_execute():
             raise RuntimeError(f"Circuit breaker OPEN for {self.config.name}")
-        try:
+
+        async def _do_embed() -> list[list[float]]:
             response = await self.client.embeddings.create(
                 model=model or self.config.models[0].id if self.config.models else "text-embedding-3-small",
                 input=texts,
             )
             return [item.embedding for item in response.data]
-        except Exception:
-            self.circuit.record_failure()
-            raise
+
+        return await self.circuit.execute(_do_embed())  # type: ignore[no-any-return]
 
     async def close(self) -> None:
         await self.client.close()
-
-    def get_circuit_stats(self) -> dict[str, Any]:
-        return self.circuit.get_stats()

@@ -30,8 +30,6 @@ class LocalModelDiscovery:
     PROBES = [
         {"name": "lmstudio", "url": "http://127.0.0.1:1234/v1", "api_key": "lm-studio"},
         {"name": "ollama", "url": "http://127.0.0.1:11434/v1", "api_key": "ollama"},
-        {"name": "lmstudio-alt", "url": "http://localhost:1234/v1", "api_key": "lm-studio"},
-        {"name": "ollama-alt", "url": "http://localhost:11434/v1", "api_key": "ollama"},
     ]
 
     # Common ports used by local LLM servers
@@ -118,14 +116,16 @@ class LocalModelDiscovery:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.settimeout(1)
-            # Connect to a dummy address to trigger interface selection
-            s.connect(("8.8.8.8", 80))
-            ip_str: str = s.getsockname()[0]
-            s.close()
-            if ip_str.startswith(subnet_prefix):
-                return ip_str
-            # If primary IP doesn't match prefix, try to find one that does
-            return self._find_ip_in_subnet(subnet_prefix)
+            try:
+                # Connect to a dummy address to trigger interface selection
+                s.connect(("8.8.8.8", 80))
+                ip_str: str = s.getsockname()[0]
+                if ip_str.startswith(subnet_prefix):
+                    return ip_str
+                # If primary IP doesn't match prefix, try to find one that does
+                return self._find_ip_in_subnet(subnet_prefix)
+            finally:
+                s.close()
         except Exception:
             return self._find_ip_in_subnet(subnet_prefix)
 
@@ -145,7 +145,7 @@ class LocalModelDiscovery:
                 if not ip_str.startswith("127."):
                     return ip_str
         except Exception:
-            pass
+            logger.warning('Operation failed', exc_info=True)
         return None
 
     async def _probe(self, probe: dict[str, str]) -> DiscoveredProvider | None:
@@ -162,6 +162,11 @@ class LocalModelDiscovery:
             data = resp.json()
             models = self._parse_models(data, probe["name"])
 
+            # For LM Studio: filter to only currently-loaded models via v0 API
+            if probe["name"] == "lmstudio":
+                loaded_ids = await self._lmstudio_loaded_models(probe["url"])
+                models = [m for m in models if m.id in loaded_ids]
+
             return DiscoveredProvider(
                 name=probe["name"],
                 provider_type=probe["name"].replace("-alt", ""),
@@ -174,6 +179,22 @@ class LocalModelDiscovery:
             logger.debug(f"Probe failed for {probe['url']}: {e}")
             return None
 
+    async def _lmstudio_loaded_models(self, base_url: str) -> set[str]:
+        """Query LM Studio's v0 API for models currently loaded in GPU memory."""
+        loaded: set[str] = set()
+        try:
+            # base_url is like http://127.0.0.1:1234/v1 → strip /v1
+            root = base_url.rsplit("/v1", 1)[0]
+            resp = await self._client.get(f"{root}/api/v0/models", timeout=httpx.Timeout(5.0))
+            if resp.status_code == 200:
+                data = resp.json()
+                for m in data.get("data", []):
+                    if m.get("state") == "loaded":
+                        loaded.add(m["id"])
+        except Exception as e:
+            logger.debug(f"LM Studio v0 API probe failed: {e}")
+        return loaded
+
     def _parse_models(self, data: dict[str, Any], provider_type: str) -> list[ModelConfig]:
         models: list[ModelConfig] = []
         raw_models = data.get("data", data.get("models", []))
@@ -184,7 +205,7 @@ class LocalModelDiscovery:
                 name = m
             else:
                 model_id = m.get("id", m.get("model", "unknown"))
-                name = m.get("object", model_id)
+                name = m.get("name", model_id)
 
             supports_vision = any(kw in model_id.lower() for kw in ["vision", "vl", "multimodal", "llava"])
             context = self._infer_context_window(model_id)
@@ -236,15 +257,26 @@ class LocalModelDiscovery:
         """Auto-discover and inject local providers into settings."""
         discovered = await self.discover_all()
         existing_names = {p.name for p in settings.providers}
+        existing_urls = {p.base_url for p in settings.providers}
+        existing_model_ids = {m.id for m in settings.models}
 
         for d in discovered:
-            if d.provider_type not in existing_names:
-                config = self.to_provider_config(d)
-                settings.providers.append(config)
-                settings.models.extend(d.models)
-                logger.info(
-                    f"Auto-configured {d.provider_type} at {d.base_url} with {len(d.models)} models"
-                )
+            # Deduplicate by base_url (127.0.0.1 and localhost are the same host)
+            if d.base_url in existing_urls:
+                logger.debug(f"Skipping duplicate provider at {d.base_url}")
+                continue
+            if d.provider_type in existing_names:
+                logger.debug(f"Skipping duplicate provider type {d.provider_type}")
+                continue
+            config = self.to_provider_config(d)
+            settings.providers.append(config)
+            for m in d.models:
+                if m.id not in existing_model_ids:
+                    settings.models.append(m)
+                    existing_model_ids.add(m.id)
+            logger.info(
+                f"Auto-configured {d.provider_type} at {d.base_url} with {len(d.models)} models"
+            )
 
         return settings
 

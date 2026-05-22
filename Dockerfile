@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir -e ".[dev]"
 USER appuser
 
 # Expose the application port
-EXPOSE 8080
+EXPOSE 8000
 
 # Default command: run the web server
-CMD ["js", "web", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["js", "web", "--host", "0.0.0.0", "--port", "8000"]

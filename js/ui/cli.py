@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -315,6 +316,21 @@ def main(ctx: click.Context, config: str | None, verbose: bool) -> None:
 
     if ctx.invoked_subcommand is None:
         settings = JSSettings.from_file(config)
+
+        # First-run guidance: if no models are configured, prompt for setup
+        if not settings.providers:
+            console.print(Panel.fit(
+                "[bold yellow]Welcome to JS Agent![/bold yellow]\n\n"
+                "No model providers are configured yet.\n"
+                "Run [bold cyan]js setup[/bold cyan] to auto-detect local models "
+                "(LM Studio, Ollama) and configure everything.\n\n"
+                "Or initialize a minimal config with:\n"
+                "  [bold]js init[/bold]",
+                title="First Run",
+                border_style="yellow",
+            ))
+            return
+
         cli = JSCLI(settings)
         try:
             asyncio.run(cli.run_interactive())
@@ -370,9 +386,10 @@ def status(config: str | None) -> None:
 @click.option("--host", default="127.0.0.1", help="Bind host")
 @click.option("--port", default=8000, help="Bind port")
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
-def web(host: str, port: int, config: str | None) -> None:
+@click.option("--reload", is_flag=True, help="Enable auto-reload on code changes (dev mode)")
+def web(host: str, port: int, config: str | None, reload: bool) -> None:
     """Launch Web UI."""
-    _launch_web(host, port, config, open_browser=False)
+    _launch_web(host, port, config, open_browser=False, reload=reload)
 
 
 @main.command(name="open")
@@ -381,10 +398,10 @@ def web(host: str, port: int, config: str | None) -> None:
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
 def open_cmd(host: str, port: int, config: str | None) -> None:
     """Launch Web UI and open browser."""
-    _launch_web(host, port, config, open_browser=True)
+    _launch_web(host, port, config, open_browser=True, reload=False)
 
 
-def _launch_web(host: str, port: int, config: str | None, open_browser: bool) -> None:
+def _launch_web(host: str, port: int, _config: str | None, open_browser: bool, reload: bool = False) -> None:
     import threading
     import time
     import webbrowser
@@ -404,7 +421,7 @@ def _launch_web(host: str, port: int, config: str | None, open_browser: bool) ->
         threading.Thread(target=_open, daemon=True).start()
 
     app = create_app()
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, reload=reload)
 
 
 @main.command()
@@ -419,7 +436,7 @@ def setup(yes: bool) -> None:
 @main.command()
 @click.argument("query")
 @click.option("--engine", "-e", default="auto", help="Search engine")
-def search(query: str, engine: str) -> None:
+def search(query: str, _engine: str) -> None:
     """Search the web."""
     from js.search.engines import DuckDuckGoEngine, SearchManager
 
@@ -444,7 +461,7 @@ def skill() -> None:
 
 
 @skill.command("list")
-@click.option("--category", "-c", help="Filter by category")
+@click.option("--category", "-C", help="Filter by category")
 @click.option("--type", "-t", "skill_type", help="Filter by type (code/prompt/workflow)")
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
 def skill_list(category: str | None, skill_type: str | None, config: str | None) -> None:
@@ -618,6 +635,280 @@ def skill_discover(query: str, install: str | None, config: str | None) -> None:
         console.print(table)
 
     asyncio.run(_search())
+
+
+@skill.command("create")
+@click.option("--path", "-p", type=click.Path(), help="Target directory for the new skill")
+@click.option("--config", "-c", type=click.Path(), help="Config file path")
+def skill_create(path: str | None, config: str | None) -> None:
+    """Interactively create a new skill from a template wizard."""
+    settings = JSSettings.from_file(config)
+    target = Path(path).expanduser() if path else settings.state_dir / "skills" / "user"
+    target.mkdir(parents=True, exist_ok=True)
+
+    from js.skills.creator import run_interactive_wizard
+    try:
+        run_interactive_wizard(target)
+    except (KeyboardInterrupt, EOFError):
+        console.print("\n[yellow]Cancelled.[/yellow]")
+
+
+@skill.command("validate")
+@click.argument("skill_path", type=click.Path(exists=True))
+def skill_validate(skill_path: str) -> None:
+    """Validate a skill directory for correctness and security."""
+    from js.skills.validator import validate_skill
+
+    report = validate_skill(Path(skill_path))
+    report.print_report()
+    if not report.passed:
+        raise click.ClickException("Validation failed")
+
+
+@skill.command("test")
+@click.argument("skill_path", type=click.Path(exists=True))
+@click.option("--generate", "-g", is_flag=True, help="Generate tests before running")
+def skill_test(skill_path: str, generate: bool) -> None:
+    """Run tests for a skill. Auto-generates test stubs if none exist."""
+    import asyncio
+
+    from js.skills.tester import generate_tests, run_skill_tests
+
+    sdir = Path(skill_path)
+    if generate or not list(sdir.glob("test_*.py")):
+        try:
+            generated = generate_tests(sdir)
+            console.print(f"[green]Generated {len(generated)} test file(s)[/green]")
+        except Exception as e:
+            console.print(f"[yellow]Test generation: {e}[/yellow]")
+
+    report = asyncio.run(run_skill_tests(sdir))
+    report.print_report()
+    if not report.passed:
+        raise click.ClickException("Tests failed")
+
+
+@skill.command("package")
+@click.argument("skill_path", type=click.Path(exists=True))
+@click.option("--output", "-o", type=click.Path(), help="Output directory")
+@click.option("--format", "fmt", default="tar.gz", type=click.Choice(["tar.gz", "zip"]))
+def skill_package(skill_path: str, output: str | None, fmt: str) -> None:
+    """Package a skill into a distributable archive."""
+    from js.skills.packager import package_skill
+
+    sdir = Path(skill_path)
+    out = Path(output).expanduser() if output else None
+    result = package_skill(sdir, out, format=fmt)
+
+    if result.success and result.archive_path and result.manifest:
+        console.print(f"[green]Packaged: {result.archive_path}[/green]")
+        console.print(f"[dim]Files: {result.manifest.file_count} | Size: {result.manifest.size_bytes} bytes[/dim]")
+        if result.clawhub_entry:
+            clawhub_path = result.archive_path.with_suffix("").with_suffix(".clawhub.json")
+            console.print(f"[dim]ClawHub entry: {clawhub_path}[/dim]")
+    else:
+        console.print(f"[red]Packaging failed: {result.error}[/red]")
+        raise click.ClickException("Packaging failed")
+
+
+@skill.command("publish")
+@click.argument("skill_path", type=click.Path(exists=True))
+@click.option("--repo", "-r", help="Git repository URL to publish to")
+def skill_publish(skill_path: str, repo: str | None) -> None:
+    """Generate publish commands for a skill (dry-run, does not push)."""
+    from js.skills.packager import publish_to_git
+
+    sdir = Path(skill_path)
+    repo_url = repo or "https://github.com/YOURNAME/skills.git"
+    result = publish_to_git(sdir, repo_url)
+
+    if result["success"]:
+        console.print(Panel(
+            "[bold]Publish your skill with these commands:[/bold]\n\n" +
+            "\n".join(f"  {cmd}" for cmd in result["commands"]),
+            title="Git Publish Guide", border_style="cyan",
+        ))
+    else:
+        console.print(f"[red]Publish setup failed: {result.get('error')}[/red]")
+
+
+@main.command()
+@click.option("--token", "-t", envvar="TELEGRAM_BOT_TOKEN", help="Telegram Bot Token (or set TELEGRAM_BOT_TOKEN env)")
+@click.option("--config", "-c", type=click.Path(), help="Config file path")
+def telegram(token: str | None, config: str | None) -> None:
+    """Run JS Agent as a Telegram Bot (24/7 messaging interface)."""
+    if not token:
+        console.print("[red]Error: --token required or set TELEGRAM_BOT_TOKEN env var[/red]")
+        raise click.ClickException("Telegram bot token is required")
+
+    settings = JSSettings.from_file(config)
+    from js.integrations.telegram_bot import TelegramBotIntegration
+
+    bot = TelegramBotIntegration(token=token, settings=settings)
+    asyncio.run(bot.start())
+
+
+@main.command()
+@click.option("--config", "-c", type=click.Path(), help="Config file path")
+def daemon(config: str | None) -> None:
+    """Run JS Agent in background daemon mode with scheduled tasks."""
+    settings = JSSettings.from_file(config)
+    from js.daemon.core import build_default_daemon
+
+    d = build_default_daemon(settings)
+    asyncio.run(d.start())
+
+
+@main.command()
+@click.option("--config", "-c", type=click.Path(), help="Config file path")
+def tui(config: str | None) -> None:
+    """Launch the Terminal User Interface (Textual-based rich CLI)."""
+    settings = JSSettings.from_file(config)
+    from js.tui.app import JSTuiApp
+
+    app = JSTuiApp(settings)
+    app.run()
+
+
+@main.group()
+def plugin() -> None:
+    """Manage plugins (discover, list, enable, disable)."""
+    pass
+
+
+@plugin.command("list")
+@click.option("--config", "-c", type=click.Path(), help="Config file path")
+def plugin_list(config: str | None) -> None:
+    """List all discovered plugins and their status."""
+    settings = JSSettings.from_file(config)
+    from js.agent import JSAgent
+    from js.plugins.manager import PluginManager
+
+    agent = JSAgent(settings)
+    pm = PluginManager(agent, settings)
+    pm.discover()
+
+    table = Table(title="Plugins")
+    table.add_column("ID", style="cyan")
+    table.add_column("Name")
+    table.add_column("Version")
+    table.add_column("Status", justify="center")
+    table.add_column("Tools")
+    table.add_column("Categories")
+
+    for p in pm.list_plugins():
+        status_color = {
+            "enabled": "green",
+            "disabled": "yellow",
+            "error": "red",
+        }.get(p.status, "dim")
+        table.add_row(
+            p.manifest.id,
+            p.manifest.name,
+            p.manifest.version,
+            f"[{status_color}]{p.status}[/{status_color}]",
+            str(len(p._tools)),
+            ", ".join(p.manifest.categories),
+        )
+    console.print(table)
+
+
+@plugin.command("enable")
+@click.argument("plugin_id")
+@click.option("--config", "-c", type=click.Path(), help="Config file path")
+def plugin_enable(plugin_id: str, config: str | None) -> None:
+    """Enable a plugin by ID."""
+    settings = JSSettings.from_file(config)
+    from js.agent import JSAgent
+    from js.plugins.manager import PluginManager
+
+    agent = JSAgent(settings)
+    pm = PluginManager(agent, settings)
+    pm.discover()
+    if pm.enable(plugin_id):
+        console.print(f"[green]Plugin '{plugin_id}' enabled.[/green]")
+    else:
+        console.print(f"[red]Failed to enable plugin '{plugin_id}'.[/red]")
+
+
+@plugin.command("disable")
+@click.argument("plugin_id")
+@click.option("--config", "-c", type=click.Path(), help="Config file path")
+def plugin_disable(plugin_id: str, config: str | None) -> None:
+    """Disable a plugin by ID."""
+    settings = JSSettings.from_file(config)
+    from js.agent import JSAgent
+    from js.plugins.manager import PluginManager
+
+    agent = JSAgent(settings)
+    pm = PluginManager(agent, settings)
+    pm.discover()
+    if pm.disable(plugin_id):
+        console.print(f"[yellow]Plugin '{plugin_id}' disabled.[/yellow]")
+    else:
+        console.print(f"[red]Failed to disable plugin '{plugin_id}'.[/red]")
+
+
+@main.group()
+def rl() -> None:
+    """Reinforcement Learning: train agent policies in simulated environments."""
+    pass
+
+
+@rl.command("train")
+@click.option("--env", "-e", default="code_fix", type=click.Choice(["code_fix"]), help="Environment name")
+@click.option("--episodes", "-n", default=5, type=int, help="Number of episodes")
+@click.option("--output", "-o", type=click.Path(), help="Trajectory output directory")
+def rl_train(env: str, episodes: int, output: str | None) -> None:
+    """Run RL training episodes and collect trajectories."""
+    from js.rl.code_fix import CodeFixEnv
+    from js.rl.trainer import RLTrainer
+
+    out_dir = Path(output).expanduser() if output else None
+    environment = CodeFixEnv()
+    trainer = RLTrainer(environment, output_dir=out_dir)
+
+    console.print(f"[bold]Training {episodes} episodes on '{env}'...[/bold]")
+    report = asyncio.run(trainer.run_episodes(num_episodes=episodes))
+
+    console.print(Panel(
+        f"Episodes: {report.num_episodes}\n"
+        f"Success rate: {report.success_count / report.num_episodes:.1%}\n"
+        f"Avg reward: {report.avg_reward:.2f}\n"
+        f"Avg steps: {report.avg_steps:.1f}\n"
+        f"Duration: {report.end_time - report.start_time:.1f}s",
+        title="Training Report", border_style="green",
+    ))
+
+
+@rl.command("list")
+def rl_list() -> None:
+    """List saved trajectories."""
+    from js.rl.recorder import TrajectoryRecorder
+
+    recorder = TrajectoryRecorder()
+    paths = recorder.list_trajectories()
+    if not paths:
+        console.print("[dim]No trajectories found.[/dim]")
+        return
+
+    table = Table(title="Saved Trajectories")
+    table.add_column("ID", style="cyan")
+    table.add_column("Env")
+    table.add_column("Steps")
+    table.add_column("Success")
+    table.add_column("Size")
+
+    for p in paths[:20]:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        table.add_row(
+            data["trajectory_id"],
+            data["env_name"],
+            str(len(data.get("steps", []))),
+            "✅" if data.get("success") else "❌",
+            f"{p.stat().st_size // 1024}KB",
+        )
+    console.print(table)
 
 
 if __name__ == "__main__":

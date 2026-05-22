@@ -22,12 +22,16 @@ logger = get_logger("js.skills.executor")
 LLMCaller = Callable[[str, str | None], Awaitable[str]]
 
 
+SkillResolver = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+
+
 async def execute_skill(
     spec: SkillSpec,
     args: dict[str, Any],
     workspace: Path,
     llm_caller: LLMCaller | None = None,
     sandbox: SandboxExecutor | None = None,
+    skill_resolver: SkillResolver | None = None,
 ) -> dict[str, Any]:
     """Execute a skill based on its type.
 
@@ -37,15 +41,16 @@ async def execute_skill(
         workspace: Agent workspace directory
         llm_caller: Optional async function(text, context) -> str for PROMPT skills
         sandbox: Optional sandbox executor for CODE skills
+        skill_resolver: Optional function to resolve sub-skills for workflow/meta types
     """
     if spec.type == SkillType.CODE:
         return await _execute_code(spec, args, workspace, sandbox)
     elif spec.type == SkillType.PROMPT:
         return await _execute_prompt(spec, args, llm_caller)
     elif spec.type == SkillType.WORKFLOW:
-        return await _execute_workflow(spec, args, workspace, llm_caller, sandbox)
+        return await _execute_workflow(spec, args, workspace, llm_caller, sandbox, skill_resolver)
     elif spec.type == SkillType.META:
-        return await _execute_meta(spec, args, workspace, llm_caller, sandbox)
+        return await _execute_meta(spec, args, workspace, llm_caller, sandbox, skill_resolver)
     else:
         return {"success": False, "error": f"Unknown skill type: {spec.type}"}
 
@@ -305,6 +310,7 @@ async def _execute_workflow(
     workspace: Path,
     llm_caller: LLMCaller | None,
     sandbox: SandboxExecutor | None = None,
+    skill_resolver: SkillResolver | None = None,
 ) -> dict[str, Any]:
     """Execute a workflow skill — a lightweight chain of steps.
 
@@ -397,11 +403,25 @@ async def _execute_workflow(
         elif step_type == "skill":
             # Reference another skill by ID
             sub_skill_id = step.get("skill_id")
-            if sub_skill_id:
+            if sub_skill_id and skill_resolver:
+                try:
+                    sub_result = await skill_resolver(sub_skill_id, {**args, **step.get("args", {})})
+                    step_result.update({
+                        "status": "success" if sub_result.get("success") else "error",
+                        "skill_id": sub_skill_id,
+                        "output": sub_result.get("output", ""),
+                        "error": sub_result.get("error"),
+                    })
+                    if not sub_result.get("success"):
+                        any_failed = True
+                except Exception as e:
+                    step_result.update({"status": "error", "error": str(e)})
+                    any_failed = True
+            elif sub_skill_id:
                 step_result.update({
                     "status": "pending",
                     "skill_id": sub_skill_id,
-                    "note": "Meta skill resolution required",
+                    "note": "Skill resolver not available in this context",
                 })
             else:
                 step_result.update({"status": "error", "error": "skill step missing skill_id"})
@@ -425,6 +445,7 @@ async def _execute_meta(
     workspace: Path,
     llm_caller: LLMCaller | None,
     sandbox: SandboxExecutor | None = None,
+    skill_resolver: SkillResolver | None = None,
 ) -> dict[str, Any]:
     """Execute a meta skill by delegating to its dependency DAG.
 
@@ -466,14 +487,39 @@ async def _execute_meta(
         arg_mapping = step.get("arg_mapping", {})
         step_args = {k: args.get(v, v) for k, v in arg_mapping.items()} if arg_mapping else args
 
-        results.append({
-            "step": i,
-            "type": "skill",
-            "skill_id": sub_skill_id,
-            "args": step_args,
-            "status": "pending",
-            "note": f"Delegate to skill '{sub_skill_id}'",
-        })
+        if skill_resolver:
+            try:
+                sub_result = await skill_resolver(sub_skill_id, step_args)
+                results.append({
+                    "step": i,
+                    "type": "skill",
+                    "skill_id": sub_skill_id,
+                    "args": step_args,
+                    "status": "success" if sub_result.get("success") else "error",
+                    "output": sub_result.get("output", ""),
+                    "error": sub_result.get("error"),
+                })
+                if not sub_result.get("success"):
+                    any_failed = True
+            except Exception as e:
+                results.append({
+                    "step": i,
+                    "type": "skill",
+                    "skill_id": sub_skill_id,
+                    "args": step_args,
+                    "status": "error",
+                    "error": str(e),
+                })
+                any_failed = True
+        else:
+            results.append({
+                "step": i,
+                "type": "skill",
+                "skill_id": sub_skill_id,
+                "args": step_args,
+                "status": "pending",
+                "note": f"Delegate to skill '{sub_skill_id}'",
+            })
 
     return {
         "success": not any_failed,

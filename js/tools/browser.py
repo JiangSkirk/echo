@@ -99,7 +99,7 @@ class BrowserTool:
         except Exception as e:
             return ToolResult(success=False, error=f"Fetch error: {e}")
 
-    async def search(self, query: str, max_results: int = 5) -> ToolResult:
+    async def search(self, _query: str, _max_results: int = 5) -> ToolResult:
         return ToolResult(
             success=False,
             error="Web search not configured. Please configure a search provider in settings.",

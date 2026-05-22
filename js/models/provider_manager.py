@@ -7,9 +7,15 @@ from pathlib import Path
 from typing import Any
 
 from js.config import ModelProviderConfig
+from js.security.secrets import SecretManager
 from js.utils.log import get_logger
 
 logger = get_logger("js.models.provider_manager")
+
+
+def _secret_key_name(provider_name: str) -> str:
+    """Generate a SecretManager key name for a provider's API key."""
+    return f"provider_apikey_{provider_name}"
 
 
 class ProviderManagerError(Exception):
@@ -28,11 +34,17 @@ class ProviderManager:
     def _load(self) -> None:
         if not self._path.exists():
             return
+        secrets = SecretManager(self.state_dir)
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
-            self._providers = [
-                ModelProviderConfig(**p) for p in data.get("providers", [])
-            ]
+            loaded: list[ModelProviderConfig] = []
+            for p_data in data.get("providers", []):
+                name = p_data.get("name", "")
+                # Restore API key from SecretManager if missing in JSON
+                if not p_data.get("api_key") and name:
+                    p_data["api_key"] = secrets.retrieve(_secret_key_name(name)) or ""
+                loaded.append(ModelProviderConfig(**p_data))
+            self._providers = loaded
         except json.JSONDecodeError as e:
             # Backup corrupt file instead of silently discarding
             backup = self._path.with_suffix(".json.bak")
@@ -48,10 +60,15 @@ class ProviderManager:
 
     def _save(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        secrets = SecretManager(self.state_dir)
         try:
+            # Store API keys in SecretManager, exclude from JSON
+            for p in self._providers:
+                if p.api_key:
+                    secrets.store(_secret_key_name(p.name), p.api_key, category="provider")
             data = {
                 "providers": [
-                    p.model_dump(mode="json") for p in self._providers
+                    p.model_dump(mode="json", exclude={"api_key"}) for p in self._providers
                 ]
             }
             self._path.write_text(json.dumps(data, indent=2), encoding="utf-8")

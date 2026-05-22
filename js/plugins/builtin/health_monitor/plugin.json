@@ -1,0 +1,10 @@
+{
+  "id": "health-monitor",
+  "name": "健康监控",
+  "version": "1.0.0",
+  "description": "监控模型提供商可用性和系统资源，触发告警",
+  "author": "JS Agent",
+  "categories": ["monitoring"],
+  "tags": ["health", "monitoring", "alerts"],
+  "entry_point": "plugin:HealthMonitorPlugin"
+}

@@ -133,6 +133,8 @@ description: A refresh test skill
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
         manager = SkillManager(state_dir, workspace)
+        import asyncio
+        asyncio.run(manager.load_hermes_async())
 
         assert "hermes:test-refresh" in manager.get_all()
 
@@ -167,6 +169,8 @@ description: New after refresh
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
         manager = SkillManager(state_dir, workspace)
+        import asyncio
+        asyncio.run(manager.load_hermes_async())
 
         assert "hermes:to-delete" in manager.get_all()
 

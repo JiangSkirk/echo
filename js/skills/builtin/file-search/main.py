@@ -16,6 +16,20 @@ def main() -> None:
     path = args.get("path", ".")
     max_results = min(int(args.get("max_results", 50)), 200)
 
+    # Sanitize inputs to prevent shell injection via subprocess args
+    # Reject leading dashes (flag injection) and null bytes
+    def _sanitize_file_arg(val: str) -> str:
+        if val.startswith("-"):
+            raise ValueError(f"Invalid argument (leading dash): {val[:40]}")
+        if "\x00" in val:
+            raise ValueError("Null bytes not allowed")
+        return val
+
+    path = _sanitize_file_arg(path)
+    pattern = _sanitize_file_arg(pattern)
+    if search_content:
+        search_content = _sanitize_file_arg(search_content)
+
     results: list[str] = []
 
     if search_content:

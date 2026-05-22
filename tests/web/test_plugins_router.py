@@ -1,0 +1,144 @@
+"""Tests for the plugins web router."""
+
+from __future__ import annotations
+
+from unittest.mock import MagicMock, patch
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from js.web.routers.plugins import router as plugins_router
+
+
+def _make_app() -> FastAPI:
+    app = FastAPI()
+    app.include_router(plugins_router)
+    patch("js.web.server._settings", None).start()
+    return app
+
+
+def _make_plugin_manager() -> MagicMock:
+    pm = MagicMock()
+    record = MagicMock()
+    record.to_dict.return_value = {
+        "id": "example-dashboard",
+        "name": "Example Dashboard",
+        "enabled": True,
+    }
+    pm.list_plugins.return_value = [record]
+    pm.enable.return_value = True
+    pm.disable.return_value = True
+    return pm
+
+
+def test_list_plugins_success() -> None:
+    agent = MagicMock()
+    agent.plugins = _make_plugin_manager()
+
+    app = _make_app()
+    client = TestClient(app)
+    with patch("js.web.routers.plugins.get_agent", return_value=agent):
+        resp = client.get("/api/plugins/")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["plugins"][0]["id"] == "example-dashboard"
+
+
+def test_list_plugins_not_initialized() -> None:
+    agent = MagicMock()
+    agent.plugins = None
+
+    app = _make_app()
+    client = TestClient(app)
+    with patch("js.web.routers.plugins.get_agent", return_value=agent):
+        resp = client.get("/api/plugins/")
+
+    assert resp.status_code == 200
+    assert resp.json()["plugins"] == []
+    assert resp.json()["total"] == 0
+
+
+def test_enable_plugin_success() -> None:
+    agent = MagicMock()
+    agent.plugins = _make_plugin_manager()
+
+    app = _make_app()
+    client = TestClient(app)
+    with patch("js.web.routers.plugins.get_agent", return_value=agent):
+        resp = client.post("/api/plugins/example-dashboard/enable")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["success"] is True
+    assert data["status"] == "enabled"
+    agent.plugins.enable.assert_called_once_with("example-dashboard")
+
+
+def test_enable_plugin_failure() -> None:
+    agent = MagicMock()
+    pm = _make_plugin_manager()
+    pm.enable.return_value = False
+    agent.plugins = pm
+
+    app = _make_app()
+    client = TestClient(app)
+    with patch("js.web.routers.plugins.get_agent", return_value=agent):
+        resp = client.post("/api/plugins/example-dashboard/enable")
+
+    assert resp.status_code == 400
+
+
+def test_enable_plugin_no_pm() -> None:
+    agent = MagicMock()
+    agent.plugins = None
+
+    app = _make_app()
+    client = TestClient(app)
+    with patch("js.web.routers.plugins.get_agent", return_value=agent):
+        resp = client.post("/api/plugins/example-dashboard/enable")
+
+    assert resp.status_code == 503
+
+
+def test_disable_plugin_success() -> None:
+    agent = MagicMock()
+    agent.plugins = _make_plugin_manager()
+
+    app = _make_app()
+    client = TestClient(app)
+    with patch("js.web.routers.plugins.get_agent", return_value=agent):
+        resp = client.post("/api/plugins/example-dashboard/disable")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["success"] is True
+    assert data["status"] == "disabled"
+    agent.plugins.disable.assert_called_once_with("example-dashboard")
+
+
+def test_disable_plugin_failure() -> None:
+    agent = MagicMock()
+    pm = _make_plugin_manager()
+    pm.disable.return_value = False
+    agent.plugins = pm
+
+    app = _make_app()
+    client = TestClient(app)
+    with patch("js.web.routers.plugins.get_agent", return_value=agent):
+        resp = client.post("/api/plugins/example-dashboard/disable")
+
+    assert resp.status_code == 400
+
+
+def test_disable_plugin_no_pm() -> None:
+    agent = MagicMock()
+    agent.plugins = None
+
+    app = _make_app()
+    client = TestClient(app)
+    with patch("js.web.routers.plugins.get_agent", return_value=agent):
+        resp = client.post("/api/plugins/example-dashboard/disable")
+
+    assert resp.status_code == 503

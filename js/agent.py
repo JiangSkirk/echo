@@ -6,14 +6,18 @@ import asyncio
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+from cachetools import TTLCache
 
 from js.approvals.queue import ApprovalMode, ApprovalQueue
 from js.compression.compressor import CompressionConfig, ContextCompressor
 from js.compression.feedback import CompressionFeedback
 from js.config import JSSettings
+from js.core.attachments import extract_excel_text, extract_pdf_text, format_size
 from js.evolution.learner import SelfLearner
 from js.evolution.metacognition import MetacognitionLoop
 from js.evolution.optimizer import PromptOptimizer
@@ -21,7 +25,7 @@ from js.memory.embeddings import Embedder, HybridEmbedder, KeywordEmbedder, LLME
 from js.memory.scheduler import DreamScheduler
 from js.memory.store import MemoryStore
 from js.models.provider_manager import ProviderManager
-from js.models.providers import ChatMessage
+from js.models.providers import ChatMessage, ChatResponse
 from js.models.router import ModelRouter
 from js.security.audit import AuditEventType, AuditLogger
 from js.security.guard import BehaviorGuard
@@ -50,6 +54,27 @@ class AgentState:
     cost_estimate: float = 0.0
     status: str = "running"  # running, completed, error, blocked
     error_message: str = ""
+    compression_stats: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "run_id": self.run_id,
+            "turn_count": self.turn_count,
+            "messages": [
+                {"role": m.role, "content": m.content, "name": getattr(m, "name", None)}
+                for m in self.messages
+            ],
+            "tool_results": [
+                {"success": r.success, "output": r.output, "error": r.error}
+                for r in self.tool_results
+            ],
+            "total_tokens": self.total_tokens,
+            "cost_estimate": self.cost_estimate,
+            "status": self.status,
+            "error_message": self.error_message,
+            "compression_stats": self.compression_stats,
+        }
 
 
 class JSAgent:
@@ -101,6 +126,10 @@ Key rules:
         self.memory = MemoryStore(settings.state_dir, settings.memory, self._setup_embedder())
         self._dream_scheduler = DreamScheduler(self)
 
+        # Plugin system
+        self.plugins: Any = None
+        self._init_plugins()
+
         # Tooling layer
         self.registry = ToolRegistry(settings.tools, self.guard)
         self.skills = SkillManager(settings.state_dir, settings.workspace)
@@ -139,6 +168,103 @@ Key rules:
 
         # Register default prompt variant for optimization
         self._init_default_prompt_variant()
+
+        # Cancel & checkpoint support
+        self._cancel_tokens: dict[str, asyncio.Event] = {}
+        self._system_message_cache: TTLCache[tuple[str, str], str] = TTLCache(maxsize=100, ttl=60)
+        self._degraded = False
+        self.degraded_reason = ""
+        from js.persistence.state_store import StateStore
+        self.state_store = StateStore(settings.state_dir / "checkpoints.db")
+
+    @property
+    def degraded(self) -> bool:
+        return self._degraded
+
+    def _get_tools_schema(self) -> list[dict[str, Any]] | None:
+        """Return tool schemas, filtering network tools when degraded."""
+        schemas = self.registry.to_openai_schemas()
+        if not self._degraded:
+            return schemas
+        filtered = []
+        for s in schemas or []:
+            name = s.get("function", {}).get("name", "")
+            if name in ("web_search", "browser_fetch", "browser_open", "fetch_url"):
+                continue
+            filtered.append(s)
+        return filtered
+
+    def request_cancel(self, session_id: str) -> bool:
+        """Request cancellation of an active run."""
+        token = self._cancel_tokens.get(session_id)
+        if token is None:
+            return False
+        token.set()
+        return True
+
+    async def _check_degraded(self) -> None:
+        """Check provider health and update degraded status."""
+        try:
+            health = await self.router.health_check()
+            any_healthy = any(health.values()) if isinstance(health, dict) else bool(health)
+            if any_healthy:
+                self._degraded = False
+                self.degraded_reason = ""
+            else:
+                self._degraded = True
+                self.degraded_reason = "All providers unhealthy"
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self._degraded = True
+            self.degraded_reason = f"Health check failed: {type(e).__name__}"
+
+    async def save_checkpoint(self, state: AgentState) -> None:
+        """Persist agent state for resume."""
+        data = state.to_dict()
+        await asyncio.to_thread(
+            self.state_store.save,
+            session_id=data["session_id"],
+            run_id=data["run_id"],
+            turn_count=data["turn_count"],
+            messages=data["messages"],
+            tool_results=data["tool_results"],
+            total_tokens=data["total_tokens"],
+            cost_estimate=data["cost_estimate"],
+            status=data["status"],
+            error_message=data["error_message"],
+            compression_stats=data["compression_stats"],
+        )
+
+    async def load_checkpoint(self, session_id: str) -> AgentState | None:
+        """Restore agent state from persistent store."""
+        data = await asyncio.to_thread(self.state_store.load, session_id)
+        if data is None:
+            return None
+        state = AgentState(
+            session_id=data["session_id"],
+            run_id=data["run_id"],
+            turn_count=data.get("turn_count", 0),
+            total_tokens=data.get("total_tokens", {"input": 0, "output": 0}),
+            cost_estimate=data.get("cost_estimate", 0.0),
+            status=data.get("status", "running"),
+            error_message=data.get("error_message", ""),
+            compression_stats=data.get("compression_stats", {}),
+        )
+        for m in data.get("messages", []):
+            state.messages.append(
+                ChatMessage(role=m.get("role", "user"), content=m.get("content", ""))
+            )
+        return state
+
+    async def resume(self, session_id: str, user_input: str = "") -> AgentState:
+        """Resume a session from its last checkpoint."""
+        state = await self.load_checkpoint(session_id)
+        if state is None:
+            state = AgentState(session_id=session_id, run_id=str(uuid.uuid4()))
+        if user_input:
+            state.messages.append(ChatMessage(role="user", content=user_input))
+        return await self.run(user_input, session_id=session_id, _resume_state=state)
 
     async def _summarize_context(self, messages: list[ChatMessage], identifiers: list[str] | None = None) -> str:
         """Generate an LLM-powered summary of conversation turns."""
@@ -212,59 +338,56 @@ Key rules:
 
         # TODO: Register code-type skills as tools (requires async handler wrapper)
 
-    @staticmethod
-    def _format_size(size_bytes: int) -> str:
-        """Format byte size to human-readable string."""
-        size = float(size_bytes)
-        for unit in ["B", "KB", "MB", "GB"]:
-            if size < 1024:
-                return f"{size:.1f} {unit}"
-            size /= 1024
-        return f"{size:.1f} TB"
+    def _init_plugins(self) -> None:
+        """Discover and auto-enable builtin plugins."""
+        try:
+            from js.plugins.manager import PluginManager
+            self.plugins = PluginManager(self, self.settings)
+            self.plugins.discover()
+            for p in self.plugins.list_plugins():
+                if p.manifest.id.startswith("builtin-") or p.manifest.categories == ["demo"]:
+                    self.plugins.enable(p.manifest.id)
+            self.logger.info(f"Plugin system initialized: {len(self.plugins.list_plugins())} plugins discovered")
+        except Exception as e:
+            self.logger.warning(f"Plugin init failed: {e}")
 
     def _setup_embedder(self) -> Embedder:
         """Select the best available embedding provider.
 
-        Tries LLM-based embedding first, wrapped in a HybridEmbedder so
-        that API failures at runtime automatically fall back to
-        KeywordEmbedder without crashing memory operations.
+        Only uses an LLM-based embedder when the user has explicitly
+        configured ``embedding_model`` on a provider. Never auto-detects
+        or probes models at startup — this keeps initialization fast and
+        avoids "opening" unwanted models.
+
+        HybridEmbedder wraps the primary so that runtime failures
+        automatically fall back to KeywordEmbedder without crashing.
         """
         for cfg in self.settings.providers:
-            if cfg.base_url:
-                try:
-                    model = getattr(cfg, "embedding_model", "text-embedding-3-small")
-                    primary = LLMEmbedder(
-                        base_url=cfg.base_url,
-                        api_key=cfg.api_key or "dummy",
-                        model=model,
-                    )
-                    # Health-check: try a dummy embed to verify the endpoint works
-                    _ = primary.embed("test")
-                    hybrid = HybridEmbedder(
-                        primary=primary,
-                        fallback=KeywordEmbedder(),
-                        failure_threshold=2,
-                        recovery_timeout=60.0,
-                    )
-                    self.logger.info(f"Using HybridEmbedder (primary={cfg.name})")
-                    return hybrid
-                except Exception:
-                    self.logger.debug(
-                        f"Provider {cfg.name} does not support embeddings, falling back",
-                        exc_info=True,
-                    )
-                    if "1234" in cfg.base_url:
-                        self.logger.warning(
-                            f"LM Studio detected at {cfg.base_url} but embeddings endpoint is not available. "
-                            "To enable semantic memory: open LM Studio → 'Developer' tab → 'Embedding Model' → load a model."
-                        )
+            if cfg.base_url and cfg.embedding_model:
+                primary = LLMEmbedder(
+                    base_url=cfg.base_url,
+                    api_key=cfg.api_key or "dummy",
+                    model=cfg.embedding_model,
+                )
+                hybrid = HybridEmbedder(
+                    primary=primary,
+                    fallback=KeywordEmbedder(),
+                    failure_threshold=2,
+                    recovery_timeout=60.0,
+                )
+                self.logger.info(
+                    f"Using HybridEmbedder (primary={cfg.name}, model={cfg.embedding_model})"
+                )
+                return hybrid
+
         self.logger.info(
-            "Using KeywordEmbedder (no embedding API available). "
-            "Semantic memory will use keyword matching instead of vector similarity."
+            "Using KeywordEmbedder (no embedding_model configured). "
+            "Semantic memory will use keyword matching instead of vector similarity. "
+            "To enable vector search, set embedding_model in your provider config."
         )
         return KeywordEmbedder()
 
-    def _build_attachment_context(self, attachments: list[str]) -> str:
+    async def _build_attachment_context(self, attachments: list[str]) -> str:
         """Build context text describing uploaded attachments."""
         if not attachments:
             return ""
@@ -280,19 +403,38 @@ Key rules:
             size = path.stat().st_size
 
             if suffix in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"}:
-                parts.append(f"- 📷 图片: `{path.name}` ({self._format_size(size)})")
+                parts.append(f"- 📷 图片: `{path.name}` ({format_size(size)})")
             elif suffix in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
-                parts.append(f"- 🎬 视频: `{path.name}` ({self._format_size(size)})")
+                parts.append(f"- 🎬 视频: `{path.name}` ({format_size(size)})")
             elif suffix in {".mp3", ".wav", ".ogg", ".m4a", ".flac"}:
-                parts.append(f"- 🎵 音频: `{path.name}` ({self._format_size(size)})")
-            elif suffix in {".txt", ".md", ".py", ".js", ".json", ".yaml", ".yml", ".csv", ".html", ".css", ".xml", ".sh", ".log", ".pdf", ".docx"}:
-                parts.append(f"- 📄 文档: `{path.name}` ({self._format_size(size)})")
+                parts.append(f"- 🎵 音频: `{path.name}` ({format_size(size)})")
+            elif suffix in {".xlsx", ".xls", ".csv"}:
+                parts.append(f"- 📊 表格: `{path.name}` ({format_size(size)})")
+                try:
+                    content = (await asyncio.to_thread(extract_excel_text, path))[:5000]
+                    if content:
+                        parts.append(f"  提取内容:\n```\n{content}\n```")
+                except Exception:
+                    self.logger.warning('Operation failed', exc_info=True)
+            elif suffix == ".pdf":
+                parts.append(f"- 📑 PDF: `{path.name}` ({format_size(size)})")
+                try:
+                    content = (await asyncio.to_thread(extract_pdf_text, path))[:5000]
+                    if content:
+                        parts.append(f"  提取内容:\n```\n{content}\n```")
+                except Exception:
+                    self.logger.warning('Operation failed', exc_info=True)
+            elif suffix in {".txt", ".md", ".py", ".js", ".json", ".yaml", ".yml", ".csv", ".html", ".css", ".xml", ".sh", ".log", ".docx"}:
+                parts.append(f"- 📄 文档: `{path.name}` ({format_size(size)})")
                 if suffix in {".txt", ".md", ".py", ".js", ".json", ".yaml", ".yml", ".csv", ".html", ".css", ".xml", ".sh", ".log"}:
                     try:
-                        content = path.read_text(encoding="utf-8", errors="replace")[:2000]
+                        def _read_file(p: Path) -> str:
+                            return p.read_text(encoding="utf-8", errors="replace")[:8000]
+
+                        content = await asyncio.to_thread(_read_file, path)
                         parts.append(f"  预览:\n```\n{content}\n```")
                     except Exception:
-                        pass
+                        self.logger.warning('Operation failed', exc_info=True)
             else:
                 parts.append(f"- 📎 文件: `{path.name}` ({self._format_size(size)})")
 
@@ -307,7 +449,7 @@ Key rules:
             if variant is None:
                 self.optimizer.register_variant("system", self.SYSTEM_PROMPT, "baseline")
         except Exception:
-            self.logger.debug("Failed to register default prompt variant", exc_info=True)
+            self.logger.warning("Failed to register default prompt variant", exc_info=True)
 
     def _build_vision_content(
         self,
@@ -335,6 +477,11 @@ Key rules:
 
     def _build_system_message(self, query: str = "", session_id: str = "", attachments: list[str] | None = None) -> str:
         """Build system message with rich multi-layer memory context."""
+        cache_key = (query, session_id)
+        cached = self._system_message_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         parts = [self.SYSTEM_PROMPT]
 
         # Inject learned insights from past interactions
@@ -352,14 +499,17 @@ Key rules:
                     parts.append(f"\n## Optimization Variant\n{prompt_template}")
                     self._last_system_variant_id = variant_id
             except Exception:
-                self.logger.debug("Failed to select prompt variant", exc_info=True)
+                self.logger.warning("Failed to select prompt variant", exc_info=True)
 
         if self.settings.memory.enabled:
             try:
+                # Cap memory context so system prompt + context stays well within
+                # typical local model context windows (4k-8k). Base prompt is ~2.5k.
+                max_memory = min(self.settings.memory.max_memory_chars, 2000)
                 memory_context = self.memory.get_context_string(
                     query=query,
                     session_id=session_id,
-                    max_chars=self.settings.memory.max_memory_chars,
+                    max_chars=max_memory,
                 )
                 if memory_context:
                     # Security scan memory context before injection
@@ -385,9 +535,252 @@ Key rules:
                     if memory_context:
                         parts.append(f"\n## Relevant Context\n{memory_context}")
             except Exception:
-                self.logger.debug("Failed to build memory context", exc_info=True)
+                self.logger.warning("Failed to build memory context", exc_info=True)
 
-        return "\n".join(parts)
+        result = "\n".join(parts)
+        # Hard cap total system prompt length to prevent context overflow
+        if len(result) > 4000:
+            result = result[:4000] + "\n...[truncated]"
+        self._system_message_cache[cache_key] = result
+        return result
+
+
+    async def _execute_tool_call(
+        self,
+        tc: dict[str, Any],
+        session_id: str,
+        run_id: str,
+        user_input: str,
+    ) -> ChatMessage:
+        """Execute a single tool call and return the tool message."""
+        func = tc.get("function", {}) if isinstance(tc, dict) else {}
+        tool_name = func.get("name", "") if isinstance(func, dict) else ""
+        raw_args = func.get("arguments", "{}") if isinstance(func, dict) else "{}"
+        tool_call_id = tc.get("id", "") if isinstance(tc, dict) else ""
+        if not tool_name:
+            return ChatMessage(role="tool", content="Error: Tool call missing name", tool_call_id=tool_call_id, name="unknown")
+        try:
+            arguments = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args if isinstance(raw_args, dict) else {})
+        except json.JSONDecodeError:
+            arguments = {}
+
+        # Strategy-based defense
+        from js.security.strategies import DefenseContext
+        defense_ctx = DefenseContext(
+            tool_name=tool_name,
+            arguments=arguments,
+            session_id=session_id,
+            run_id=run_id,
+            user_input=user_input,
+            config=self.settings.security,
+        )
+        defense_result = self.defense_strategies.evaluate(defense_ctx)
+        if defense_result.blocked:
+            return ChatMessage(
+                role="tool",
+                content=f"Error: Security blocked: {defense_result.reason}",
+                tool_call_id=tool_call_id,
+                name=tool_name,
+            )
+
+        # Approval check for dangerous tools (must be awaited, so runs inline)
+        spec = self.registry.get(tool_name)
+        if spec and spec.dangerous:
+            approved = await asyncio.to_thread(
+                self.approvals.request,
+                tool_name=tool_name,
+                arguments=arguments,
+                context="cli",
+            )
+            if not approved:
+                return ChatMessage(
+                    role="tool",
+                    content="Error: Operation denied: approval required but not granted",
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                )
+
+        self.audit.log(
+            AuditEventType.TOOL_CALL,
+            session_id,
+            run_id,
+            "agent",
+            tool_name,
+            {"arguments": arguments},
+        )
+
+        result = await self.registry.execute(run_id, tool_name, arguments)
+
+        # Repeated failure guard (Hermes-style)
+        fail_check = self.guard.check_repeated_failure(run_id, tool_name, result.success)
+        if fail_check.decision == "block":
+            result = ToolResult(success=False, error=f"Security: {fail_check.reason}")
+
+        # Redact secrets in output
+        if result.output:
+            result.output = self.secrets.detect_and_redact(result.output, f"tool:{tool_name}")
+
+        return ChatMessage(
+            role="tool",
+            content=result.to_text(),
+            tool_call_id=tool_call_id,
+            name=tool_name,
+        )
+
+
+    async def _finalize_run(
+        self,
+        state: AgentState,
+        session_id: str,
+        run_id: str,
+        user_input: str,
+        history_ua_count: int,
+    ) -> None:
+        """Persist memory, audit logs, and learning data after a run completes."""
+        # Extract assistant output for memory storage
+        assistant_output = ""
+        for msg in reversed(state.messages):
+            if msg.role == "assistant" and isinstance(msg.content, str) and msg.content:
+                assistant_output = msg.content
+                break
+
+        # Persist conversation history FIRST to avoid empty sessions
+        try:
+            ua_messages = [
+                msg
+                for msg in state.messages
+                if msg.role in ("user", "assistant") and isinstance(msg.content, str)
+            ]
+            new_messages: list[dict[str, str]] = [
+                {"role": msg.role, "content": str(msg.content)}
+                for msg in ua_messages[history_ua_count:]
+            ]
+            if new_messages:
+                await asyncio.to_thread(
+                    self.memory.store_messages,
+                    session_id,
+                    new_messages,
+                )
+        except Exception as e:
+            self.logger.debug(f"Failed to store messages: {e}")
+
+        # Store episodic memory second
+        try:
+            summary = f"User: {user_input[:80]}... → Assistant: {assistant_output[:80]}..."
+            topics = list({
+                word.lower() for word in (user_input + " " + assistant_output).split()
+                if len(word) > 4 and word.isalpha()
+            })[:5]
+            await asyncio.to_thread(
+                self.memory.store_episode,
+                session_id=session_id,
+                summary=summary,
+                topics=topics,
+                tokens_used=sum(state.total_tokens.values()),
+                turn_count=state.turn_count,
+                importance=7 if state.status == "completed" else 4,
+            )
+            try:
+                self._dream_scheduler.notify_activity(user_input, assistant_output)
+            except Exception as e:
+                self.logger.debug(f"Failed to notify scheduler: {e}")
+        except Exception as mem_err:
+            self.logger.warning(f"Memory consolidation failed: {mem_err}")
+
+        # Reset guard counters
+        try:
+            self.guard.reset_loop_counters(run_id)
+        except Exception:
+            self.logger.warning("Failed to reset guard counters", exc_info=True)
+
+        self.logger.info(
+            "Run complete",
+            extra={
+                "run": run_id,
+                "status": state.status,
+                "turns": state.turn_count,
+                "tokens": state.total_tokens,
+            },
+        )
+
+        # Record for self-learning
+        try:
+            await asyncio.to_thread(
+                self.learner.record_interaction,
+                session_id=session_id,
+                user_input=user_input,
+                agent_output=assistant_output,
+                tool_calls=[
+                    {"name": r.metadata.get("tool_name", "unknown"), "success": r.success}
+                    for r in state.tool_results
+                ],
+                success=state.status == "completed",
+                latency_ms=0.0,
+                tokens_used=sum(state.total_tokens.values()),
+            )
+        except Exception:
+            self.logger.warning("Failed to record interaction", exc_info=True)
+
+        # Record compression outcome for feedback loop
+        try:
+            await asyncio.to_thread(
+                self.compression_feedback.record_outcome,
+                session_id=session_id,
+                turn_number=state.turn_count,
+                success=state.status == "completed",
+                error_type=state.error_message if state.status == "error" else None,
+            )
+        except Exception:
+            self.logger.warning("Failed to record compression outcome", exc_info=True)
+
+        # Record prompt optimization result
+        try:
+            if hasattr(self, "_last_system_variant_id"):
+                await asyncio.to_thread(
+                    self.optimizer.record_result,
+                    self._last_system_variant_id,
+                    state.status == "completed",
+                    1.0 if state.status == "completed" else 0.0,
+                    context="system",
+                )
+                delattr(self, "_last_system_variant_id")
+        except Exception:
+            self.logger.warning("Failed to record prompt optimization result", exc_info=True)
+
+        # Trigger metacognition if interval reached
+        try:
+            await asyncio.to_thread(self.metacognition.tick)
+        except Exception:
+            self.logger.warning("Metacognition tick failed", exc_info=True)
+
+        # Periodic skill curation
+        try:
+            if self.curator.should_run():
+                curation_report = await asyncio.to_thread(
+                    self.curator.curate, self.skills.get_all()
+                )
+                self.logger.info(
+                    "Skill curation completed",
+                    extra={
+                        "healthy": curation_report.get("healthy", 0),
+                        "underperforming": curation_report.get("underperforming", 0),
+                    },
+                )
+        except Exception:
+            self.logger.warning("Skill curation failed", exc_info=True)
+
+        # Auto-evolve underperforming skills (fire-and-forget background tasks)
+        try:
+            if self.evolver:
+                for skill_id, _spec in self.skills.get_all().items():
+                    if self.evolver.should_evolve(skill_id):
+                        self.logger.info(f"Triggering auto-evolution for skill {skill_id}")
+                        asyncio.create_task(
+                            self._run_skill_evolution_for(skill_id),
+                            name=f"evolve-{skill_id}",
+                        )
+        except Exception:
+            self.logger.warning("Auto-evolution check failed", exc_info=True)
 
     async def run(
         self,
@@ -395,17 +788,22 @@ Key rules:
         session_id: str | None = None,
         model: str | None = None,
         attachments: list[str] | None = None,
+        _resume_state: AgentState | None = None,
+        stream_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> AgentState:
         """Execute a full agent run."""
         session_id = session_id or str(uuid.uuid4())
         run_id = str(uuid.uuid4())
-        state = AgentState(session_id=session_id, run_id=run_id)
+        state = _resume_state or AgentState(session_id=session_id, run_id=run_id)
+        if _resume_state:
+            state.run_id = run_id
         attachments = attachments or []
+        self._cancel_tokens[session_id] = asyncio.Event()
 
         try:
             get_metrics().agent_runs_total.inc()
         except Exception:
-            self.logger.debug("Suppressed error", exc_info=True)
+            self.logger.warning("Suppressed error", exc_info=True)
 
         self.logger.info("Starting run", extra={"session": session_id, "run": run_id, "attachments": len(attachments)})
         self.audit.log(
@@ -421,7 +819,7 @@ Key rules:
         user_input = self.secrets.detect_and_redact(user_input, "user_input")
 
         # Build attachment context
-        attachment_ctx = self._build_attachment_context(attachments)
+        attachment_ctx = await self._build_attachment_context(attachments)
 
         # Load historical conversation context if continuing a session
         try:
@@ -434,7 +832,7 @@ Key rules:
                         ChatMessage(role=m["role"], content=m["content"])
                     )
         except Exception:
-            self.logger.debug("Failed to load session history", exc_info=True)
+            self.logger.warning("Failed to load session history", exc_info=True)
 
         # Count historical user/assistant messages already persisted
         history_ua_count = sum(
@@ -475,6 +873,12 @@ Key rules:
         with start_span("agent.run"):
             try:
                 while state.turn_count < self.settings.max_turns:
+                    # Check for cancellation request
+                    if self._cancel_tokens.get(session_id) and self._cancel_tokens[session_id].is_set():
+                        state.status = "cancelled"
+                        state.error_message = "Run cancelled by user request"
+                        break
+
                     state.turn_count += 1
                     self.logger.debug(f"Turn {state.turn_count}", extra={"run": run_id})
 
@@ -499,12 +903,30 @@ Key rules:
                             )
 
                         # Get model response
-                        tools_schema = self.registry.to_openai_schemas()
-                        response = await self.router.chat(
-                            messages=compressed_messages,
-                            model=model,
-                            tools=tools_schema if tools_schema else None,
-                        )
+                        tools_schema = self._get_tools_schema()
+                        if stream_callback and not tools_schema:
+                            # Stream final assistant response when no tools
+                            decision = await self.router.select_model(preferred=model)
+                            stream_text = ""
+                            async for token in decision.provider.chat_stream(
+                                messages=compressed_messages,
+                                model=decision.model,
+                            ):
+                                stream_text += token
+                                await stream_callback(token)
+                            response = ChatResponse(
+                                content=stream_text,
+                                tool_calls=[],
+                                model=decision.model,
+                                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                                finish_reason="stop",
+                            )
+                        else:
+                            response = await self.router.chat(
+                                messages=compressed_messages,
+                                model=model,
+                                tools=tools_schema if tools_schema else None,
+                            )
 
                         # Track usage
                         prompt_tokens = response.usage.get("prompt_tokens", 0)
@@ -548,90 +970,16 @@ Key rules:
                             break
 
                         # Execute tools (parallel when safe)
-                        async def _execute_single_tool(tc: dict[str, Any]) -> ChatMessage:
-                            """Execute a single tool call and return the tool message."""
-                            func = tc.get("function", {}) if isinstance(tc, dict) else {}
-                            tool_name = func.get("name", "") if isinstance(func, dict) else ""
-                            raw_args = func.get("arguments", "{}") if isinstance(func, dict) else "{}"
-                            tool_call_id = tc.get("id", "") if isinstance(tc, dict) else ""
-                            if not tool_name:
-                                return ChatMessage(role="tool", content="Error: Tool call missing name", tool_call_id=tool_call_id, name="unknown")
-                            try:
-                                arguments = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args if isinstance(raw_args, dict) else {})
-                            except json.JSONDecodeError:
-                                arguments = {}
-
-                            # Strategy-based defense
-                            from js.security.strategies import DefenseContext
-                            defense_ctx = DefenseContext(
-                                tool_name=tool_name,
-                                arguments=arguments,
-                                session_id=session_id,
-                                run_id=run_id,
-                                user_input=user_input,
-                                config=self.settings.security,
-                            )
-                            defense_result = self.defense_strategies.evaluate(defense_ctx)
-                            if defense_result.blocked:
-                                return ChatMessage(
-                                    role="tool",
-                                    content=f"Error: Security blocked: {defense_result.reason}",
-                                    tool_call_id=tool_call_id,
-                                    name=tool_name,
-                                )
-
-                            # Approval check for dangerous tools (must be awaited, so runs inline)
-                            spec = self.registry.get(tool_name)
-                            if spec and spec.dangerous:
-                                approved = await asyncio.to_thread(
-                                    self.approvals.request,
-                                    tool_name=tool_name,
-                                    arguments=arguments,
-                                    context="cli",
-                                )
-                                if not approved:
-                                    return ChatMessage(
-                                        role="tool",
-                                        content="Error: Operation denied: approval required but not granted",
-                                        tool_call_id=tool_call_id,
-                                        name=tool_name,
-                                    )
-
-                            self.audit.log(
-                                AuditEventType.TOOL_CALL,
-                                session_id,
-                                run_id,
-                                "agent",
-                                tool_name,
-                                {"arguments": arguments},
-                            )
-
-                            result = await self.registry.execute(run_id, tool_name, arguments)
-
-                            # Repeated failure guard (Hermes-style)
-                            fail_check = self.guard.check_repeated_failure(run_id, tool_name, result.success)
-                            if fail_check.decision == "block":
-                                result = ToolResult(success=False, error=f"Security: {fail_check.reason}")
-
-                            # Redact secrets in output
-                            if result.output:
-                                result.output = self.secrets.detect_and_redact(result.output, f"tool:{tool_name}")
-
-                            return ChatMessage(
-                                role="tool",
-                                content=result.to_text(),
-                                tool_call_id=tool_call_id,
-                                name=tool_name,
-                            )
-
-                        # Parallel execution: group by safety, run batches sequentially
                         parallel = ParallelToolExecutor()
                         batches = parallel.group(response.tool_calls)
                         self.logger.debug(
                             f"Tool batches: {len(batches)} for {len(response.tool_calls)} calls"
                         )
                         for batch in batches:
-                            batch_tasks = [_execute_single_tool(tc) for tc in batch]
+                            batch_tasks = [
+                                self._execute_tool_call(tc, session_id, run_id, user_input)
+                                for tc in batch
+                            ]
                             batch_messages = await asyncio.gather(*batch_tasks)
                             state.messages.extend(batch_messages)
                     finally:
@@ -639,7 +987,7 @@ Key rules:
                         try:
                             get_metrics().agent_turn_duration_seconds.observe(turn_latency)
                         except Exception:
-                            self.logger.debug("Suppressed error", exc_info=True)
+                            self.logger.warning("Suppressed error", exc_info=True)
 
             except Exception as e:
                 state.status = "error"
@@ -653,152 +1001,11 @@ Key rules:
                     "exception",
                     {"error": str(e)},
                 )
+                await self._check_degraded()
 
             finally:
-                # Extract assistant output for memory storage
-                assistant_output = ""
-                for msg in reversed(state.messages):
-                    if msg.role == "assistant" and isinstance(msg.content, str) and msg.content:
-                        assistant_output = msg.content
-                        break
-
-                # Persist conversation history FIRST to avoid empty sessions
-                try:
-                    ua_messages = [
-                        msg
-                        for msg in state.messages
-                        if msg.role in ("user", "assistant") and isinstance(msg.content, str)
-                    ]
-                    new_messages: list[dict[str, str]] = [
-                        {"role": msg.role, "content": str(msg.content)}
-                        for msg in ua_messages[history_ua_count:]
-                    ]
-                    if new_messages:
-                        await asyncio.to_thread(
-                            self.memory.store_messages,
-                            session_id,
-                            new_messages,
-                        )
-                except Exception as e:
-                    self.logger.debug(f"Failed to store messages: {e}")
-
-                # Store episodic memory second
-                try:
-                    summary = f"User: {user_input[:80]}... → Assistant: {assistant_output[:80]}..."
-                    topics = list({
-                        word.lower() for word in (user_input + " " + assistant_output).split()
-                        if len(word) > 4 and word.isalpha()
-                    })[:5]
-                    await asyncio.to_thread(
-                        self.memory.store_episode,
-                        session_id=session_id,
-                        summary=summary,
-                        topics=topics,
-                        tokens_used=sum(state.total_tokens.values()),
-                        turn_count=state.turn_count,
-                        importance=7 if state.status == "completed" else 4,
-                    )
-                    try:
-                        self._dream_scheduler.notify_activity(user_input, assistant_output)
-                    except Exception as e:
-                        self.logger.debug(f"Failed to notify scheduler: {e}")
-                except Exception as mem_err:
-                    self.logger.warning(f"Memory consolidation failed: {mem_err}")
-
-                # Reset guard counters
-                try:
-                    self.guard.reset_loop_counters(run_id)
-                except Exception:
-                    self.logger.debug("Failed to reset guard counters", exc_info=True)
-
-                self.logger.info(
-                    "Run complete",
-                    extra={
-                        "run": run_id,
-                        "status": state.status,
-                        "turns": state.turn_count,
-                        "tokens": state.total_tokens,
-                    },
-                )
-
-                # Record for self-learning
-                try:
-                    await asyncio.to_thread(
-                        self.learner.record_interaction,
-                        session_id=session_id,
-                        user_input=user_input,
-                        agent_output=assistant_output,
-                        tool_calls=[
-                            {"name": r.metadata.get("tool_name", "unknown"), "success": r.success}
-                            for r in state.tool_results
-                        ],
-                        success=state.status == "completed",
-                        latency_ms=0.0,
-                        tokens_used=sum(state.total_tokens.values()),
-                    )
-                except Exception:
-                    self.logger.debug("Failed to record interaction", exc_info=True)
-
-                # Record compression outcome for feedback loop
-                try:
-                    await asyncio.to_thread(
-                        self.compression_feedback.record_outcome,
-                        session_id=session_id,
-                        turn_number=state.turn_count,
-                        success=state.status == "completed",
-                        error_type=state.error_message if state.status == "error" else None,
-                    )
-                except Exception:
-                    self.logger.debug("Failed to record compression outcome", exc_info=True)
-
-                # Record prompt optimization result
-                try:
-                    if hasattr(self, "_last_system_variant_id"):
-                        await asyncio.to_thread(
-                            self.optimizer.record_result,
-                            self._last_system_variant_id,
-                            state.status == "completed",
-                            1.0 if state.status == "completed" else 0.0,
-                            context="system",
-                        )
-                        delattr(self, "_last_system_variant_id")
-                except Exception:
-                    self.logger.debug("Failed to record prompt optimization result", exc_info=True)
-
-                # Trigger metacognition if interval reached
-                try:
-                    await asyncio.to_thread(self.metacognition.tick)
-                except Exception:
-                    self.logger.debug("Metacognition tick failed", exc_info=True)
-
-                # Periodic skill curation
-                try:
-                    if self.curator.should_run():
-                        curation_report = await asyncio.to_thread(
-                            self.curator.curate, self.skills.get_all()
-                        )
-                        self.logger.info(
-                            "Skill curation completed",
-                            extra={
-                                "healthy": curation_report.get("healthy", 0),
-                                "underperforming": curation_report.get("underperforming", 0),
-                            },
-                        )
-                except Exception:
-                    self.logger.debug("Skill curation failed", exc_info=True)
-
-                # Auto-evolve underperforming skills (fire-and-forget background tasks)
-                try:
-                    if self.evolver:
-                        for skill_id, _spec in self.skills.get_all().items():
-                            if self.evolver.should_evolve(skill_id):
-                                self.logger.info(f"Triggering auto-evolution for skill {skill_id}")
-                                asyncio.create_task(
-                                    self._run_skill_evolution_for(skill_id),
-                                    name=f"evolve-{skill_id}",
-                                )
-                except Exception:
-                    self.logger.debug("Auto-evolution check failed", exc_info=True)
+                await self._finalize_run(state, session_id, run_id, user_input, history_ua_count)
+                self._cancel_tokens.pop(session_id, None)
 
         return state
 
@@ -859,7 +1066,7 @@ Key rules:
             current_user = self.memory.read_memory_file("user")
             current_identity = self.memory.read_memory_file("identity")
         except Exception as e:
-            self.logger.debug(f"Failed to read profile files: {e}", exc_info=True)
+            self.logger.warning(f"Failed to read profile files: {e}", exc_info=True)
             return
 
         transcript = "\n\n".join(
@@ -913,7 +1120,7 @@ Key rules:
                 self.memory.write_memory_file("identity", identity_content)
             self.logger.info("Auto-updated memory files from conversation")
         except Exception as e:
-            self.logger.debug(f"Auto-profile update failed: {e}", exc_info=True)
+            self.logger.warning(f"Auto-profile update failed: {e}", exc_info=True)
 
     async def _run_skill_evolution(self) -> list[str]:
         """Evolve underperforming skills using LLM-powered rewriting.
@@ -964,6 +1171,9 @@ Key rules:
 
     async def close(self) -> None:
         """Clean up resources: HTTP clients, DB connections, etc."""
+        # Signal cancellation for all active runs
+        for token in self._cancel_tokens.values():
+            token.set()
         self.stop_background_tasks()
         resources = [
             ("router", getattr(self, "router", None)),
@@ -1026,7 +1236,7 @@ Key rules:
         attachments = attachments or []
 
         user_input = self.secrets.detect_and_redact(user_input, "user_input")
-        attachment_ctx = self._build_attachment_context(attachments)
+        attachment_ctx = await self._build_attachment_context(attachments)
 
         messages: list[ChatMessage] = []
         # Load historical conversation context
@@ -1038,7 +1248,7 @@ Key rules:
                 if m.get("role") in ("user", "assistant") and m.get("content"):
                     messages.append(ChatMessage(role=m["role"], content=m["content"]))
         except Exception:
-            self.logger.debug("Failed to load session history for stream", exc_info=True)
+            self.logger.warning("Failed to load session history for stream", exc_info=True)
 
         messages.insert(
             0,
@@ -1051,7 +1261,7 @@ Key rules:
         )
         messages.append(ChatMessage(role="user", content=user_input + attachment_ctx))
 
-        decision = self.router.select_model(preferred=model)
+        decision = await self.router.select_model(preferred=model)
         async for token in decision.provider.chat_stream(
             messages=messages,
             model=decision.model,

@@ -4,6 +4,128 @@ let currentTab = 'chat';
 let selectedModel = localStorage.getItem('js-selected-model') || '';
 let availableModels = [];
 
+// ===== First-Start Wizard =====
+let wizardStep = 1;
+let wizardSelectedModel = '';
+
+async function checkFirstStart() {
+  // Skip if already completed locally
+  if (localStorage.getItem('js-wizard-completed') === 'true') return;
+  try {
+    const res = await fetch('/api/setup/first-start');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.first_run_completed) {
+      showWizard();
+    } else {
+      localStorage.setItem('js-wizard-completed', 'true');
+    }
+  } catch (e) {
+    console.error('Failed to check first-start status:', e);
+  }
+}
+
+function showWizard() {
+  wizardStep = 1;
+  wizardSelectedModel = '';
+  document.getElementById('setup-wizard').classList.remove('hidden');
+  document.getElementById('wizard-step-1').classList.remove('hidden');
+  document.getElementById('wizard-step-2').classList.add('hidden');
+  document.getElementById('wizard-step-3').classList.add('hidden');
+}
+
+function hideWizard() {
+  document.getElementById('setup-wizard').classList.add('hidden');
+}
+
+function wizardNext() {
+  if (wizardStep === 1) {
+    document.getElementById('wizard-step-1').classList.add('hidden');
+    document.getElementById('wizard-step-2').classList.remove('hidden');
+    loadWizardModels();
+    wizardStep = 2;
+  } else if (wizardStep === 2) {
+    if (!wizardSelectedModel) return;
+    document.getElementById('wizard-step-2').classList.add('hidden');
+    document.getElementById('wizard-step-3').classList.remove('hidden');
+    const model = availableModels.find(m => m.id === wizardSelectedModel);
+    document.getElementById('wizard-selected-model').textContent = model ? (model.name || model.id) : wizardSelectedModel;
+    wizardStep = 3;
+  }
+}
+
+function wizardPrev() {
+  if (wizardStep === 2) {
+    document.getElementById('wizard-step-2').classList.add('hidden');
+    document.getElementById('wizard-step-1').classList.remove('hidden');
+    wizardStep = 1;
+  }
+}
+
+async function wizardComplete() {
+  try {
+    if (wizardSelectedModel) {
+      await switchModel(wizardSelectedModel);
+    }
+    await fetch('/api/setup/complete', { method: 'POST' });
+    localStorage.setItem('js-wizard-completed', 'true');
+    hideWizard();
+    showToast('设置完成，欢迎使用！');
+  } catch (e) {
+    showToast('完成设置失败: ' + e.message, true);
+  }
+}
+
+async function loadWizardModels() {
+  const container = document.getElementById('wizard-model-list');
+  container.innerHTML = '<div class="text-gray-400 text-sm"><i class="fas fa-spinner fa-spin mr-2"></i>加载模型列表...</div>';
+  try {
+    const res = await fetch('/api/models');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const flatModels = [];
+    if (data.providers) {
+      data.providers.forEach(p => {
+        p.models.forEach(m => {
+          flatModels.push({
+            id: `${p.name}/${m.id}`,
+            name: `${p.name}/${m.name || m.id}`,
+            provider: p.name,
+            contextWindow: m.context_window,
+          });
+        });
+      });
+    }
+    if (flatModels.length === 0) {
+      container.innerHTML = '<div class="text-gray-400 text-sm">未配置模型，请跳过此步骤并在设置中添加 Provider。</div>';
+      document.getElementById('wizard-next-2').disabled = false;
+      return;
+    }
+    container.innerHTML = flatModels.map(m => `
+      <label class="flex items-center gap-3 bg-gray-800 rounded-lg px-3 py-2 cursor-pointer hover:bg-gray-700 transition border border-transparent ${wizardSelectedModel === m.id ? 'border-blue-500' : ''}">
+        <input type="radio" name="wizard-model" value="${escapeHtml(m.id)}" ${wizardSelectedModel === m.id ? 'checked' : ''} onchange="wizardSelectModel('${escapeHtml(m.id)}')" class="accent-blue-500">
+        <div class="flex-1">
+          <div class="text-sm font-medium">${escapeHtml(m.name)}</div>
+          <div class="text-xs text-gray-500">Provider: ${escapeHtml(m.provider)} · 上下文: ${m.contextWindow || '--'} tokens</div>
+        </div>
+      </label>
+    `).join('');
+    document.getElementById('wizard-next-2').disabled = !wizardSelectedModel;
+  } catch (e) {
+    container.innerHTML = '<div class="text-red-400 text-sm">加载模型失败: ' + escapeHtml(e.message) + '</div>';
+    document.getElementById('wizard-next-2').disabled = false;
+  }
+}
+
+function wizardSelectModel(modelId) {
+  wizardSelectedModel = modelId;
+  document.getElementById('wizard-next-2').disabled = false;
+  // Update visual selection
+  document.querySelectorAll('#wizard-model-list label').forEach(el => {
+    el.classList.toggle('border-blue-500', el.querySelector('input')?.value === modelId);
+  });
+}
+
 // ===== File Attachments =====
 let pendingAttachments = []; // { id, path, name, type, size, previewUrl? }
 
@@ -604,17 +726,21 @@ async function loadMemory() {
 
     // Show embedder status
     const statusEl = document.getElementById('memory-embedder-status');
+    const recoverBtn = document.getElementById('memory-embedder-recover');
     if (statusEl && embedderStatus) {
       statusEl.classList.remove('hidden');
       if (embedderStatus.active) {
         statusEl.className = 'text-xs px-2 py-1 rounded bg-green-900/40 text-green-400';
         statusEl.innerHTML = '<i class="fas fa-microchip mr-1"></i>' + escapeHtml(embedderStatus.provider);
+        if (recoverBtn) recoverBtn.classList.add('hidden');
       } else if (embedderStatus.fallback) {
         statusEl.className = 'text-xs px-2 py-1 rounded bg-yellow-900/40 text-yellow-400';
         statusEl.innerHTML = '<i class="fas fa-exclamation-triangle mr-1"></i>降级: ' + escapeHtml(embedderStatus.fallback);
+        if (recoverBtn) recoverBtn.classList.remove('hidden');
       } else {
         statusEl.className = 'text-xs px-2 py-1 rounded bg-gray-800 text-gray-400';
         statusEl.textContent = escapeHtml(embedderStatus.provider);
+        if (recoverBtn) recoverBtn.classList.add('hidden');
       }
     }
 
@@ -648,16 +774,7 @@ async function loadMemory() {
       if (items.length === 0) {
         semEl.innerHTML = '<div class="text-gray-400 text-sm">暂无长期知识</div>';
       } else {
-        semEl.innerHTML = items.map(s => `
-          <div class="bg-gray-800 rounded-lg px-3 py-2">
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-mono text-pink-400">${escapeHtml(s.key || 'unknown')}</span>
-              <span class="text-[10px] text-gray-500">${s.category || 'fact'} · 置信度 ${((s.confidence || 0.5) * 100).toFixed(0)}%</span>
-            </div>
-            <div class="text-sm text-gray-300 mt-0.5">${escapeHtml(s.value || '')}</div>
-            ${s.source ? `<div class="text-[10px] text-gray-600 mt-0.5">来源: ${escapeHtml(s.source)}</div>` : ''}
-          </div>
-        `).join('');
+        semEl.innerHTML = items.map(s => renderSemanticMemoryItem(s)).join('');
       }
     }
 
@@ -723,6 +840,89 @@ async function loadMemory() {
   }
 }
 
+function renderSemanticMemoryItem(s) {
+  const catColor = {
+    fact: 'bg-blue-900/40 text-blue-400',
+    preference: 'bg-pink-900/40 text-pink-400',
+    insight: 'bg-purple-900/40 text-purple-400',
+  }[s.category] || 'bg-gray-700 text-gray-400';
+  return `
+    <div class="bg-gray-800 rounded-lg px-3 py-2" data-memory-id="${s.id}">
+      <div class="flex items-center justify-between flex-wrap gap-1">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-xs font-mono text-pink-400">${escapeHtml(s.key || 'unknown')}</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded ${catColor}">${escapeHtml(s.category || 'fact')}</span>
+          <span class="text-[10px] text-gray-500">置信度 ${((s.confidence || 0.5) * 100).toFixed(0)}%</span>
+        </div>
+        <div class="flex items-center gap-1">
+          <button onclick="editSemanticMemory(${s.id})" class="text-[10px] bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded transition" title="编辑">
+            <i class="fas fa-pen"></i>
+          </button>
+          <button onclick="deleteSemanticMemory(${s.id})" class="text-[10px] bg-red-900/40 hover:bg-red-900/60 text-red-400 px-2 py-1 rounded transition" title="删除">
+            <i class="fas fa-trash"></i>
+          </button>
+        </div>
+      </div>
+      <div class="text-sm text-gray-300 mt-1 memory-value">${escapeHtml(s.value || '')}</div>
+      ${s.source ? `<div class="text-[10px] text-gray-500 mt-1"><i class="fas fa-source mr-1"></i>来源: ${escapeHtml(s.source)}</div>` : ''}
+    </div>
+  `;
+}
+
+function editSemanticMemory(id) {
+  const card = document.querySelector(`[data-memory-id="${id}"]`);
+  if (!card) return;
+  const valueEl = card.querySelector('.memory-value');
+  const currentValue = valueEl.textContent;
+  const currentCategory = card.querySelector('[class*="rounded"].text-blue-400, [class*="rounded"].text-pink-400, [class*="rounded"].text-purple-400, [class*="rounded"].text-gray-400')?.textContent || 'fact';
+
+  valueEl.innerHTML = `
+    <textarea id="sem-edit-${id}" rows="3" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-gray-300 resize-none focus:outline-none focus:border-pink-500">${escapeHtml(currentValue)}</textarea>
+    <div class="flex items-center gap-2 mt-2">
+      <select id="sem-cat-${id}" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
+        <option value="fact" ${currentCategory === 'fact' ? 'selected' : ''}>事实</option>
+        <option value="preference" ${currentCategory === 'preference' ? 'selected' : ''}>偏好</option>
+        <option value="insight" ${currentCategory === 'insight' ? 'selected' : ''}>洞察</option>
+      </select>
+      <button onclick="saveSemanticMemory(${id})" class="bg-pink-900/40 hover:bg-pink-900/60 text-pink-300 px-3 py-1 rounded text-xs">保存</button>
+      <button onclick="loadMemory()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-xs">取消</button>
+    </div>
+  `;
+}
+
+async function saveSemanticMemory(id) {
+  const value = document.getElementById(`sem-edit-${id}`)?.value.trim();
+  const category = document.getElementById(`sem-cat-${id}`)?.value;
+  if (!value) {
+    showToast('内容不能为空', true);
+    return;
+  }
+  try {
+    const res = await fetch(`/api/memory/semantic/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value, category }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    loadMemory();
+    showToast('知识已更新');
+  } catch (e) {
+    showToast('更新失败: ' + e.message, true);
+  }
+}
+
+async function deleteSemanticMemory(id) {
+  if (!confirm('确定删除这条知识吗？此操作不可恢复。')) return;
+  try {
+    const res = await fetch(`/api/memory/semantic/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    loadMemory();
+    showToast('知识已删除');
+  } catch (e) {
+    showToast('删除失败: ' + e.message, true);
+  }
+}
+
 // Search semantic memories
 async function searchSemantic() {
   const input = document.getElementById('semantic-search');
@@ -744,15 +944,7 @@ async function searchSemantic() {
     if (items.length === 0) {
       container.innerHTML = '<div class="text-gray-400 text-sm">未找到匹配的知识</div>';
     } else {
-      container.innerHTML = items.map(s => `
-        <div class="bg-gray-800 rounded-lg px-3 py-2">
-          <div class="flex items-center justify-between">
-            <span class="text-xs font-mono text-pink-400">${escapeHtml(s.key || 'unknown')}</span>
-            <span class="text-[10px] text-gray-500">${s.category || 'fact'} · 置信度 ${((s.confidence || 0.5) * 100).toFixed(0)}%</span>
-          </div>
-          <div class="text-sm text-gray-300 mt-0.5">${escapeHtml(s.value || '')}</div>
-        </div>
-      `).join('');
+      container.innerHTML = items.map(s => renderSemanticMemoryItem(s)).join('');
     }
   } catch (e) {
     container.innerHTML = '<div class="text-red-400 text-sm">搜索失败: ' + escapeHtml(e.message) + '</div>';
@@ -1280,7 +1472,14 @@ async function loadEvolution() {
       : { icon: 'fa-clock', color: 'text-gray-400', label: '等待数据', detail: '暂无交互记录' };
     const dreamStatus = { icon: 'fa-moon', color: 'text-purple-400', label: '自动触发', detail: '空闲 30 秒后自动运行' };
     const skillEvolveStatus = { icon: 'fa-dna', color: 'text-cyan-400', label: '后台运行', detail: '低成功率技能自动进化' };
-    const promptOptStatus = { icon: 'fa-flask', color: 'text-gray-500', label: '实验性', detail: '尚未激活' };
+
+    // Prompt optimizer status — driven by real backend data
+    const opt = insightsData.optimization || {};
+    const promptOptStatus = (opt.total_variants || 0) > 0
+      ? ((opt.best_usage || 0) > 0
+        ? { icon: 'fa-check-circle', color: 'text-green-400', label: '活跃', detail: `${opt.total_variants} 变体 · 最佳 ${((opt.best_success_rate || 0) * 100).toFixed(0)}%` }
+        : { icon: 'fa-flask', color: 'text-blue-400', label: '已注册', detail: `${opt.total_variants} 个变体等待测试` })
+      : { icon: 'fa-clock', color: 'text-gray-400', label: '等待数据', detail: '暂无变体记录' };
 
     container.innerHTML = `
       <!-- Subsystem Status -->
@@ -1567,6 +1766,26 @@ function showToast(msg, isError) {
   setTimeout(() => { div.style.opacity = '0'; setTimeout(() => div.remove(), 300); }, 2500);
 }
 
+async function switchModel(modelId) {
+  if (!modelId) return;
+  try {
+    const res = await fetch('/api/models/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_id: modelId }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || 'HTTP ' + res.status);
+    }
+    setCurrentModel(modelId);
+    showToast('已切换到模型: ' + (availableModels.find(m => m.id === modelId)?.name || modelId));
+    loadModels();
+  } catch (e) {
+    showToast('切换模型失败: ' + e.message, true);
+  }
+}
+
 async function loadModels() {
   showLoading('models-content', '加载模型...');
   try {
@@ -1575,6 +1794,12 @@ async function loadModels() {
   const data = await res.json();
   const container = document.getElementById('models-content');
   const select = document.getElementById('current-model');
+
+  // Use server-side active model if available
+  if (data.active_model) {
+    selectedModel = data.active_model;
+    localStorage.setItem('js-selected-model', selectedModel);
+  }
 
   // Build flat model list for dropdown
   availableModels = [];
@@ -1596,7 +1821,22 @@ async function loadModels() {
     const currentVal = select.value;
     select.innerHTML = '<option value="">默认模型</option>' +
       availableModels.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join('');
-    select.value = currentVal || selectedModel || '';
+    select.value = selectedModel || '';
+  }
+
+  // Update active model display in models tab
+  const activeModelDisplay = document.getElementById('active-model-display');
+  const activeModelName = document.getElementById('active-model-name');
+  const activeModelMeta = document.getElementById('active-model-meta');
+  const activeModel = availableModels.find(m => m.id === selectedModel);
+  if (activeModelName && activeModelMeta) {
+    if (activeModel) {
+      activeModelName.textContent = activeModel.name || activeModel.id;
+      activeModelMeta.textContent = `Provider: ${activeModel.provider} · 上下文窗口: ${activeModel.context_window || '--'} tokens`;
+    } else {
+      activeModelName.textContent = '未选择';
+      activeModelMeta.textContent = '使用系统默认模型';
+    }
   }
 
   if (!data.providers || data.providers.length === 0) {
@@ -1627,10 +1867,11 @@ async function loadModels() {
             <div>
               <span class="text-sm">${escapeHtml(m.name || m.id)}</span>
               <span class="text-xs text-gray-500 font-mono ml-2">${escapeHtml(m.id)}</span>
+              <span class="text-xs text-gray-500 ml-2">${m.context_window ? m.context_window + ' tokens' : ''}</span>
               ${isActive ? '<span class="text-xs bg-blue-900 text-blue-400 px-1.5 py-0.5 rounded ml-2">当前</span>' : ''}
             </div>
-            <button onclick="setCurrentModel(${JSON.stringify(fullId)})" class="text-xs ${isActive ? 'bg-gray-700 text-gray-400 cursor-default' : 'bg-blue-600 hover:bg-blue-700 text-white'} px-2 py-1 rounded transition">
-              ${isActive ? '使用中' : '使用'}
+            <button onclick="switchModel(${JSON.stringify(fullId)})" class="text-xs ${isActive ? 'bg-gray-700 text-gray-400 cursor-default' : 'bg-blue-600 hover:bg-blue-700 text-white'} px-2 py-1 rounded transition">
+              ${isActive ? '使用中' : '切换'}
             </button>
           </div>
           `;
@@ -1779,6 +2020,31 @@ function escapeHtml(text) {
     .replace(/'/g, '&#039;');
 }
 
+async function recoverEmbedder() {
+  const btn = document.getElementById('memory-embedder-recover');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>恢复中...';
+  }
+  try {
+    const res = await fetch('/api/memory/embedder/recover', { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      showToast('嵌入器已恢复: ' + (data.provider || 'OK'), 'success');
+    } else {
+      showToast('恢复失败: ' + (data.reason || '嵌入器仍不可用'), 'warning');
+    }
+    loadMemory();
+  } catch (e) {
+    showToast('恢复请求失败: ' + e.message, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-undo mr-1"></i>恢复嵌入器';
+    }
+  }
+}
+
 
 
 document.getElementById('chat-input').addEventListener('keydown', (e) => {
@@ -1817,6 +2083,7 @@ connectWS();
 loadModels();
 loadSessions();
 initDragDrop();
+checkFirstStart();
 
 function renderMarkdown(text) {
   if (!text) return '';
@@ -1850,3 +2117,238 @@ function renderMarkdown(text) {
     return html.replace(/\n/g, '<br>');
   }
 }
+
+
+// ===== Cron / Scheduled Tasks =====
+
+async function refreshCronJobs() {
+  try {
+    const res = await fetch('/api/cron/jobs');
+    const data = await res.json();
+    renderCronJobs(data.jobs || []);
+  } catch (e) {
+    console.error('Failed to load cron jobs:', e);
+    document.getElementById('cron-jobs-list').innerHTML =
+      '<tr><td colspan="7" class="p-4 text-red-400 text-center">加载失败</td></tr>';
+  }
+  // Also refresh stats
+  try {
+    const statsRes = await fetch('/api/cron/stats');
+    const stats = await statsRes.json();
+    document.getElementById('cron-stat-total').textContent = stats.total_jobs || 0;
+    document.getElementById('cron-stat-active').textContent = stats.active_jobs || 0;
+    document.getElementById('cron-stat-runs').textContent = stats.total_runs || 0;
+    document.getElementById('cron-stat-rate').textContent =
+      (stats.success_rate || 0).toFixed(1) + '%';
+  } catch (e) {
+    console.error('Failed to load cron stats:', e);
+  }
+}
+
+function renderCronJobs(jobs) {
+  const tbody = document.getElementById('cron-jobs-list');
+  if (!jobs.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-gray-500 text-center">暂无定时任务</td></tr>';
+    return;
+  }
+  tbody.innerHTML = jobs.map(job => {
+    const statusColor = {
+      'pending': 'text-gray-400',
+      'running': 'text-blue-400',
+      'completed': 'text-green-400',
+      'failed': 'text-red-400',
+      'paused': 'text-yellow-400',
+      'disabled': 'text-gray-600'
+    }[job.status] || 'text-gray-400';
+    const nextRun = job.next_run_at ? new Date(job.next_run_at * 1000).toLocaleString('zh-CN', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '-';
+    const isEnabled = job.enabled;
+    return `<tr class="hover:bg-gray-800/50">
+      <td class="p-3"><span class="${statusColor} text-xs">● ${job.status}</span></td>
+      <td class="p-3">${escapeHtml(job.name)}</td>
+      <td class="p-3 text-gray-400 text-xs">${escapeHtml(job.schedule_summary || job.cron_expr)}</td>
+      <td class="p-3 text-xs"><span class="bg-gray-800 px-2 py-0.5 rounded">${job.task_type}</span></td>
+      <td class="p-3 text-gray-400 text-xs">${nextRun}</td>
+      <td class="p-3 text-xs">${job.run_count} / ${job.fail_count}</td>
+      <td class="p-3 text-right">
+        <button onclick="runCronJob('${job.id}')" class="text-xs text-blue-400 hover:text-blue-300 mr-2" title="立即执行"><i class="fas fa-play"></i></button>
+        <button onclick="toggleCronJob('${job.id}', ${!isEnabled})" class="text-xs ${isEnabled ? 'text-yellow-400' : 'text-green-400'} hover:opacity-80 mr-2" title="${isEnabled ? '暂停' : '启用'}"><i class="fas fa-${isEnabled ? 'pause' : 'play'}"></i></button>
+        <button onclick="deleteCronJob('${job.id}')" class="text-xs text-red-400 hover:text-red-300" title="删除"><i class="fas fa-trash"></i></button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function runCronJob(jobId) {
+  try {
+    const res = await fetch(`/api/cron/jobs/${jobId}/run`, {method: 'POST'});
+    const data = await res.json();
+    if (data.success) {
+      showToast('任务执行成功', 'success');
+    } else {
+      showToast('任务执行失败: ' + (data.error || ''), 'error');
+    }
+    refreshCronJobs();
+  } catch (e) {
+    showToast('执行失败', 'error');
+  }
+}
+
+async function toggleCronJob(jobId, enabled) {
+  try {
+    await fetch(`/api/cron/jobs/${jobId}`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled})
+    });
+    showToast(enabled ? '任务已启用' : '任务已暂停', 'success');
+    refreshCronJobs();
+  } catch (e) {
+    showToast('操作失败', 'error');
+  }
+}
+
+async function deleteCronJob(jobId) {
+  if (!confirm('确定要删除这个定时任务吗？')) return;
+  try {
+    await fetch(`/api/cron/jobs/${jobId}`, {method: 'DELETE'});
+    showToast('任务已删除', 'success');
+    refreshCronJobs();
+  } catch (e) {
+    showToast('删除失败', 'error');
+  }
+}
+
+// Cron create modal
+async function loadCronTemplates() {
+  try {
+    const res = await fetch('/api/cron/templates');
+    const data = await res.json();
+    const select = document.getElementById('cron-template-select');
+    data.templates.forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = `${t.icon} ${t.name}`;
+      select.appendChild(opt);
+    });
+  } catch (e) {
+    console.error('Failed to load templates:', e);
+  }
+}
+
+function showCronCreateModal() {
+  document.getElementById('cron-create-modal').classList.remove('hidden');
+  loadCronTemplates();
+}
+
+function hideCronCreateModal() {
+  document.getElementById('cron-create-modal').classList.add('hidden');
+}
+
+async function onCronTemplateChange() {
+  const templateId = document.getElementById('cron-template-select').value;
+  if (!templateId) return;
+  try {
+    const res = await fetch('/api/cron/templates');
+    const data = await res.json();
+    const t = data.templates.find(x => x.id === templateId);
+    if (t) {
+      document.getElementById('cron-name').value = t.name;
+      document.getElementById('cron-expr').value = t.default_cron;
+      document.getElementById('cron-task-type').value = t.task_type;
+      document.getElementById('cron-payload').value = JSON.stringify(t.default_payload || {}, null, 2);
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function parseCronNatural() {
+  const text = document.getElementById('cron-natural').value;
+  if (!text) return;
+  try {
+    const res = await fetch('/api/cron/parse', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text})
+    });
+    const data = await res.json();
+    const resultEl = document.getElementById('cron-parse-result');
+    if (data.matched) {
+      document.getElementById('cron-expr').value = data.cron_expr;
+      resultEl.textContent = `✓ 解析为: ${data.summary}`;
+      resultEl.classList.remove('hidden', 'text-red-400');
+      resultEl.classList.add('text-green-400');
+    } else {
+      resultEl.textContent = '✗ 无法解析，请尝试标准 Cron 表达式';
+      resultEl.classList.remove('hidden', 'text-green-400');
+      resultEl.classList.add('text-red-400');
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function submitCronJob() {
+  const name = document.getElementById('cron-name').value;
+  const cronExpr = document.getElementById('cron-expr').value;
+  const taskType = document.getElementById('cron-task-type').value;
+  const payloadStr = document.getElementById('cron-payload').value;
+  const templateId = document.getElementById('cron-template-select').value;
+
+  if (!name || !cronExpr) {
+    showToast('请填写任务名称和调度规则', 'error');
+    return;
+  }
+
+  let payload = {};
+  try {
+    payload = JSON.parse(payloadStr || '{}');
+  } catch (e) {
+    showToast('参数 JSON 格式错误', 'error');
+    return;
+  }
+
+  const body = templateId
+    ? {template_id: templateId, name, cron_expr: cronExpr, payload}
+    : {name, cron_expr: cronExpr, task_type: taskType, payload};
+
+  try {
+    const res = await fetch('/api/cron/jobs', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('任务创建成功', 'success');
+      hideCronCreateModal();
+      refreshCronJobs();
+    } else {
+      showToast(data.error || '创建失败', 'error');
+    }
+  } catch (e) {
+    showToast('创建失败', 'error');
+  }
+}
+
+// Toast helper
+function showToast(message, type) {
+  const div = document.createElement('div');
+  const color = type === 'success' ? 'bg-green-600' : type === 'error' ? 'bg-red-600' : 'bg-blue-600';
+  div.className = `fixed bottom-4 right-4 ${color} text-white px-4 py-2 rounded-lg text-sm shadow-lg z-50 transition-opacity`;
+  div.textContent = message;
+  document.body.appendChild(div);
+  setTimeout(() => {
+    div.style.opacity = '0';
+    setTimeout(() => div.remove(), 300);
+  }, 3000);
+}
+
+// Hook: refresh cron jobs when tab is shown
+const _origSwitchTab = window.switchTab;
+window.switchTab = function(tab) {
+  if (_origSwitchTab) _origSwitchTab(tab);
+  if (tab === 'cron') {
+    refreshCronJobs();
+  }
+};

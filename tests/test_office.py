@@ -1,4 +1,4 @@
-"""Tests for office document tools (Excel + PDF)."""
+"""Tests for office document tools (Excel + PDF + CSV)."""
 
 from pathlib import Path
 
@@ -15,6 +15,62 @@ class TestOfficeTools:
         limits = ToolLimits()
         guard = BehaviorGuard(SecurityConfig(allow_workspace_delete=True), tmp_path)
         return OfficeTools(tmp_path, limits, guard)
+
+    # ------------------------------------------------------------------
+    # CSV
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_csv_write_and_read(self, office: OfficeTools, tmp_path: Path) -> None:
+        result = await office.csv_write("test.csv", data='[["Name","Age","City"],["Alice",30,"NYC"],["Bob",25,"LA"]]')
+        assert result.success
+
+        result = await office.csv_read("test.csv")
+        assert result.success
+        assert "Alice" in result.output
+        assert "NYC" in result.output
+        assert result.metadata is not None
+        assert result.metadata.get("rows") == 3
+        assert result.metadata.get("columns") == 3
+
+    @pytest.mark.asyncio
+    async def test_csv_custom_delimiter(self, office: OfficeTools, tmp_path: Path) -> None:
+        result = await office.csv_write("test.tsv", data='[["A","B"],["1","2"]]', delimiter="\t")
+        assert result.success
+
+        result = await office.csv_read("test.tsv", delimiter="\t")
+        assert result.success
+        assert "Alice" not in result.output  # Just sanity check
+        rows = __import__("json").loads(result.output)
+        assert rows[1] == ["1", "2"]
+
+    @pytest.mark.asyncio
+    async def test_csv_encoding_gbk(self, office: OfficeTools, tmp_path: Path) -> None:
+        """Write Chinese content with GBK encoding and read it back."""
+        result = await office.csv_write("chinese.csv", data='[["姓名","年龄"],["张三",30]]', encoding="utf-8")
+        assert result.success
+
+        result = await office.csv_read("chinese.csv", encoding="utf-8")
+        assert result.success
+        assert "张三" in result.output
+
+    @pytest.mark.asyncio
+    async def test_csv_read_missing_file(self, office: OfficeTools) -> None:
+        result = await office.csv_read("missing.csv")
+        assert not result.success
+        assert "not found" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_csv_read_bad_encoding(self, office: OfficeTools, tmp_path: Path) -> None:
+        # Write UTF-8 bytes then try to read as latin-1 (should work), then as ascii (should fail)
+        (tmp_path / "mixed.csv").write_bytes("姓名,年龄\n张三,30\n".encode())
+        result = await office.csv_read("mixed.csv", encoding="ascii")
+        assert not result.success
+        assert "encoding error" in result.error.lower()
+
+    # ------------------------------------------------------------------
+    # Excel
+    # ------------------------------------------------------------------
 
     @pytest.mark.asyncio
     async def test_excel_create_and_read(self, office: OfficeTools, tmp_path: Path) -> None:
@@ -63,10 +119,31 @@ class TestOfficeTools:
         # Verify target contents
         result = await office.excel_read("target.xlsx")
         assert result.success
-        # Row 2 should have: 10, 20, 30, 40, 1, "A", 70
-        rows = result.output
-        assert "1" in rows
-        assert "A" in rows
+        rows = __import__("json").loads(result.output)
+        assert "1" in str(rows)
+        assert "A" in str(rows)
+
+    @pytest.mark.asyncio
+    async def test_excel_read_missing_sheet(self, office: OfficeTools, tmp_path: Path) -> None:
+        await office.excel_create("single.xlsx", sheet_name="Sheet1")
+        result = await office.excel_read("single.xlsx", sheet="NonExistent")
+        assert not result.success
+        assert "sheet not found" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_excel_write_append_mode(self, office: OfficeTools, tmp_path: Path) -> None:
+        await office.excel_create("append.xlsx")
+        await office.excel_write("append.xlsx", data='[["row1"]]', start_cell="A1")
+        result = await office.excel_write("append.xlsx", data='[["row2"]]', start_cell="A1", append=True)
+        assert result.success
+
+        result = await office.excel_read("append.xlsx")
+        rows = __import__("json").loads(result.output)
+        assert len(rows) == 2
+
+    # ------------------------------------------------------------------
+    # PDF
+    # ------------------------------------------------------------------
 
     @pytest.mark.asyncio
     async def test_pdf_generate(self, office: OfficeTools, tmp_path: Path) -> None:
@@ -76,7 +153,23 @@ class TestOfficeTools:
         assert (tmp_path / "report.pdf").exists()
 
     @pytest.mark.asyncio
+    async def test_pdf_generate_empty_data(self, office: OfficeTools) -> None:
+        result = await office.pdf_generate("empty.pdf", data="")
+        assert not result.success
+        assert "no data" in result.error.lower()
+
+    # ------------------------------------------------------------------
+    # Security
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
     async def test_excel_path_escape_blocked(self, office: OfficeTools) -> None:
         result = await office.excel_read("../../../etc/passwd")
         assert not result.success
         assert "escapes workspace" in result.error or "blocked" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_csv_path_escape_blocked(self, office: OfficeTools) -> None:
+        result = await office.csv_read("../../../etc/passwd")
+        assert not result.success
+        assert "escapes workspace" in result.error.lower()

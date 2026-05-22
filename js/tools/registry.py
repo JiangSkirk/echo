@@ -149,7 +149,7 @@ class ToolRegistry:
         if not spec:
             return False
         # Cache read-only tools (file_read, browser_fetch, etc.)
-        if getattr(spec, "read_only", False):
+        if spec.read_only:
             return True
         # Cache safe built-ins by name heuristic
         cacheable_names = {"file_read", "file_list", "file_search", "browser_fetch", "web_search"}
@@ -189,7 +189,7 @@ class ToolRegistry:
                 try:
                     get_metrics().tool_calls_total.labels(tool_name=tool_name).inc()
                 except Exception:
-                    self.logger.debug("Suppressed error", exc_info=True)
+                    self.logger.warning("Suppressed error", exc_info=True)
                 start = time.perf_counter()
                 with start_span("tool.execute", {"tool_name": tool_name}):
                     try:
@@ -212,8 +212,10 @@ class ToolRegistry:
                                 tool_name=tool_name
                             ).observe(latency)
                         except Exception:
-                            self.logger.debug("Suppressed error", exc_info=True)
+                            self.logger.warning("Suppressed error", exc_info=True)
                         return result
+                    except asyncio.CancelledError:
+                        raise
                     except Exception as e:
                         latency = time.perf_counter() - start
                         try:
@@ -224,10 +226,11 @@ class ToolRegistry:
                                 tool_name=tool_name
                             ).inc()
                         except Exception:
-                            self.logger.debug("Suppressed error", exc_info=True)
+                            self.logger.warning("Metrics error", exc_info=True)
                         return ToolResult(success=False, error=f"Tool execution failed: {e}")
             except Exception as e:
-                # Metrics/span machinery failed; still report the error
+                # Outer guard: metrics/span machinery failed; still report the error
+                self.logger.warning("Tool registry outer error", exc_info=True)
                 return ToolResult(success=False, error=f"Tool execution failed: {e}")
 
     def get_stats(self) -> dict[str, int]:
@@ -266,7 +269,6 @@ class ParallelToolExecutor:
         if isinstance(raw, dict):
             return raw
         try:
-            import json
             result: dict[str, Any] = json.loads(raw)
             return result
         except Exception:

@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import os
+import platform
+import shutil
 import signal
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import psutil
+
+from js.utils.log import get_logger
+
+logger = get_logger("js.security.sandbox")
 
 
 @dataclass(frozen=True)
@@ -20,6 +26,33 @@ class SandboxResult:
     duration_ms: float
     killed: bool = False
     oom_killed: bool = False
+
+
+# macOS sandbox profile that blocks all network access but allows file/process ops.
+_MACOS_NETWORK_DENY_PROFILE = """(version 1)
+(allow default)
+(deny network*)
+"""
+
+# macOS sandbox profile that restricts filesystem to workspace + system read-only
+_MACOS_FS_RESTRICT_PROFILE = '''(version 1)
+(allow default)
+(deny network*)
+(allow file-read*)
+(allow file-write*
+    (subpath "{workspace}"))
+(deny file-write*
+    (subpath "/etc")
+    (subpath "/usr")
+    (subpath "/bin")
+    (subpath "/sbin")
+    (subpath "/var")
+    (subpath "/System")
+    (subpath "~/.ssh")
+    (subpath "~/.aws")
+    (subpath "~/.kube")
+    (subpath "~/.docker"))
+'''
 
 
 class SandboxExecutor:
@@ -38,6 +71,8 @@ class SandboxExecutor:
         self.max_output_bytes = max_output_bytes
         self.max_memory_mb = max_memory_mb
         self.env_passthrough = env_passthrough or ["PATH", "HOME", "USER", "LANG", "TERM"]
+        self._has_sandbox_exec = shutil.which("sandbox-exec") is not None
+        self._has_unshare = shutil.which("unshare") is not None
 
     def _build_env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         """Build a restricted environment."""
@@ -51,6 +86,69 @@ class SandboxExecutor:
         env["PWD"] = str(self.workspace)
         return env
 
+    def _wrap_network_isolation(
+        self,
+        cmd: list[str],
+        network_allowed: bool = True,
+    ) -> list[str]:
+        """Wrap command with network isolation if requested and tools available."""
+        if network_allowed:
+            return cmd
+        system = platform.system()
+        if system == "Darwin" and self._has_sandbox_exec:
+            # macOS: use sandbox-exec with a profile denying network
+            return [
+                "sandbox-exec",
+                "-p",
+                _MACOS_NETWORK_DENY_PROFILE,
+                *cmd,
+            ]
+        if system == "Linux" and self._has_unshare:
+            # Linux: unshare network namespace (no interfaces = no outbound)
+            return ["unshare", "-n", *cmd]
+        # Fallback: warn but still execute (fail-open to avoid breaking skills)
+        import logging
+        logging.getLogger("js.security.sandbox").warning(
+            "Network isolation requested but no sandbox tool available "
+            f"(platform={system}, sandbox-exec={self._has_sandbox_exec}, "
+            f"unshare={self._has_unshare})"
+        )
+        return cmd
+
+    def _wrap_filesystem_isolation(
+        self,
+        cmd: list[str],
+        fs_restricted: bool = False,
+    ) -> list[str]:
+        """Wrap command with filesystem isolation if requested and tools available."""
+        if not fs_restricted:
+            return cmd
+        system = platform.system()
+        if system == "Darwin" and self._has_sandbox_exec:
+            profile = _MACOS_FS_RESTRICT_PROFILE.format(workspace=str(self.workspace))
+            return [
+                "sandbox-exec",
+                "-p",
+                profile,
+                *cmd,
+            ]
+        if system == "Linux" and self._has_unshare:
+            # Linux: unshare mount namespace + bind workspace
+            # This is a simplified approach; full chroot requires root
+            return [
+                "unshare",
+                "-m",
+                "bash",
+                "-c",
+                f'cd "{self.workspace}" && {" ".join(cmd)}',
+            ]
+        logger.warning(
+            "Filesystem isolation requested but no sandbox tool available "
+            f"(platform={system}, sandbox-exec={self._has_sandbox_exec}, "
+            f"unshare={self._has_unshare})"
+        )
+        return cmd
+
     async def execute(
         self,
         command: str | list[str],
@@ -58,16 +156,23 @@ class SandboxExecutor:
         env: dict[str, str] | None = None,
         stdin: str | None = None,
         timeout: float | None = None,
+        network_allowed: bool = True,
+        fs_restricted: bool = False,
     ) -> SandboxResult:
         """Execute a command in sandboxed environment."""
-        start_time = asyncio.get_event_loop().time()
+        import time
+        start_time = time.monotonic()
         effective_timeout = timeout if timeout is not None else self.timeout
 
         if isinstance(command, str):
             # Use shell for complex commands, but carefully
             cmd = ["bash", "-c", command]
         else:
-            cmd = command
+            cmd = list(command)
+
+        # Apply isolation wrappers before spawning
+        cmd = self._wrap_network_isolation(cmd, network_allowed=network_allowed)
+        cmd = self._wrap_filesystem_isolation(cmd, fs_restricted=fs_restricted)
 
         work_dir = Path(cwd).expanduser().resolve() if cwd else self.workspace
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -114,7 +219,7 @@ class SandboxExecutor:
                 try:
                     oom_killed = await memory_task
                 except asyncio.CancelledError:
-                    pass
+                    logger.warning('Operation failed', exc_info=True)
 
             stdout = stdout_bytes.decode("utf-8", errors="replace")
             stderr = stderr_bytes.decode("utf-8", errors="replace")
@@ -125,7 +230,7 @@ class SandboxExecutor:
             if len(stderr) > self.max_output_bytes:
                 stderr = stderr[: self.max_output_bytes] + "\n... [stderr truncated]"
 
-            duration_ms = (asyncio.get_event_loop().time() - start_time) * 1000
+            duration_ms = (time.monotonic() - start_time) * 1000
 
             return SandboxResult(
                 returncode=returncode,
@@ -137,7 +242,7 @@ class SandboxExecutor:
             )
 
         except Exception as e:
-            duration_ms = (asyncio.get_event_loop().time() - start_time) * 1000
+            duration_ms = (time.monotonic() - start_time) * 1000
             if proc:
                 self._kill_process_tree(proc)
             return SandboxResult(
@@ -163,7 +268,7 @@ class SandboxExecutor:
                 except psutil.NoSuchProcess:
                     break
         except asyncio.CancelledError:
-            pass
+            logger.warning('Operation failed', exc_info=True)
         return False
 
     def _kill_process_tree(self, proc: asyncio.subprocess.Process) -> None:
@@ -179,9 +284,9 @@ class SandboxExecutor:
             for p in alive:
                 p.kill()
         except psutil.NoSuchProcess:
-            pass
+            logger.warning('Operation failed', exc_info=True)
 
         try:
             proc.kill()
         except ProcessLookupError:
-            pass
+            logger.warning('Operation failed', exc_info=True)

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
-import uuid
+import signal
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -27,6 +28,10 @@ from js.config import JSSettings, ModelConfig, ModelProviderConfig
 from js.models.provider_manager import ProviderManager
 from js.models.providers import OpenAICompatibleProvider
 from js.utils.log import get_logger
+
+# Imported routers (extracted from this file)
+from js.web.routers import cron, fleet
+from js.web.routers import plugins as plugins_router
 from js.web.stats_store import TokenStatsStore
 
 HTTPXClientInstrumentor().instrument()
@@ -41,6 +46,7 @@ _agent: JSAgent | None = None
 _settings: JSSettings | None = None
 _stats_store: TokenStatsStore | None = None
 _fleet: Any | None = None
+_active_model: str = ""
 
 # Agent fleet model assignment config: role -> model_id
 _agent_config: dict[str, str] = {
@@ -70,16 +76,20 @@ def get_fleet() -> AgentFleet:
             except Exception as e:
                 raise HTTPException(503, f"Settings not loaded: {e}") from e
         try:
-            _fleet = AgentFleet(settings)
+            _fleet = AgentFleet(settings, agent_config=_agent_config)
         except Exception as e:
             raise HTTPException(500, f"Failed to initialize fleet: {e}") from e
     return _fleet
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     global _agent, _settings, _stats_store
     _settings = JSSettings.from_file()
+    # Allow tests/CI to override state_dir without editing config files
+    if state_dir_env := os.getenv("JS_STATE_DIR"):
+        _settings.state_dir = Path(state_dir_env)
+        _settings.state_dir.mkdir(parents=True, exist_ok=True)
     _agent = JSAgent(_settings)
     _agent.start_background_tasks()
     _stats_store = TokenStatsStore(_settings.state_dir)
@@ -89,11 +99,42 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if cleaned:
             logger.info(f"Cleaned up {cleaned} empty sessions on startup")
     except Exception:
-        logger.debug("Failed to clean up empty sessions", exc_info=True)
+        logger.warning("Failed to clean up empty sessions", exc_info=True)
+    # Load Hermes skills asynchronously so the web server starts immediately
+    try:
+        asyncio.create_task(_agent.skills.load_hermes_async())
+        logger.info("Hermes skill loading started in background")
+    except Exception:
+        logger.warning("Failed to start Hermes skill loading", exc_info=True)
     logger.info("Web UI agent initialized")
+
+    # SIGTERM handler for graceful shutdown
+    _shutdown_event = asyncio.Event()
+
+    def _handle_sigterm() -> None:
+        logger.info("SIGTERM received, initiating graceful shutdown")
+        _shutdown_event.set()
+
+    try:
+        loop = asyncio.get_running_loop()
+        try:
+            loop.add_signal_handler(signal.SIGTERM, _handle_sigterm)
+        except (NotImplementedError, ValueError, RuntimeError):
+            pass  # Windows, non-main thread, or already closed loop
+    except RuntimeError:
+        pass  # No running loop
+
     try:
         yield
     finally:
+        try:
+            loop = asyncio.get_running_loop()
+            try:
+                loop.remove_signal_handler(signal.SIGTERM)
+            except (NotImplementedError, ValueError, RuntimeError):
+                pass
+        except RuntimeError:
+            pass
         if _agent:
             await _agent.close()
         _agent = None
@@ -106,6 +147,11 @@ def create_app() -> FastAPI:
 
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
+    # Include extracted routers
+    app.include_router(cron.router)
+    app.include_router(plugins_router.router)
+    app.include_router(fleet.router)
+
     @app.get("/", response_class=HTMLResponse)
     async def root() -> str:
         return _load_index_html()
@@ -113,14 +159,85 @@ def create_app() -> FastAPI:
     @app.get("/api/status")
     async def status() -> dict[str, Any]:
         agent = get_agent()
+        await agent._check_degraded()
         return {
             "workspace": str(agent.settings.workspace),
             "state_dir": str(agent.settings.state_dir),
             "max_turns": agent.settings.max_turns,
             "defense_mode": agent.settings.security.defense_mode.value,
+            "degraded": agent.degraded,
+            "degraded_reason": agent.degraded_reason,
             "tool_stats": agent.registry.get_stats(),
             "secret_stats": agent.secrets.get_stats(),
         }
+
+    @app.get("/api/metrics/providers")
+    async def provider_metrics() -> dict[str, Any]:
+        """Return per-provider SLO metrics: health, latency percentiles, circuit state."""
+        agent = get_agent()
+        health = await agent.router.health_check()
+
+        # Pull Prometheus samples for provider metrics
+        from prometheus_client import REGISTRY
+        def _latency_stats(model: str, provider: str) -> dict[str, float]:
+            """Read P50/P95/P99 from histogram buckets (approximate)."""
+            stats = {"count": 0.0, "sum": 0.0, "p50": 0.0, "p95": 0.0, "p99": 0.0}
+            try:
+                for family in REGISTRY.collect():
+                    if family.name == "model_latency_seconds":
+                        for sample in family.samples:
+                            if sample.labels.get("model") == model and sample.labels.get("provider") == provider:
+                                if sample.name.endswith("_count"):
+                                    stats["count"] = sample.value
+                                elif sample.name.endswith("_sum"):
+                                    stats["sum"] = sample.value
+                                elif sample.name.endswith("_bucket"):
+                                    # Find buckets for p50/p95/p99 approximations
+                                    le = sample.labels.get("le", "")
+                                    if le not in ("+Inf", ""):
+                                        try:
+                                            bound = float(le)
+                                            if bound <= 0.5 and sample.value > 0:
+                                                stats["p50"] = bound
+                                            if bound <= 2.0 and sample.value > 0:
+                                                stats["p95"] = bound
+                                            if bound <= 5.0 and sample.value > 0:
+                                                stats["p99"] = bound
+                                        except ValueError:
+                                            logger.warning('Operation failed', exc_info=True)
+            except Exception:
+                logger.warning('Operation failed', exc_info=True)
+            return stats
+
+        providers: list[dict[str, Any]] = []
+        for p in agent.settings.providers:
+            for m in p.models:
+                lat = _latency_stats(m.id, p.name)
+                providers.append({
+                    "name": p.name,
+                    "model": m.id,
+                    "healthy": health.get(p.name, False),
+                    "latency_p50_ms": round(lat["p50"] * 1000, 1) if lat["p50"] else None,
+                    "latency_p95_ms": round(lat["p95"] * 1000, 1) if lat["p95"] else None,
+                    "latency_p99_ms": round(lat["p99"] * 1000, 1) if lat["p99"] else None,
+                    "request_count": int(lat["count"]),
+                })
+
+        overall_healthy = any(p["healthy"] for p in providers)
+        return {
+            "overall_healthy": overall_healthy,
+            "degraded": agent.degraded,
+            "providers": providers,
+        }
+
+    @app.post("/api/cancel/{session_id}")
+    async def cancel_session(session_id: str) -> dict[str, Any]:
+        """Request cancellation of an active agent run for *session_id*."""
+        agent = get_agent()
+        ok = agent.request_cancel(session_id)
+        if not ok:
+            raise HTTPException(404, f"No active run for session {session_id}")
+        return {"session_id": session_id, "cancelled": True}
 
     @app.get("/api/diag")
     async def diag() -> dict[str, Any]:
@@ -228,7 +345,7 @@ def create_app() -> FastAPI:
         category = (body.get("category") or "fact").strip()
         if not key or not value:
             raise HTTPException(400, "key and value are required")
-        await asyncio.to_thread(
+        result = await asyncio.to_thread(
             agent.memory.store_semantic,
             key=key,
             value=value,
@@ -236,7 +353,60 @@ def create_app() -> FastAPI:
             confidence=0.9,
             source="manual",
         )
-        return {"success": True, "key": key}
+        return {"success": True, "key": key, **result}
+
+    @app.delete("/api/memory/semantic/{memory_id}")
+    async def memory_semantic_delete(memory_id: int) -> dict[str, Any]:
+        agent = get_agent()
+        ok = await asyncio.to_thread(agent.memory.delete_semantic, memory_id)
+        if not ok:
+            raise HTTPException(404, "memory not found")
+        return {"success": True}
+
+    @app.put("/api/memory/semantic/{memory_id}")
+    async def memory_semantic_put(memory_id: int, body: dict[str, Any]) -> dict[str, Any]:
+        agent = get_agent()
+        value = (body.get("value") or "").strip()
+        category = body.get("category")
+        if not value:
+            raise HTTPException(400, "value is required")
+        ok = await asyncio.to_thread(
+            agent.memory.update_semantic,
+            memory_id,
+            value,
+            category=category,
+        )
+        if not ok:
+            raise HTTPException(404, "memory not found")
+        return {"success": True}
+
+    @app.get("/api/setup/first-start")
+    async def setup_first_start() -> dict[str, Any]:
+        if _settings is None:
+            return {"first_run_completed": False}
+        return {"first_run_completed": _settings.first_run_completed}
+
+    @app.post("/api/setup/complete")
+    async def setup_complete() -> dict[str, Any]:
+        if _settings is None:
+            raise HTTPException(503, "Settings not initialized")
+        _settings.first_run_completed = True
+        try:
+            # Use field-restricted save so we don't clobber providers/models/paths
+            await asyncio.to_thread(_settings.save, None, ["first_run_completed"])
+        except PermissionError:
+            # Fallback: save to state_dir/config.yaml when home dir is not writable
+            try:
+                fallback = _settings.state_dir / "config.yaml"
+                await asyncio.to_thread(_settings.save, fallback, ["first_run_completed"])
+            except OSError as e:
+                raise HTTPException(
+                    500,
+                    f"Unable to save settings: home directory and state directory are both read-only. {e}",
+                ) from e
+        except OSError as e:
+            raise HTTPException(500, f"Unable to save settings: {e}") from e
+        return {"success": True}
 
     @app.get("/api/audit")
     async def audit(limit: int = 50) -> dict[str, Any]:
@@ -312,7 +482,25 @@ def create_app() -> FastAPI:
                 for p in agent.settings.providers
             ],
             "health": await agent.router.health_check(),
+            "active_model": _active_model,
         }
+
+    @app.post("/api/models/switch")
+    async def models_switch(body: dict[str, Any]) -> dict[str, Any]:
+        global _active_model
+        model_id = (body.get("model_id") or "").strip()
+        if not model_id:
+            raise HTTPException(400, "model_id is required")
+        agent = get_agent()
+        valid_models = {
+            f"{p.name}/{m.id}"
+            for p in agent.settings.providers
+            for m in p.models
+        }
+        if model_id not in valid_models:
+            raise HTTPException(400, f"Invalid model '{model_id}'")
+        _active_model = model_id
+        return {"success": True, "model_id": model_id}
 
     def _validate_provider_name(name: str) -> None:
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", name):
@@ -391,7 +579,7 @@ def create_app() -> FastAPI:
             try:
                 agent.provider_manager.remove(name)
             except Exception:
-                pass
+                logger.warning('Operation failed', exc_info=True)
             agent.settings.providers = [
                 p for p in agent.settings.providers if p.name != name
             ]
@@ -468,7 +656,7 @@ def create_app() -> FastAPI:
             try:
                 agent.provider_manager.remove(preset_id)
             except Exception:
-                pass
+                logger.warning('Operation failed', exc_info=True)
             agent.settings.providers = [
                 p for p in agent.settings.providers if p.name != preset_id
             ]
@@ -667,6 +855,125 @@ def create_app() -> FastAPI:
             "skills": skills,
             "categories": agent.skills.list_categories(),
             "global_stats": agent.skills.get_global_stats(),
+        }
+
+    @app.get("/api/skills/metrics")
+    async def skills_metrics() -> dict[str, Any]:
+        """Return skill execution metrics for observability dashboard."""
+        agent = get_agent()
+        all_skills = agent.skills.list_skills()
+        per_skill: list[dict[str, Any]] = []
+        for skill in all_skills:
+            stats = agent.skills.get_stats(skill["id"])
+            if stats:
+                per_skill.append({
+                    "id": stats["id"],
+                    "name": stats["name"],
+                    "type": stats.get("type", "unknown"),
+                    "trust_level": stats.get("trust_level", "community"),
+                    "usage_count": stats.get("usage_count", 0),
+                    "success_rate": round(stats.get("success_rate", 1.0), 3),
+                    "avg_latency_ms": round(stats.get("avg_latency_ms", 0.0), 1),
+                    "prerequisites_ok": stats.get("prerequisites_ok", True),
+                })
+        per_skill.sort(key=lambda x: x["usage_count"], reverse=True)
+        return {
+            "global": agent.skills.get_global_stats(),
+            "per_skill": per_skill,
+        }
+
+    @app.get("/api/memory/metrics")
+    async def memory_metrics() -> dict[str, Any]:
+        """Return memory subsystem metrics for observability dashboard."""
+        agent = get_agent()
+        embedder_health = agent.memory.embedder.health()
+
+        # Pull Prometheus metric samples (best-effort)
+        from prometheus_client import REGISTRY
+        def _sample(name: str, label_filters: dict[str, str] | None = None) -> float:
+            total = 0.0
+            try:
+                for family in REGISTRY.collect():
+                    if family.name == name:
+                        for sample in family.samples:
+                            if label_filters is None or all(sample.labels.get(k) == v for k, v in label_filters.items()):
+                                total += sample.value
+            except Exception:
+                logger.warning('Operation failed', exc_info=True)
+            return total
+
+        return {
+            "embedder": {
+                "provider": embedder_health.provider,
+                "active": embedder_health.active,
+                "fallback_provider": embedder_health.fallback_provider,
+                "failure_count": embedder_health.failure_count,
+            },
+            "prometheus": {
+                "memory_store_latency_seconds_count": _sample("memory_store_latency_seconds_count"),
+                "memory_store_latency_seconds_sum": _sample("memory_store_latency_seconds_sum"),
+                "memory_retrieve_latency_seconds_count": _sample("memory_retrieve_latency_seconds_count"),
+                "memory_retrieve_latency_seconds_sum": _sample("memory_retrieve_latency_seconds_sum"),
+                "memory_search_fallback_total": _sample("memory_search_fallback_total"),
+            },
+            "counts": {
+                "episodes": len(agent.memory.get_episodes(limit=1000)),
+                "semantic_memories": len(agent.memory.get_all_semantic(limit=1000)),
+                "working_memories": len(agent.memory.get_all_working(limit=1000)),
+                "dream_logs": len(agent.memory.get_dream_logs(limit=1000)),
+            },
+        }
+
+    @app.post("/api/memory/embedder/recover")
+    async def memory_embedder_recover() -> dict[str, Any]:
+        """Manually trigger embedder recovery probe.
+
+        First tries to re-instantiate a fresh embedder (catches cases where
+        the provider became available after agent startup or the HTTP client
+        is in a bad state).  If that fails, falls back to probing the
+        existing embedder via force_recover().
+        """
+        agent = get_agent()
+        # Attempt 1: rebuild from scratch — this handles provider configs
+        # that changed after startup (e.g. LM Studio loaded an embedding
+        # model) or a stale httpx client.
+        try:
+            new_embedder = await asyncio.to_thread(agent._setup_embedder)
+            # If we got a KeywordEmbedder back, no provider supports embeddings.
+            from js.memory.embeddings import KeywordEmbedder
+            if not isinstance(new_embedder, KeywordEmbedder):
+                # Fresh HybridEmbedder created — swap it in.
+                agent.memory.replace_embedder(new_embedder)
+                health = new_embedder.health()
+                return {
+                    "success": True,
+                    "provider": health.provider,
+                    "active": health.active,
+                    "fallback_provider": health.fallback_provider,
+                    "failure_count": health.failure_count,
+                    "recovered": True,
+                    "method": "rebuild",
+                }
+        except Exception:
+            logger.warning('Operation failed', exc_info=True)
+
+        # Attempt 2: probe the existing embedder.
+        embedder = agent.memory.embedder
+        if hasattr(embedder, "force_recover"):
+            ok = embedder.force_recover()
+            health = embedder.health()
+            return {
+                "success": ok,
+                "provider": health.provider,
+                "active": health.active,
+                "fallback_provider": health.fallback_provider,
+                "failure_count": health.failure_count,
+                "recovered": ok,
+                "method": "probe",
+            }
+        return {
+            "success": False,
+            "reason": "Current embedder does not support runtime recovery",
         }
 
     # Hermes-specific endpoints MUST be defined BEFORE /api/skills/{skill_id}
@@ -984,7 +1291,7 @@ def create_app() -> FastAPI:
                 if msg_type == "message":
                     user_msg = data.get("content", "")
                     session_id = data.get("session_id") or session_id
-                    model = data.get("model")
+                    model = data.get("model") or _active_model or None
                     attachments = data.get("attachments", [])
 
                     await websocket.send_json({"type": "status", "content": "thinking..."})
@@ -1019,6 +1326,7 @@ def create_app() -> FastAPI:
                             "tokens": state.total_tokens,
                             "cost": round(state.cost_estimate, 6),
                             "status": state.status,
+                            "compression": state.compression_stats,
                         }
                     )
 
@@ -1030,9 +1338,22 @@ def create_app() -> FastAPI:
 
                     await websocket.send_json({"type": "status", "content": "streaming..."})
 
-                    # Use agent.run() for full tool-calling support,
-                    # then simulate token-by-token delivery for UI smoothness.
-                    state = await agent.run(user_msg, session_id=session_id, model=model, attachments=attachments)
+                    # Native token-level streaming for the final assistant response.
+                    # Tool-calling turns remain non-streaming (parsed atomically).
+                    streamed = False
+
+                    async def _send_token(token: str) -> None:
+                        nonlocal streamed
+                        streamed = True
+                        await websocket.send_json({"type": "token", "content": token})
+
+                    state = await agent.run(
+                        user_msg,
+                        session_id=session_id,
+                        model=model,
+                        attachments=attachments,
+                        stream_callback=_send_token,
+                    )
                     session_id = state.session_id
 
                     assistant_msg = ""
@@ -1041,15 +1362,20 @@ def create_app() -> FastAPI:
                             assistant_msg = msg.content
                             break
 
-                    # Simulate streaming by sending characters in chunks
-                    chunk_size = 3
-                    for i in range(0, len(assistant_msg), chunk_size):
-                        await websocket.send_json(
-                            {"type": "token", "content": assistant_msg[i:i + chunk_size]}
-                        )
-                        await asyncio.sleep(0.005)  # Tiny delay for visual smoothness
+                    # Fallback: if streaming never fired (all tool turns or provider
+                    # doesn't support streaming), send the full response in one go.
+                    if not streamed and assistant_msg:
+                        await websocket.send_json({"type": "response", "content": assistant_msg})
 
-                    await websocket.send_json({"type": "done", "session_id": session_id})
+                    await websocket.send_json({
+                        "type": "done",
+                        "session_id": session_id,
+                        "turns": state.turn_count,
+                        "tokens": state.total_tokens,
+                        "cost": round(state.cost_estimate, 6),
+                        "status": state.status,
+                        "compression": state.compression_stats,
+                    })
 
                     # Store memories for stream path (same as run() path)
                     try:
@@ -1083,7 +1409,7 @@ def create_app() -> FastAPI:
                         )
                         agent._dream_scheduler.notify_activity(user_msg, assistant_msg)
                     except Exception:
-                        logger.debug("Stream memory storage failed", exc_info=True)
+                        logger.warning("Stream memory storage failed", exc_info=True)
 
                 elif msg_type == "ping":
                     await websocket.send_json({"type": "pong"})
@@ -1095,132 +1421,9 @@ def create_app() -> FastAPI:
             try:
                 await websocket.send_json({"type": "error", "content": str(e)})
             except Exception:
-                logger.debug("Failed to send error to websocket", exc_info=True)
-
-    # ------------------------------------------------------------------
-    # Fleet API
-    # ------------------------------------------------------------------
-
-    @app.get("/api/fleet/status")
-    async def fleet_status() -> dict[str, Any]:
-        try:
-            fleet = get_fleet()
-            return fleet.get_status()
-        except Exception:
-            raise
-
-    @app.get("/api/fleet/models")
-    async def fleet_models() -> dict[str, Any]:
-        """List all models available for fleet agents."""
-        agent = get_agent()
-        models: list[dict[str, Any]] = []
-        for p in agent.settings.providers:
-            for m in p.models:
-                models.append({
-                    "id": f"{p.name}/{m.id}",
-                    "provider": p.name,
-                    "model_id": m.id,
-                    "name": m.name or m.id,
-                    "context_window": m.context_window,
-                    "supports_vision": m.supports_vision,
-                })
-        return {"models": models}
-
-    @app.post("/api/fleet/spawn")
-    async def fleet_spawn(payload: dict[str, Any]) -> dict[str, Any]:
-        from js.orchestration.fleet import AgentRole
-
-        try:
-            fleet = get_fleet()
-            role = AgentRole(payload.get("role", "generalist"))
-            model = payload.get("model")
-
-            # Validate model against available providers
-            if model:
-                agent = get_agent()
-                valid_models = {
-                    f"{p.name}/{m.id}"
-                    for p in agent.settings.providers
-                    for m in p.models
-                }
-                if model not in valid_models:
-                    raise HTTPException(
-                        400,
-                        f"Invalid model '{model}'. Use /api/fleet/models to see available models."
-                    )
-
-            instance = fleet.spawn(
-                name=payload.get("name", f"agent-{role.value}"),
-                role=role,
-                model=model,
-            )
-            return {
-                "success": True,
-                "agent_id": instance.id,
-                "role": role.value,
-                "model": model,
-            }
-        except ValueError as e:
-            raise HTTPException(400, str(e)) from e
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Fleet spawn failed: {e}", exc_info=True)
-            raise HTTPException(500, f"Fleet spawn failed: {e}") from e
-
-    @app.post("/api/fleet/dispatch")
-    async def fleet_dispatch(payload: dict[str, Any]) -> dict[str, Any]:
-        from js.orchestration.fleet import AgentRole, Task
-
-        try:
-            fleet = get_fleet()
-            task = Task(
-                id=str(uuid.uuid4()),
-                description=payload.get("description", ""),
-                role_hint=AgentRole(payload.get("role", "generalist")),
-                priority=payload.get("priority", 5),
-            )
-            task_id = await fleet.dispatch(task)
-            return {"success": True, "task_id": task_id}
-        except ValueError as e:
-            raise HTTPException(400, str(e)) from e
-        except Exception as e:
-            logger.error(f"Fleet dispatch failed: {e}", exc_info=True)
-            raise HTTPException(500, f"Fleet dispatch failed: {e}") from e
-
-    @app.post("/api/fleet/collaborate")
-    async def fleet_collaborate(payload: dict[str, Any]) -> dict[str, Any]:
-        from js.orchestration.fleet import AgentRole
-
-        try:
-            fleet = get_fleet()
-            subtasks_raw = payload.get("subtasks", [])
-            subtasks: list[tuple[str, AgentRole]] = []
-            for st in subtasks_raw:
-                subtasks.append((st.get("description", ""), AgentRole(st.get("role", "generalist"))))
-            result = await fleet.collaborate(
-                main_task=payload.get("task", ""),
-                subtasks=subtasks,
-            )
-            return {"success": True, "result": result}
-        except ValueError as e:
-            raise HTTPException(400, str(e)) from e
-        except Exception as e:
-            logger.error(f"Fleet collaborate failed: {e}", exc_info=True)
-            raise HTTPException(500, f"Fleet collaborate failed: {e}") from e
-
-    @app.post("/api/fleet/broadcast")
-    async def fleet_broadcast(payload: dict[str, Any]) -> dict[str, Any]:
-        try:
-            fleet = get_fleet()
-            await fleet.broadcast(payload.get("message", ""))
-            return {"success": True}
-        except Exception as e:
-            logger.error(f"Fleet broadcast failed: {e}", exc_info=True)
-            raise HTTPException(500, f"Fleet broadcast failed: {e}") from e
+                logger.warning("Failed to send error to websocket", exc_info=True)
 
     return app
-
 
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"

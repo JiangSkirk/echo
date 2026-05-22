@@ -1,0 +1,16 @@
+id: file_delete_cleanup
+name: Delete temporary files
+description: Agent should delete specific files and confirm cleanup.
+input: "Delete the file temp.log and confirm it no longer exists"
+tags: [file, delete]
+max_turns: 4
+setup:
+  files:
+    - path: temp.log
+      content: "temporary log data"
+scoring:
+  expected_tool_calls:
+    - file_delete
+    - file_list
+  expected_output_contains:
+    - "deleted"

@@ -223,3 +223,280 @@ class TestSkillPrerequisites:
         preqs = spec.prerequisites
         assert preqs is not None
         assert "curl" in preqs.commands
+
+
+class TestWorkflowSkillExecution:
+    """Test workflow skill execution with prompt, shell, and skill steps."""
+
+    @pytest.mark.asyncio
+    async def test_workflow_prompt_steps(self, tmp_path: Path) -> None:
+        """Workflow with prompt steps calls llm_caller."""
+        from js.skills.spec import SkillSpec, SkillType, TrustLevel
+
+        spec = SkillSpec(
+            id="test-workflow",
+            name="Test Workflow",
+            type=SkillType.WORKFLOW,
+            trust_level=TrustLevel.BUILTIN,
+            metadata={
+                "workflow": {
+                    "steps": [
+                        {"type": "prompt", "input": "Hello {name}"},
+                        {"type": "prompt", "input": "Goodbye {name}"},
+                    ]
+                }
+            },
+        )
+
+        llm_caller = AsyncMock(side_effect=["Hi there", "See ya"])
+        result = await execute_skill(
+            spec=spec,
+            args={"name": "Alice"},
+            workspace=tmp_path,
+            llm_caller=llm_caller,
+        )
+        assert result["success"] is True
+        assert result["steps_executed"] == 2
+        assert result["steps_failed"] == 0
+        steps = json.loads(result["output"])
+        assert steps[0]["output"] == "Hi there"
+        assert steps[1]["output"] == "See ya"
+        assert llm_caller.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_workflow_skill_step_resolves_subskill(self, tmp_path: Path) -> None:
+        """Workflow with skill step delegates to skill_resolver."""
+        from js.skills.spec import SkillSpec, SkillType, TrustLevel
+
+        spec = SkillSpec(
+            id="test-workflow-with-skill",
+            name="Test Workflow With Skill",
+            type=SkillType.WORKFLOW,
+            trust_level=TrustLevel.BUILTIN,
+            metadata={
+                "workflow": {
+                    "steps": [
+                        {"type": "skill", "skill_id": "sub-skill", "args": {"x": "1"}},
+                    ]
+                }
+            },
+        )
+
+        async def skill_resolver(skill_id: str, args: dict) -> dict:
+            return {"success": True, "output": f"resolved {skill_id} with {args}"}
+
+        result = await execute_skill(
+            spec=spec,
+            args={"name": "Alice"},
+            workspace=tmp_path,
+            skill_resolver=skill_resolver,
+        )
+        assert result["success"] is True
+        steps = json.loads(result["output"])
+        assert steps[0]["status"] == "success"
+        assert "resolved sub-skill" in steps[0]["output"]
+
+    @pytest.mark.asyncio
+    async def test_workflow_skill_step_missing_resolver(self, tmp_path: Path) -> None:
+        """Workflow skill step without resolver is marked pending."""
+        from js.skills.spec import SkillSpec, SkillType, TrustLevel
+
+        spec = SkillSpec(
+            id="test-workflow-no-resolver",
+            name="Test Workflow No Resolver",
+            type=SkillType.WORKFLOW,
+            trust_level=TrustLevel.BUILTIN,
+            metadata={
+                "workflow": {
+                    "steps": [
+                        {"type": "skill", "skill_id": "sub-skill"},
+                    ]
+                }
+            },
+        )
+
+        result = await execute_skill(
+            spec=spec,
+            args={},
+            workspace=tmp_path,
+        )
+        # Pending is not a failure — the step simply can't be resolved here
+        assert result["success"] is True
+        steps = json.loads(result["output"])
+        assert steps[0]["status"] == "pending"
+        assert "resolver" in steps[0]["note"]
+
+    @pytest.mark.asyncio
+    async def test_workflow_condition_skips_step(self, tmp_path: Path) -> None:
+        """Workflow condition causes step skip."""
+        from js.skills.spec import SkillSpec, SkillType, TrustLevel
+
+        spec = SkillSpec(
+            id="test-workflow-condition",
+            name="Test Workflow Condition",
+            type=SkillType.WORKFLOW,
+            trust_level=TrustLevel.BUILTIN,
+            metadata={
+                "workflow": {
+                    "steps": [
+                        {"type": "prompt", "input": "skip me", "condition": {"if": "mode", "eq": "debug"}},
+                        {"type": "prompt", "input": "run me"},
+                    ]
+                }
+            },
+        )
+
+        llm_caller = AsyncMock(return_value="ok")
+        result = await execute_skill(
+            spec=spec,
+            args={"mode": "production"},
+            workspace=tmp_path,
+            llm_caller=llm_caller,
+        )
+        assert result["success"] is True
+        steps = json.loads(result["output"])
+        assert steps[0]["status"] == "skipped"
+        assert steps[1]["status"] == "success"
+        assert llm_caller.call_count == 1
+
+
+class TestMetaSkillExecution:
+    """Test meta skill execution delegates to sub-skills."""
+
+    @pytest.mark.asyncio
+    async def test_meta_skill_executes_subskills(self, tmp_path: Path) -> None:
+        """Meta skill calls skill_resolver for each sub-skill."""
+        from js.skills.spec import SkillSpec, SkillType, TrustLevel
+
+        spec = SkillSpec(
+            id="test-meta",
+            name="Test Meta",
+            type=SkillType.META,
+            trust_level=TrustLevel.BUILTIN,
+            metadata={
+                "workflow": {
+                    "steps": [
+                        {"type": "skill", "skill_id": "step-a"},
+                        {"type": "skill", "skill_id": "step-b", "arg_mapping": {"task": "job"}},
+                    ]
+                }
+            },
+        )
+
+        calls: list[tuple[str, dict]] = []
+
+        async def skill_resolver(skill_id: str, args: dict) -> dict:
+            calls.append((skill_id, args))
+            return {"success": True, "output": f"done {skill_id}"}
+
+        result = await execute_skill(
+            spec=spec,
+            args={"job": "test-task"},
+            workspace=tmp_path,
+            skill_resolver=skill_resolver,
+        )
+        assert result["success"] is True
+        assert len(calls) == 2
+        assert calls[0] == ("step-a", {"job": "test-task"})
+        assert calls[1] == ("step-b", {"task": "test-task"})
+        steps = json.loads(result["output"])
+        assert steps[0]["output"] == "done step-a"
+        assert steps[1]["output"] == "done step-b"
+
+    @pytest.mark.asyncio
+    async def test_meta_skill_subskill_failure(self, tmp_path: Path) -> None:
+        """Meta skill reports failure when sub-skill fails."""
+        from js.skills.spec import SkillSpec, SkillType, TrustLevel
+
+        spec = SkillSpec(
+            id="test-meta-fail",
+            name="Test Meta Fail",
+            type=SkillType.META,
+            trust_level=TrustLevel.BUILTIN,
+            metadata={
+                "workflow": {
+                    "steps": [
+                        {"type": "skill", "skill_id": "step-a"},
+                        {"type": "skill", "skill_id": "step-b"},
+                    ]
+                }
+            },
+        )
+
+        async def skill_resolver(skill_id: str, args: dict) -> dict:
+            if skill_id == "step-b":
+                return {"success": False, "error": "b failed"}
+            return {"success": True, "output": "ok"}
+
+        result = await execute_skill(
+            spec=spec,
+            args={},
+            workspace=tmp_path,
+            skill_resolver=skill_resolver,
+        )
+        assert result["success"] is False
+        assert result["steps_failed"] == 1
+        steps = json.loads(result["output"])
+        assert steps[1]["status"] == "error"
+        assert "b failed" in steps[1]["error"]
+
+    @pytest.mark.asyncio
+    async def test_meta_skill_missing_skill_id(self, tmp_path: Path) -> None:
+        """Meta skill step without skill_id reports error."""
+        from js.skills.spec import SkillSpec, SkillType, TrustLevel
+
+        spec = SkillSpec(
+            id="test-meta-missing",
+            name="Test Meta Missing",
+            type=SkillType.META,
+            trust_level=TrustLevel.BUILTIN,
+            metadata={
+                "workflow": {
+                    "steps": [
+                        {"type": "skill"},  # no skill_id
+                    ]
+                }
+            },
+        )
+
+        async def skill_resolver(skill_id: str, args: dict) -> dict:
+            return {"success": True, "output": "ok"}
+
+        result = await execute_skill(
+            spec=spec,
+            args={},
+            workspace=tmp_path,
+            skill_resolver=skill_resolver,
+        )
+        assert result["success"] is False
+        steps = json.loads(result["output"])
+        assert steps[0]["status"] == "error"
+        assert "Missing skill_id" in steps[0]["error"]
+
+    @pytest.mark.asyncio
+    async def test_meta_skill_no_resolver(self, tmp_path: Path) -> None:
+        """Meta skill without resolver reports pending for all steps."""
+        from js.skills.spec import SkillSpec, SkillType, TrustLevel
+
+        spec = SkillSpec(
+            id="test-meta-no-resolver",
+            name="Test Meta No Resolver",
+            type=SkillType.META,
+            trust_level=TrustLevel.BUILTIN,
+            metadata={
+                "workflow": {
+                    "steps": [
+                        {"type": "skill", "skill_id": "step-a"},
+                    ]
+                }
+            },
+        )
+
+        result = await execute_skill(
+            spec=spec,
+            args={},
+            workspace=tmp_path,
+        )
+        assert result["success"] is True  # No actual failure, just pending
+        steps = json.loads(result["output"])
+        assert steps[0]["status"] == "pending"

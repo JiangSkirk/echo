@@ -300,44 +300,8 @@ class SkillEvolver:
                 parsed: list[dict[str, Any]] = json.loads(rows[0][0])
                 return parsed
             except json.JSONDecodeError:
-                pass
+                logger.warning('Operation failed', exc_info=True)
         return [{"input": "example", "expected": "result"}]
-
-    async def run_test_cases(
-        self,
-        variant: SkillVariant,
-        executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]],
-    ) -> list[dict[str, Any]]:
-        """Execute test cases for a variant and record results."""
-        results: list[dict[str, Any]] = []
-        for tc in variant.test_cases:
-            test_input = tc.get("input", "")
-            expected = tc.get("expected", "")
-            try:
-                actual_result = await executor(variant.code, {"input": test_input})
-                actual = str(actual_result.get("output", ""))
-                passed = actual == expected
-            except Exception as e:
-                actual = str(e)
-                passed = False
-
-            with db_connection(self.db_path) as conn:
-                conn.execute(
-                    """
-                    INSERT INTO test_case_results (variant_id, test_input, expected, actual, passed, executed_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (variant.id, test_input, expected, actual, int(passed), time.time()),
-                )
-                conn.commit()
-
-            results.append({
-                "input": test_input,
-                "expected": expected,
-                "actual": actual,
-                "passed": passed,
-            })
-        return results
 
     def get_evolution_report(self, skill_id: str) -> dict[str, Any]:
         """Get evolution statistics for a skill."""

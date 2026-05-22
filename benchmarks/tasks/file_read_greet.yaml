@@ -1,0 +1,18 @@
+id: file_read_greet
+name: Read a greeting file
+description: Agent should read an existing file and report its contents.
+input: "Read the file greeting.txt and tell me what it says"
+tags: [file, read]
+max_turns: 3
+setup:
+  files:
+    - path: greeting.txt
+      content: "Welcome to the benchmark!"
+scoring:
+  expected_files:
+    - path: greeting.txt
+      contains: "Welcome"
+  expected_output_contains:
+    - "Welcome"
+  expected_tool_calls:
+    - file_read

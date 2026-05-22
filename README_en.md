@@ -1,6 +1,6 @@
 # JS Agent
 
-A **stable, secure, and convenient** AI Agent framework that synthesizes the best of OpenClaw and Hermes while surpassing both.
+An AI Agent framework synthesizing the best of OpenClaw and Hermes, leading in architectural modernity and actively growing its ecosystem.
 
 > **Status**: v0.1.0-alpha — APIs may change. Feedback welcome!
 
@@ -9,7 +9,7 @@ A **stable, secure, and convenient** AI Agent framework that synthesizes the bes
 ### 🔒 Security-First
 - **Layered Sandbox**: All commands execute in an isolated environment with whitelist/blacklist support.
 - **Strategy-Pattern Defense** (from OpenClaw): Tool-call defenses are injectable, ordered strategy objects—not hardcoded if-else chains.
-- **Fail-Open Semantics** (from OpenClaw): A security strategy crash never blocks the main system.
+- **Fail-Open Semantics** (from OpenClaw): When the security subsystem itself crashes/fails, it does not block the main system (prevents security from becoming a single point of failure).
 - **Secret Management**: Auto-detects and redacts API keys, tokens, and passwords; stores them encrypted at rest.
 - **Behavior Audit**: Immutable hash-chained audit log of every tool call, model response, and security event.
 - **Path Protection**: Prevents accidental deletion of system files; writes outside the workspace require confirmation.
@@ -29,12 +29,6 @@ A **stable, secure, and convenient** AI Agent framework that synthesizes the bes
 - **Middle Compression**: Older turns are summarized with handoff framing to prevent misinterpretation.
 - **Tool Output Truncation**: Overly long tool results are truncated before compression.
 - **Multimodal Awareness**: Images are accounted for with fixed token estimates.
-
-### 📸 Checkpoint Snapshots (from Hermes)
-- **Transparent Git Shadow Repo**: Zero state leakage into the user's project.
-- **Git Environment Isolation**: Completely independent of the user's global git config.
-- **Per-Turn Deduplication**: At most one snapshot per directory per turn.
-- **Safe Rollback**: One-click restore to any historical state.
 
 ### ✅ Enhanced Approval System (from Hermes)
 - **Tiered Modes**: Manual / Auto-approve / Auto-reject / Cron-task reject.
@@ -77,10 +71,10 @@ pip install -e ".[dev]"
 js setup
 
 # CLI interactive mode
-js chat
+js
 
 # Web UI
-js web --port 8080
+js web --port 8000
 
 # Search
 js search "latest AI developments"
@@ -110,16 +104,19 @@ js search "latest AI developments"
 pytest tests/ -v
 ```
 
-**319 tests** covering all modules. Ruff zero errors, mypy strict zero errors.
+**608 tests** covering all modules. Ruff zero errors, mypy zero new errors.
 
 ## Production Deployment
 
 ```bash
 # Web UI
-js web --host 0.0.0.0 --port 8080
+js web --host 0.0.0.0 --port 8000
+
+# Or Docker
+docker run -p 8000:8000 -e OPENAI_API_KEY=xxx js-agent
 
 # Or Gunicorn + Uvicorn
-gunicorn "js.web:create_app()" -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8080
+gunicorn "js.web:create_app()" -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
 ```
 
 ## License

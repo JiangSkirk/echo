@@ -77,7 +77,7 @@ class MockRouter(ModelRouter):
         self._providers: dict[str, ModelProvider] = {"mock": provider}
         self._model_map = {}
 
-    def select_model(self, task_complexity: str = "medium", preferred: str | None = None) -> Any:
+    async def select_model(self, task_complexity: str = "medium", preferred: str | None = None) -> Any:
         from js.models.router import RoutingDecision
         return RoutingDecision(
             provider=self._providers["mock"],

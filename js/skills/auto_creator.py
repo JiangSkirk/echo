@@ -96,22 +96,6 @@ Apply the following approach when handling requests related to:
         logger.info(f"Created auto-skill: {skill_id} from pattern '{pattern[:40]}'")
         return spec
 
-    def list_auto_skills(self) -> list[SkillSpec]:
-        """List all existing auto-generated skills."""
-        skills: list[SkillSpec] = []
-        from js.skills.spec import parse_skill_manifest
-
-        for subdir in sorted(self.auto_dir.iterdir()):
-            manifest = subdir / "SKILL.md"
-            if manifest.exists():
-                try:
-                    spec = parse_skill_manifest(manifest)
-                    spec.path = subdir
-                    skills.append(spec)
-                except Exception:
-                    logger.debug(f"Failed to parse auto-skill manifest: {manifest}")
-        return skills
-
     @staticmethod
     def _hash_pattern(pattern: str) -> str:
         return hashlib.md5(pattern.encode(), usedforsecurity=False).hexdigest()[:12]

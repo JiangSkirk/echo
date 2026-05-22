@@ -40,7 +40,6 @@ class MCPClient:
         self._transport: str = "stdio" if command else "sse"
         self._req_id = 0
         self._tools: list[MCPTool] = []
-        self._resources: list[MCPResource] = []
 
     async def connect(self) -> None:
         if self._transport == "stdio":
@@ -53,7 +52,7 @@ class MCPClient:
             raise ValueError("No command provided for stdio transport")
         cmd = self.command
         assert cmd is not None
-        self._proc = await asyncio.get_event_loop().run_in_executor(
+        self._proc = await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: subprocess.Popen(
                 cmd,
@@ -88,10 +87,9 @@ class MCPClient:
             return None
         line = json.dumps(msg) + "\n"
         # Run blocking I/O in thread pool to avoid freezing the event loop
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._proc.stdin.write, line)
-        await loop.run_in_executor(None, self._proc.stdin.flush)
-        response = await loop.run_in_executor(None, self._proc.stdout.readline)
+        await asyncio.to_thread(self._proc.stdin.write, line)
+        await asyncio.to_thread(self._proc.stdin.flush)
+        response = await asyncio.to_thread(self._proc.stdout.readline)
         if response:
             try:
                 return json.loads(response)  # type: ignore[no-any-return]

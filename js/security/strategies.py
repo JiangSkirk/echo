@@ -10,7 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from js.config import SecurityConfig
+from js.config import DefenseMode, SecurityConfig
 from js.utils.log import get_logger
 
 logger = get_logger("js.security.strategies")
@@ -36,10 +36,9 @@ class DefenseResult:
 DefenseStrategy = Callable[[DefenseContext], DefenseResult]
 
 
-def _get_defense_mode(ctx: DefenseContext) -> str:
-    """Normalize defense_mode to a string value."""
-    raw_mode = ctx.config.defense_mode
-    return raw_mode.value if hasattr(raw_mode, "value") else str(raw_mode)
+def _get_defense_mode(ctx: DefenseContext) -> DefenseMode:
+    """Return the normalized defense mode enum."""
+    return ctx.config.defense_mode
 
 
 class StrategyRegistry:
@@ -98,9 +97,9 @@ def command_block_strategy(ctx: DefenseContext) -> DefenseResult:
     for pattern in high_risk:
         if pattern in command:
             return DefenseResult(
-                blocked=mode == "enforce",
+                blocked=mode == DefenseMode.ENFORCE,
                 reason=f"High-risk command pattern: {pattern}",
-                observe_only=mode == "observe",
+                observe_only=mode == DefenseMode.OBSERVE,
             )
     return DefenseResult(blocked=False)
 
@@ -114,19 +113,19 @@ def path_protection_strategy(ctx: DefenseContext) -> DefenseResult:
     if raw is None:
         return DefenseResult(blocked=False)
     path = str(raw)
-    protected = ["/etc", "/usr", "/bin", "/sys", "/dev", "/proc"]
+    protected = ctx.config.protected_paths or ["/etc", "/usr", "/bin", "/sys", "/dev", "/proc"]
     mode = _get_defense_mode(ctx)
     for p in protected:
         if path.startswith(p):
             return DefenseResult(
-                blocked=mode == "enforce",
+                blocked=mode == DefenseMode.ENFORCE,
                 reason=f"Protected path: {p}",
-                observe_only=mode == "observe",
+                observe_only=mode == DefenseMode.OBSERVE,
             )
     return DefenseResult(blocked=False)
 
 
-def loop_guard_strategy(ctx: DefenseContext) -> DefenseResult:
+def loop_guard_strategy(_ctx: DefenseContext) -> DefenseResult:
     """Warn on potentially looping tool calls."""
     # Simplified: actual implementation would track per-run counters
     return DefenseResult(blocked=False)

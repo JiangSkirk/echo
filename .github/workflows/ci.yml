@@ -30,7 +30,7 @@ jobs:
         run: ruff check js/ tests/
 
       - name: Type check with mypy
-        run: mypy js/ --ignore-missing-imports
+        run: mypy js/ --no-error-summary
 
       - name: Test with pytest
         run: pytest tests/ -v --tb=short

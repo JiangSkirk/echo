@@ -47,6 +47,17 @@ class MemoryStore:
         """Expose the embedder for health-check endpoints."""
         return self.enhanced.embedder
 
+    def replace_embedder(self, embedder: Any) -> None:
+        """Swap the underlying embedder at runtime (e.g. after recovery)."""
+        if hasattr(self, "enhanced") and self.enhanced:
+            self.enhanced.close()
+        self._init_enhanced(embedder)
+
+    def close(self) -> None:
+        """Close enhanced store and release embedder resources."""
+        if hasattr(self, "enhanced") and self.enhanced:
+            self.enhanced.close()
+
     def _ensure_memory_files(self) -> None:
         """Create OpenClaw-style memory files if they don't exist."""
         memory_dir = self.state_dir / "memory"
@@ -329,10 +340,23 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
             return self.enhanced.get_all_semantic(limit)
         return []
 
-    def store_semantic(self, key: str, value: str, category: str = "fact", confidence: float = 0.5, source: str = "") -> None:
+    def store_semantic(self, key: str, value: str, category: str = "fact", confidence: float = 0.5, source: str = "") -> dict[str, Any]:
         """Store a semantic memory."""
         if hasattr(self, "enhanced"):
-            self.enhanced.store_semantic(key, value, category, confidence, source)
+            return self.enhanced.store_semantic(key, value, category, confidence, source)
+        return {"conflicts": [], "evicted": 0}
+
+    def delete_semantic(self, memory_id: int) -> bool:
+        """Delete a semantic memory by id."""
+        if hasattr(self, "enhanced"):
+            return self.enhanced.delete_semantic(memory_id)
+        return False
+
+    def update_semantic(self, memory_id: int, value: str, category: str | None = None) -> bool:
+        """Update a semantic memory by id."""
+        if hasattr(self, "enhanced"):
+            return self.enhanced.update_semantic(memory_id, value, category)
+        return False
 
     def search_semantic(self, query: str, category: str | None = None, limit: int = 10) -> list[Any]:
         """Search semantic memories."""

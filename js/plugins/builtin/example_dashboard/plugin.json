@@ -1,0 +1,10 @@
+{
+  "id": "example-dashboard",
+  "name": "示例仪表盘",
+  "version": "1.0.0",
+  "description": "一个示例插件，展示如何为 JS Agent 添加自定义工具和 Hook",
+  "author": "JS Agent",
+  "categories": ["demo"],
+  "tags": ["example", "dashboard"],
+  "entry_point": "plugin:DashboardPlugin"
+}

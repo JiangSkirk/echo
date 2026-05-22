@@ -98,7 +98,7 @@ class ApprovalQueue:
                     outcome="approved",
                 ).inc()
             except Exception:
-                pass
+                logger.warning('Operation failed', exc_info=True)
             return True
 
         if resolved_mode == ApprovalMode.AUTO_DENY:
@@ -111,7 +111,7 @@ class ApprovalQueue:
                     outcome="denied",
                 ).inc()
             except Exception:
-                pass
+                logger.warning('Operation failed', exc_info=True)
             return False
 
         if resolved_mode == ApprovalMode.CRON_DENY and context == "cron":
@@ -124,7 +124,7 @@ class ApprovalQueue:
                     outcome="denied",
                 ).inc()
             except Exception:
-                pass
+                logger.warning('Operation failed', exc_info=True)
             return False
 
         # MANUAL mode: check for callback or block
@@ -155,7 +155,7 @@ class ApprovalQueue:
                         outcome="approved" if approved else "denied",
                     ).inc()
                 except Exception:
-                    pass
+                    logger.warning('Operation failed', exc_info=True)
                 return approved
             except Exception as e:
                 logger.error(f"Approval callback failed: {e}")
@@ -173,7 +173,7 @@ class ApprovalQueue:
                     outcome="approved" if approved else "denied",
                 ).inc()
             except Exception:
-                pass
+                logger.warning('Operation failed', exc_info=True)
             return approved
 
         # No callback and not CLI: deny for safety
@@ -190,7 +190,7 @@ class ApprovalQueue:
                 outcome="denied",
             ).inc()
         except Exception:
-            pass
+            logger.warning('Operation failed', exc_info=True)
         return False
 
     def _cli_prompt(self, req: ApprovalRequest) -> bool:

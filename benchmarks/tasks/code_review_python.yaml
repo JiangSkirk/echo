@@ -1,0 +1,23 @@
+id: code_review_python
+name: Review Python code
+description: Agent reads a Python file and identifies a bug.
+input: "Read buggy.py and tell me what's wrong with it"
+tags: [code, analysis]
+max_turns: 4
+setup:
+  files:
+    - path: buggy.py
+      content: |
+        def divide(a, b):
+            return a / b
+        
+        result = divide(10, 0)
+        print(result)
+scoring:
+  expected_output_contains:
+    - "ZeroDivision"
+    - "divide by zero"
+    - "bug"
+    - "error"
+  expected_tool_calls:
+    - file_read

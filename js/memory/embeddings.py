@@ -7,13 +7,19 @@ vectors, with a pluggable interface for future transformer-based models.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
+import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import cast
 
 import httpx
+
+from js.utils.log import get_logger
+
+logger = get_logger("js.memory.embeddings")
 
 
 @dataclass
@@ -40,13 +46,9 @@ class Embedder(ABC):
         return [self.embed(t) for t in texts]
 
     def to_json(self, vec: list[float]) -> str:
-        import json
-
         return json.dumps(vec)
 
     def from_json(self, raw: str) -> list[float]:
-        import json
-
         return cast("list[float]", json.loads(raw))
 
     def health(self) -> EmbedderHealth:
@@ -89,7 +91,8 @@ class LLMEmbedder(Embedder):
     """Embedding provider using an OpenAI-compatible embeddings API.
 
     Uses a synchronous httpx client so it can be called from the
-    synchronous MemoryStore methods.
+    synchronous MemoryStore methods.  Includes retry with exponential
+    backoff for transient failures.
     """
 
     def __init__(
@@ -98,14 +101,16 @@ class LLMEmbedder(Embedder):
         api_key: str,
         model: str = "text-embedding-3-small",
         dims: int | None = None,
+        max_retries: int = 3,
     ) -> None:
         self.client = httpx.Client(
             base_url=base_url,
             headers={"Authorization": f"Bearer {api_key}"},
-            timeout=httpx.Timeout(30.0),
+            timeout=httpx.Timeout(30.0, connect=5.0),
         )
         self.model = model
         self.dims = dims
+        self.max_retries = max_retries
         self._failure_count = 0
         self._last_failure: float | None = None
         self._last_success: float | None = None
@@ -115,23 +120,37 @@ class LLMEmbedder(Embedder):
         return result[0]
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        try:
-            response = self.client.post(
-                "/embeddings",
-                json={"model": self.model, "input": texts},
-            )
-            response.raise_for_status()
-            data = response.json()
-            vectors = [item["embedding"] for item in data["data"]]
-            if self.dims:
-                vectors = [v[: self.dims] for v in vectors]
-            self._failure_count = 0
-            self._last_success = time.time()
-            return vectors
-        except Exception as e:
-            self._failure_count += 1
-            self._last_failure = time.time()
-            raise RuntimeError(f"Embedding API failed: {e}") from e
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries):
+            try:
+                response = self.client.post(
+                    "/embeddings",
+                    json={"model": self.model, "input": texts},
+                )
+                response.raise_for_status()
+                data = response.json()
+                vectors = [item["embedding"] for item in data["data"]]
+                if self.dims:
+                    vectors = [v[: self.dims] for v in vectors]
+                self._failure_count = 0
+                self._last_success = time.time()
+                return vectors
+            except Exception as e:
+                last_error = e
+                is_retryable = isinstance(e, (httpx.NetworkError, httpx.TimeoutException))
+                if hasattr(e, 'response') and hasattr(e.response, 'status_code'):
+                    is_retryable = is_retryable or e.response.status_code >= 500 or e.response.status_code == 429
+                if not is_retryable or attempt >= self.max_retries - 1:
+                    break
+                time.sleep(min(2 ** attempt, 10))
+
+        self._failure_count += 1
+        self._last_failure = time.time()
+        raise RuntimeError(f"Embedding API failed after {self.max_retries} attempts: {last_error}") from last_error
+
+    def close(self) -> None:
+        if hasattr(self, "client") and self.client:
+            self.client.close()
 
     def health(self) -> EmbedderHealth:
         return EmbedderHealth(
@@ -170,52 +189,69 @@ class HybridEmbedder(Embedder):
         self._consecutive_failures = 0
         self._last_failure_time: float | None = None
         self._using_fallback = False
+        self._lock = threading.Lock()
 
     def _try_primary(self, texts: list[str]) -> list[list[float]]:
         """Attempt primary embedder, updating circuit state."""
         try:
             result = self.primary.embed_batch(texts)
-            self._consecutive_failures = 0
-            self._last_failure_time = None
-            self._using_fallback = False
+            with self._lock:
+                self._consecutive_failures = 0
+                self._last_failure_time = None
+                self._using_fallback = False
             return result
         except Exception:
-            self._consecutive_failures += 1
-            self._last_failure_time = time.time()
-            if self._consecutive_failures >= self.failure_threshold:
-                self._using_fallback = True
+            with self._lock:
+                self._consecutive_failures += 1
+                self._last_failure_time = time.time()
+                if self._consecutive_failures >= self.failure_threshold:
+                    self._using_fallback = True
             raise
 
     def _maybe_recover(self) -> bool:
         """If we are in fallback mode and the recovery timeout has passed,
-        try a dummy embed to see if the primary is back."""
-        if not self._using_fallback:
-            return False
-        if self._last_failure_time is None:
-            return False
-        elapsed = time.time() - self._last_failure_time
-        if elapsed < self.recovery_timeout:
-            return False
+        try a dummy embed to see if the primary is back.
+        """
+        with self._lock:
+            if not self._using_fallback:
+                return False
+            if self._last_failure_time is None:
+                return False
+            elapsed = time.time() - self._last_failure_time
+            if elapsed < self.recovery_timeout:
+                return False
+        return self.force_recover()
+
+    def force_recover(self) -> bool:
+        """Immediately probe the primary embedder and switch back if healthy.
+
+        Returns True if recovery succeeded.
+        """
         try:
             self.primary.embed("ping")
-            self._using_fallback = False
-            self._consecutive_failures = 0
-            self._last_failure_time = None
+            with self._lock:
+                self._using_fallback = False
+                self._consecutive_failures = 0
+                self._last_failure_time = None
             return True
         except Exception:
-            self._last_failure_time = time.time()
+            with self._lock:
+                self._consecutive_failures = self.failure_threshold
+                self._last_failure_time = time.time()
             return False
 
     def embed(self, text: str) -> list[float]:
         return self.embed_batch([text])[0]
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        if self._using_fallback:
+        with self._lock:
+            using_fallback = self._using_fallback
+        if using_fallback:
             if self._maybe_recover():
                 try:
                     return self._try_primary(texts)
                 except Exception:
-                    pass
+                    logger.warning('Operation failed', exc_info=True)
             return self.fallback.embed_batch(texts)
 
         try:
@@ -225,13 +261,30 @@ class HybridEmbedder(Embedder):
             # the caller never sees an error.
             return self.fallback.embed_batch(texts)
 
+    def close(self) -> None:
+        """Close any underlying resources (e.g. HTTP clients)."""
+        if hasattr(self.primary, 'close'):
+            try:
+                self.primary.close()
+            except Exception:
+                logger.warning('Operation failed', exc_info=True)
+        if hasattr(self.fallback, 'close'):
+            try:
+                self.fallback.close()
+            except Exception:
+                logger.warning('Operation failed', exc_info=True)
+
     def health(self) -> EmbedderHealth:
         primary_health = self.primary.health()
+        with self._lock:
+            using_fallback = self._using_fallback
+            consecutive_failures = self._consecutive_failures
+            last_failure = self._last_failure_time
         return EmbedderHealth(
             provider=primary_health.provider,
-            active=not self._using_fallback,
-            failure_count=self._consecutive_failures,
-            last_failure=self._last_failure_time,
+            active=not using_fallback,
+            failure_count=consecutive_failures,
+            last_failure=last_failure,
             last_success=primary_health.last_success,
-            fallback_provider=self.fallback.health().provider if self._using_fallback else None,
+            fallback_provider=self.fallback.health().provider if using_fallback else None,
         )

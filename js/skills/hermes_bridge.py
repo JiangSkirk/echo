@@ -65,7 +65,7 @@ def _load_hub_lock() -> dict[str, Any]:
             data: dict[str, Any] = json.loads(lock_path.read_text())
             return data
         except (json.JSONDecodeError, OSError):
-            pass
+            logger.warning('Operation failed', exc_info=True)
     return {}
 
 
@@ -320,7 +320,7 @@ def _post_process_hermes_spec(spec: SkillSpec, lock_data: dict[str, Any]) -> Ski
             if len(parts) >= 1:
                 spec.category = str(parts[0])
         except ValueError:
-            pass
+            logger.warning('Operation failed', exc_info=True)
 
     # Ensure sub-directories are set (redundant with parse_skill_manifest but safe)
     if spec.path:
@@ -530,7 +530,7 @@ def _try_hermes_guard_scan(skill_path: Path) -> ScanResult | None:
                 trust_level=TrustLevel.TRUSTED if verdict == "safe" else TrustLevel.COMMUNITY,
             )
     except Exception:
-        pass
+        logger.warning('Operation failed', exc_info=True)
     return None
 
 

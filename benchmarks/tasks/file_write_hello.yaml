@@ -1,0 +1,14 @@
+id: file_write_hello
+name: Write a hello file
+description: Agent should create a text file with greeting content.
+input: "Create a file named hello.txt with the content 'Hello, World!'"
+tags: [file, write]
+max_turns: 3
+scoring:
+  expected_files:
+    - path: hello.txt
+      contains: "Hello, World!"
+  expected_output_contains:
+    - "created"
+  expected_tool_calls:
+    - file_write

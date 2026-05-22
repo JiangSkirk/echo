@@ -198,7 +198,3 @@ class SkillCurator:
             "recommendation": health.recommendation,
         }
 
-    def get_last_report(self) -> dict[str, Any] | None:
-        """Get the most recent curation report from log (simplified)."""
-        # In a full implementation, we'd persist reports to DB
-        return None

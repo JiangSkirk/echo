@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -37,6 +37,9 @@ class ModelProviderConfig(BaseModel):
     timeout: float = Field(default=120.0, ge=1.0)
     max_retries: int = Field(default=3, ge=0)
     default_model: str = Field(default="")
+    embedding_model: str | None = Field(
+        default=None, description="Optional embedding model override for this provider"
+    )
     models: list[ModelConfig] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -109,6 +112,10 @@ class SecurityConfig(BaseModel):
     script_provenance: bool = True
     tool_result_scan: bool = True
 
+    # API authentication
+    api_key_required: bool = Field(default=False, description="Require X-API-Key for all web API endpoints")
+    api_key_auto_bootstrap: bool = Field(default=True, description="Allow first access without key to bootstrap admin key")
+
     @field_validator("protected_paths")
     @classmethod
     def validate_paths(cls, v: list[str]) -> list[str]:
@@ -119,7 +126,7 @@ class MemoryConfig(BaseModel):
     """Memory and context management."""
 
     enabled: bool = True
-    max_memory_chars: int = Field(default=8000, ge=0)
+    max_memory_chars: int = Field(default=2000, ge=0)
     compression_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
     context_window_target: float = Field(default=0.8, ge=0.1, le=1.0)
     auto_summarize: bool = True
@@ -134,6 +141,17 @@ class DisplayConfig(BaseModel):
     show_reasoning: bool = False
     streaming: bool = True
     theme: Literal["default", "dark", "light"] = "default"
+
+
+class PipelineConfig(BaseModel):
+    """Auto-Fetch Memory Pipeline configuration."""
+
+    enabled: bool = True
+    poll_interval_minutes: int = Field(default=30, ge=1)
+    token_limit: int = Field(default=3000, ge=500)
+    vault_dir: str = ""
+    # Per-source configs keyed by connector name
+    sources: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class JSSettings(BaseSettings):
@@ -163,7 +181,9 @@ class JSSettings(BaseSettings):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)
+    pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     search_configured: bool = False
+    first_run_completed: bool = False
 
     @model_validator(mode="after")
     def ensure_directories(self) -> JSSettings:
@@ -185,23 +205,46 @@ class JSSettings(BaseSettings):
 
     @classmethod
     def from_file(cls, path: Path | str | None = None) -> JSSettings:
-        """Load settings from file, or create defaults."""
+        """Load settings from file, or create defaults.
+
+        Priority:
+        1. Explicit *path* argument
+        2. JS_CONFIG_PATH environment variable
+        3. Default locations (~/.config/js/config.{yaml,toml})
+        """
         if path:
-            p = Path(path).expanduser()
+            p = Path(path).expanduser().resolve()
+        elif env_path := os.getenv("JS_CONFIG_PATH"):
+            p = Path(env_path).expanduser().resolve()
+        else:
+            p = None
+
+        if p is not None:
+            # Guard against path traversal attempts
+            if ".." in str(p):
+                raise ValueError(f"Path traversal not allowed: {p}")
             if not p.exists():
-                raise FileNotFoundError(f"Config file not found: {p}")
+                # Graceful fallback: return defaults so the app can still start
+                # (setup wizard will guide the user to create a proper config)
+                instance = cls()
+                instance._config_path = p  # type: ignore[attr-defined]
+                return instance
             if p.suffix in (".yaml", ".yml"):
                 import yaml
 
                 with open(p) as f:
                     data = yaml.safe_load(f) or {}
-                return cls(**data)
+                instance = cls(**data)
+                instance._config_path = p  # type: ignore[attr-defined]
+                return instance
             elif p.suffix == ".toml":
                 import tomllib
 
                 with open(p, "rb") as f:
                     data = tomllib.load(f)
-                return cls(**data)
+                instance = cls(**data)
+                instance._config_path = p  # type: ignore[attr-defined]
+                return instance
 
         # Try default locations
         for candidate in [
@@ -209,20 +252,59 @@ class JSSettings(BaseSettings):
             Path.home() / ".config" / "js" / "config.toml",
         ]:
             if candidate.exists():
-                return cls.from_file(candidate)
+                instance = cls.from_file(candidate)
+                instance._config_path = candidate  # type: ignore[attr-defined]
+                return instance
 
-        return cls()
+        instance = cls()
+        instance._config_path = Path.home() / ".config" / "js" / "config.yaml"  # type: ignore[attr-defined]
+        return instance
 
-    def save(self, path: Path | str | None = None) -> None:
-        """Save current settings to file."""
-        target = Path(path or Path.home() / ".config" / "js" / "config.yaml")
+    def save(
+        self,
+        path: Path | str | None = None,
+        fields: list[str] | None = None,
+    ) -> None:
+        """Save current settings to file.
+
+        Resolution order for target path:
+        1. Explicit *path* argument
+        2. JS_CONFIG_PATH environment variable
+        3. _config_path attribute (set by from_file)
+        4. Default ~/.config/js/config.yaml
+
+        If *fields* is provided, only those top-level fields are updated in
+        the existing file (merge mode). This prevents accidental clobbering
+        of providers, models, or paths that were set by auto-discovery or
+        loaded from the original config.
+        """
+        if path:
+            target = Path(path)
+        elif env_path := os.getenv("JS_CONFIG_PATH"):
+            target = Path(env_path)
+        elif hasattr(self, "_config_path"):
+            target = Path(self._config_path)
+        else:
+            target = Path.home() / ".config" / "js" / "config.yaml"
+
+        target = target.expanduser().resolve()
         target.parent.mkdir(parents=True, exist_ok=True)
         import yaml
 
+        # Build the new data dict
+        new_data = self.model_dump(mode="json", exclude={"providers": {"__all__": {"api_key"}}})
+
+        # Field-restricted merge mode: update only specified fields
+        if fields and target.exists():
+            try:
+                with open(target) as f:
+                    existing = yaml.safe_load(f) or {}
+                for key in fields:
+                    if key in new_data:
+                        existing[key] = new_data[key]
+                new_data = existing
+            except Exception:
+                pass  # If read fails, fall back to full overwrite
+
         with open(target, "w") as f:
-            yaml.safe_dump(
-                self.model_dump(mode="json", exclude={"providers": {"__all__": {"api_key"}}}),
-                f,
-                default_flow_style=False,
-                sort_keys=False,
-            )
+            yaml.safe_dump(new_data, f, default_flow_style=False, sort_keys=False)

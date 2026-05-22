@@ -2,23 +2,25 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from js.config import DefenseMode
 from js.web import server as web_server
 from js.web.server import create_app
 
 
 @pytest.fixture
-def client(tmp_path) -> TestClient:
+def client(tmp_path: Path) -> TestClient:
     """Build a TestClient with a fully-mocked agent."""
     mock_agent = MagicMock()
     mock_agent.settings.workspace = tmp_path / "workspace"
     mock_agent.settings.state_dir = tmp_path / "state"
     mock_agent.settings.max_turns = 10
-    mock_agent.settings.security.defense_mode.value = "standard"
+    mock_agent.settings.security.defense_mode = DefenseMode.ENFORCE
     mock_agent.settings.default_model = "test/model"
     mock_agent.registry.get_stats.return_value = {}
     mock_agent.secrets.get_stats.return_value = {"stored_secrets": 0, "detected_leaks": 0}
@@ -138,13 +140,13 @@ class TestEvolutionEndpoints:
 
 
 class TestEvolutionRunErrors:
-    def test_evolution_run_501_when_method_missing(self, tmp_path) -> None:
+    def test_evolution_run_501_when_method_missing(self, tmp_path: Path) -> None:
         """If agent lacks _run_evolution_cycle, return 501."""
         mock_agent = MagicMock()
         mock_agent.settings.workspace = tmp_path / "workspace"
         mock_agent.settings.state_dir = tmp_path / "state"
         mock_agent.settings.max_turns = 10
-        mock_agent.settings.security.defense_mode.value = "standard"
+        mock_agent.settings.security.defense_mode = DefenseMode.ENFORCE
         mock_agent.registry.get_stats.return_value = {}
         mock_agent.secrets.get_stats.return_value = {"stored_secrets": 0, "detected_leaks": 0}
         mock_agent.metacognition = MagicMock()
@@ -166,13 +168,13 @@ class TestEvolutionRunErrors:
         assert resp.status_code == 501
         assert "restart" in resp.json()["detail"].lower()
 
-    def test_evolution_run_503_when_subsystem_missing(self, tmp_path) -> None:
+    def test_evolution_run_503_when_subsystem_missing(self, tmp_path: Path) -> None:
         """If a required subsystem is None, return 503."""
         mock_agent = MagicMock()
         mock_agent.settings.workspace = tmp_path / "workspace"
         mock_agent.settings.state_dir = tmp_path / "state"
         mock_agent.settings.max_turns = 10
-        mock_agent.settings.security.defense_mode.value = "standard"
+        mock_agent.settings.security.defense_mode = DefenseMode.ENFORCE
         mock_agent.registry.get_stats.return_value = {}
         mock_agent.secrets.get_stats.return_value = {"stored_secrets": 0, "detected_leaks": 0}
         mock_agent.metacognition = None

@@ -83,12 +83,12 @@ class FileTools:
         ]
 
     async def read(self, path: str, offset: int = 0, limit: int = 0) -> ToolResult:
-        target = self._resolve(path)
-        decision = self.guard.check_path_operation(str(target), "read")
-        if decision.decision == SecurityDecisionType.BLOCK:
-            return ToolResult(success=False, error=decision.reason)
-
         try:
+            target = self._resolve(path)
+            decision = self.guard.check_path_operation(str(target), "read")
+            if decision.decision == SecurityDecisionType.BLOCK:
+                return ToolResult(success=False, error=decision.reason)
+
             if not target.exists():
                 return ToolResult(success=False, error=f"File not found: {path}")
 
@@ -113,10 +113,13 @@ class FileTools:
             return ToolResult(success=False, error=str(e))
 
     async def write(self, path: str, content: str, append: bool = False) -> ToolResult:
-        target = self._resolve(path)
-        decision = self.guard.check_path_operation(str(target), "write")
-        if decision.decision == SecurityDecisionType.BLOCK:
-            return ToolResult(success=False, error=decision.reason)
+        try:
+            target = self._resolve(path)
+            decision = self.guard.check_path_operation(str(target), "write")
+            if decision.decision == SecurityDecisionType.BLOCK:
+                return ToolResult(success=False, error=decision.reason)
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
 
         if len(content) > self.limits.file_write_max_chars:
             return ToolResult(
@@ -143,12 +146,12 @@ class FileTools:
             return ToolResult(success=False, error=str(e))
 
     async def list_dir(self, path: str = ".", recursive: bool = False) -> ToolResult:
-        target = self._resolve(path)
-        decision = self.guard.check_path_operation(str(target), "read")
-        if decision.decision == SecurityDecisionType.BLOCK:
-            return ToolResult(success=False, error=decision.reason)
-
         try:
+            target = self._resolve(path)
+            decision = self.guard.check_path_operation(str(target), "read")
+            if decision.decision == SecurityDecisionType.BLOCK:
+                return ToolResult(success=False, error=decision.reason)
+
             if not target.is_dir():
                 return ToolResult(success=False, error=f"Not a directory: {path}")
 
@@ -169,12 +172,12 @@ class FileTools:
             return ToolResult(success=False, error=str(e))
 
     async def search(self, pattern: str, path: str = ".") -> ToolResult:
-        target = self._resolve(path)
-        decision = self.guard.check_path_operation(str(target), "read")
-        if decision.decision == SecurityDecisionType.BLOCK:
-            return ToolResult(success=False, error=decision.reason)
-
         try:
+            target = self._resolve(path)
+            decision = self.guard.check_path_operation(str(target), "read")
+            if decision.decision == SecurityDecisionType.BLOCK:
+                return ToolResult(success=False, error=decision.reason)
+
             import fnmatch
 
             matches: list[str] = []
@@ -190,12 +193,12 @@ class FileTools:
             return ToolResult(success=False, error=str(e))
 
     async def delete(self, path: str) -> ToolResult:
-        target = self._resolve(path)
-        decision = self.guard.check_path_operation(str(target), "delete")
-        if decision.decision == SecurityDecisionType.BLOCK:
-            return ToolResult(success=False, error=decision.reason)
-
         try:
+            target = self._resolve(path)
+            decision = self.guard.check_path_operation(str(target), "delete")
+            if decision.decision == SecurityDecisionType.BLOCK:
+                return ToolResult(success=False, error=decision.reason)
+
             if target.is_file():
                 target.unlink()
                 return ToolResult(success=True, output=f"Deleted file: {path}")

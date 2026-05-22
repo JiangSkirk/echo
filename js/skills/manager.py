@@ -129,6 +129,12 @@ class SkillManager:
         for spec in self._skills.values():
             self._register_skill_as_tool(spec)
 
+    def register_auto_skill(self, spec: SkillSpec) -> None:
+        """Register an auto-generated skill and expose it as a tool."""
+        self._skills[spec.id] = spec
+        self._register_skill_as_tool(spec)
+        logger.info(f"Registered auto-skill: {spec.id}")
+
     def _register_skill_as_tool(self, spec: SkillSpec) -> None:
         if not self._tool_registry:
             return
@@ -189,7 +195,7 @@ class SkillManager:
     # ------------------------------------------------------------------
 
     def _load_all(self) -> None:
-        """Load builtin + installed + Hermes skills."""
+        """Load builtin + installed skills. Hermes skills loaded separately."""
         # 1. Builtin skills (shipped with agent)
         if self.BUILTIN_DIR.exists():
             self._scan_directory(self.BUILTIN_DIR, trust_override=TrustLevel.BUILTIN)
@@ -197,10 +203,16 @@ class SkillManager:
         # 2. User-installed skills
         self._scan_directory(self.skills_dir)
 
-        # 3. Hermes skills (seamless integration)
+        logger.info(f"Loaded {len(self._skills)} native skills")
+
+    def load_hermes_sync(self) -> None:
+        """Synchronously load Hermes skills (for CLI/non-async contexts)."""
         self._load_hermes_skills()
 
-        logger.info(f"Loaded {len(self._skills)} skills")
+    async def load_hermes_async(self) -> None:
+        """Asynchronously load Hermes skills in a background thread."""
+        import asyncio
+        await asyncio.to_thread(self._load_hermes_skills)
 
     def _load_hermes_skills(self) -> None:
         """Load skills from the Hermes skills directory (~/.hermes/skills/).
@@ -408,7 +420,7 @@ class SkillManager:
                     refreshed = parse_skill_manifest(manifest)
                     spec.full_content = refreshed.full_content
                 except Exception:
-                    pass
+                    logger.warning(f"Failed to refresh manifest for {spec.id}", exc_info=True)
 
         # Load references
         references: dict[str, str] = {}
@@ -418,7 +430,7 @@ class SkillManager:
                     try:
                         references[ref_file.name] = ref_file.read_text()
                     except Exception:
-                        pass
+                        logger.warning(f"Failed to read reference {ref_file.name}", exc_info=True)
 
         # Load templates
         templates: dict[str, str] = {}
@@ -428,7 +440,7 @@ class SkillManager:
                     try:
                         templates[tmpl_file.name] = tmpl_file.read_text()
                     except Exception:
-                        pass
+                        logger.warning(f"Failed to read template {tmpl_file.name}", exc_info=True)
 
         data = spec.to_detail_dict()
         data["content"] = spec.full_content
@@ -474,8 +486,6 @@ class SkillManager:
 
         New skills enter quarantine until explicitly trusted.
         """
-        import asyncio
-
         target_id = skill_id or Path(source).name
         # Sanitize target_id to prevent path traversal
         target_id = Path(target_id).name
@@ -526,6 +536,31 @@ entry: main.py
         spec = parse_skill_manifest(manifest)
         spec.path = target_dir
 
+        # --- OpenClaw / Hermes type inference ---
+        # If the manifest did not explicitly declare a type, infer from directory contents.
+        # OpenClaw skills default to prompt unless they ship executable scripts.
+        has_explicit_type = False
+        try:
+            import re as _re
+
+            import yaml
+            text = manifest.read_text(encoding="utf-8")
+            # Try YAML frontmatter format first (---\n...\n---\n)
+            match = _re.match(r"^---\s*\n(.*?)\n---\s*\n", text, _re.DOTALL)
+            if match:
+                frontmatter = yaml.safe_load(match.group(1)) or {}
+            else:
+                # Fall back to plain YAML (JS Agent native format)
+                frontmatter = yaml.safe_load(text) or {}
+            has_explicit_type = "type" in frontmatter
+        except Exception:
+            logger.warning('Operation failed', exc_info=True)
+        if not has_explicit_type:
+            has_scripts = (target_dir / "scripts").exists() and any((target_dir / "scripts").iterdir())
+            if not has_scripts:
+                spec.type = SkillType.PROMPT
+                logger.debug(f"Inferred type=prompt for {spec.id} (no scripts/ dir)")
+
         # New installs start in quarantine
         result = scan_skill(spec)
         spec.risk_flags = result.risk_flags
@@ -537,6 +572,16 @@ entry: main.py
         # Install pip dependencies if present
         req_file = target_dir / "requirements.txt"
         if req_file.exists():
+            # Safety: reject requirements with git URLs or local paths
+            raw_reqs = req_file.read_text(encoding="utf-8")
+            for line in raw_reqs.splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if stripped.startswith("git+") or stripped.startswith("-e ") or stripped.startswith(".") or "//" in stripped:
+                    raise ValueError(
+                        f"Blocked unsafe requirement in {spec.id}: {stripped[:80]}"
+                    )
             proc = await asyncio.create_subprocess_exec(
                 sys.executable, "-m", "pip", "install", "-r", str(req_file),
                 stdout=asyncio.subprocess.PIPE,
@@ -620,7 +665,7 @@ entry: main.py
         # Execute
         try:
             exec_result: dict[str, Any] = await execute_skill(
-                spec, args, self.workspace, llm_caller, self._sandbox
+                spec, args, self.workspace, llm_caller, self._sandbox, self.execute
             )
         except Exception as e:
             exec_result = {"success": False, "error": str(e)}
@@ -628,6 +673,19 @@ entry: main.py
         latency = (time.time() - start) * 1000
         success = exec_result.get("success", False)
         self._record_usage(skill_id, spec.type.value, success, latency)
+
+        # Emit Prometheus metrics
+        try:
+            from js.utils.metrics import get_metrics
+            m = get_metrics()
+            source = "hermes" if skill_id.startswith("hermes:") else "native"
+            m.skill_usage_total.labels(skill_id=skill_id, skill_type=spec.type.value, source=source).inc()
+            m.skill_latency_seconds.labels(skill_id=skill_id, skill_type=spec.type.value).observe(latency / 1000.0)
+            # Success rate as a point-in-time gauge (based on in-memory stats)
+            if spec.success_rate is not None:
+                m.skill_success_rate_gauge.labels(skill_id=skill_id).observe(spec.success_rate)
+        except Exception:
+            logger.warning("Failed to emit skill metrics", exc_info=True)
 
         # Record evolution feedback
         if hasattr(self, "_evolver") and self._evolver:
@@ -637,7 +695,7 @@ entry: main.py
                     score = 1.0 if success else 0.0
                     self._evolver.record_result(best.id, success, score)
             except Exception:
-                logger.debug(f"Failed to record evolution result for {skill_id}", exc_info=True)
+                logger.warning(f"Failed to record evolution result for {skill_id}", exc_info=True)
 
         # Record composition chain for learning
         self._record_chain(skill_id, success, session_id)
@@ -661,7 +719,7 @@ entry: main.py
             dep_spec = self._skills.get(dep_id)
             if not dep_spec:
                 return {"success": False, "error": f"Dependency skill not found: {dep_id}"}
-            result = await execute_skill(dep_spec, args, self.workspace, llm_caller, self._sandbox)
+            result = await execute_skill(dep_spec, args, self.workspace, llm_caller, self._sandbox, self.execute)
             return result
 
         for dep_id in spec.dependencies:
@@ -697,7 +755,7 @@ entry: main.py
                 spec.success_rate = (total[1] or 0) / total[0]
                 spec.avg_latency_ms = avg_lat[0] or 0.0
 
-    def _record_chain(self, skill_id: str, success: bool, session_id: str = "") -> None:
+    def _record_chain(self, skill_id: str, _success: bool, session_id: str = "") -> None:
         """Record skill execution for composition chain discovery."""
         if not session_id or not self._composer:
             return
@@ -707,49 +765,9 @@ entry: main.py
             try:
                 self._composer.record_transition(last_skill, skill_id, session_id)
             except Exception:
-                logger.debug(f"Failed to record transition {last_skill} -> {skill_id}", exc_info=True)
+                logger.warning(f"Failed to record transition {last_skill} -> {skill_id}", exc_info=True)
 
         self._last_skill_by_session[session_id] = skill_id
-
-    # ------------------------------------------------------------------
-    # Composition Chain Discovery
-    # ------------------------------------------------------------------
-
-    def record_skill_transition(self, from_skill: str, to_skill: str) -> None:
-        """Record that one skill was followed by another."""
-        with db_connection(self.db_path) as conn:
-            existing = conn.execute(
-                "SELECT frequency FROM skill_composition_chains WHERE from_skill = ? AND to_skill = ?",
-                (from_skill, to_skill),
-            ).fetchone()
-            if existing:
-                conn.execute(
-                    "UPDATE skill_composition_chains SET frequency = frequency + 1, last_seen = ? WHERE from_skill = ? AND to_skill = ?",
-                    (time.time(), from_skill, to_skill),
-                )
-            else:
-                conn.execute(
-                    "INSERT INTO skill_composition_chains (from_skill, to_skill, last_seen) VALUES (?, ?, ?)",
-                    (from_skill, to_skill, time.time()),
-                )
-            conn.commit()
-
-    def get_common_chains(self, min_frequency: int = 3) -> list[dict[str, Any]]:
-        """Discover commonly used skill chains from execution history."""
-        with db_connection(self.db_path) as conn:
-            rows = conn.execute(
-                """
-                SELECT from_skill, to_skill, frequency
-                FROM skill_composition_chains
-                WHERE frequency >= ?
-                ORDER BY frequency DESC
-                """,
-                (min_frequency,),
-            ).fetchall()
-        return [
-            {"from": r[0], "to": r[1], "frequency": r[2]}
-            for r in rows
-        ]
 
     # ------------------------------------------------------------------
     # Stats & Admin

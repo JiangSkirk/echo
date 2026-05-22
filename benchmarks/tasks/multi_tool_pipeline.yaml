@@ -1,0 +1,18 @@
+id: multi_tool_pipeline
+name: Multi-tool data pipeline
+description: Agent reads input, processes with shell, writes output.
+input: "Read data.txt, uppercase its content with shell tr, and save to output.txt"
+tags: [multi-step, shell, file]
+max_turns: 6
+setup:
+  files:
+    - path: data.txt
+      content: "hello benchmark"
+scoring:
+  expected_files:
+    - path: output.txt
+      contains: "HELLO BENCHMARK"
+  expected_tool_calls:
+    - file_read
+    - shell
+    - file_write

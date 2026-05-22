@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any
+
+import aiosqlite
 
 
 @contextmanager
@@ -24,3 +26,17 @@ def db_connection(db_path: Path | str, *, row_factory: Any = None) -> Generator[
         yield conn
     finally:
         conn.close()
+
+
+@asynccontextmanager
+async def adb_connection(db_path: Path | str, *, row_factory: Any = None) -> AsyncGenerator[aiosqlite.Connection, None]:
+    """Open an async SQLite connection via aiosqlite.
+
+    Usage::
+        async with adb_connection(path) as conn:
+            await conn.execute(...)
+    """
+    async with aiosqlite.connect(str(db_path)) as conn:
+        if row_factory is not None:
+            conn.row_factory = row_factory
+        yield conn

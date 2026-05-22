@@ -6,7 +6,7 @@ import pytest
 
 from js.skills.composer import CompositionNode, SkillComposer
 from js.skills.curator import SkillCurator
-from js.skills.spec import SkillSpec, SkillType, TrustLevel
+from js.skills.spec import SkillSpec, TrustLevel
 
 
 class TestSkillComposer:
@@ -37,22 +37,6 @@ class TestSkillComposer:
         discovered = composer.discover_chains(min_frequency=3)
         assert len(discovered) >= 1
 
-    def test_list_chains(self, composer: SkillComposer) -> None:
-        composer.create_chain("Chain 1", "Desc", [CompositionNode(skill_id="s1")])
-        chains = composer.list_chains()
-        assert len(chains) >= 1
-        assert chains[0]["name"] == "Chain 1"
-
-    def test_record_chain_result(self, composer: SkillComposer) -> None:
-        chain = composer.create_chain("Test", "Desc", [CompositionNode(skill_id="s1")])
-        composer.record_chain_result(chain.id, True)
-        composer.record_chain_result(chain.id, False)
-
-    def test_build_meta_skill_spec(self, composer: SkillComposer) -> None:
-        chain = composer.create_chain("Meta", "Meta skill", [CompositionNode(skill_id="s1")])
-        spec = composer.build_meta_skill_spec(chain)
-        assert spec.type == SkillType.META
-        assert spec.dependencies == ["s1"]
 
 
 class TestSkillCurator:

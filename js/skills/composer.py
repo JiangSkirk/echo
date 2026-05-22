@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from js.skills.spec import SkillSpec, SkillType
 from js.utils.db import db_connection
 from js.utils.log import get_logger
 
@@ -156,64 +155,4 @@ class SkillComposer:
 
         return discovered
 
-    def get_chain(self, chain_id: str) -> SkillChain | None:
-        return self._chains.get(chain_id)
 
-    def list_chains(self) -> list[dict[str, Any]]:
-        """List all available chains."""
-        with db_connection(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT id, name, description, usage_count, success_rate FROM skill_chains ORDER BY usage_count DESC"
-            ).fetchall()
-        return [
-            {
-                "id": r[0],
-                "name": r[1],
-                "description": r[2],
-                "usage_count": r[3],
-                "success_rate": r[4],
-            }
-            for r in rows
-        ]
-
-    def record_chain_result(self, chain_id: str, success: bool) -> None:
-        """Record execution result for a chain."""
-        with db_connection(self.db_path) as conn:
-            conn.execute(
-                "INSERT INTO chain_executions (chain_id, success, executed_at) VALUES (?, ?, ?)",
-                (chain_id, int(success), time.time()),
-            )
-            # Update chain stats
-            stats = conn.execute(
-                "SELECT AVG(success), COUNT(*) FROM chain_executions WHERE chain_id = ?",
-                (chain_id,),
-            ).fetchone()
-            if stats:
-                conn.execute(
-                    "UPDATE skill_chains SET success_rate = ?, usage_count = ? WHERE id = ?",
-                    (stats[0], stats[1], chain_id),
-                )
-            conn.commit()
-
-    def build_meta_skill_spec(self, chain: SkillChain) -> SkillSpec:
-        """Build a SkillSpec for a meta skill from a chain."""
-        return SkillSpec(
-            id=chain.id,
-            name=chain.name,
-            description=chain.description,
-            type=SkillType.META,
-            dependencies=[s.skill_id for s in chain.steps],
-            metadata={
-                "workflow": {
-                    "steps": [
-                        {
-                            "type": "skill",
-                            "skill_id": s.skill_id,
-                            "arg_mapping": s.args_mapping,
-                            "condition": s.condition,
-                        }
-                        for s in chain.steps
-                    ]
-                }
-            },
-        )

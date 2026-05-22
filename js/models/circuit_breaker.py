@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import threading
+import asyncio
 import time
 from dataclasses import dataclass
 from enum import StrEnum
@@ -34,21 +34,22 @@ class CircuitBreaker:
         self._successes = 0
         self._last_failure_time: float = 0.0
         self._half_open_calls = 0
-        self._lock = threading.RLock()
+        self._lock = asyncio.Lock()
 
-    @property
-    def state(self) -> CircuitState:
-        with self._lock:
+    async def state(self) -> CircuitState:
+        async with self._lock:
             if self._state == CircuitState.OPEN and time.time() - self._last_failure_time > self.recovery_timeout:
                 self._state = CircuitState.HALF_OPEN
                 self._half_open_calls = 0
                 logger.info(f"Circuit {self.name} entering HALF_OPEN")
             return self._state
 
-    def record_success(self) -> None:
-        with self._lock:
+    async def record_success(self) -> None:
+        async with self._lock:
             # Trigger state transition if needed
-            _ = self.state
+            if self._state == CircuitState.OPEN and time.time() - self._last_failure_time > self.recovery_timeout:
+                self._state = CircuitState.HALF_OPEN
+                self._half_open_calls = 0
             if self._state == CircuitState.HALF_OPEN:
                 if self._half_open_calls >= self.half_open_max_calls:
                     self._state = CircuitState.CLOSED
@@ -57,8 +58,8 @@ class CircuitBreaker:
             else:
                 self._failures = max(0, self._failures - 1)
 
-    def record_failure(self) -> None:
-        with self._lock:
+    async def record_failure(self) -> None:
+        async with self._lock:
             self._failures += 1
             self._last_failure_time = time.time()
 
@@ -69,9 +70,12 @@ class CircuitBreaker:
                 self._state = CircuitState.OPEN
                 logger.warning(f"Circuit {self.name} OPEN ({self._failures} failures)")
 
-    def can_execute(self) -> bool:
-        with self._lock:
-            state = self.state
+    async def can_execute(self) -> bool:
+        async with self._lock:
+            if self._state == CircuitState.OPEN and time.time() - self._last_failure_time > self.recovery_timeout:
+                self._state = CircuitState.HALF_OPEN
+                self._half_open_calls = 0
+            state = self._state
             if state == CircuitState.CLOSED:
                 return True
             if state == CircuitState.HALF_OPEN:
@@ -81,12 +85,51 @@ class CircuitBreaker:
                 return False
             return False
 
-    def get_stats(self) -> dict[str, Any]:
-        with self._lock:
+    async def execute(self, coro: Any) -> Any:
+        """Execute a coroutine with circuit breaker protection.
+
+        Automatically handles success/failure recording and releases
+        half-open slots on cancellation.
+        """
+        async with self._lock:
+            if self._state == CircuitState.OPEN and time.time() - self._last_failure_time > self.recovery_timeout:
+                self._state = CircuitState.HALF_OPEN
+                self._half_open_calls = 0
+            state = self._state
+            if state == CircuitState.CLOSED:
+                pass
+            elif state == CircuitState.HALF_OPEN:
+                if self._half_open_calls < self.half_open_max_calls:
+                    self._half_open_calls += 1
+                else:
+                    raise RuntimeError(f"Circuit breaker OPEN for {self.name}")
+            else:
+                raise RuntimeError(f"Circuit breaker OPEN for {self.name}")
+
+        try:
+            result = await coro
+        except asyncio.CancelledError:
+            async with self._lock:
+                if self._state == CircuitState.HALF_OPEN and self._half_open_calls > 0:
+                    self._half_open_calls -= 1
+            raise
+        except Exception:
+            await self.record_failure()
+            raise
+        else:
+            await self.record_success()
+            return result
+
+    async def get_stats(self) -> dict[str, Any]:
+        async with self._lock:
+            # Inline can_execute logic to avoid recursive lock deadlock
+            can_exec = False
+            if self._state == CircuitState.CLOSED or self._state == CircuitState.HALF_OPEN and self._half_open_calls < self.half_open_max_calls:
+                can_exec = True
             return {
                 "name": self.name,
                 "state": self._state.value,
                 "failures": self._failures,
                 "last_failure": self._last_failure_time,
-                "can_execute": self.can_execute(),
+                "can_execute": can_exec,
             }

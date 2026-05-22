@@ -83,6 +83,13 @@ class CompressionResult:
     compressed_tokens: int
     identifiers_found: list[str] = field(default_factory=list)
     identifiers_preserved: list[str] = field(default_factory=list)
+    # Visibility fields for observability
+    trigger_ratio: float = 0.0          # estimated / max_tokens that triggered compression
+    head_count: int = 0                 # messages protected in head
+    middle_count: int = 0               # messages in compressible middle
+    tail_count: int = 0                 # messages protected in tail
+    pruned_count: int = 0               # tool-output messages pruned
+    summary_length: int = 0             # chars in generated summary
 
 
 class ContextCompressor:
@@ -95,9 +102,30 @@ class ContextCompressor:
         self,
         config: CompressionConfig | None = None,
         summarizer: Callable[[list[ChatMessage], list[str] | None], Awaitable[str]] | None = None,
+        feedback: Any | None = None,
     ) -> None:
         self.config = config or CompressionConfig()
         self._summarizer = summarizer
+        self._feedback = feedback
+        self._apply_adaptive_adjustments()
+
+    def _apply_adaptive_adjustments(self) -> None:
+        """If adaptive mode is on and feedback data exists, auto-tune thresholds."""
+        if not self.config.adaptive_mode or self._feedback is None:
+            return
+        try:
+            recs = self._feedback.get_adjustment_recommendations()
+            if not recs.get("needs_adjustment"):
+                return
+            for param, info in recs.get("recommendations", {}).items():
+                if param == "protect_tail_turns" and hasattr(self.config, param) or param == "protect_head_messages" and hasattr(self.config, param):
+                    current = getattr(self.config, param)
+                    delta = info.get("recommended_delta", 0)
+                    new_val = max(1, current + delta)
+                    setattr(self.config, param, new_val)
+                    self._feedback.apply_adjustment(param, float(new_val), info.get("reason", "adaptive"))
+        except Exception:
+            logger.warning("Adaptive adjustment failed", exc_info=True)
 
     def estimate_tokens(self, messages: list[ChatMessage]) -> int:
         """Estimate token count for messages."""
@@ -134,6 +162,7 @@ class ContextCompressor:
         """Compress messages to fit within budget."""
         estimated = self.estimate_tokens(messages)
         level = self._determine_level(estimated)
+        ratio = estimated / self.config.max_tokens if self.config.max_tokens > 0 else 0.0
 
         if level == CompressionLevel.NONE:
             logger.debug(f"Context {estimated} tokens within budget, no compression needed")
@@ -142,32 +171,47 @@ class ContextCompressor:
                 level=level,
                 original_tokens=estimated,
                 compressed_tokens=estimated,
+                trigger_ratio=ratio,
             )
 
-        logger.info(f"Context {estimated} tokens at level {level.value}, compressing...")
+        logger.info(
+            f"Context compression triggered: {estimated} tokens "
+            f"(ratio {ratio:.2%}, threshold {self.config.warning_threshold:.0%}/"
+            f"{self.config.critical_threshold:.0%}), level={level.value}"
+        )
 
         if level == CompressionLevel.GENTLE:
             # Gentle: only prune tool outputs, no summarization
             result = self._prune_tool_outputs(messages)
+            pruned = sum(1 for o, r in zip(messages, result, strict=False) if o.content != r.content)
             final_estimate = self.estimate_tokens(result)
             if final_estimate <= self.config.max_tokens:
-                logger.info(f"Gentle compression: {estimated} -> {final_estimate} tokens")
+                logger.info(
+                    f"Gentle compression: {estimated} -> {final_estimate} tokens "
+                    f"({pruned} tool outputs pruned)"
+                )
                 return CompressionResult(
                     messages=result,
                     level=level,
                     original_tokens=estimated,
                     compressed_tokens=final_estimate,
                     identifiers_found=self._extract_identifiers(result) if self.config.preserve_identifiers else [],
+                    trigger_ratio=ratio,
+                    pruned_count=pruned,
                 )
             # If still over budget, fall through to full compression
             logger.info("Gentle compression insufficient, falling back to full")
             level = CompressionLevel.FULL
 
         # Full compression: split head/middle/tail, summarize middle
-        return await self._compress_full(messages, estimated, level)
+        return await self._compress_full(messages, estimated, level, ratio)
 
     async def _compress_full(
-        self, messages: list[ChatMessage], estimated: int, level: CompressionLevel
+        self,
+        messages: list[ChatMessage],
+        estimated: int,
+        level: CompressionLevel,
+        trigger_ratio: float = 0.0,
     ) -> CompressionResult:
         """Full compression: split into head/middle/tail and summarize middle."""
         head, middle, tail = self._split_messages(messages)
@@ -180,6 +224,10 @@ class ContextCompressor:
                 level=level,
                 original_tokens=estimated,
                 compressed_tokens=self.estimate_tokens(truncated),
+                trigger_ratio=trigger_ratio,
+                head_count=len(head),
+                middle_count=0,
+                tail_count=len(tail),
             )
 
         # Extract and preserve identifiers
@@ -191,6 +239,7 @@ class ContextCompressor:
 
         # Prune tool outputs in middle before summarizing
         pruned_middle = self._prune_tool_outputs(middle)
+        pruned = sum(1 for o, r in zip(middle, pruned_middle, strict=False) if o.content != r.content)
 
         # Generate summary of middle
         summary = await self._generate_summary(pruned_middle, identifiers)
@@ -202,7 +251,11 @@ class ContextCompressor:
         result.extend(tail)
 
         final_estimate = self.estimate_tokens(result)
-        logger.info(f"Full compression: {estimated} -> {final_estimate} tokens")
+        logger.info(
+            f"Full compression: {estimated} -> {final_estimate} tokens "
+            f"(head={len(head)}, middle={len(middle)}, tail={len(tail)}, "
+            f"pruned={pruned}, identifiers={len(identifiers)}, summary={len(summary)} chars)"
+        )
 
         return CompressionResult(
             messages=result,
@@ -211,6 +264,12 @@ class ContextCompressor:
             compressed_tokens=final_estimate,
             identifiers_found=identifiers,
             identifiers_preserved=identifiers,
+            trigger_ratio=trigger_ratio,
+            head_count=len(head),
+            middle_count=len(middle),
+            tail_count=len(tail),
+            pruned_count=pruned,
+            summary_length=len(summary),
         )
 
     def _split_messages(
@@ -293,21 +352,38 @@ class ContextCompressor:
     async def _generate_summary(
         self, messages: list[ChatMessage], identifiers: list[str] | None = None
     ) -> str:
-        """Generate a text summary of compressed messages."""
+        """Generate a text summary of compressed messages.
+
+        The summary budget is derived from summary_ratio × middle_section_budget
+        to ensure summaries don't consume an excessive fraction of the context.
+        """
+        middle_tokens = self.estimate_tokens(messages)
+        # summary_ratio (default 20%) caps the summary size relative to the
+        # content being summarized, while summary_min/max provide absolute bounds.
+        budget_tokens = int(
+            max(
+                self.config.summary_min_tokens,
+                min(
+                    self.config.summary_max_tokens,
+                    middle_tokens * self.config.summary_ratio,
+                ),
+            )
+        )
+        max_chars = budget_tokens * 4
+
         if self.config.use_llm_summary and self._summarizer:
             try:
                 summary = await self._summarizer(messages, identifiers)
                 if summary:
-                    max_chars = self.config.summary_max_tokens * 4
                     if len(summary) > max_chars:
                         summary = summary[:max_chars] + "\n... [summary truncated]"
                     return summary
             except Exception as e:
                 logger.warning(f"LLM summary generation failed: {e}, using fallback")
-        return self._fallback_summary(messages, identifiers)
+        return self._fallback_summary(messages, identifiers, max_chars)
 
     def _fallback_summary(
-        self, messages: list[ChatMessage], identifiers: list[str] | None = None
+        self, messages: list[ChatMessage], identifiers: list[str] | None = None, max_chars: int | None = None
     ) -> str:
         """Rule-based summary when LLM is unavailable."""
         parts: list[str] = []
@@ -322,7 +398,8 @@ class ContextCompressor:
                 parts.append(f"Tool '{msg.name}' executed")
 
         summary = "\n".join(parts)
-        max_chars = self.config.summary_max_tokens * 4
+        if max_chars is None:
+            max_chars = self.config.summary_max_tokens * 4
         if len(summary) > max_chars:
             summary = summary[:max_chars] + "\n... [summary truncated]"
 

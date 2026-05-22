@@ -6,7 +6,11 @@ from contextlib import contextmanager
 from typing import Any
 
 from opentelemetry import trace
-from prometheus_client import Counter, Histogram, make_wsgi_app
+from prometheus_client import Counter, Histogram
+
+from js.utils.log import get_logger
+
+logger = get_logger("js.utils.metrics")
 
 tracer = trace.get_tracer("js.agent")
 
@@ -63,6 +67,39 @@ class MetricsCollector:
             "agent_turn_duration_seconds",
             "Agent turn duration in seconds",
         )
+        # Skill metrics
+        self.skill_usage_total = Counter(
+            "skill_usage_total",
+            "Total number of skill executions",
+            ["skill_id", "skill_type", "source"],
+        )
+        self.skill_latency_seconds = Histogram(
+            "skill_latency_seconds",
+            "Skill execution latency in seconds",
+            ["skill_id", "skill_type"],
+        )
+        self.skill_success_rate_gauge = Histogram(
+            "skill_success_rate",
+            "Skill success rate distribution",
+            ["skill_id"],
+            buckets=[0.0, 0.25, 0.5, 0.75, 0.9, 0.95, 1.0],
+        )
+        # Memory metrics
+        self.memory_store_latency_seconds = Histogram(
+            "memory_store_latency_seconds",
+            "Memory store operation latency in seconds",
+            ["operation"],
+        )
+        self.memory_retrieve_latency_seconds = Histogram(
+            "memory_retrieve_latency_seconds",
+            "Memory retrieve/search latency in seconds",
+            ["operation"],
+        )
+        self.memory_search_fallback_total = Counter(
+            "memory_search_fallback_total",
+            "Total number of memory search fallbacks to keyword",
+            ["reason"],
+        )
 
 
 _metrics = MetricsCollector()
@@ -85,12 +122,9 @@ def start_span(
                     try:
                         span.set_attribute(key, value)
                     except Exception:
-                        pass
+                        logger.warning('Operation failed', exc_info=True)
             yield span
     except Exception:
         yield None
 
 
-def get_metrics_app() -> Any:
-    """Return WSGI app for /metrics endpoint."""
-    return make_wsgi_app()

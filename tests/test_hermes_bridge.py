@@ -392,6 +392,8 @@ class TestManagerIntegration:
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
         manager = SkillManager(state_dir, workspace)
+        import asyncio
+        asyncio.run(manager.load_hermes_async())
 
         hermes_skills = {k: v for k, v in manager.get_all().items() if k.startswith("hermes:")}
         assert len(hermes_skills) >= 4
@@ -404,6 +406,8 @@ class TestManagerIntegration:
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
         manager = SkillManager(state_dir, workspace)
+        import asyncio
+        asyncio.run(manager.load_hermes_async())
 
         all_skills = manager.list_skills()
         hermes_ids = [s["id"] for s in all_skills if s["id"].startswith("hermes:")]
@@ -415,6 +419,8 @@ class TestManagerIntegration:
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
         manager = SkillManager(state_dir, workspace)
+        import asyncio
+        asyncio.run(manager.load_hermes_async())
 
         detail = manager.view_skill("hermes:arxiv")
         assert detail is not None
@@ -447,6 +453,8 @@ class TestManagerIntegration:
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
         manager = SkillManager(state_dir, workspace)
+        import asyncio
+        asyncio.run(manager.load_hermes_async())
 
         software = manager.list_skills(category="software-development")
         hermes_soft = [s for s in software if s["id"].startswith("hermes:")]
@@ -458,6 +466,8 @@ class TestManagerIntegration:
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
         manager = SkillManager(state_dir, workspace)
+        import asyncio
+        asyncio.run(manager.load_hermes_async())
 
         results = manager.search_skills("arxiv")
         assert any(r["id"] == "hermes:arxiv" for r in results)
@@ -468,6 +478,8 @@ class TestManagerIntegration:
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
         manager = SkillManager(state_dir, workspace)
+        import asyncio
+        asyncio.run(manager.load_hermes_async())
 
         stats = manager.get_global_stats()
         assert stats["skills_loaded"] >= 4
@@ -481,6 +493,8 @@ class TestManagerIntegration:
         workspace = tmp_path / "workspace"
 
         manager = SkillManager(state_dir, workspace)
+        import asyncio
+        asyncio.run(manager.load_hermes_async())
         # "plan" might conflict — verify Hermes version is namespaced
         if "plan" in manager.get_all():
             assert "hermes:plan" in manager.get_all()

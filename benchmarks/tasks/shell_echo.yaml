@@ -1,0 +1,11 @@
+id: shell_echo
+name: Echo via shell
+description: Agent should use the shell tool to echo a message.
+input: "Use the shell to echo 'benchmark-test-42'"
+tags: [shell]
+max_turns: 3
+scoring:
+  expected_output_contains:
+    - "benchmark-test-42"
+  expected_tool_calls:
+    - shell

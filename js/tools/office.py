@@ -34,6 +34,27 @@ class OfficeTools:
     def get_specs(self) -> list[ToolSpec]:
         return [
             ToolSpec(
+                name="csv_read",
+                description="Read data from a CSV file. Returns JSON array of rows.",
+                parameters=[
+                    ToolParam("path", "string", "Path to CSV file (relative to workspace)"),
+                    ToolParam("encoding", "string", "File encoding (default: utf-8)", required=False),
+                    ToolParam("delimiter", "string", "Column delimiter (default: comma)", required=False),
+                ],
+                read_only=True,
+            ),
+            ToolSpec(
+                name="csv_write",
+                description="Write data to a CSV file.",
+                parameters=[
+                    ToolParam("path", "string", "Path to CSV file"),
+                    ToolParam("data", "string", "JSON array of rows to write"),
+                    ToolParam("encoding", "string", "File encoding (default: utf-8)", required=False),
+                    ToolParam("delimiter", "string", "Column delimiter (default: comma)", required=False),
+                ],
+                dangerous=True,
+            ),
+            ToolSpec(
                 name="excel_read",
                 description="Read data from an Excel file (.xlsx). Returns JSON array of rows.",
                 parameters=[
@@ -98,6 +119,85 @@ class OfficeTools:
             ),
         ]
 
+    async def csv_read(
+        self,
+        path: str,
+        encoding: str = "utf-8",
+        delimiter: str = ",",
+    ) -> ToolResult:
+        try:
+            target = self._resolve(path)
+        except ValueError as e:
+            return ToolResult(success=False, error=str(e))
+        decision = self.guard.check_path_operation(str(target), "read")
+        if decision.decision == SecurityDecisionType.BLOCK:
+            return ToolResult(success=False, error=decision.reason)
+
+        try:
+            import csv
+
+            if not target.exists():
+                return ToolResult(success=False, error=f"File not found: {path}")
+
+            rows: list[list[str]] = []
+            with open(target, encoding=encoding, newline="") as f:
+                reader = csv.reader(f, delimiter=delimiter)
+                for row in reader:
+                    rows.append(row)
+
+            return ToolResult(
+                success=True,
+                output=json.dumps(rows, ensure_ascii=False, indent=2),
+                metadata={"rows": len(rows), "columns": len(rows[0]) if rows else 0},
+            )
+        except UnicodeDecodeError:
+            return ToolResult(success=False, error=f"Encoding error: {encoding} does not match file content. Try 'gbk' or 'latin-1'.")
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
+
+    async def csv_write(
+        self,
+        path: str,
+        data: str = "",
+        encoding: str = "utf-8",
+        delimiter: str = ",",
+    ) -> ToolResult:
+        try:
+            target = self._resolve(path)
+        except ValueError as e:
+            return ToolResult(success=False, error=str(e))
+        decision = self.guard.check_path_operation(str(target), "write")
+        if decision.decision == SecurityDecisionType.BLOCK:
+            return ToolResult(success=False, error=decision.reason)
+
+        try:
+            import csv
+
+            rows_data: list[list[Any]] = json.loads(data) if data else []
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "w", encoding=encoding, newline="") as f:
+                writer = csv.writer(f, delimiter=delimiter)
+                writer.writerows(rows_data)
+
+            return ToolResult(
+                success=True,
+                output=f"Written {len(rows_data)} rows to {path}",
+                metadata={"path": str(target), "rows": len(rows_data)},
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=str(e))
+
+    @staticmethod
+    def _parse_cell(value: Any) -> Any:
+        """Preserve native types (int, float, bool) where possible."""
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value
+        return str(value)
+
     async def excel_read(
         self,
         path: str,
@@ -115,6 +215,7 @@ class OfficeTools:
         if decision.decision == SecurityDecisionType.BLOCK:
             return ToolResult(success=False, error=decision.reason)
 
+        wb = None
         try:
             from openpyxl import load_workbook
             from openpyxl.utils import column_index_from_string
@@ -140,16 +241,38 @@ class OfficeTools:
                 max_col=max_col,
                 values_only=True,
             ):
-                rows.append([str(cell) if cell is not None else "" for cell in row])
+                rows.append([self._parse_cell(cell) for cell in row])
 
-            wb.close()
             return ToolResult(
                 success=True,
                 output=json.dumps(rows, ensure_ascii=False, indent=2),
                 metadata={"rows": len(rows), "columns": len(rows[0]) if rows else 0},
             )
+        except KeyError as e:
+            return ToolResult(success=False, error=f"Sheet not found: {e}")
         except Exception as e:
             return ToolResult(success=False, error=str(e))
+        finally:
+            if wb is not None:
+                wb.close()
+
+    @staticmethod
+    def _parse_cell_ref(ref: str) -> tuple[str, str]:
+        """Split Excel cell reference like 'A1' or 'BC123' into (col_letters, row_num)."""
+        col = ""
+        row = ""
+        for ch in ref:
+            if ch.isalpha():
+                if row:
+                    raise ValueError(f"Invalid cell reference: {ref}")
+                col += ch
+            elif ch.isdigit():
+                row += ch
+            else:
+                raise ValueError(f"Invalid cell reference: {ref}")
+        if not col or not row:
+            raise ValueError(f"Invalid cell reference: {ref}")
+        return col, row
 
     async def excel_write(
         self,
@@ -167,12 +290,15 @@ class OfficeTools:
         if decision.decision == SecurityDecisionType.BLOCK:
             return ToolResult(success=False, error=decision.reason)
 
+        wb = None
         try:
             from openpyxl import Workbook, load_workbook
             from openpyxl.utils import column_index_from_string
 
             sheet_name = sheet or "Sheet1"
             rows_data: list[list[Any]] = json.loads(data) if data else []
+            if not isinstance(rows_data, list) or any(not isinstance(r, list) for r in rows_data):
+                return ToolResult(success=False, error="data must be a JSON array of arrays")
 
             if target.exists():
                 wb = load_workbook(str(target))
@@ -186,19 +312,11 @@ class OfficeTools:
             else:
                 ws = wb.create_sheet(title=sheet_name)
 
-            # Parse start_cell
-            col_letter = ""
-            row_num_str = ""
-            for ch in start_cell:
-                if ch.isalpha():
-                    col_letter += ch
-                else:
-                    row_num_str += ch
-            start_col = column_index_from_string(col_letter) if col_letter else 1
-            start_row_num = int(row_num_str) if row_num_str else 1
+            col_letter, row_num_str = self._parse_cell_ref(start_cell)
+            start_col = column_index_from_string(col_letter)
+            start_row_num = int(row_num_str)
 
             if append:
-                # Find first empty row at or after start_row_num in the target column range
                 start_row_num = max(start_row_num, ws.max_row + 1)
 
             for r_idx, row in enumerate(rows_data, start=start_row_num):
@@ -207,15 +325,19 @@ class OfficeTools:
 
             target.parent.mkdir(parents=True, exist_ok=True)
             wb.save(str(target))
-            wb.close()
 
             return ToolResult(
                 success=True,
                 output=f"Written {len(rows_data)} rows to {path}",
                 metadata={"path": str(target), "rows": len(rows_data)},
             )
+        except ValueError as e:
+            return ToolResult(success=False, error=str(e))
         except Exception as e:
             return ToolResult(success=False, error=str(e))
+        finally:
+            if wb is not None:
+                wb.close()
 
     async def excel_merge(
         self,
@@ -237,6 +359,8 @@ class OfficeTools:
             if decision.decision == SecurityDecisionType.BLOCK:
                 return ToolResult(success=False, error=decision.reason)
 
+        src_wb = None
+        tgt_wb = None
         try:
             from openpyxl import load_workbook
             from openpyxl.utils import column_index_from_string, range_boundaries
@@ -264,19 +388,12 @@ class OfficeTools:
                 max_row = src_ws.max_row
                 max_col = src_ws.max_column
 
-            if not include_header and min_row == 1 and max_row > 1:
+            if not include_header and min_row == 1 and max_row is not None and max_row > 1:
                 min_row += 1
 
-            # Parse target_start_cell
-            col_letter = ""
-            row_num_str = ""
-            for ch in target_start_cell:
-                if ch.isalpha():
-                    col_letter += ch
-                else:
-                    row_num_str += ch
-            tgt_start_col = column_index_from_string(col_letter) if col_letter else 1
-            tgt_start_row = int(row_num_str) if row_num_str else 1
+            col_letter, row_num_str = self._parse_cell_ref(target_start_cell)
+            tgt_start_col = column_index_from_string(col_letter)
+            tgt_start_row = int(row_num_str)
 
             rows_copied = 0
             for r_idx, row in enumerate(
@@ -293,17 +410,22 @@ class OfficeTools:
                     tgt_ws.cell(row=r_idx, column=c_idx, value=value)
                 rows_copied += 1
 
-            src_wb.close()
             tgt_wb.save(str(target))
-            tgt_wb.close()
 
             return ToolResult(
                 success=True,
                 output=f"Merged {rows_copied} rows from {source_path} into {target_path} at {target_start_cell}",
                 metadata={"rows_copied": rows_copied},
             )
+        except ValueError as e:
+            return ToolResult(success=False, error=str(e))
         except Exception as e:
             return ToolResult(success=False, error=str(e))
+        finally:
+            if src_wb is not None:
+                src_wb.close()
+            if tgt_wb is not None:
+                tgt_wb.close()
 
     async def excel_create(
         self,
@@ -319,6 +441,7 @@ class OfficeTools:
         if decision.decision == SecurityDecisionType.BLOCK:
             return ToolResult(success=False, error=decision.reason)
 
+        wb = None
         try:
             from openpyxl import Workbook
 
@@ -331,16 +454,20 @@ class OfficeTools:
 
             if headers:
                 hdrs: list[str] = json.loads(headers)
+                if not isinstance(hdrs, list):
+                    return ToolResult(success=False, error="headers must be a JSON array")
                 for c_idx, h in enumerate(hdrs, start=1):
                     ws.cell(row=1, column=c_idx, value=h)
 
             target.parent.mkdir(parents=True, exist_ok=True)
             wb.save(str(target))
-            wb.close()
 
             return ToolResult(success=True, output=f"Created Excel file: {path}")
         except Exception as e:
             return ToolResult(success=False, error=str(e))
+        finally:
+            if wb is not None:
+                wb.close()
 
     async def pdf_generate(
         self,
@@ -403,7 +530,11 @@ class OfficeTools:
     def register_all(self, registry: Any) -> None:
         """Register all office tools."""
         for spec in self.get_specs():
-            if spec.name == "excel_read":
+            if spec.name == "csv_read":
+                registry.register(spec, self.csv_read)
+            elif spec.name == "csv_write":
+                registry.register(spec, self.csv_write)
+            elif spec.name == "excel_read":
                 registry.register(spec, self.excel_read)
             elif spec.name == "excel_write":
                 registry.register(spec, self.excel_write)

@@ -85,6 +85,7 @@ def scan_skill(spec: SkillSpec) -> ScanResult:
                         if pattern.search(content) and flag_name not in risk_flags:
                             risk_flags.append(flag_name)
                 except Exception:
+                    logger.warning(f"Failed to scan {file_path}", exc_info=True)
                     continue
 
         # Determine trust level based on heuristics
@@ -171,6 +172,6 @@ def runtime_security_check(spec: SkillSpec) -> tuple[bool, list[str]]:
                 if sensitive_pattern and sensitive_pattern.search(content):
                     warnings.append("Script references sensitive paths (SSH keys, credentials, etc.)")
             except Exception:
-                pass
+                logger.warning(f"Failed to read entry {entry}", exc_info=True)
 
     return len(warnings) == 0 or spec.trust_level != TrustLevel.QUARANTINE, warnings

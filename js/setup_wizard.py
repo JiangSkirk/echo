@@ -42,6 +42,7 @@ class SetupWizard:
             ("Configuring search", self._configure_search),
             ("Saving configuration", self._save_config),
             ("Running health checks", self._health_checks),
+            ("Finishing up", self._embedding_hint),
         ]
 
         with Progress(
@@ -62,31 +63,73 @@ class SetupWizard:
             "[green]Setup complete![/green]\n\n"
             f"Config saved to: [cyan]{self.config_path}[/cyan]\n\n"
             "Next steps:\n"
-            "  [bold]js chat[/bold]     - Start CLI chat\n"
+            "  [bold]js[/bold]          - Start CLI chat\n"
             "  [bold]js web[/bold]      - Launch Web UI\n"
             "  [bold]js status[/bold]   - Check system status",
             border_style="green",
         ))
 
-    async def _setup_directories(self, **kwargs: Any) -> None:
+    async def _setup_directories(self, **_kwargs: Any) -> None:
         self.settings.workspace.mkdir(parents=True, exist_ok=True)
         self.settings.state_dir.mkdir(parents=True, exist_ok=True)
         (self.settings.state_dir / "skills").mkdir(exist_ok=True)
 
-    async def _detect_models(self, **kwargs: Any) -> None:
+    async def _detect_models(self, non_interactive: bool = False, **_kwargs: Any) -> None:
+        """Probe local providers and configure only the default chat model.
+
+        Does NOT auto-save all discovered models — only the provider endpoint
+        and a single default_model chosen by the user (or first loaded model
+        in non-interactive mode). Embedding models are left for manual config.
+        """
+        from js.config import ModelConfig, ModelProviderConfig
+
         discovery = LocalModelDiscovery(timeout=5.0)
         try:
-            self.settings = await discovery.apply_to_settings(self.settings)
+            discovered = await discovery.discover_all()
         finally:
             await discovery.close()
 
-        if not self.settings.providers:
+        if not discovered:
             console.print(
                 "[yellow]⚠ No local models detected.[/yellow]\n"
                 "  Make sure LM Studio or Ollama is running, or configure cloud providers manually."
             )
+            return
 
-    async def _configure_search(self, non_interactive: bool = False, **kwargs: Any) -> None:
+        existing_names = {p.name for p in self.settings.providers}
+        existing_urls = {p.base_url for p in self.settings.providers}
+
+        for d in discovered:
+            if d.base_url in existing_urls or d.provider_type in existing_names:
+                continue
+
+            # Pick default: first non-embedding model, or first model if all are embedding
+            chat_models = [m for m in d.models if "embed" not in m.id.lower()]
+            default_models = chat_models if chat_models else d.models
+            default_model = default_models[0].id if default_models else ""
+
+            if not non_interactive and len(default_models) > 1:
+                choices = [m.id for m in default_models]
+                default_model = click.prompt(
+                    f"Select default model for {d.provider_type}",
+                    type=click.Choice(choices),
+                    default=choices[0],
+                )
+
+            cfg = ModelProviderConfig(
+                name=d.provider_type,
+                base_url=d.base_url,
+                api_key="lm-studio" if d.provider_type == "lmstudio" else "ollama",
+                timeout=120.0,
+                max_retries=3,
+                default_model=default_model,
+                models=[ModelConfig(id=default_model, name=default_model, provider=d.provider_type)],
+            )
+            self.settings.providers.append(cfg)
+            self.settings.models.append(ModelConfig(id=default_model, name=default_model, provider=d.provider_type))
+            console.print(f"  [green]+ {d.provider_type}[/green] → {default_model}")
+
+    async def _configure_search(self, non_interactive: bool = False, **_kwargs: Any) -> None:
         # Always enable DuckDuckGo (free, no API key)
         search_manager = SearchManager()
         search_manager.register(DuckDuckGoEngine(), default=True)
@@ -109,16 +152,30 @@ class SetupWizard:
 
         self.settings.search_configured = True
 
-    async def _save_config(self, **kwargs: Any) -> None:
+    async def _save_config(self, **_kwargs: Any) -> None:
         self.settings.save(self.config_path)
 
-    async def _health_checks(self, **kwargs: Any) -> None:
+    async def _health_checks(self, **_kwargs: Any) -> None:
         from js.models.router import ModelRouter
         router = ModelRouter(self.settings)
         health = await router.health_check()
         for name, status in health.items():
             color = "green" if status else "red"
             console.print(f"  [{color}]{'✓' if status else '✗'} {name}[/{color}]")
+
+    async def _embedding_hint(self, **_kwargs: Any) -> None:
+        """Print a hint about embedding models for semantic memory."""
+        has_embedding = any(
+            "embed" in m.id.lower() or "embedding" in m.id.lower()
+            for p in self.settings.providers
+            for m in p.models
+        )
+        if not has_embedding and self.settings.providers:
+            console.print(
+                "\n[dim]💡 Tip: For full semantic memory (vector search), load an embedding model\n"
+                "   in LM Studio → 'Developer' tab → 'Embedding Model', or use an external\n"
+                "   embedding provider like OpenAI text-embedding-3-small.[/dim]"
+            )
 
 
 async def run_setup(non_interactive: bool = False) -> None:

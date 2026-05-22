@@ -1,0 +1,20 @@
+id: file_search_glob
+name: Search files by pattern
+description: Agent should search for files matching a pattern in the workspace.
+input: "Search for all .txt files in the current directory"
+tags: [file, search]
+max_turns: 3
+setup:
+  files:
+    - path: alpha.txt
+      content: "alpha"
+    - path: beta.txt
+      content: "beta"
+    - path: gamma.py
+      content: "gamma"
+scoring:
+  expected_output_contains:
+    - "alpha.txt"
+    - "beta.txt"
+  expected_tool_calls:
+    - file_search

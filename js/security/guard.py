@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import re
 from dataclasses import dataclass
 from enum import StrEnum
@@ -11,7 +12,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
-from js.config import SecurityConfig
+from js.config import DefenseMode, SecurityConfig
+from js.utils.log import get_logger
+
+logger = get_logger("js.security.guard")
 
 
 class SecurityDecisionType(StrEnum):
@@ -39,7 +43,7 @@ class BehaviorGuard:
 
     ENCODING_PATTERNS = {
         "base64": re.compile(r"(?:[A-Za-z0-9+/]{4}){10,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?"),
-        "hex": re.compile(r"(?:[0-9a-fA-F]{2}){20,}"),
+        "hex": re.compile(r"(?:[0-9a-fA-F]{2}){8,}"),
         "url_encoded": re.compile(r"(?:%[0-9a-fA-F]{2}){10,}"),
     }
 
@@ -84,28 +88,46 @@ class BehaviorGuard:
         self._command_patterns = [re.compile(p) for p in self.HIGH_RISK_COMMANDS]
         self._hardline_patterns = [re.compile(p) for p in self.HARDLINE_PATTERNS]
         self._protected_pattern = [re.compile(p) for p in config.protected_commands]
-        self._loop_counters: dict[str, int] = {}
-        self._failure_counters: dict[str, int] = {}
-        self._script_artifacts: set[str] = set()
+        from cachetools import LRUCache
+        self._loop_counters: LRUCache[str, int] = LRUCache(maxsize=1000)
+        self._failure_counters: LRUCache[str, int] = LRUCache(maxsize=1000)
+        self._script_artifacts: LRUCache[str, bool] = LRUCache(maxsize=1000)
+
+    @staticmethod
+    def _normalize_command(command: str) -> str:
+        """Normalize command by collapsing whitespace to catch space-obfuscated payloads."""
+        # Collapse all whitespace sequences to single spaces
+        normalized = re.sub(r"\s+", " ", command).strip()
+        # Remove spaces around hyphens that look like flags: "- r" -> "-r"
+        normalized = re.sub(r"-\s+(\w)", r"-\1", normalized)
+        # Remove spaces between single-letter chunks: "r m" -> "rm", "d d" -> "dd"
+        # Repeat until stable to handle chained splits like "r m - r f"
+        prev = None
+        while prev != normalized:
+            prev = normalized
+            normalized = re.sub(r"\b(\w)\s+(\w)\b", r"\1\2", normalized)
+        return normalized
 
     def _check_hardline(self, command: str) -> SecurityDecision | None:
         """Check hardline blocklist — irreversible ops blocked even in off/yolo mode."""
-        for pattern in self._hardline_patterns:
-            if pattern.search(command):
-                return SecurityDecision(
-                    SecurityDecisionType.BLOCK,
-                    f"Hardline block: irreversible operation detected: {pattern.pattern}",
-                )
+        candidates = [command, self._normalize_command(command)]
+        for candidate in candidates:
+            for pattern in self._hardline_patterns:
+                if pattern.search(candidate):
+                    return SecurityDecision(
+                        SecurityDecisionType.BLOCK,
+                        f"Hardline block: irreversible operation detected: {pattern.pattern}",
+                    )
         return None
 
-    def check_command(self, command: str, cwd: str = ".") -> SecurityDecision:
+    def check_command(self, command: str, _cwd: str = ".") -> SecurityDecision:
         """Check if a shell command is safe to execute."""
         # Hardline check FIRST — always runs regardless of defense_mode
         hardline = self._check_hardline(command)
         if hardline:
             return hardline
 
-        if self.config.defense_mode.value == "off":
+        if self.config.defense_mode == DefenseMode.OFF:
             return SecurityDecision(SecurityDecisionType.ALLOW)
 
         # Check high-risk patterns on raw command
@@ -157,12 +179,12 @@ class BehaviorGuard:
         operation: str,  # read, write, delete, list
     ) -> SecurityDecision:
         """Check if a path operation is allowed."""
-        if self.config.defense_mode.value == "off":
+        if self.config.defense_mode == DefenseMode.OFF:
             return SecurityDecision(SecurityDecisionType.ALLOW)
 
         try:
             resolved = Path(path).expanduser().resolve()
-        except OSError as e:
+        except (OSError, ValueError) as e:
             return SecurityDecision(
                 SecurityDecisionType.BLOCK,
                 f"Invalid path: {e}",
@@ -196,7 +218,7 @@ class BehaviorGuard:
                         f"{operation} operation blocked on protected path: {protected_path}",
                     )
             except ValueError:
-                pass
+                logger.warning('Operation failed', exc_info=True)
 
         # Check workspace delete
         if operation == "delete" and not self.config.allow_workspace_delete:
@@ -209,15 +231,13 @@ class BehaviorGuard:
 
     def check_loop(self, run_id: str, tool_name: str, args_key: str) -> SecurityDecision:
         """Check if we're stuck in a tool loop."""
-        if self.config.defense_mode.value == "off":
+        if self.config.defense_mode == DefenseMode.OFF:
             return SecurityDecision(SecurityDecisionType.ALLOW)
 
         key = f"{run_id}:{tool_name}:{args_key}"
         count = self._loop_counters.get(key, 0) + 1
         self._loop_counters[key] = count
-        # Prune old counters to prevent unbounded growth
-        if len(self._loop_counters) > 10_000:
-            self._loop_counters.clear()
+
 
         if count > self.config.max_loop_iterations:
             return SecurityDecision(
@@ -234,7 +254,7 @@ class BehaviorGuard:
 
     def check_tool_result(self, result: str | None) -> SecurityDecision:
         """Scan tool results for prompt injection or exfiltration attempts."""
-        if self.config.defense_mode.value == "off" or not self.config.tool_result_scan:
+        if self.config.defense_mode == DefenseMode.OFF or not self.config.tool_result_scan:
             return SecurityDecision(SecurityDecisionType.ALLOW)
 
         if result is None:
@@ -246,7 +266,7 @@ class BehaviorGuard:
             "new instructions:",
             "system prompt:",
             "you are now",
-            "DAN mode",
+            "dan mode",
             "developer mode",
         ]
         result_lower = result.lower()
@@ -262,24 +282,10 @@ class BehaviorGuard:
     def register_script_artifact(self, path: str) -> None:
         """Track a newly written script for provenance checking."""
         if self.config.script_provenance:
-            self._script_artifacts.add(str(Path(path).resolve()))
+            self._script_artifacts[str(Path(path).resolve())] = True
             # Prune old artifacts to prevent unbounded growth
             if len(self._script_artifacts) > 10_000:
                 self._script_artifacts.clear()
-
-    def check_script_execution(self, path: str) -> SecurityDecision:
-        """Check if a script execution is allowed based on provenance."""
-        if self.config.defense_mode.value == "off" or not self.config.script_provenance:
-            return SecurityDecision(SecurityDecisionType.ALLOW)
-
-        resolved = str(Path(path).resolve())
-        if resolved in self._script_artifacts:
-            return SecurityDecision(
-                SecurityDecisionType.WARN,
-                f"Script was written by agent, reviewing before execution: {path}",
-            )
-
-        return SecurityDecision(SecurityDecisionType.ALLOW)
 
     def _check_encoding(self, text: str) -> SecurityDecision:
         """Check for encoded/obfuscated payloads."""
@@ -322,20 +328,41 @@ class BehaviorGuard:
                 decoded += " " + bytes.fromhex(segment).decode("utf-8", errors="ignore")
             except (ValueError, UnicodeDecodeError):
                 continue
-        # URL-encoded
-        decoded += " " + unquote(command)
+        # URL-encoded — only append decoded segments, not the entire command
+        for match in self.ENCODING_PATTERNS["url_encoded"].finditer(command):
+            segment = match.group(0)
+            decoded += " " + unquote(segment)
         return decoded
 
-    def check_repeated_failure(self, run_id: str, tool_name: str, success: bool) -> SecurityDecision:
+    def check_repeated_failure(
+        self,
+        run_id: str,
+        tool_name: str,
+        success: bool,
+        tool_args: dict[str, Any] | None = None,
+    ) -> SecurityDecision:
         """Check if the same tool is failing repeatedly in a run.
 
-        Hermes-style tool guardrail: if a tool fails N consecutive times,
-        block further calls to prevent failure spirals.
+        Hermes-style tool guardrail: if a tool fails N consecutive times
+        *with the same arguments*, block further calls to prevent failure
+        spirals.  Granularity is per-(tool, args_hash) so that retrying
+        the same tool with different parameters is not penalised.
         """
-        if self.config.defense_mode.value == "off":
+        if self.config.defense_mode == DefenseMode.OFF:
             return SecurityDecision(SecurityDecisionType.ALLOW)
 
-        key = f"{run_id}:{tool_name}"
+        # Build a stable hash of the arguments for fine-grained tracking
+        args_hash = ""
+        if tool_args:
+            try:
+                import hashlib
+                args_hash = hashlib.sha256(
+                    json.dumps(tool_args, sort_keys=True, ensure_ascii=False).encode("utf-8")
+                ).hexdigest()[:16]
+            except Exception:
+                args_hash = ""
+
+        key = f"{run_id}:{tool_name}:{args_hash}" if args_hash else f"{run_id}:{tool_name}"
         if success:
             # Reset on success
             self._failure_counters.pop(key, None)
@@ -348,15 +375,16 @@ class BehaviorGuard:
             self._failure_counters.clear()
 
         threshold = max(3, self.config.max_loop_iterations // 2)
+        detail = f" (args hash: {args_hash})" if args_hash else ""
         if count >= threshold:
             return SecurityDecision(
                 SecurityDecisionType.BLOCK,
-                f"Repeated failure guard: {tool_name} failed {count} consecutive times in this run",
+                f"Repeated failure guard: {tool_name} failed {count} consecutive times in this run{detail}",
             )
         elif count >= 2:
             return SecurityDecision(
                 SecurityDecisionType.WARN,
-                f"{tool_name} has failed {count} times — may be stuck",
+                f"{tool_name} has failed {count} times — may be stuck{detail}",
             )
 
         return SecurityDecision(SecurityDecisionType.ALLOW)

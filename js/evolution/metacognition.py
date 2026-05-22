@@ -236,7 +236,7 @@ class MetacognitionLoop:
             chains = self.composer.discover_chains(min_frequency=3)
             return {"discovered": chains, "total_chains": len(chains)}
         except Exception:
-            logger.debug("Composition analysis failed", exc_info=True)
+            logger.warning("Composition analysis failed", exc_info=True)
             return {"discovered": []}
 
     def _analyze_auto_skills(self) -> list[Any]:
@@ -263,7 +263,7 @@ class MetacognitionLoop:
                     if spec:
                         created.append(spec)
         except Exception:
-            logger.debug("Auto-skill analysis failed", exc_info=True)
+            logger.warning("Auto-skill analysis failed", exc_info=True)
         return created
 
     def _analyze_evolution(self) -> list[dict[str, Any]]:
@@ -366,7 +366,7 @@ class MetacognitionLoop:
                 data["health_score"] = r["health_score"]
                 reports.append(data)
             except json.JSONDecodeError:
-                pass
+                logger.warning('Operation failed', exc_info=True)
         return reports
 
     def get_proposals(self, area: str | None = None, limit: int = 20) -> list[dict[str, Any]]:

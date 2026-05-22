@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import html as html_module
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -96,6 +98,9 @@ class DuckDuckGoEngine(SearchEngine):
                 "https://lite.duckduckgo.com/lite/",
                 params={"q": query},
             )
+            if resp.status_code != 200:
+                logger.warning(f"DuckDuckGo Lite returned {resp.status_code}")
+                return []
             return self._parse_html(resp.text, max_results)
         except Exception as e:
             logger.error(f"DuckDuckGo lite fallback failed: {e}")
@@ -108,9 +113,8 @@ class DuckDuckGoEngine(SearchEngine):
         # Remove scripts and styles to avoid false matches
         html = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.S | re.I)
 
-        # Find result blocks: <div> containers whose class attribute starts
-        # with the word "result" (e.g. "result", "result results_links").
-        # This avoids brittle CSS-class-specific regexes.
+        # Strategy 1: Find result blocks: <div> containers whose class attribute
+        # starts with the word "result" (e.g. "result", "result results_links").
         block_starts = [
             m.start()
             for m in re.finditer(
@@ -119,6 +123,44 @@ class DuckDuckGoEngine(SearchEngine):
                 re.I,
             )
         ]
+
+        # Strategy 2: If no result blocks found, try table-row layout (lite/mobile).
+        # In Lite mode each result spans multiple <tr> rows (title, snippet, ...).
+        # We merge consecutive <tr> rows until the next one that contains an
+        # external link, which signals the start of a new result.
+        if not block_starts:
+            tr_starts = [m.start() for m in re.finditer(r"<tr[^>]*>", html, re.I)]
+            merged: list[int] = []
+            idx = 0
+            while idx < len(tr_starts):
+                s = tr_starts[idx]
+                e = tr_starts[idx + 1] if idx + 1 < len(tr_starts) else len(html)
+                row = html[s:e]
+                has_link = any(
+                    u.startswith("http") and "duckduckgo.com" not in u
+                    for m2 in re.finditer(r'<a[^>]*href="([^"]+)"[^>]*>.*?</a>', row, re.S)
+                    for u in [m2.group(1)]
+                )
+                if has_link:
+                    merged.append(s)
+                    idx += 1
+                elif merged:
+                    # Belongs to previous result — extend its end boundary
+                    idx += 1
+                else:
+                    idx += 1
+            block_starts = merged
+
+        # Strategy 3: If still no blocks, try generic article/section containers
+        if not block_starts:
+            block_starts = [
+                m.start()
+                for m in re.finditer(
+                    r"<article[^>]*>|<section[^>]*>",
+                    html,
+                    re.I,
+                )
+            ]
 
         for i, start in enumerate(block_starts):
             end = block_starts[i + 1] if i + 1 < len(block_starts) else len(html)
@@ -131,6 +173,7 @@ class DuckDuckGoEngine(SearchEngine):
             ):
                 url = link_match.group(1)
                 title = re.sub(r"<[^>]+>", "", link_match.group(2)).strip()
+                title = html_module.unescape(title)
 
                 if not url.startswith("http") or "duckduckgo.com" in url or not title:
                     continue
@@ -140,6 +183,7 @@ class DuckDuckGoEngine(SearchEngine):
                 snippet = ""
                 for text_match in re.finditer(r">([^<]{10,})<", after, re.S):
                     candidate = re.sub(r"<[^>]+>", "", text_match.group(1)).strip()
+                    candidate = html_module.unescape(candidate)
                     if candidate and candidate != title:
                         snippet = candidate
                         break
@@ -186,7 +230,7 @@ class TavilyEngine(SearchEngine):
             try:
                 get_metrics().search_requests_total.labels(engine="tavily").inc()
             except Exception:
-                pass
+                logger.warning('Operation failed', exc_info=True)
             resp = await self._client.post(
                 "https://api.tavily.com/search",
                 json={
@@ -242,7 +286,7 @@ class SerperEngine(SearchEngine):
             try:
                 get_metrics().search_requests_total.labels(engine="serper").inc()
             except Exception:
-                pass
+                logger.warning('Operation failed', exc_info=True)
             resp = await self._client.post(
                 "https://google.serper.dev/search",
                 json={"q": query, "num": max_results},
@@ -274,12 +318,41 @@ class SerperEngine(SearchEngine):
             return False
 
 
-class SearchManager:
-    """Manages multiple search engines with fallback."""
+class SearchCache:
+    """Simple in-memory TTL cache for search results."""
 
-    def __init__(self) -> None:
+    def __init__(self, ttl_seconds: float = 300.0) -> None:
+        self._ttl = ttl_seconds
+        self._store: dict[str, tuple[list[SearchResult], float]] = {}
+
+    def _key(self, query: str, max_results: int) -> str:
+        return f"{query.lower().strip()}:{max_results}"
+
+    def get(self, query: str, max_results: int) -> list[SearchResult] | None:
+        key = self._key(query, max_results)
+        entry = self._store.get(key)
+        if entry is None:
+            return None
+        results, timestamp = entry
+        if time.time() - timestamp > self._ttl:
+            self._store.pop(key, None)
+            return None
+        return results
+
+    def set(self, query: str, max_results: int, results: list[SearchResult]) -> None:
+        self._store[self._key(query, max_results)] = (results, time.time())
+
+    def clear(self) -> None:
+        self._store.clear()
+
+
+class SearchManager:
+    """Manages multiple search engines with fallback and caching."""
+
+    def __init__(self, cache_ttl: float = 300.0) -> None:
         self.engines: list[SearchEngine] = []
         self._default: SearchEngine | None = None
+        self._cache = SearchCache(ttl_seconds=cache_ttl)
 
     def register(self, engine: SearchEngine, default: bool = False) -> None:
         self.engines.append(engine)
@@ -291,14 +364,22 @@ class SearchManager:
             close_method = getattr(engine, "close", None)
             if close_method:
                 await close_method()
+        self._cache.clear()
 
     async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
-        """Search with fallback across all engines."""
+        """Search with caching and fallback across all engines."""
+        # Check cache first
+        cached = self._cache.get(query, max_results)
+        if cached is not None:
+            logger.debug(f"Search cache hit for query: {query[:40]}")
+            return cached
+
         errors: list[str] = []
         for engine in self.engines:
             try:
                 results = await engine.search(query, max_results)
                 if results:
+                    self._cache.set(query, max_results, results)
                     return results
             except Exception as e:
                 errors.append(f"{type(engine).__name__}: {e}")

@@ -4,14 +4,14 @@
 >
 > [English README](README_en.md)
 
-一个比 OpenClaw/Hermes 更**稳定、好用、安全、方便**的 AI Agent 框架，融合了二者的架构精华并超越了它们。
+一个融合 OpenClaw 和 Hermes 架构精华的 AI Agent 框架，在架构现代性上领先，在生态成熟度上持续追赶。
 
 ## 核心特性
 
 ### 🔒 安全优先 (Security-First)
 - **分层沙箱**: 所有命令在隔离环境中执行，支持白名单/黑名单
 - **策略模式防御** (from OpenClaw): 工具调用防御不是硬编码 if-else，是可注入、可排序的策略对象
-- **Fail-Open 语义** (from OpenClaw): 安全策略崩溃不阻断主系统
+- **Fail-Open 语义** (from OpenClaw): 安全子系统自身崩溃时不阻断主系统（防止安全成为单点故障）
 - **秘密管理**: 自动检测和屏蔽 API keys、tokens，持久化加密存储
 - **行为审计**: 完整记录每个工具调用，哈希链式防篡改日志
 - **路径保护**: 防止误删系统文件，Workspace 外写操作需确认
@@ -31,12 +31,6 @@
 - **压缩中间**: 旧对话生成摘要，带 Handoff Framing 防止误读
 - **工具输出裁剪**: 过长的工具结果先截断再压缩
 - **多模态感知**: 图片内容按固定 token 估算
-
-### 📸 Checkpoint 快照系统 (from Hermes)
-- **透明 Git Shadow Repo**: 零状态泄漏到用户项目
-- **GIT 环境隔离**: 完全独立于用户全局 git 配置
-- **每轮去重**: 同一目录每轮最多一个快照
-- **安全回滚**: 一键恢复到任意历史状态
 
 ### ✅ 增强审批系统 (from Hermes)
 - **分层模式**: 手动 / 自动通过 / 自动拒绝 / 定时任务拒绝
@@ -79,10 +73,10 @@ pip install -e ".[dev]"
 js setup
 
 # CLI 交互
-js chat
+js
 
 # Web UI
-js web --port 8080
+js web --port 8000
 
 # 搜索
 js search "最新的 AI 发展"
@@ -179,21 +173,31 @@ Web 界面的 Skills 面板支持：
 pytest tests/ -v
 ```
 
-**319 个测试**覆盖所有模块，Ruff 零错误，mypy strict 零错误。
+**662 个测试**覆盖所有模块：
+- 安全：Red-team (24) + Fuzz guard (40) + Sandbox (8)
+- 记忆：Quality (12) + 持久化 (5)
+- 路由：Provider failover (8) + Circuit breaker
+- 流水线：Auto-Fetch (20) + Benchmark (11)
+- 取消/恢复：Checkpoint/Resume (10) + Smoke (26)
+- Ruff 零错误，mypy 零错误。
 
 ## 已知限制
 
-- **WebSocket stream 模式**: 纯文本流式输出，暂不支持工具调用；需要工具调用请使用 message 模式。
+- **WebSocket 流式**: 最终 assistant 回复支持原生 token 级流式，工具调用环节保持原子解析。
 - **LM Studio Embeddings**: 需手动在 LM Studio 中开启 Embedding 服务端点，否则自动降级为关键词匹配。
+- **Auto-Fetch Pipeline (实验性)**: Gmail / Slack / Drive / Calendar / GitHub / Notion 连接器目前为 **mock / 实验性**实现，仅用于演示数据流架构。生产环境请使用文件系统连接器 (`file`) 或等待后续稳定版本。
 
 ## 生产部署
 
 ```bash
 # Web UI
-js web --host 0.0.0.0 --port 8080
+js web --host 0.0.0.0 --port 8000
+
+# 或 Docker
+docker run -p 8000:8000 -e OPENAI_API_KEY=xxx js-agent
 
 # 或 Gunicorn + Uvicorn
-gunicorn "js.web:create_app()" -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8080
+gunicorn "js.web:create_app()" -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
 ```
 
 ## License

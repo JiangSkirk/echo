@@ -1,0 +1,125 @@
+id: multi_step_analysis
+name: Analyze directory contents
+description: Agent lists files, reads the largest one, and summarizes.
+input: List all files, find the largest .txt file, read it, and tell me the first
+  line
+tags:
+- multi-step
+- file
+- analysis
+max_turns: 6
+setup:
+  files:
+  - path: small.txt
+    content: short
+  - path: large.txt
+    content: 'This is the first line of a much larger document.
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      x
+
+      '
+scoring:
+  expected_output_contains:
+  - first line
+  - largest
+  expected_tool_calls:
+  - file_list
+  - file_read

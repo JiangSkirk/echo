@@ -1,0 +1,13 @@
+id: multi_step_create_and_list
+name: Create file then list directory
+description: Agent creates a file and then lists the directory to confirm.
+input: "Create a file named todo.txt with content 'Buy milk' then list the current directory"
+tags: [file, multi-step]
+max_turns: 5
+scoring:
+  expected_files:
+    - path: todo.txt
+      contains: "Buy milk"
+  expected_tool_calls:
+    - file_write
+    - file_list
