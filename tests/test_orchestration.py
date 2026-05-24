@@ -34,7 +34,10 @@ class TestTaskRouter:
 class TestAgentFleet:
     @pytest.fixture
     def fleet(self, tmp_path: Path) -> AgentFleet:
-        settings = JSSettings()
+        settings = JSSettings(
+            state_dir=tmp_path / "state",
+            workspace=tmp_path / "workspace",
+        )
         return AgentFleet(settings)
 
     def test_spawn(self, fleet: AgentFleet) -> None:

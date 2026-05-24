@@ -6,7 +6,6 @@ import asyncio
 import os
 import platform
 import shutil
-import signal
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -135,12 +134,16 @@ class SandboxExecutor:
         if system == "Linux" and self._has_unshare:
             # Linux: unshare mount namespace + bind workspace
             # This is a simplified approach; full chroot requires root
+            import shlex
+            # Safely quote the workspace path and each command argument
+            quoted_ws = shlex.quote(str(self.workspace))
+            quoted_cmd = " ".join(shlex.quote(str(arg)) for arg in cmd)
             return [
                 "unshare",
                 "-m",
                 "bash",
                 "-c",
-                f'cd "{self.workspace}" && {" ".join(cmd)}',
+                f"cd {quoted_ws} && {quoted_cmd}",
             ]
         logger.warning(
             "Filesystem isolation requested but no sandbox tool available "
@@ -166,7 +169,11 @@ class SandboxExecutor:
 
         if isinstance(command, str):
             # Use shell for complex commands, but carefully
-            cmd = ["bash", "-c", command]
+            # Cross-platform: use sh on Unix, cmd /c on Windows
+            if platform.system() == "Windows":
+                cmd = ["cmd", "/c", command]
+            else:
+                cmd = ["sh", "-c", command]
         else:
             cmd = list(command)
 
@@ -212,14 +219,14 @@ class SandboxExecutor:
                 killed = True
                 self._kill_process_tree(proc)
                 stdout_bytes, stderr_bytes = b"", b"Command timed out"
-                returncode = -signal.SIGTERM
+                returncode = -9  # Cross-platform: SIGKILL (-9) is recognized on both Unix and Windows
 
             if memory_task and not memory_task.done():
                 memory_task.cancel()
                 try:
                     oom_killed = await memory_task
                 except asyncio.CancelledError:
-                    logger.warning('Operation failed', exc_info=True)
+                    pass
 
             stdout = stdout_bytes.decode("utf-8", errors="replace")
             stderr = stderr_bytes.decode("utf-8", errors="replace")
@@ -268,25 +275,49 @@ class SandboxExecutor:
                 except psutil.NoSuchProcess:
                     break
         except asyncio.CancelledError:
-            logger.warning('Operation failed', exc_info=True)
+            # Task was cancelled (normal when the monitored process exits);
+            # swallow silently so the caller's await does not re-raise.
+            return False
         return False
 
     def _kill_process_tree(self, proc: asyncio.subprocess.Process) -> None:
-        """Kill a process and all its children."""
+        """Kill a process and all its children.
+
+        Tolerates permission errors and cases where child enumeration fails.
+        Always falls back to proc.kill() to guarantee termination.
+        """
+        killed = False
         try:
             parent = psutil.Process(proc.pid)
-            children = parent.children(recursive=True)
+            try:
+                children = parent.children(recursive=True)
+            except (psutil.AccessDenied, PermissionError, OSError, psutil.Error):
+                children = []
             for child in children:
-                child.terminate()
-            parent.terminate()
+                try:
+                    child.terminate()
+                except (psutil.NoSuchProcess, psutil.AccessDenied, PermissionError, OSError, psutil.Error):
+                    pass
+            try:
+                parent.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, PermissionError, OSError, psutil.Error):
+                pass
             # Wait briefly, then force kill
-            gone, alive = psutil.wait_procs(children + [parent], timeout=2)
-            for p in alive:
-                p.kill()
-        except psutil.NoSuchProcess:
-            logger.warning('Operation failed', exc_info=True)
+            try:
+                gone, alive = psutil.wait_procs(children + [parent], timeout=2)
+                for p in alive:
+                    try:
+                        p.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, PermissionError, OSError, psutil.Error):
+                        pass
+            except (psutil.Error, OSError):
+                pass
+        except (psutil.NoSuchProcess, psutil.AccessDenied, PermissionError, OSError, psutil.Error):
+            pass
 
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            logger.warning('Operation failed', exc_info=True)
+        # Ultimate fallback: kill via asyncio subprocess API
+        if not killed:
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError, PermissionError):
+                pass

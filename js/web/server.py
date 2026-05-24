@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from js.orchestration.fleet import AgentFleet
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -28,6 +28,7 @@ from js.config import JSSettings, ModelConfig, ModelProviderConfig
 from js.models.provider_manager import ProviderManager
 from js.models.providers import OpenAICompatibleProvider
 from js.utils.log import get_logger
+from js.web.auth import require_auth_dep
 
 # Imported routers (extracted from this file)
 from js.web.routers import cron, fleet
@@ -517,7 +518,10 @@ def create_app() -> FastAPI:
             raise HTTPException(400, "URL must have a host")
 
     @app.post("/api/providers/discover")
-    async def discover_provider(payload: dict[str, Any]) -> dict[str, Any]:
+    async def discover_provider(
+        payload: dict[str, Any],
+        auth: dict[str, Any] = Depends(require_auth_dep),
+    ) -> dict[str, Any]:
         base_url = payload.get("base_url", "").strip()
         api_key = payload.get("api_key") or None
         if not base_url:
@@ -591,12 +595,21 @@ def create_app() -> FastAPI:
     @app.delete("/api/providers/{name}")
     async def delete_provider(name: str) -> dict[str, Any]:
         agent = get_agent()
-        removed = agent.provider_manager.remove(name)
+        # Remove from dynamic provider_manager (if it was added at runtime)
+        agent.provider_manager.remove(name)
+        # Remove from static settings
+        before = len(agent.settings.providers)
+        agent.settings.providers = [p for p in agent.settings.providers if p.name != name]
+        removed = len(agent.settings.providers) < before
+        # Remove from router
+        agent.router.remove_provider(name)
         if not removed:
             raise HTTPException(404, f"Provider '{name}' not found")
-        # Also remove from in-memory settings and router
-        agent.settings.providers = [p for p in agent.settings.providers if p.name != name]
-        agent.router.remove_provider(name)
+        # Persist config change
+        try:
+            agent.settings.save()
+        except Exception as e:
+            logger.warning(f"Failed to save config after provider removal: {e}")
         # Clean up agent fleet config if it references this provider
         prefix = f"{name}/"
         for role in _agent_config:
@@ -671,7 +684,10 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/providers/scan-lan")
-    async def scan_lan(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def scan_lan(
+        payload: dict[str, Any] | None = None,
+        auth: dict[str, Any] = Depends(require_auth_dep),
+    ) -> dict[str, Any]:
         """Scan the local network for model servers."""
         from js.discovery.local_models import LocalModelDiscovery
 
@@ -1222,7 +1238,10 @@ def create_app() -> FastAPI:
         return result
 
     @app.post("/api/chat")
-    async def chat(payload: dict[str, Any]) -> dict[str, Any]:
+    async def chat(
+        payload: dict[str, Any],
+        auth: dict[str, Any] = Depends(require_auth_dep),
+    ) -> dict[str, Any]:
         agent = get_agent()
         message = payload.get("message", "")
         session_id = payload.get("session_id")
@@ -1251,6 +1270,19 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
+        # Authenticate WebSocket connection via X-API-Key header
+        from js.exceptions import AuthRequiredError
+        from js.web.auth import AuthManager
+        api_key = websocket.headers.get("x-api-key", "")
+        settings = get_agent().settings
+        if settings.security.api_key_required:
+            auth_mgr = AuthManager(settings.state_dir)
+            if auth_mgr.has_admin():
+                try:
+                    auth_mgr.verify(api_key)
+                except AuthRequiredError as e:
+                    await websocket.close(code=1008, reason=str(e))
+                    return
         await websocket.accept()
         agent = get_agent()
         session_id: str | None = None

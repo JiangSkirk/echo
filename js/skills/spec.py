@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 import sys
 from dataclasses import dataclass, field
@@ -134,12 +133,26 @@ class SkillSpec:
         return any(mapping.get(p, p) == current for p in self.platforms)
 
     def compute_hash(self) -> str:
-        """Compute SHA-256 hash of the SKILL.md file."""
-        if self.path:
-            manifest = self.path / "SKILL.md"
-            if manifest.exists():
-                return hashlib.sha256(manifest.read_bytes()).hexdigest()[:16]
-        return ""
+        """Compute SHA-256 hash of all skill files (manifest + code)."""
+        if not self.path:
+            return ""
+        import hashlib
+        h = hashlib.sha256()
+        # Hash manifest first
+        manifest = self.path / "SKILL.md"
+        if manifest.exists():
+            h.update(manifest.read_bytes())
+        # Hash all executable and config files
+        for pattern in ("*.py", "*.sh", "*.bash", "*.js", "*.json", "*.yaml", "*.yml", "*.toml", "requirements.txt"):
+            for f in sorted(self.path.glob(pattern)):
+                h.update(f.read_bytes())
+        # Hash scripts/ directory if present
+        scripts_dir = self.path / "scripts"
+        if scripts_dir.exists():
+            for f in sorted(scripts_dir.rglob("*")):
+                if f.is_file():
+                    h.update(f.read_bytes())
+        return h.hexdigest()[:16]
 
     def to_summary_dict(self) -> dict[str, Any]:
         """Return minimal metadata for list_skills() — progressive disclosure."""

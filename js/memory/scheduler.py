@@ -57,6 +57,20 @@ class DreamScheduler:
         if self._task and not self._task.done():
             self._task.cancel()
 
+    async def force_consolidation(self) -> None:
+        """Immediately run an evolution cycle, bypassing idle wait.
+
+        Used by the daemon's cron dream task and manual triggers.
+        """
+        self._last_activity = 0.0  # Pretend we've been idle forever
+        self._pending = True
+        self._pending_since = 0.0
+        # Wait up to 2 check intervals for the loop to pick it up
+        for _ in range(2):
+            await asyncio.sleep(self._check_interval)
+            if not self._pending:
+                break
+
     async def _loop(self) -> None:
         """Main scheduling loop — checks idle time and triggers evolution."""
         while True:

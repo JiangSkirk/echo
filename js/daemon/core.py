@@ -369,8 +369,8 @@ class JSDaemon:
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 loop.add_signal_handler(sig, self._request_shutdown)
-            except NotImplementedError:
-                pass  # Windows
+            except (NotImplementedError, ValueError, RuntimeError):
+                pass  # Windows, non-main thread, or already closed loop
 
         # Main loop: write heartbeat, persist job states
         try:

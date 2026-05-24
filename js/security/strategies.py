@@ -81,24 +81,42 @@ class StrategyRegistry:
 # Built-in strategies
 
 def command_block_strategy(ctx: DefenseContext) -> DefenseResult:
-    """Block high-risk shell commands."""
+    """Block high-risk shell commands using regex for robust matching."""
+    import re
+
     if ctx.tool_name != "shell":
         return DefenseResult(blocked=False)
 
     raw = ctx.arguments.get("command", "")
     command = " ".join(raw) if isinstance(raw, list) else str(raw)
-    high_risk = [
-        "rm -rf /",
-        "dd if=/dev/zero",
-        "mkfs.",
-        ":(){ :|:& };:",
+    # Normalize: collapse multiple spaces and lower-case for consistent matching
+    normalized = re.sub(r"\s+", " ", command.lower().strip())
+
+    high_risk_patterns = [
+        (r"rm\s+(-[rf]+\s+)*\/\s*($|\s|;)", "rm -rf / variant"),
+        (r"dd\s+if=[^\s]*\s+of=\/dev\/sd[a-z]", "dd to block device"),
+        (r"dd\s+if=\/dev\/zero\s+of=\/dev\/sd[a-z]", "dd zero to block device"),
+        (r"mkfs\.[a-z0-9]+\s+\/dev\/sd[a-z]", "mkfs on block device"),
+        (r"mkfs\.[a-z0-9]+\s+\/dev\/hd[a-z]", "mkfs on IDE device"),
+        (r"mkfs\.[a-z0-9]+\s+\/dev\/nvme", "mkfs on NVMe device"),
+        (r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:", "fork bomb"),
+        (r"curl\s+.*\|\s*sh", "curl pipe to shell"),
+        (r"wget\s+.*\|\s*sh", "wget pipe to shell"),
+        (r"curl\s+.*\|\s*bash", "curl pipe to bash"),
+        (r"eval\s*\$", "eval of variable"),
+        (r"chmod\s+-R\s+777\s+\/", "chmod 777 root"),
+        (r"shutdown\s+-h\s+now", "shutdown now"),
+        (r"halt\s+-p", "halt"),
+        (r"reboot\s+-f", "forced reboot"),
+        (r"init\s+0", "init 0"),
+        (r"poweroff\s+-f", "forced poweroff"),
     ]
     mode = _get_defense_mode(ctx)
-    for pattern in high_risk:
-        if pattern in command:
+    for pattern, description in high_risk_patterns:
+        if re.search(pattern, normalized):
             return DefenseResult(
                 blocked=mode == DefenseMode.ENFORCE,
-                reason=f"High-risk command pattern: {pattern}",
+                reason=f"High-risk command: {description}",
                 observe_only=mode == DefenseMode.OBSERVE,
             )
     return DefenseResult(blocked=False)

@@ -56,15 +56,17 @@ class AgentFleet:
         self,
         settings: JSSettings,
         agent_config: dict[str, str] | None = None,
+        max_agents: int = 8,
     ) -> None:
         self.settings = settings
         self.agent_config = agent_config or {}
         self.agents: dict[str, AgentInstance] = {}
         self.tasks: dict[str, Task] = {}
-        self._bus: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._bus: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1000)
         self._lock = asyncio.Lock()
         self._running = False
         self._background_tasks: set[asyncio.Task[Any]] = set()
+        self._max_agents = max_agents
 
     def spawn(
         self,
@@ -77,6 +79,8 @@ class AgentFleet:
 
         If *model* is not provided, the fleet's agent_config is consulted
         for a role-to-model mapping.  Explicit *model* always wins.
+        Each fleet agent gets its own state subdirectory to avoid SQLite
+        lock contention.
         """
         agent_id = str(uuid.uuid4())
         # Auto-resolve model from fleet config when not explicitly given
@@ -84,8 +88,8 @@ class AgentFleet:
         if resolved_model is None and self.agent_config:
             resolved_model = self.agent_config.get(role.value, "") or None
 
-        # Customize settings per role
-        role_settings = self._role_settings(role)
+        # Customize settings per role AND give each agent its own state_dir
+        role_settings = self._role_settings(role, agent_id)
         agent = JSAgent(role_settings)
         instance = AgentInstance(
             id=agent_id,
@@ -96,18 +100,22 @@ class AgentFleet:
             capabilities=capabilities or [],
         )
         self.agents[agent_id] = instance
-        logger.info(f"Spawned agent {name} ({role}) with ID {agent_id}")
+        logger.info(f"Spawned agent {name} ({role}) with ID {agent_id} (state={role_settings.state_dir})")
         return instance
 
-    def _role_settings(self, role: AgentRole) -> JSSettings:
+    def _role_settings(self, role: AgentRole, agent_id: str) -> JSSettings:
         """Create specialized settings for different roles.
 
         Uses the fleet's current settings (which include dynamically-added
         providers) rather than reloading from disk.
+        Each agent gets its own state subdirectory to avoid SQLite contention.
         """
         from copy import deepcopy
 
         settings = deepcopy(self.settings)
+        # Isolate each fleet agent's SQLite databases to prevent lock contention
+        settings.state_dir = settings.state_dir / "fleet" / agent_id
+        settings.state_dir.mkdir(parents=True, exist_ok=True)
         if role == AgentRole.CODER:
             settings.max_turns = 80
         elif role == AgentRole.REVIEWER:
@@ -129,8 +137,26 @@ class AgentFleet:
                 break
 
         if not best_agent:
-            # Spawn a new generalist
-            best_agent = self.spawn(f"worker-{task.role_hint}", task.role_hint)
+            # Pool limit: if at capacity, wait for an agent to become idle
+            if len(self.agents) >= self._max_agents:
+                logger.warning(
+                    f"Fleet at max capacity ({self._max_agents}), waiting for idle agent"
+                )
+                # Simple blocking wait with timeout
+                for _ in range(60):  # wait up to ~60s
+                    for agent in self.agents.values():
+                        if agent.status == "idle":
+                            best_agent = agent
+                            break
+                    if best_agent:
+                        break
+                    await asyncio.sleep(1)
+                if not best_agent:
+                    raise RuntimeError(
+                        f"No idle agent available and fleet at max capacity ({self._max_agents})"
+                    )
+            else:
+                best_agent = self.spawn(f"worker-{task.role_hint}", task.role_hint)
 
         task.assigned_to = best_agent.id
         task.status = "running"
@@ -193,11 +219,19 @@ class AgentFleet:
             tasks.append(t)
             await self.dispatch(t)
 
-        # Wait for all
+        # Wait for all with a generous timeout to prevent deadlocks
         results: dict[str, str] = {}
         pending = {t.id for t in tasks}
+        deadline = asyncio.get_event_loop().time() + 600.0  # 10 min timeout
         while pending:
-            msg = await self._bus.get()
+            timeout = max(0.0, deadline - asyncio.get_event_loop().time())
+            try:
+                msg = await asyncio.wait_for(self._bus.get(), timeout=timeout)
+            except TimeoutError:
+                logger.error(f"Collaborate timeout: {len(pending)} subtasks never completed")
+                for tid in pending:
+                    results[tid] = "[timeout: subtask did not complete]"
+                break
             if msg["type"] == "task_complete" and msg["task_id"] in pending:
                 pending.remove(msg["task_id"])
                 results[msg["task_id"]] = msg["result"]

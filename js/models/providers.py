@@ -95,7 +95,7 @@ class OpenAICompatibleProvider(ModelProvider):
         self.circuit = CircuitBreaker(name=config.name, failure_threshold=5, recovery_timeout=30.0)
         self.client = AsyncOpenAI(
             base_url=config.base_url,
-            api_key=config.api_key or "dummy",
+            api_key=config.api_key or "not-needed",
             timeout=httpx.Timeout(config.timeout, connect=5.0, read=config.timeout),
             max_retries=0,  # We handle retries ourselves
         )
@@ -274,10 +274,14 @@ class OpenAICompatibleProvider(ModelProvider):
                 # Use a short timeout for health checks to avoid hanging
                 await self.client.models.list(timeout=8.0)
                 self._health_status = True
-                await self.circuit.record_success()
+                # Do NOT record health-check success to circuit — only real calls should
+                # affect the breaker. Otherwise routine health checks can keep the
+                # circuit closed even when actual requests are failing.
             except Exception:
                 self._health_status = False
-                await self.circuit.record_failure()
+                # Similarly, do not record health-check failures to the circuit breaker.
+                # A transient health-check failure should not trip the breaker.
+                pass
 
             self._last_health_check = time.time()
             return self._health_status

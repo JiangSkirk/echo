@@ -7,6 +7,7 @@ Supports text messages, file uploads, and inline commands.
 from __future__ import annotations
 
 import asyncio
+import signal
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -62,10 +63,10 @@ class TelegramBotIntegration:
             stop_event.set()
 
         try:
-            for sig in (2, 15):  # SIGINT, SIGTERM
+            for sig in (signal.SIGINT, signal.SIGTERM):
                 asyncio.get_running_loop().add_signal_handler(sig, _signal_handler)
-        except NotImplementedError:
-            pass  # Windows
+        except (NotImplementedError, ValueError, RuntimeError):
+            pass  # Windows, non-main thread, or already closed loop
 
         await stop_event.wait()
 

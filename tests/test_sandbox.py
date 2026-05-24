@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import signal
 from pathlib import Path
 
 import pytest
@@ -30,7 +29,8 @@ class TestSandboxExecution:
         """Process exceeding timeout is killed."""
         result = await sandbox.execute(["sleep", "10"], timeout=0.5)
         assert result.killed
-        assert result.returncode == -signal.SIGTERM
+        # Cross-platform: force-killed processes report -9 (SIGKILL)
+        assert result.returncode == -9
         assert "timed out" in result.stderr.lower()
 
     @pytest.mark.asyncio
@@ -59,36 +59,49 @@ class TestSandboxNetworkIsolation:
 
     @pytest.mark.asyncio
     async def test_network_allowed_true_can_fetch(self, sandbox: SandboxExecutor) -> None:
-        """With network_allowed=True, curl should be able to reach localhost."""
-        # Start a tiny HTTP server in background to test against
+        """With network_allowed=True, sandbox does not block outbound network."""
         import asyncio
-        server_started = asyncio.Event()
+        import errno
 
-        async def _tiny_server() -> None:
-            server = await asyncio.start_server(
-                lambda r, w: w.write(b"HTTP/1.1 200 OK\r\n\r\nok") or w.close(),
-                "127.0.0.1", 0,
-            )
-            server.sockets[0].getsockname()
-            server_started.set()
-            await asyncio.sleep(3)
-            server.close()
+        async def _http_handler(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            """Serve a minimal HTTP response and gracefully close."""
+            # Drain the request so curl doesn't see a RST.
+            try:
+                await asyncio.wait_for(reader.read(1024), timeout=1.0)
+            except TimeoutError:
+                pass
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
 
-        task = asyncio.create_task(_tiny_server())
-        await server_started.wait()
-        # We can't easily get the port in this pattern; instead use a simpler test:
-        # just verify curl to a known-closed port fails quickly.
-        result = await sandbox.execute(
-            ["curl", "-s", "--max-time", "2", "http://127.0.0.1:1/"],
-            network_allowed=True,
-        )
-        # curl will fail to connect to port 1, but the command itself runs
-        assert isinstance(result, SandboxResult)
-        task.cancel()
         try:
-            await task
-        except asyncio.CancelledError:
-            pass
+            server = await asyncio.start_server(_http_handler, "127.0.0.1", 0)
+        except PermissionError:
+            pytest.skip("local loopback bind not permitted in this environment")
+        except OSError as exc:
+            if exc.errno == errno.EPERM:
+                pytest.skip("local loopback bind not permitted in this environment")
+            raise
+
+        server_port = int(server.sockets[0].getsockname()[1])  # type: ignore[index]
+        try:
+            result = await sandbox.execute(
+                ["curl", "-s", "--max-time", "2", f"http://127.0.0.1:{server_port}/"],
+                network_allowed=True,
+            )
+            assert isinstance(result, SandboxResult)
+            # curl exit code 56 can occur on macOS when the handler closes the
+            # connection before curl finishes reading. With the graceful handler
+            # above this should be 0, but we keep 56 in the allow-list for CI
+            # environments where sandbox-exec timing may differ.
+            assert result.returncode in (0, 56)
+            assert "ok" in result.stdout
+        finally:
+            server.close()
+            await server.wait_closed()
 
     @pytest.mark.asyncio
     async def test_network_denied_blocks_outbound(self, sandbox: SandboxExecutor) -> None:

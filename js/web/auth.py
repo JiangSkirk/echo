@@ -21,6 +21,8 @@ from js.utils.log import get_logger
 
 logger = get_logger("js.web.auth")
 
+__all__ = ["AuthManager", "require_auth", "require_admin", "require_auth_dep"]
+
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 _ADMIN_ROLE = "admin"
@@ -181,12 +183,13 @@ async def require_auth(
     if not effective_settings.security.api_key_required:
         return {"name": "anonymous", "role": _ADMIN_ROLE}
 
-    # If no admin key exists yet, bootstrap: first call creates the default key
     auth_mgr = AuthManager(effective_settings.state_dir)
     if not auth_mgr.has_admin():
-        # During bootstrap window, any key is accepted if one hasn't been created
-        # This allows the first setup to proceed
-        return {"name": "bootstrap", "role": _ADMIN_ROLE}
+        # Bootstrap window: require a valid API key even during first setup.
+        # If no key is provided, reject. The admin must create a key via CLI first.
+        raise AuthRequiredError(
+            "No admin API key configured. Run 'js web-admin create-key' to set up authentication."
+        )
 
     return auth_mgr.verify(api_key)
 

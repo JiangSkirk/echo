@@ -31,16 +31,12 @@ class TestCircuitBreakerStateTransitions:
         assert await cb.state() == CircuitState.HALF_OPEN
         assert await cb.can_execute() is True
 
-    async def test_closes_after_half_open_successes(self) -> None:
+    async def test_closes_after_half_open_success(self) -> None:
+        # Any success in HALF_OPEN immediately closes the circuit
         cb = CircuitBreaker(name="test", failure_threshold=1, recovery_timeout=0.05, half_open_max_calls=2)
         await cb.record_failure()
         await asyncio.sleep(0.1)
-        # HALF_OPEN: consume slots via can_execute, then record successes
-        assert await cb.can_execute() is True  # slot 1
-        await cb.record_success()
         assert await cb.state() == CircuitState.HALF_OPEN
-        assert await cb.can_execute() is True  # slot 2
-        # HALF_OPEN: second success -> CLOSED
         await cb.record_success()
         assert await cb.state() == CircuitState.CLOSED
 

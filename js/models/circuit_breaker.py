@@ -51,12 +51,14 @@ class CircuitBreaker:
                 self._state = CircuitState.HALF_OPEN
                 self._half_open_calls = 0
             if self._state == CircuitState.HALF_OPEN:
-                if self._half_open_calls >= self.half_open_max_calls:
-                    self._state = CircuitState.CLOSED
-                    self._failures = 0
-                    logger.info(f"Circuit {self.name} CLOSED (recovered)")
+                # Any success in HALF_OPEN closes the circuit immediately
+                self._state = CircuitState.CLOSED
+                self._failures = 0
+                self._successes += 1
+                logger.info(f"Circuit {self.name} CLOSED (recovered)")
             else:
                 self._failures = max(0, self._failures - 1)
+                self._successes += 1
 
     async def record_failure(self) -> None:
         async with self._lock:

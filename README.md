@@ -173,13 +173,34 @@ Web 界面的 Skills 面板支持：
 pytest tests/ -v
 ```
 
-**662 个测试**覆盖所有模块：
+**849 个测试**覆盖所有模块：
 - 安全：Red-team (24) + Fuzz guard (40) + Sandbox (8)
 - 记忆：Quality (12) + 持久化 (5)
 - 路由：Provider failover (8) + Circuit breaker
 - 流水线：Auto-Fetch (20) + Benchmark (11)
 - 取消/恢复：Checkpoint/Resume (10) + Smoke (26)
 - Ruff 零错误，mypy 零错误。
+
+```bash
+# 代码质量检查
+ruff check js tests
+mypy js
+pytest tests/ -q -p no:cacheprovider
+```
+
+## 构建与发布
+
+```bash
+# 安装开发依赖
+pip install -e ".[dev]"
+
+# 构建 wheel + sdist
+python -m build
+
+# 产物位于 dist/
+#   js_agent-0.1.0-py3-none-any.whl
+#   js_agent-0.1.0.tar.gz
+```
 
 ## 已知限制
 

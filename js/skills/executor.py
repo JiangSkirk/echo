@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import shlex
 import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -125,7 +124,11 @@ async def _execute_code(
     if is_python:
         cmd = [sys.executable, str(entry_path)]
     elif is_shell:
-        cmd = ["bash", str(entry_path)]
+        import shutil
+        shell = shutil.which("bash") or shutil.which("sh") or shutil.which("cmd")
+        if not shell:
+            return {"success": False, "error": "No shell interpreter found (bash/sh/cmd)"}
+        cmd = [shell, str(entry_path)]
         for k, v in args.items():
             env[f"JS_ARG_{k.upper()}"] = str(v)
     else:
@@ -362,8 +365,9 @@ async def _execute_workflow(
                 any_failed = True
         elif step_type == "shell":
             try:
+                # Use shell=True equivalent via sh -c so pipes, redirects, etc. work
                 proc = await asyncio.create_subprocess_exec(
-                    *shlex.split(step_input),
+                    "sh", "-c", step_input,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=str(workspace),

@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-05-18
+## [0.1.0] - 2026-05-24
 
 ### Added
 
@@ -54,11 +54,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Duplicate providers**: `LocalModelDiscovery` deduplicates by `base_url` (prevents `127.0.0.1` + `localhost` duplicates).
 - **Unloaded models in list**: LM Studio discovery now filters to `state == "loaded"` via `/api/v0/models`.
 - **Embedder auto-discovery**: `_setup_embedder()` probes LM Studio when providers are empty; auto-detects embedding model name.
+- **Cross-platform signal handling**: Windows `SIGTERM`/`SIGINT` unsupported → catch `NotImplementedError`/`ValueError`/`RuntimeError` in `web/server.py`, `daemon/core.py`, and `telegram_bot.py`.
+- **Web UI auth hardening**: Added `X-API-Key` requirement to `/ws`, `/api/chat`, `/api/providers/discover`, `/api/providers/scan-lan`; removed bootstrap admin creation vulnerability.
+- **Circuit breaker half-open recovery**: Single success now correctly closes the circuit; health check decoupled from circuit breaker failure counting.
+- **Sandbox safety**: Linux `unshare` command injection fixed via `shlex.quote`; `_kill_process_tree` hardened against `AccessDenied`/`OSError`; `_monitor_memory` silently handles `CancelledError`.
+- **Fleet isolation**: Each spawned fleet agent gets independent `state_dir` under `fleet/{uuid}/` to prevent SQLite contention.
+- **Search empty-result fallback**: Empty results no longer trigger unnecessary engine fallback.
+- **Skill integrity**: `compute_hash()` now covers all code files (`.py`, `.sh`, `.js`, `scripts/`) not just `SKILL.md`.
+- **Workflow shell**: Switched from `create_subprocess_exec(*shlex.split(...))` to `sh -c` to support pipes and redirections.
+- **DreamScheduler consolidation**: Implemented `force_consolidation()` so cron dream tasks work correctly.
+- **Collaborate deadlock prevention**: Added 10-minute timeout via `asyncio.wait_for(self._bus.get(), timeout=...)`.
+- **Test suite reliability**: `test_sandbox.py::test_network_allowed_true_can_fetch` rewritten with deterministic short timeouts and auto-close server lifecycle; `test_orchestration.py` fleet fixture uses `tmp_path` isolation; `test_integration_e2e.py` replaced `JSSettings.from_file()` with `tmp_path`-based settings.
 
 ### Changed
 
 - **TUI type completeness**: `js/tui/` no longer excluded from mypy; 5 type errors fixed. 131 files now pass strict mypy.
-- **Tests**: 831 passed covering security (red-team + fuzz + sandbox), skills, Hermes bridge, tool execution, memory quality, provider failover, Auto-Fetch pipeline, checkpoint/resume, benchmark, web API, and orchestration.
+- **Tests**: 849 passed covering security (red-team + fuzz + sandbox), skills, Hermes bridge, tool execution, memory quality, provider failover, Auto-Fetch pipeline, checkpoint/resume, benchmark, web API, orchestration, and E2E integration.
+- **Build tooling**: `build>=1.2` added to dev dependencies; `python -m build` verified producing `js_agent-0.1.0.tar.gz` and `js_agent-0.1.0-py3-none-any.whl`.
 - **Agent refactoring**: `js/agent.py` slimmed from ~1526 to ~1270 lines. `_build_system_message()` cached with `TTLCache`. `_execute_tool_call()` and `_finalize_run()` extracted as dedicated methods.
 - **Auto-Fetch connectors marked experimental**: Gmail/Slack/Drive/Calendar/GitHub/Notion are mock/experimental. Documented in README.
 - **Windows installer**: `install.ps1` now supports `-NoShortcut`, `-NoStart`, `-ProjectDir` parameters.

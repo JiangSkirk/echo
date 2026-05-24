@@ -137,12 +137,12 @@ class ModelRouter:
 
         # Select first healthy provider
         for provider_name, default_model in provider_defaults.items():
-            provider = self._providers.get(provider_name)
-            if not provider:
+            maybe_provider = self._providers.get(provider_name)
+            if maybe_provider is None:
                 continue
-            if await self._provider_healthy(provider):
+            if await self._provider_healthy(maybe_provider):
                 decision = RoutingDecision(
-                    provider=provider,
+                    provider=maybe_provider,
                     model=default_model,
                     provider_name=provider_name,
                     reason=f"Default model: {default_model}",
@@ -152,10 +152,10 @@ class ModelRouter:
 
         # Last resort: first configured provider even if unhealthy
         for provider_name, default_model in provider_defaults.items():
-            provider = self._providers.get(provider_name)
-            if provider:
+            maybe_provider = self._providers.get(provider_name)
+            if maybe_provider is not None:
                 decision = RoutingDecision(
-                    provider=provider,
+                    provider=maybe_provider,
                     model=default_model,
                     provider_name=provider_name,
                     reason=f"Fallback (unhealthy): {default_model}",

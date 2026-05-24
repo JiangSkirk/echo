@@ -108,19 +108,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         logger.info("SIGTERM received, initiating graceful shutdown")
         _shutdown_event.set()
 
-    loop = asyncio.get_event_loop()
     try:
-        loop.add_signal_handler(signal.SIGTERM, _handle_sigterm)
-    except (NotImplementedError, ValueError):
-        pass  # Windows or already closed loop
+        loop = asyncio.get_running_loop()
+        try:
+            loop.add_signal_handler(signal.SIGTERM, _handle_sigterm)
+        except (NotImplementedError, ValueError, RuntimeError):
+            pass  # Windows, non-main thread, or already closed loop
+    except RuntimeError:
+        pass  # No running loop
 
     try:
         yield
     finally:
         try:
-            loop.remove_signal_handler(signal.SIGTERM)
-        except (NotImplementedError, ValueError):
-            logger.debug("Operation failed", exc_info=True)
+            loop = asyncio.get_running_loop()
+            try:
+                loop.remove_signal_handler(signal.SIGTERM)
+            except (NotImplementedError, ValueError, RuntimeError):
+                pass
+        except RuntimeError:
+            pass
         if _agent:
             await _agent.close()
         _agent = None

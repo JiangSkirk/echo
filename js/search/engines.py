@@ -81,7 +81,8 @@ class DuckDuckGoEngine(SearchEngine):
                 )
             except Exception as e:
                 logger.warning(
-                    f"DuckDuckGo request failed: {e}, attempt {attempt + 1}/3"
+                    f"DuckDuckGo request failed: {type(e).__name__}: {e}, "
+                    f"attempt {attempt + 1}/3"
                 )
 
             if attempt < 2:
@@ -103,7 +104,9 @@ class DuckDuckGoEngine(SearchEngine):
                 return []
             return self._parse_html(resp.text, max_results)
         except Exception as e:
-            logger.error(f"DuckDuckGo lite fallback failed: {e}")
+            logger.error(
+                f"DuckDuckGo lite fallback failed: {type(e).__name__}: {e}"
+            )
             return []
 
     def _parse_html(self, html: str, max_results: int) -> list[SearchResult]:
@@ -378,9 +381,10 @@ class SearchManager:
         for engine in self.engines:
             try:
                 results = await engine.search(query, max_results)
-                if results:
-                    self._cache.set(query, max_results, results)
-                    return results
+                # Cache and return even empty results — a legitimate empty result
+                # is different from an engine failure. Only fallback on exception.
+                self._cache.set(query, max_results, results)
+                return results
             except Exception as e:
                 errors.append(f"{type(engine).__name__}: {e}")
 

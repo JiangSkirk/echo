@@ -106,8 +106,8 @@ class TestSearchManager:
         manager.register(DuckDuckGoEngine(timeout=2.0), default=True)
         assert manager._default is not None
 
-    def test_fallback_empty_results_from_first_engine(self) -> None:
-        """If first engine returns [] (success but no results), fallback to next."""
+    def test_empty_results_returned_directly(self) -> None:
+        """A successful engine returning [] should return empty, not fallback."""
 
         class EmptyEngine:
             async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
@@ -131,6 +131,41 @@ class TestSearchManager:
 
         manager = SearchManager()
         manager.register(EmptyEngine())  # type: ignore[arg-type]
+        manager.register(RealEngine())  # type: ignore[arg-type]
+
+        import asyncio
+
+        async def _run() -> list[SearchResult]:
+            return await manager.search("query")
+
+        results = asyncio.run(_run())
+        assert len(results) == 0  # Empty results from successful engine are preserved
+
+    def test_fallback_on_engine_exception(self) -> None:
+        """If an engine throws an exception, fallback to the next engine."""
+
+        class FailingEngine:
+            async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+                raise RuntimeError("Engine down")
+
+            async def health_check(self) -> bool:
+                return False
+
+            async def close(self) -> None:
+                pass
+
+        class RealEngine:
+            async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+                return [SearchResult(title="Test", url="https://test.com", snippet="snippet", source="test")]
+
+            async def health_check(self) -> bool:
+                return True
+
+            async def close(self) -> None:
+                pass
+
+        manager = SearchManager()
+        manager.register(FailingEngine())  # type: ignore[arg-type]
         manager.register(RealEngine())  # type: ignore[arg-type]
 
         import asyncio
