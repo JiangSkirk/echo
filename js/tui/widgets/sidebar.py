@@ -37,4 +37,4 @@ class Sidebar(Static):
         yield Static("• /clear 清空")
         yield Static("• /status 状态")
         yield Static("")
-        yield Static("[dim]v0.1.0[/dim]")
+        yield Static("[dim]v0.1.1[/dim]")

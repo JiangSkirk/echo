@@ -15,6 +15,7 @@ import signal
 import time
 from typing import Any
 
+from js import __version__
 from js.agent import JSAgent
 from js.config import JSSettings
 from js.cron.engine import CronEngine, JobResult, ScheduledJob
@@ -94,6 +95,26 @@ async def _session_cleanup_task(agent: JSAgent) -> None:
         logger.warning(f"Session cleanup failed: {e}")
 
 
+def _interval_to_cron(interval_seconds: int) -> str:
+    """Convert an interval in seconds to a valid cron expression.
+
+    Cron minute field only supports 0-59, so intervals >= 60 seconds
+    are converted to hour-based expressions where possible.
+    """
+    if interval_seconds <= 0:
+        return "* * * * *"
+    if interval_seconds < 60:
+        return f"*/{interval_seconds} * * * *"
+    minutes = interval_seconds // 60
+    if minutes < 60:
+        return f"*/{minutes} * * * *"
+    hours = minutes // 60
+    if hours < 24:
+        return f"0 */{hours} * * *"
+    days = hours // 24
+    return f"0 0 */{days} * *"
+
+
 class DaemonHeartbeat:
     """Snapshot of daemon health written to disk periodically."""
 
@@ -105,7 +126,7 @@ class DaemonHeartbeat:
         tasks_failed: int,
         provider_count: int,
         memory_sessions: int,
-        version: str = "0.1.0",
+        version: str = __version__,
     ) -> None:
         self.timestamp = timestamp
         self.uptime_seconds = uptime_seconds
@@ -135,7 +156,7 @@ class DaemonHeartbeat:
             tasks_failed=data.get("tasks_failed", 0),
             provider_count=data.get("provider_count", 0),
             memory_sessions=data.get("memory_sessions", 0),
-            version=data.get("version", "0.1.0"),
+            version=data.get("version", __version__),
         )
 
 
@@ -176,7 +197,7 @@ class JSDaemon:
         # Also register in cron engine for actual execution
         job = ScheduledJob(
             name=task.name,
-            cron_expr=f"*/{int(task.interval_seconds)} * * * *",
+            cron_expr=_interval_to_cron(int(task.interval_seconds)),
             task_type="custom",
             payload={},
         )

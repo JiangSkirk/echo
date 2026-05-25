@@ -19,7 +19,11 @@ def db_connection(db_path: Path | str, *, row_factory: Any = None) -> Generator[
         with db_connection(path) as conn:
             conn.execute(...)
     """
-    conn = sqlite3.connect(str(db_path))
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), timeout=10.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     if row_factory is not None:
         conn.row_factory = row_factory
     try:

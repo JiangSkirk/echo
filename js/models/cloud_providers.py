@@ -190,5 +190,8 @@ def build_provider_config(preset: CloudProviderPreset, api_key: str) -> ModelPro
         timeout=120.0,
         max_retries=3,
         default_model=preset.models[0].id if preset.models else "",
-        models=list(preset.models),
+        models=[
+            model.model_copy(update={"provider": preset.id})
+            for model in preset.models
+        ],
     )

@@ -382,11 +382,14 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
 
     def _memory_file_path(self, name: str) -> Path:
         """Resolve memory file path, guarding against path traversal."""
-        # Allow any .md file in the memory directory, not just the hardcoded set
         safe_name = Path(name).name
-        if not safe_name or safe_name.startswith("."):
+        if not safe_name or safe_name.startswith(".") or safe_name == "..":
             raise ValueError(f"Invalid memory file name: {name}")
-        return self.state_dir / "memory" / f"{safe_name}.md"
+        target = (self.state_dir / "memory" / f"{safe_name}.md").resolve()
+        base = (self.state_dir / "memory").resolve()
+        if not str(target).startswith(str(base)):
+            raise ValueError(f"Memory file path escapes allowed directory: {name}")
+        return target
 
     def read_memory_file(self, name: str) -> str:
         """Read a memory file's content. Returns empty string if not found."""

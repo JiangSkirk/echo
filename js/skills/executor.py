@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -117,12 +118,20 @@ async def _execute_code(
         from js.skills.hermes_bridge import _get_hermes_home
         env["HERMES_HOME"] = str(_get_hermes_home())
 
-    # Determine interpreter
+    # Determine interpreter (prefer skill-local venv if available)
     is_python = spec.entry.endswith(".py")
     is_shell = spec.entry.endswith(".sh") or spec.entry.endswith(".bash")
 
+    python_exe = sys.executable
+    if spec.path:
+        venv_python = spec.path / ".venv" / "bin" / "python"
+        if sys.platform == "win32":
+            venv_python = spec.path / ".venv" / "Scripts" / "python.exe"
+        if venv_python.exists():
+            python_exe = str(venv_python)
+
     if is_python:
-        cmd = [sys.executable, str(entry_path)]
+        cmd = [python_exe, str(entry_path)]
     elif is_shell:
         import shutil
         shell = shutil.which("bash") or shutil.which("sh") or shutil.which("cmd")
@@ -138,8 +147,8 @@ async def _execute_code(
     if is_hermes and (is_python or is_shell):
         cmd.extend(_build_hermes_cli_args(args))
 
-    # Use sandbox if available and appropriate
-    if sandbox and spec.trust_level.value in ("community", "quarantine"):
+    # Use sandbox if available — all CODE skills should run sandboxed
+    if sandbox:
         try:
             result = await sandbox.execute(
                 cmd,
@@ -345,9 +354,9 @@ async def _execute_workflow(
                 })
                 continue
 
-        # Substitute args into step input
+        # Substitute args into step input (safely quote shell values)
         for k, v in args.items():
-            step_input = step_input.replace(f"{{{k}}}", str(v))
+            step_input = step_input.replace(f"{{{k}}}", shlex.quote(str(v)))
 
         step_result: dict[str, Any] = {"step": i, "type": step_type}
 

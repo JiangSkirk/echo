@@ -37,7 +37,14 @@ class LocalModelDiscovery:
 
     def __init__(self, timeout: float = 3.0) -> None:
         self.timeout = timeout
-        self._client = httpx.AsyncClient(timeout=httpx.Timeout(timeout))
+        # Disable system proxies for local server discovery to avoid
+        # 502 errors when a system proxy forwards loopback traffic.
+        # httpx 0.28 reads HTTP_PROXY/HTTPS_PROXY env vars by default;
+        # trust_env=False disables this behaviour.
+        self._client = httpx.AsyncClient(
+            trust_env=False,
+            timeout=httpx.Timeout(timeout),
+        )
 
     async def discover_all(self) -> list[DiscoveredProvider]:
         """Probe all known local endpoints concurrently."""

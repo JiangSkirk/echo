@@ -50,10 +50,18 @@ HERMES_ID_PREFIX = "hermes:"
 
 
 def _get_hermes_home() -> Path:
-    """Return the Hermes home directory from env or default."""
+    """Return the Hermes home directory from env or default.
+
+    Security: reject env values that escape the user's home directory.
+    """
     env_home = os.environ.get("HERMES_HOME")
     if env_home:
-        return Path(env_home)
+        candidate = Path(env_home).resolve()
+        home = Path.home().resolve()
+        if candidate != home and not str(candidate).startswith(str(home) + os.sep):
+            logger.warning(f"HERMES_HOME {candidate} is outside home directory, using default")
+            return DEFAULT_HERMES_HOME
+        return candidate
     return DEFAULT_HERMES_HOME
 
 

@@ -1,6 +1,6 @@
 # JS Agent
 
-> **⚠️ 当前版本: v0.1.0-alpha — API 可能变更，欢迎反馈！**
+> **⚠️ 当前版本: v0.1.1-alpha — API 可能变更，欢迎反馈！**
 >
 > [English README](README_en.md)
 
@@ -65,9 +65,17 @@
 
 ## 快速开始
 
+环境要求：macOS + Python 3.12 / 3.13 / 3.14。
+
 ```bash
-# 安装
-pip install -e ".[dev]"
+# 推荐：首次运行会自动创建 .venv、安装依赖、初始化配置并打开 Web UI
+./scripts/macos_start.sh
+```
+
+手动安装：
+
+```bash
+pip install -e .
 
 # 一键配置（自动检测 LM Studio / Ollama）
 js setup
@@ -82,11 +90,30 @@ js web --port 8000
 js search "最新的 AI 发展"
 ```
 
+## 接入自己的模型
+
+JS Agent 支持 OpenAI-compatible 接口。普通用户可以在 Web UI 的 Models 页面添加 Provider：
+
+- LM Studio: `http://127.0.0.1:1234/v1`
+- Ollama: `http://127.0.0.1:11434/v1`
+- OpenAI / DeepSeek / DashScope / SiliconFlow 等云服务：填写对应 `base_url` 和 API Key
+
+添加后点击 Discover 拉取模型列表，保存后即可在顶部模型下拉框切换。
+
+## 二次开发
+
+```bash
+pip install -e ".[dev]"
+ruff check js tests
+mypy js
+pytest tests -q -p no:cacheprovider
+```
+
 ## 架构对比
 
 | 能力 | OpenClaw | Hermes | **JS** |
 |------|----------|--------|-----------|
-| 运行时 | Node.js (3700 chunks) | Python + Node UI | **Python 3.12 统一** |
+| 运行时 | Node.js (3700 chunks) | Python + Node UI | **Python 3.12+ 统一** |
 | 安全 | 外部插件 (ClawAegis) | Tirith + 审批 | **内置 + 策略模式 + Fail-Open** |
 | 上下文压缩 | ❌ | ✅ 最强 | ✅ **Hermes 式压缩器** |
 | Checkpoint | ❌ | ✅ Git Shadow | ✅ **Git Shadow Repo** |
@@ -100,8 +127,6 @@ js search "最新的 AI 发展"
 | 多Agent | 简单子Agent | 委托线程池 | ✅ **角色系统 + 并行编排** |
 | 自主学习 | ❌ | ❌ | ✅ **交互学习 + A/B 测试** |
 | 安装体验 | JSON 手动配置 | YAML 388行 | ✅ **`js setup` 一键** |
-
-## 测试
 
 ## Skill 系统
 
@@ -129,11 +154,18 @@ JS Agent 拥有统一、安全、可扩展的 Skill 系统，支持三种类型�
 
 ### 内置 Skills
 
-开箱即用 5 个 Prompt 类型 Skill：
+开箱即用的内置 Skill：
+- `api-design` — API 设计审查
 - `arxiv-research` — arXiv 论文搜索指南
 - `code-review` — 结构化代码审查
-- `file-search` — 高级 grep/find 技巧
-- `git-helper` — Git 工作流指南
+- `docker-helper` — Docker 使用建议
+- `excel-helper` — Excel 读取、写入、合并指南
+- `file-search` — 高级文件搜索
+- `pdf-helper` — PDF 报告生成指南
+- `python-debug` — Python 调试指南
+- `regex-cookbook` — 正则表达式助手
+- `shell-safety` — Shell 命令安全审查
+- `sql-optimizer` — SQL 优化建议
 - `web-fetch` — curl/wget 最佳实践
 
 ### CLI 管理
@@ -173,7 +205,7 @@ Web 界面的 Skills 面板支持：
 pytest tests/ -v
 ```
 
-**849 个测试**覆盖所有模块：
+完整测试覆盖核心模块：
 - 安全：Red-team (24) + Fuzz guard (40) + Sandbox (8)
 - 记忆：Quality (12) + 持久化 (5)
 - 路由：Provider failover (8) + Circuit breaker
@@ -186,6 +218,7 @@ pytest tests/ -v
 ruff check js tests
 mypy js
 pytest tests/ -q -p no:cacheprovider
+python scripts/release_smoke.py --all
 ```
 
 ## 构建与发布
@@ -198,8 +231,8 @@ pip install -e ".[dev]"
 python -m build
 
 # 产物位于 dist/
-#   js_agent-0.1.0-py3-none-any.whl
-#   js_agent-0.1.0.tar.gz
+#   js_agent-0.1.1-py3-none-any.whl
+#   js_agent-0.1.1.tar.gz
 ```
 
 ## 已知限制

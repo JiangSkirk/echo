@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from js import __version__
 from js.config import ToolLimits
 from js.security.guard import BehaviorGuard
 from js.tools.registry import ToolParam, ToolResult, ToolSpec
@@ -27,7 +28,7 @@ class BrowserTool:
                 timeout=httpx.Timeout(self.limits.browser_timeout),
                 follow_redirects=False,  # Prevent redirect-based SSRF bypass
                 headers={
-                    "User-Agent": "JS-Agent/0.1.0 (Research Bot)",
+                    "User-Agent": f"JS-Agent/{__version__} (Research Bot)",
                 },
             )
         return self._client

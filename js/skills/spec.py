@@ -140,17 +140,18 @@ class SkillSpec:
         h = hashlib.sha256()
         # Hash manifest first
         manifest = self.path / "SKILL.md"
-        if manifest.exists():
+        if manifest.exists() and not manifest.is_symlink():
             h.update(manifest.read_bytes())
         # Hash all executable and config files
         for pattern in ("*.py", "*.sh", "*.bash", "*.js", "*.json", "*.yaml", "*.yml", "*.toml", "requirements.txt"):
             for f in sorted(self.path.glob(pattern)):
-                h.update(f.read_bytes())
+                if not f.is_symlink():
+                    h.update(f.read_bytes())
         # Hash scripts/ directory if present
         scripts_dir = self.path / "scripts"
         if scripts_dir.exists():
             for f in sorted(scripts_dir.rglob("*")):
-                if f.is_file():
+                if f.is_file() and not f.is_symlink():
                     h.update(f.read_bytes())
         return h.hexdigest()[:16]
 

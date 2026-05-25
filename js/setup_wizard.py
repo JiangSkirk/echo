@@ -25,7 +25,7 @@ class SetupWizard:
 
     def __init__(self) -> None:
         self.settings = JSSettings()
-        self.config_path = Path.home() / ".config" / "js" / "config.yaml"
+        self.config_path = Path(os.getenv("JS_CONFIG_PATH", "~/.config/js/config.yaml")).expanduser()
 
     async def run(self, non_interactive: bool = False) -> None:
         """Run the complete setup flow."""

@@ -208,6 +208,45 @@ class TestCLICommands:
         result = runner.invoke(main, ["skill", "create", "--help"])
         assert result.exit_code == 0
 
+    def test_search_command_runs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Search command accepts --engine option and renders results."""
+        from click.testing import CliRunner
+
+        import js.search.engines as search_engines
+        from js.search.engines import SearchResult
+        from js.ui.cli import main
+
+        class FakeManager:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def register(self, _engine: object, default: bool = False) -> None:
+                return None
+
+            async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+                return [
+                    SearchResult(
+                        title=f"Result for {query}",
+                        url="https://example.com",
+                        snippet=f"max={max_results}",
+                        source="fake",
+                    )
+                ]
+
+            async def close(self) -> None:
+                self.closed = True
+
+        class FakeDuckDuckGo:
+            pass
+
+        monkeypatch.setattr(search_engines, "SearchManager", FakeManager)
+        monkeypatch.setattr(search_engines, "DuckDuckGoEngine", FakeDuckDuckGo)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["search", "OpenAI", "--engine", "auto"])
+        assert result.exit_code == 0
+        assert "Result for OpenAI" in result.output
+
 
 class TestConfigLoading:
     """Smoke-test configuration loading."""

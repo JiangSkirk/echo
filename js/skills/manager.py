@@ -569,7 +569,7 @@ entry: main.py
 
         self._skills[spec.id] = spec
 
-        # Install pip dependencies if present
+        # Install pip dependencies into a skill-local venv if present
         req_file = target_dir / "requirements.txt"
         if req_file.exists():
             # Safety: reject requirements with git URLs or local paths
@@ -582,8 +582,25 @@ entry: main.py
                     raise ValueError(
                         f"Blocked unsafe requirement in {spec.id}: {stripped[:80]}"
                     )
+            venv_dir = target_dir / ".venv"
+            pip_cmd = [sys.executable, "-m", "pip"]
+            if not venv_dir.exists():
+                # Create isolated venv for this skill
+                venv_proc = await asyncio.create_subprocess_exec(
+                    sys.executable, "-m", "venv", str(venv_dir),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await asyncio.wait_for(venv_proc.communicate(), timeout=120)
+                pip_cmd = [str(venv_dir / "bin" / "python"), "-m", "pip"]
+                if sys.platform == "win32":
+                    pip_cmd = [str(venv_dir / "Scripts" / "python.exe"), "-m", "pip"]
+            else:
+                pip_cmd = [str(venv_dir / "bin" / "python"), "-m", "pip"]
+                if sys.platform == "win32":
+                    pip_cmd = [str(venv_dir / "Scripts" / "python.exe"), "-m", "pip"]
             proc = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "pip", "install", "-r", str(req_file),
+                *pip_cmd, "install", "-r", str(req_file),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

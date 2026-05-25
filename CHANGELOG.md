@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1-alpha] - 2026-05-25
+
+### Added
+
+- **macOS first-run script**: Added `scripts/macos_start.sh` for a one-command macOS startup path. It creates `.venv`, installs runtime dependencies, runs setup when needed, and opens the Web UI.
+- **Release smoke workflow**: Added `.github/workflows/release-smoke.yml` to verify package, Web UI, model provider switching, OpenClaw/Hermes skill compatibility, dream memory, evolution, and multi-agent fleet behavior.
+- **Release smoke script**: Added `scripts/release_smoke.py` for local and CI release validation.
+- **Office builtin skills**: Moved Excel/PDF helper skills into the real loaded builtin skill directory as `excel-helper` and `pdf-helper`.
+- **macOS-focused README quick start**: Documented the recommended macOS path and model-provider setup flow.
+
+### Fixed
+
+- **DuckDuckGo search parsing**: Decodes DuckDuckGo `uddg` redirect URLs so real external results are no longer filtered out as internal DuckDuckGo links.
+- **CLI search command**: Fixed `js search` Click parameter mismatch that caused `TypeError: search() got an unexpected keyword argument 'engine'`.
+- **Web upload dependency**: Ensured `python-multipart` is included so FastAPI upload routes can start correctly.
+- **Local model provider discovery**: Avoids environment proxy interference for local provider model discovery.
+- **Web model list refresh**: `/api/models` now refreshes local LM Studio/Ollama model lists more reliably.
+- **Version consistency**: Updated package/UI/server version display to `0.1.1`.
+- **Generated artifact cleanup**: `.mypy_cache/` and `.ruff_cache/` are ignored, and stale cache/log/build artifacts were removed.
+- **Windows installer removal**: Removed the old PowerShell installer path after narrowing this release to macOS-first distribution.
+
+### Changed
+
+- **Release positioning**: This is now a macOS-first alpha release rather than a cross-platform desktop/app release.
+- **CI matrix**: CI and release smoke workflows target Python 3.12, 3.13, and 3.14.
+- **Skill loading**: Builtin skill count is now 12, including office helper prompt skills.
+
+### Verified
+
+- `ruff check js tests scripts pyproject.toml`
+- `mypy js`
+- `pytest -q` → 856 tests passed locally on macOS + Python 3.12.
+- `python scripts/release_smoke.py --all`
+- `python -m js search "OpenAI"`
+- `python -m build`
+- Fresh temporary macOS virtual environment installing the built wheel and running release smoke checks.
+
+### Known Limitations
+
+- The release is intended as an alpha/public testing build.
+- macOS + Python 3.12 is the locally verified path.
+- Python 3.13/3.14 are configured in CI, but should be confirmed by GitHub Actions before calling the release broadly stable.
+- Windows installer/app packaging is intentionally out of scope for this release.
+
 ## [0.1.0] - 2026-05-24
 
 ### Added
@@ -86,4 +130,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **831 tests** with **Ruff** linting and **mypy** strict type checking passing with zero errors.
 
-[0.1.0]: https://github.com/yourusername/js-agent/releases/tag/v0.1.0
+[0.1.0]: https://github.com/JiangSkirk/titan-agent/releases/tag/v0.1.0
+[0.1.1-alpha]: https://github.com/JiangSkirk/titan-agent/releases/tag/v0.1.1-alpha

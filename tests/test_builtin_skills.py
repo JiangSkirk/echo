@@ -1,12 +1,4 @@
-"""Integration tests for the 5 builtin skills.
-
-Skills tested:
-- arxiv-research (prompt)
-- code-review (prompt)
-- file-search (code)
-- shell-safety (prompt)
-- web-fetch (prompt)
-"""
+"""Integration tests for builtin skills."""
 
 from __future__ import annotations
 
@@ -100,6 +92,8 @@ class TestPromptSkillsLoaded:
     @pytest.mark.parametrize("skill_id", [
         "arxiv-research",
         "code-review",
+        "excel-helper",
+        "pdf-helper",
         "shell-safety",
         "web-fetch",
     ])

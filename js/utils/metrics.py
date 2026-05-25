@@ -1,18 +1,50 @@
-"""Metrics collection with Prometheus and OpenTelemetry."""
+"""Metrics collection with Prometheus and OpenTelemetry (optional)."""
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
-from opentelemetry import trace
-from prometheus_client import Counter, Histogram
+try:
+    from opentelemetry import trace
+    from prometheus_client import Counter, Histogram
+
+    tracer = trace.get_tracer("js.agent")
+    _METRICS_AVAILABLE = True
+except ImportError:
+    _METRICS_AVAILABLE = False
+
+    class _DummyCounter:
+        """No-op counter when prometheus_client is unavailable."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def inc(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def labels(self, *args: Any, **kwargs: Any) -> _DummyCounter:
+            return self
+
+    class _DummyHistogram:
+        """No-op histogram when prometheus_client is unavailable."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def observe(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def labels(self, *args: Any, **kwargs: Any) -> _DummyHistogram:
+            return self
+
+    Counter = _DummyCounter  # type: ignore[misc,assignment]
+    Histogram = _DummyHistogram  # type: ignore[misc,assignment]
 
 from js.utils.log import get_logger
 
 logger = get_logger("js.utils.metrics")
-
-tracer = trace.get_tracer("js.agent")
 
 
 class MetricsCollector:
@@ -113,8 +145,11 @@ def get_metrics() -> MetricsCollector:
 def start_span(
     name: str,
     attributes: dict[str, Any] | None = None,
-) -> Any:
+) -> Generator[Any, None, None]:
     """Start an OpenTelemetry span, failing open on any error."""
+    if not _METRICS_AVAILABLE:
+        yield None
+        return
     try:
         with tracer.start_as_current_span(name) as span:
             if attributes and span is not None:
@@ -122,9 +157,7 @@ def start_span(
                     try:
                         span.set_attribute(key, value)
                     except Exception:
-                        logger.warning('Operation failed', exc_info=True)
+                        logger.warning("Operation failed", exc_info=True)
             yield span
     except Exception:
         yield None
-
-

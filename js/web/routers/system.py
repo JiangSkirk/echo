@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 
+from js import __version__
 from js.agent import JSAgent
 from js.config import JSSettings
 from js.utils.log import get_logger
@@ -26,7 +27,7 @@ logger = get_logger("js.web")
 
 router = APIRouter(tags=["system"])
 
-SERVER_VERSION = "0.1.0+evolution"
+SERVER_VERSION = f"{__version__}+evolution"
 
 # Global state
 _agent: JSAgent | None = None

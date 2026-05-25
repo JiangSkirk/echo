@@ -79,6 +79,20 @@ class TestDuckDuckGoEngine:
         assert len(results) == 1
         assert results[0].title == "Real Article"
 
+    def test_parse_html_decodes_duckduckgo_redirects(self, engine: DuckDuckGoEngine) -> None:
+        html = """
+        <div class="result">
+            <a class="result__a" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Farticle&amp;rut=abc">
+                Redirected Result
+            </a>
+            <div class="result__snippet">Useful redirected result snippet.</div>
+        </div>
+        """
+        results = engine._parse_html(html, 5)
+        assert len(results) == 1
+        assert results[0].title == "Redirected Result"
+        assert results[0].url == "https://example.com/article"
+
     def test_parse_html_empty(self, engine: DuckDuckGoEngine) -> None:
         assert engine._parse_html("", 5) == []
         assert engine._parse_html("<html><body><h1>No results</h1></body></html>", 5) == []

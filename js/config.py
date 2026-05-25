@@ -164,7 +164,7 @@ class JSSettings(BaseSettings):
     )
 
     # Core
-    version: str = "0.1.0"
+    version: str = "0.1.1"
     workspace: Path = Field(default_factory=lambda: Path.home() / ".js" / "workspace")
     state_dir: Path = Field(default_factory=lambda: Path.home() / ".js" / "state")
     log_level: LogLevel = LogLevel.INFO

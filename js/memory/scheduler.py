@@ -48,28 +48,52 @@ class DreamScheduler:
         if self._task and not self._task.done():
             self._task.cancel()
         self._task = asyncio.create_task(self._loop())
-        self._task.add_done_callback(
-            lambda t: t.exception() if t.done() and not t.cancelled() else None
-        )
+        self._task.add_done_callback(self._on_loop_done)
 
     def stop(self) -> None:
         """Stop the background scheduling loop."""
         if self._task and not self._task.done():
             self._task.cancel()
 
+    def _on_loop_done(self, task: asyncio.Task[Any]) -> None:
+        """Log any unhandled exception from the background loop."""
+        if task.done() and not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                self.logger.error("DreamScheduler loop crashed: %s", exc, exc_info=True)
+
     async def force_consolidation(self) -> None:
         """Immediately run an evolution cycle, bypassing idle wait.
 
         Used by the daemon's cron dream task and manual triggers.
         """
-        self._last_activity = 0.0  # Pretend we've been idle forever
+        self._last_activity = 0.0
         self._pending = True
         self._pending_since = 0.0
-        # Wait up to 2 check intervals for the loop to pick it up
-        for _ in range(2):
-            await asyncio.sleep(self._check_interval)
-            if not self._pending:
-                break
+        try:
+            await asyncio.wait_for(
+                self._run_once(),
+                timeout=max(30.0, self._check_interval * 3),
+            )
+        except TimeoutError:
+            self.logger.warning("force_consolidation timed out")
+
+    async def _run_once(self) -> None:
+        """Execute a single evolution cycle."""
+        buffer_copy = list(self._conversation_buffer)
+        try:
+            await asyncio.wait_for(
+                self.agent._run_evolution_cycle(conversation_buffer=buffer_copy),
+                timeout=120.0,
+            )
+        except asyncio.CancelledError:
+            self._pending = False
+            self._conversation_buffer.clear()
+            raise
+        except Exception as e:
+            self.logger.warning(f"Evolution cycle failed: {e}", exc_info=True)
+        self._pending = False
+        self._conversation_buffer = self._conversation_buffer[len(buffer_copy):]
 
     async def _loop(self) -> None:
         """Main scheduling loop — checks idle time and triggers evolution."""
@@ -83,24 +107,13 @@ class DreamScheduler:
             idle = time.time() - self._last_activity
             deferred = time.time() - self._pending_since
             self.logger.debug(
-                f"DreamScheduler check: idle={idle:.1f}s, deferred={deferred:.1f}s, "
-                f"threshold={self._idle_threshold:.0f}s, max_deferral={self._max_deferral:.0f}s"
+                "DreamScheduler check: idle=%.1fs, deferred=%.1fs, "
+                "threshold=%.0fs, max_deferral=%.0fs",
+                idle, deferred, self._idle_threshold, self._max_deferral,
             )
             if idle >= self._idle_threshold or deferred >= self._max_deferral:
                 self.logger.info(
-                    f"Triggering evolution cycle (idle={idle:.1f}s, deferred={deferred:.1f}s)"
+                    "Triggering evolution cycle (idle=%.1fs, deferred=%.1fs)",
+                    idle, deferred,
                 )
-                buffer_copy = list(self._conversation_buffer)
-                try:
-                    await self.agent._run_evolution_cycle(
-                        conversation_buffer=buffer_copy
-                    )
-                except asyncio.CancelledError:
-                    self._pending = False
-                    self._conversation_buffer.clear()
-                    raise
-                except Exception as e:
-                    self.logger.warning(f"Evolution cycle failed: {e}", exc_info=True)
-                self._pending = False
-                # Remove only entries that were in the copy (race-safe)
-                self._conversation_buffer = self._conversation_buffer[len(buffer_copy):]
+                await self._run_once()

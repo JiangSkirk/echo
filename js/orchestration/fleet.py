@@ -99,7 +99,13 @@ class AgentFleet:
             model=resolved_model,
             capabilities=capabilities or [],
         )
-        self.agents[agent_id] = instance
+        # Use lock to prevent races with dispatch/get_status
+        # (synchronous lock acquisition for sync spawn API)
+        if hasattr(self._lock, '_lock'):
+            with self._lock._lock:
+                self.agents[agent_id] = instance
+        else:
+            self.agents[agent_id] = instance
         logger.info(f"Spawned agent {name} ({role}) with ID {agent_id} (state={role_settings.state_dir})")
         return instance
 
@@ -129,39 +135,49 @@ class AgentFleet:
         async with self._lock:
             self.tasks[task.id] = task
 
-        # Find best agent
-        best_agent: AgentInstance | None = None
-        for agent in self.agents.values():
-            if agent.status == "idle" and (agent.role == task.role_hint or agent.role == AgentRole.GENERALIST):
-                best_agent = agent
-                break
+            # Find best agent
+            best_agent: AgentInstance | None = None
+            for agent in self.agents.values():
+                if agent.status == "idle" and (agent.role == task.role_hint or agent.role == AgentRole.GENERALIST):
+                    best_agent = agent
+                    break
+
+            if not best_agent:
+                # Pool limit: if at capacity, wait for an agent to become idle
+                if len(self.agents) >= self._max_agents:
+                    logger.warning(
+                        f"Fleet at max capacity ({self._max_agents}), waiting for idle agent"
+                    )
+                    # Release lock while polling to avoid blocking other operations
+                    pass
+                else:
+                    best_agent = self.spawn(f"worker-{task.role_hint}", task.role_hint)
+
+            if best_agent:
+                task.assigned_to = best_agent.id
+                task.status = "running"
+                best_agent.status = "busy"
+                best_agent.current_task = task.id
 
         if not best_agent:
-            # Pool limit: if at capacity, wait for an agent to become idle
-            if len(self.agents) >= self._max_agents:
-                logger.warning(
-                    f"Fleet at max capacity ({self._max_agents}), waiting for idle agent"
-                )
-                # Simple blocking wait with timeout
-                for _ in range(60):  # wait up to ~60s
+            # Wait outside the lock for an idle agent
+            for _ in range(60):  # wait up to ~60s
+                async with self._lock:
                     for agent in self.agents.values():
                         if agent.status == "idle":
                             best_agent = agent
                             break
                     if best_agent:
+                        task.assigned_to = best_agent.id
+                        task.status = "running"
+                        best_agent.status = "busy"
+                        best_agent.current_task = task.id
                         break
-                    await asyncio.sleep(1)
-                if not best_agent:
-                    raise RuntimeError(
-                        f"No idle agent available and fleet at max capacity ({self._max_agents})"
-                    )
-            else:
-                best_agent = self.spawn(f"worker-{task.role_hint}", task.role_hint)
-
-        task.assigned_to = best_agent.id
-        task.status = "running"
-        best_agent.status = "busy"
-        best_agent.current_task = task.id
+                await asyncio.sleep(1)
+            if not best_agent:
+                raise RuntimeError(
+                    f"No idle agent available and fleet at max capacity ({self._max_agents})"
+                )
 
         # Run task in background
         bg_task = asyncio.create_task(self._execute_task(task, best_agent))
@@ -193,7 +209,8 @@ class AgentFleet:
         except Exception as e:
             task.status = "failed"
             task.result = str(e)
-            agent.status = "error"
+            agent.status = "idle"  # Allow agent to be reused after failure
+            agent.current_task = None
             logger.error(f"Task {task.id} failed: {e}")
             # Notify bus so collaborate() doesn't hang forever
             await self._bus.put({

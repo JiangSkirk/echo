@@ -7,6 +7,7 @@ import html as html_module
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
@@ -89,7 +90,10 @@ class DuckDuckGoEngine(SearchEngine):
                 await asyncio.sleep(2 ** attempt)  # 1s, 2s exponential backoff
 
         # Fallback to DuckDuckGo Lite
-        return await self._search_via_lite(query, max_results)
+        lite_results = await self._search_via_lite(query, max_results)
+        if lite_results:
+            return lite_results
+        raise RuntimeError("DuckDuckGo search failed after all retries")
 
     async def _search_via_lite(self, query: str, max_results: int) -> list[SearchResult]:
         """Fallback using DuckDuckGo Lite."""
@@ -101,13 +105,13 @@ class DuckDuckGoEngine(SearchEngine):
             )
             if resp.status_code != 200:
                 logger.warning(f"DuckDuckGo Lite returned {resp.status_code}")
-                return []
+                raise RuntimeError(f"DuckDuckGo Lite returned {resp.status_code}")
             return self._parse_html(resp.text, max_results)
         except Exception as e:
             logger.error(
                 f"DuckDuckGo lite fallback failed: {type(e).__name__}: {e}"
             )
-            return []
+            raise RuntimeError(f"DuckDuckGo search failed: {e}") from e
 
     def _parse_html(self, html: str, max_results: int) -> list[SearchResult]:
         import re
@@ -174,7 +178,7 @@ class DuckDuckGoEngine(SearchEngine):
             for link_match in re.finditer(
                 r'<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', block, re.S
             ):
-                url = link_match.group(1)
+                url = self._normalize_result_url(link_match.group(1))
                 title = re.sub(r"<[^>]+>", "", link_match.group(2)).strip()
                 title = html_module.unescape(title)
 
@@ -205,6 +209,20 @@ class DuckDuckGoEngine(SearchEngine):
                 break
 
         return results
+
+    @staticmethod
+    def _normalize_result_url(raw_url: str) -> str:
+        """Return the external target URL from direct or DuckDuckGo redirect links."""
+        url = html_module.unescape(raw_url)
+        parsed = urlparse(url)
+
+        # DuckDuckGo HTML commonly wraps outbound links as /l/?uddg=<encoded-url>.
+        # Decode those so real search results are not mistaken for internal links.
+        if parsed.path.startswith("/l/") or parsed.netloc.endswith("duckduckgo.com"):
+            target = parse_qs(parsed.query).get("uddg", [""])[0]
+            if target:
+                return unquote(target)
+        return url
 
     async def health_check(self) -> bool:
         try:
@@ -256,7 +274,7 @@ class TavilyEngine(SearchEngine):
             return results
         except Exception as e:
             logger.error(f"Tavily search failed: {e}")
-            return []
+            raise RuntimeError(f"Tavily search failed: {e}") from e
 
     async def health_check(self) -> bool:
         try:
@@ -307,7 +325,7 @@ class SerperEngine(SearchEngine):
             return results
         except Exception as e:
             logger.error(f"Serper search failed: {e}")
-            return []
+            raise RuntimeError(f"Serper search failed: {e}") from e
 
     async def health_check(self) -> bool:
         try:

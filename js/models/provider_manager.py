@@ -114,7 +114,7 @@ class ProviderManager:
             headers["Authorization"] = f"Bearer {api_key}"
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
                 resp = await client.get(
                     f"{base_url.rstrip('/')}/models", headers=headers
                 )

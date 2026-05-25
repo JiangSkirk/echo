@@ -19,10 +19,19 @@ from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
-from prometheus_client import make_asgi_app
 
+try:
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    from prometheus_client import make_asgi_app
+    HTTPXClientInstrumentor().instrument()
+    _MONITORING_AVAILABLE = True
+except ImportError:
+    _MONITORING_AVAILABLE = False
+    FastAPIInstrumentor = None  # type: ignore[misc,assignment]
+    make_asgi_app = None  # type: ignore[assignment]
+
+from js import __version__
 from js.agent import JSAgent
 from js.config import JSSettings, ModelConfig, ModelProviderConfig
 from js.models.provider_manager import ProviderManager
@@ -35,12 +44,10 @@ from js.web.routers import cron, fleet
 from js.web.routers import plugins as plugins_router
 from js.web.stats_store import TokenStatsStore
 
-HTTPXClientInstrumentor().instrument()
-
 logger = get_logger("js.web")
 
 # Server version (bump when adding new API surfaces)
-SERVER_VERSION = "0.1.0+evolution"
+SERVER_VERSION = f"{__version__}+evolution"
 
 # Global agent instance
 _agent: JSAgent | None = None
@@ -143,8 +150,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
 
 def create_app() -> FastAPI:
     app = FastAPI(title="JS Agent Web UI", lifespan=lifespan)
-    FastAPIInstrumentor.instrument_app(app)
-    app.mount("/metrics", make_asgi_app())
+    if _MONITORING_AVAILABLE:
+        FastAPIInstrumentor.instrument_app(app)
+        app.mount("/metrics", make_asgi_app())
 
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
@@ -158,7 +166,7 @@ def create_app() -> FastAPI:
         return _load_index_html()
 
     @app.get("/api/status")
-    async def status() -> dict[str, Any]:
+    async def status(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         await agent._check_degraded()
         return {
@@ -173,7 +181,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/metrics/providers")
-    async def provider_metrics() -> dict[str, Any]:
+    async def provider_metrics(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """Return per-provider SLO metrics: health, latency percentiles, circuit state."""
         agent = get_agent()
         health = await agent.router.health_check()
@@ -232,7 +240,7 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/cancel/{session_id}")
-    async def cancel_session(session_id: str) -> dict[str, Any]:
+    async def cancel_session(session_id: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """Request cancellation of an active agent run for *session_id*."""
         agent = get_agent()
         ok = agent.request_cancel(session_id)
@@ -241,7 +249,7 @@ def create_app() -> FastAPI:
         return {"session_id": session_id, "cancelled": True}
 
     @app.get("/api/diag")
-    async def diag() -> dict[str, Any]:
+    async def diag(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """Diagnostic endpoint to verify server version, routes and subsystem health."""
         agent = get_agent()
         routes = []
@@ -284,12 +292,12 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/memory")
-    async def memory() -> dict[str, Any]:
+    async def memory(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         return {"context": agent.memory.get_context_string(max_chars=4000)}
 
     @app.get("/api/memory/enhanced")
-    async def memory_enhanced(session_id: str | None = None) -> dict[str, Any]:
+    async def memory_enhanced(session_id: str | None = None, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         result: dict[str, Any] = {
             "context": agent.memory.get_context_string(max_chars=4000),
@@ -316,12 +324,12 @@ def create_app() -> FastAPI:
         return result
 
     @app.get("/api/memory/files")
-    async def memory_file_list() -> dict[str, Any]:
+    async def memory_file_list(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         return {"files": agent.memory.list_memory_files()}
 
     @app.get("/api/memory/files/{name}")
-    async def memory_file_get(name: str) -> dict[str, Any]:
+    async def memory_file_get(name: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         try:
             content = agent.memory.read_memory_file(name)
@@ -330,7 +338,7 @@ def create_app() -> FastAPI:
         return {"name": name, "content": content}
 
     @app.put("/api/memory/files/{name}")
-    async def memory_file_put(name: str, body: dict[str, Any]) -> dict[str, Any]:
+    async def memory_file_put(name: str, body: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         try:
             await asyncio.to_thread(agent.memory.write_memory_file, name, body.get("content", ""))
@@ -339,7 +347,7 @@ def create_app() -> FastAPI:
         return {"name": name, "saved": True}
 
     @app.post("/api/memory/semantic")
-    async def memory_semantic_post(body: dict[str, Any]) -> dict[str, Any]:
+    async def memory_semantic_post(body: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         key = (body.get("key") or "").strip()
         value = (body.get("value") or "").strip()
@@ -357,7 +365,7 @@ def create_app() -> FastAPI:
         return {"success": True, "key": key, **result}
 
     @app.delete("/api/memory/semantic/{memory_id}")
-    async def memory_semantic_delete(memory_id: int) -> dict[str, Any]:
+    async def memory_semantic_delete(memory_id: int, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         ok = await asyncio.to_thread(agent.memory.delete_semantic, memory_id)
         if not ok:
@@ -365,7 +373,7 @@ def create_app() -> FastAPI:
         return {"success": True}
 
     @app.put("/api/memory/semantic/{memory_id}")
-    async def memory_semantic_put(memory_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    async def memory_semantic_put(memory_id: int, body: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         value = (body.get("value") or "").strip()
         category = body.get("category")
@@ -382,13 +390,13 @@ def create_app() -> FastAPI:
         return {"success": True}
 
     @app.get("/api/setup/first-start")
-    async def setup_first_start() -> dict[str, Any]:
+    async def setup_first_start(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         if _settings is None:
             return {"first_run_completed": False}
         return {"first_run_completed": _settings.first_run_completed}
 
     @app.post("/api/setup/complete")
-    async def setup_complete() -> dict[str, Any]:
+    async def setup_complete(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         if _settings is None:
             raise HTTPException(503, "Settings not initialized")
         _settings.first_run_completed = True
@@ -410,7 +418,7 @@ def create_app() -> FastAPI:
         return {"success": True}
 
     @app.get("/api/audit")
-    async def audit(limit: int = 50) -> dict[str, Any]:
+    async def audit(limit: int = 50, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         events = agent.audit.query(limit=limit)
         return {
@@ -426,7 +434,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/files")
-    async def list_files(path: str = ".") -> dict[str, Any]:
+    async def list_files(path: str = ".", auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         # Validate path to prevent directory traversal
         try:
@@ -443,26 +451,27 @@ def create_app() -> FastAPI:
         return {"success": result.success, "output": result.output, "error": result.error}
 
     @app.get("/api/sessions")
-    async def list_sessions(limit: int = 30) -> dict[str, Any]:
+    async def list_sessions(limit: int = 30, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         sessions = agent.memory.get_sessions(limit=limit)
         return {"sessions": sessions}
 
     @app.get("/api/sessions/{session_id}/messages")
-    async def session_messages(session_id: str) -> dict[str, Any]:
+    async def session_messages(session_id: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         messages = agent.memory.get_session_messages(session_id)
         return {"session_id": session_id, "messages": messages}
 
     @app.delete("/api/sessions/{session_id}")
-    async def delete_session(session_id: str) -> dict[str, Any]:
+    async def delete_session(session_id: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         agent.memory.delete_session(session_id)
         return {"success": True, "session_id": session_id}
 
     @app.get("/api/models")
-    async def models() -> dict[str, Any]:
+    async def models(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
+        await _refresh_local_provider_models(agent)
         return {
             "providers": [
                 {
@@ -486,8 +495,47 @@ def create_app() -> FastAPI:
             "active_model": _active_model,
         }
 
+    async def _refresh_local_provider_models(agent: JSAgent) -> None:
+        """Refresh models for local providers so LM Studio model changes show up."""
+        for provider_cfg in agent.settings.providers:
+            name = getattr(provider_cfg, "name", "")
+            base_url = getattr(provider_cfg, "base_url", "")
+            if name not in {"lmstudio", "ollama"}:
+                continue
+            if not isinstance(base_url, str) or not base_url.startswith("http://127.0.0.1"):
+                continue
+            result = await ProviderManager.discover_models(
+                base_url,
+                getattr(provider_cfg, "api_key", None),
+            )
+            discovered = result.get("models", [])
+            if not discovered:
+                continue
+            refreshed_models = [
+                ModelConfig(
+                    id=str(m["id"]),
+                    name=str(m.get("name") or m["id"]),
+                    provider=name,
+                )
+                for m in discovered
+                if isinstance(m, dict) and m.get("id")
+            ]
+            if not refreshed_models:
+                continue
+            old_ids = [m.id for m in provider_cfg.models]
+            new_ids = [m.id for m in refreshed_models]
+            if old_ids == new_ids:
+                continue
+            provider_cfg.models = refreshed_models
+            provider_cfg.default_model = refreshed_models[0].id
+            agent.router.add_provider(
+                provider_cfg.name,
+                OpenAICompatibleProvider(provider_cfg),
+                refreshed_models,
+            )
+
     @app.post("/api/models/switch")
-    async def models_switch(body: dict[str, Any]) -> dict[str, Any]:
+    async def models_switch(body: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         global _active_model
         model_id = (body.get("model_id") or "").strip()
         if not model_id:
@@ -533,7 +581,7 @@ def create_app() -> FastAPI:
         return {"base_url": base_url, "models": result["models"]}
 
     @app.post("/api/providers/connect")
-    async def connect_provider(payload: dict[str, Any]) -> dict[str, Any]:
+    async def connect_provider(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         name = payload.get("name", "").strip()
         base_url = payload.get("base_url", "").strip()
         api_key = payload.get("api_key", "").strip() or None
@@ -549,7 +597,10 @@ def create_app() -> FastAPI:
         if not all(isinstance(m, dict) and "id" in m for m in model_ids):
             raise HTTPException(400, "models must be a list of objects with 'id'")
 
-        models = [ModelConfig(id=m["id"], name=m.get("name", m["id"])) for m in model_ids]
+        models = [
+            ModelConfig(id=m["id"], name=m.get("name", m["id"]), provider=name)
+            for m in model_ids
+        ]
         cfg = ModelProviderConfig(
             name=name,
             base_url=base_url,
@@ -593,7 +644,7 @@ def create_app() -> FastAPI:
         return {"success": True, "provider": name, "models_added": len(models)}
 
     @app.delete("/api/providers/{name}")
-    async def delete_provider(name: str) -> dict[str, Any]:
+    async def delete_provider(name: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         # Remove from dynamic provider_manager (if it was added at runtime)
         agent.provider_manager.remove(name)
@@ -618,13 +669,13 @@ def create_app() -> FastAPI:
         return {"success": True}
 
     @app.get("/api/providers/cloud-presets")
-    async def cloud_presets() -> dict[str, Any]:
+    async def cloud_presets(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """List all built-in cloud provider presets."""
         from js.models.cloud_providers import list_presets
         return {"presets": list_presets()}
 
     @app.post("/api/providers/add-cloud")
-    async def add_cloud_provider(payload: dict[str, Any]) -> dict[str, Any]:
+    async def add_cloud_provider(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """One-click add a cloud provider from presets."""
         from js.models.cloud_providers import build_provider_config, get_preset
 
@@ -717,25 +768,25 @@ def create_app() -> FastAPI:
             await discovery.close()
 
     @app.get("/api/stats/tokens")
-    async def token_stats(days: int = 30) -> dict[str, Any]:
+    async def token_stats(days: int = 30, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         if _stats_store is None:
             raise HTTPException(503, "Stats store not initialized")
         return _stats_store.get_summary(days=days)
 
     @app.get("/api/evolution/reports")
-    async def evolution_reports(limit: int = 10) -> dict[str, Any]:
+    async def evolution_reports(limit: int = 10, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         reports = agent.metacognition.get_recent_reports(limit=limit)
         return {"reports": reports}
 
     @app.get("/api/evolution/proposals")
-    async def evolution_proposals(limit: int = 20) -> dict[str, Any]:
+    async def evolution_proposals(limit: int = 20, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         proposals = agent.metacognition.get_proposals(limit=limit)
         return {"proposals": proposals}
 
     @app.get("/api/evolution/insights")
-    async def evolution_insights(limit: int = 20) -> dict[str, Any]:
+    async def evolution_insights(limit: int = 20, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         return {
             "learning": {
@@ -748,7 +799,7 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/evolution/run")
-    async def evolution_run() -> dict[str, Any]:
+    async def evolution_run(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
 
         # Pre-flight readiness check
@@ -791,7 +842,7 @@ def create_app() -> FastAPI:
             raise HTTPException(500, f"Evolution cycle failed: {e}") from e
 
     @app.post("/api/evolution/reflect")
-    async def evolution_reflect() -> dict[str, Any]:
+    async def evolution_reflect(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """Trigger an immediate metacognition reflection."""
         agent = get_agent()
         if agent.metacognition is None:
@@ -809,7 +860,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/agents/config")
-    async def get_agent_config() -> dict[str, Any]:
+    async def get_agent_config(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         # Build available models list for the UI
         available_models: list[dict[str, Any]] = []
@@ -829,7 +880,7 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/agents/config")
-    async def set_agent_config(payload: dict[str, Any]) -> dict[str, Any]:
+    async def set_agent_config(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         global _agent_config
         new_config = payload.get("config", {})
         agent = get_agent()
@@ -847,7 +898,7 @@ def create_app() -> FastAPI:
         return {"success": True, "config": _agent_config}
 
     @app.get("/api/search")
-    async def search_api(query: str, max_results: int = 5) -> dict[str, Any]:
+    async def search_api(query: str, max_results: int = 5, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         results = await agent.search.search(query, max_results)
         return {
@@ -862,6 +913,7 @@ def create_app() -> FastAPI:
         category: str | None = None,
         skill_type: str | None = None,
         query: str | None = None,
+        auth: dict[str, Any] = Depends(require_auth_dep),
     ) -> dict[str, Any]:
         agent = get_agent()
         from js.skills.spec import SkillType
@@ -874,7 +926,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/skills/metrics")
-    async def skills_metrics() -> dict[str, Any]:
+    async def skills_metrics(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """Return skill execution metrics for observability dashboard."""
         agent = get_agent()
         all_skills = agent.skills.list_skills()
@@ -899,7 +951,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/memory/metrics")
-    async def memory_metrics() -> dict[str, Any]:
+    async def memory_metrics(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """Return memory subsystem metrics for observability dashboard."""
         agent = get_agent()
         embedder_health = agent.memory.embedder.health()
@@ -941,7 +993,7 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/memory/embedder/recover")
-    async def memory_embedder_recover() -> dict[str, Any]:
+    async def memory_embedder_recover(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """Manually trigger embedder recovery probe.
 
         First tries to re-instantiate a fresh embedder (catches cases where
@@ -995,7 +1047,7 @@ def create_app() -> FastAPI:
     # Hermes-specific endpoints MUST be defined BEFORE /api/skills/{skill_id}
     # to avoid "hermes" being captured as a skill_id path parameter.
     @app.get("/api/skills/hermes")
-    async def hermes_skills_list() -> dict[str, Any]:
+    async def hermes_skills_list(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """List all Hermes skills with bridge diagnostics."""
         agent = get_agent()
         from js.skills.hermes_bridge import get_bridge_stats, is_hermes_skill
@@ -1013,7 +1065,7 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/skills/hermes/refresh")
-    async def hermes_skills_refresh() -> dict[str, Any]:
+    async def hermes_skills_refresh(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """Refresh Hermes skills from disk without restarting the server."""
         agent = get_agent()
         result = agent.skills.refresh_hermes_skills()
@@ -1022,7 +1074,7 @@ def create_app() -> FastAPI:
         raise HTTPException(500, result.get("error", "Refresh failed"))
 
     @app.get("/api/skills/{skill_id}")
-    async def skill_detail(skill_id: str) -> dict[str, Any]:
+    async def skill_detail(skill_id: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         detail = agent.skills.view_skill(skill_id)
         if not detail:
@@ -1030,7 +1082,7 @@ def create_app() -> FastAPI:
         return detail
 
     @app.post("/api/skills/install")
-    async def skill_install(payload: dict[str, Any]) -> dict[str, Any]:
+    async def skill_install(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         source = payload.get("source", "")
         skill_id = payload.get("skill_id")
@@ -1049,14 +1101,14 @@ def create_app() -> FastAPI:
             raise HTTPException(500, f"Failed to install skill: {e}") from e
 
     @app.delete("/api/skills/{skill_id}")
-    async def skill_uninstall(skill_id: str) -> dict[str, Any]:
+    async def skill_uninstall(skill_id: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         if await agent.skills.uninstall(skill_id):
             return {"success": True}
         raise HTTPException(404, "Skill not found or is built-in")
 
     @app.post("/api/skills/{skill_id}/trust")
-    async def skill_trust(skill_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def skill_trust(skill_id: str, payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         from js.skills.spec import TrustLevel
 
         agent = get_agent()
@@ -1070,7 +1122,7 @@ def create_app() -> FastAPI:
         raise HTTPException(404, f"Skill '{skill_id}' not found")
 
     @app.get("/api/skills/discover")
-    async def skill_discover(query: str = "") -> dict[str, Any]:
+    async def skill_discover(query: str = "", auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """Search the ClawHub skill marketplace."""
         agent = get_agent()
         if not hasattr(agent, "_clawhub") or agent._clawhub is None:
@@ -1091,7 +1143,7 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/skills/discover/install")
-    async def skill_discover_install(payload: dict[str, Any]) -> dict[str, Any]:
+    async def skill_discover_install(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """Install a skill from the ClawHub marketplace."""
         from js.skills.clawhub import ClawHubClient
 
@@ -1121,7 +1173,7 @@ def create_app() -> FastAPI:
             raise HTTPException(500, f"Failed to install skill: {e}") from e
 
     @app.post("/api/upload")
-    async def upload_file(file: UploadFile | None = None) -> dict[str, Any]:
+    async def upload_file(file: UploadFile | None = None, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """Upload a file to the workspace/uploads directory."""
         if file is None:
             raise HTTPException(400, "No file provided")
@@ -1168,7 +1220,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/uploads")
-    async def list_uploads() -> dict[str, Any]:
+    async def list_uploads(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """List uploaded files in workspace/uploads."""
         agent = get_agent()
         uploads_dir = agent.settings.workspace / "uploads"
@@ -1187,7 +1239,7 @@ def create_app() -> FastAPI:
         return {"files": files}
 
     @app.delete("/api/uploads/{filename}")
-    async def delete_upload(filename: str) -> dict[str, Any]:
+    async def delete_upload(filename: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """Delete an uploaded file."""
         agent = get_agent()
         from pathlib import PurePath
@@ -1203,7 +1255,7 @@ def create_app() -> FastAPI:
         raise HTTPException(404, "File not found")
 
     @app.get("/api/file-preview")
-    async def file_preview(path: str) -> dict[str, Any]:
+    async def file_preview(path: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """Preview a file's content or metadata."""
         agent = get_agent()
         try:
@@ -1259,6 +1311,18 @@ def create_app() -> FastAPI:
             if msg.role == "assistant" and isinstance(msg.content, str) and msg.content:
                 assistant_msg = msg.content
                 break
+
+        # Record token usage
+        if _stats_store and state.total_tokens["input"] + state.total_tokens["output"] > 0:
+            _stats_store.record(
+                model=getattr(state, "model", None) or model or "unknown",
+                provider="",
+                prompt_tokens=state.total_tokens["input"],
+                completion_tokens=state.total_tokens["output"],
+                cost=state.cost_estimate,
+                session_id=state.session_id,
+                run_id=state.run_id,
+            )
 
         return {
             "response": assistant_msg,
@@ -1340,7 +1404,7 @@ def create_app() -> FastAPI:
                     # Record token usage
                     if _stats_store and state.total_tokens["input"] + state.total_tokens["output"] > 0:
                         _stats_store.record(
-                            model=model or state.messages[-1].role or "unknown",
+                            model=getattr(state, "model", None) or model or "unknown",
                             provider="",
                             prompt_tokens=state.total_tokens["input"],
                             completion_tokens=state.total_tokens["output"],
@@ -1466,4 +1530,3 @@ def _load_index_html() -> str:
     if path.exists():
         return path.read_text(encoding='utf-8')
     return '<h1>Template not found</h1>'
-

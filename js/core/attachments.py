@@ -38,8 +38,8 @@ def extract_pdf_text(path: Path) -> str:
 
         texts2: list[str] = []
         with pdfplumber.open(str(path)) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
+            for pdf_page in pdf.pages:
+                text = pdf_page.extract_text()
                 if text:
                     texts2.append(text)
         return "\n".join(texts2)

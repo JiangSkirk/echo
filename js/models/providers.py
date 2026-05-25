@@ -93,10 +93,18 @@ class OpenAICompatibleProvider(ModelProvider):
     def __init__(self, config: ModelProviderConfig) -> None:
         self.config = config
         self.circuit = CircuitBreaker(name=config.name, failure_threshold=5, recovery_timeout=30.0)
+        # Bypass system proxies for local model servers (LM Studio, Ollama, etc.)
+        # to avoid 502 errors from proxy forwarding loopback traffic.
+        # httpx 0.28 reads HTTP_PROXY/HTTPS_PROXY env vars by default;
+        # trust_env=False disables this behaviour.
+        _http_client = httpx.AsyncClient(
+            trust_env=False,
+            timeout=httpx.Timeout(config.timeout, connect=5.0, read=config.timeout),
+        )
         self.client = AsyncOpenAI(
             base_url=config.base_url,
             api_key=config.api_key or "not-needed",
-            timeout=httpx.Timeout(config.timeout, connect=5.0, read=config.timeout),
+            http_client=_http_client,
             max_retries=0,  # We handle retries ourselves
         )
         self._last_health_check = 0.0

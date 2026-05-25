@@ -10,6 +10,7 @@ from typing import Any
 
 import httpx
 
+from js import __version__
 from js.utils.log import get_logger
 
 logger = get_logger("js.mcp")
@@ -68,7 +69,11 @@ class MCPClient:
             "jsonrpc": "2.0",
             "id": self._next_id(),
             "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "js", "version": "0.1.0"}},
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "js", "version": __version__},
+            },
         })
         await self._list_tools_stdio()
 

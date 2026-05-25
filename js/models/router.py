@@ -209,6 +209,17 @@ class ModelRouter:
             except Exception as e:
                 errors.append(f"{name}: {e}")
 
+        # Last resort: try the original selected provider even if unhealthy
+        try:
+            return await decision.provider.chat(
+                messages=messages,
+                model=decision.model,
+                tools=tools,
+                temperature=temperature,
+            )
+        except Exception as e:
+            errors.append(f"{decision.provider_name}/{decision.model} (last resort): {e}")
+
         raise RuntimeError(f"All providers failed: {'; '.join(errors)}")
 
     async def chat_stream(

@@ -9,8 +9,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from js.skills.hermes_bridge import load_all_hermes_skills, is_hermes_skill
 from js.skills.executor import execute_skill
+from js.skills.hermes_bridge import load_all_hermes_skills
 from js.skills.spec import SkillType
 
 WORKSPACE = Path.home() / ".js" / "workspace"

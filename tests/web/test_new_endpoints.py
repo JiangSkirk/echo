@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from js.config import DefenseMode
+from js.models.cloud_providers import DEEPSEEK_PRESET, build_provider_config
 from js.web import server as web_server
 from js.web.server import create_app
 
@@ -21,6 +22,7 @@ def client(tmp_path: Path) -> TestClient:
     mock_agent.settings.state_dir = tmp_path / "state"
     mock_agent.settings.max_turns = 10
     mock_agent.settings.security.defense_mode = DefenseMode.ENFORCE
+    mock_agent.settings.security.api_key_required = False
     mock_agent.settings.default_model = "test/model"
     mock_agent.settings.first_run_completed = False
     mock_provider = MagicMock()
@@ -39,6 +41,11 @@ def client(tmp_path: Path) -> TestClient:
     mock_agent.secrets.get_stats.return_value = {"stored_secrets": 0, "detected_leaks": 0}
     mock_agent.router.health_check = AsyncMock(return_value={"test": True})
     mock_agent.router.get_model_config.return_value = None
+    mock_agent.router.add_provider = MagicMock()
+    mock_agent.router.remove_provider = MagicMock()
+    mock_agent.provider_manager.get_all.return_value = []
+    mock_agent.provider_manager.add = MagicMock()
+    mock_agent.provider_manager.remove = MagicMock()
 
     mock_memory = MagicMock()
     mock_memory.get_context_string.return_value = ""
@@ -104,6 +111,62 @@ class TestModelSwitch:
     def test_switch_model_invalid_id(self, client: TestClient) -> None:
         resp = client.post("/api/models/switch", json={"model_id": "invalid/model"})
         assert resp.status_code == 400
+
+    def test_models_refreshes_lmstudio_models(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        agent = web_server._agent
+        agent.settings.providers[0].name = "lmstudio"
+        agent.settings.providers[0].base_url = "http://127.0.0.1:1234/v1"
+
+        discover = AsyncMock(
+            return_value={
+                "models": [
+                    {"id": "loaded-model", "name": "Loaded Model"},
+                ]
+            }
+        )
+        monkeypatch.setattr(web_server.ProviderManager, "discover_models", discover)
+
+        resp = client.get("/api/models")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["providers"][0]["models"][0]["id"] == "loaded-model"
+        assert agent.settings.providers[0].default_model == "loaded-model"
+        agent.router.add_provider.assert_called()
+
+
+class TestProviderConnect:
+    def test_connect_provider_sets_model_provider(self, client: TestClient) -> None:
+        resp = client.post(
+            "/api/providers/connect",
+            json={
+                "name": "custom",
+                "base_url": "http://127.0.0.1:1234/v1",
+                "api_key": "",
+                "models": [{"id": "model-x", "name": "Model X"}],
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+        assert data["provider"] == "custom"
+
+        agent = web_server._agent
+        saved_cfg = agent.provider_manager.add.call_args.args[0]
+        assert saved_cfg.name == "custom"
+        assert saved_cfg.models[0].id == "model-x"
+        assert saved_cfg.models[0].provider == "custom"
+        agent.router.add_provider.assert_called_once()
+
+    def test_cloud_provider_preset_sets_model_provider(self) -> None:
+        cfg = build_provider_config(DEEPSEEK_PRESET, "test-key")
+
+        assert cfg.name == "deepseek"
+        assert cfg.models
+        assert all(model.provider == "deepseek" for model in cfg.models)
 
 
 class TestMemorySemantic:

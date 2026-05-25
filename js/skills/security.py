@@ -79,6 +79,8 @@ def scan_skill(spec: SkillSpec) -> ScanResult:
                 files_to_scan.append(skill_md)
 
             for file_path in files_to_scan:
+                if file_path.is_symlink():
+                    continue
                 try:
                     content = file_path.read_text(errors="ignore")
                     for flag_name, pattern in RISK_PATTERNS.items():

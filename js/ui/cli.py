@@ -53,7 +53,7 @@ class JSCLI:
         session = self._get_session()
 
         console.print(Panel.fit(
-            "[bold cyan]JS Agent[/bold cyan] v0.1.0\n"
+            "[bold cyan]JS Agent[/bold cyan] v0.1.1\n"
             "Type your message or [bold]/help[/bold] for commands, [bold]/quit[/bold] to exit.",
             title="Welcome",
             border_style="cyan",
@@ -436,7 +436,7 @@ def setup(yes: bool) -> None:
 @main.command()
 @click.argument("query")
 @click.option("--engine", "-e", default="auto", help="Search engine")
-def search(query: str, _engine: str) -> None:
+def search(query: str, engine: str) -> None:
     """Search the web."""
     from js.search.engines import DuckDuckGoEngine, SearchManager
 

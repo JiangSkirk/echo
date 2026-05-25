@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from js import __version__
 from js.config import JSSettings
 from js.daemon.core import DaemonHeartbeat, JSDaemon, ScheduledTask, build_default_daemon
 
@@ -50,7 +51,7 @@ class TestDaemonHeartbeat:
 
     def test_from_dict_defaults(self) -> None:
         restored = DaemonHeartbeat.from_dict({})
-        assert restored.version == "0.1.0"
+        assert restored.version == __version__
         assert restored.tasks_run == 0
 
 
@@ -149,7 +150,7 @@ class TestDaemonHeartbeatFile:
         assert "timestamp" in data
         assert "uptime_seconds" in data
         assert data["tasks_run"] == 0
-        assert data["version"] == "0.1.0"
+        assert data["version"] == __version__
 
     def test_heartbeat_after_tasks_run(self, settings: JSSettings) -> None:
         daemon = JSDaemon(settings)
