@@ -58,6 +58,9 @@ dev = [
     "ruff>=0.8",
     "build>=1.2",
     "opentelemetry-distro>=0.50",
+    "types-PyYAML>=6.0",
+    "types-psutil>=6.1",
+    "types-reportlab>=4.0",
 ]
 [project.scripts]
 js = "js.__main__:main"
