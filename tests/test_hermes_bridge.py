@@ -409,7 +409,7 @@ class TestManagerIntegration:
         import asyncio
         asyncio.run(manager.load_hermes_async())
 
-        all_skills = manager.list_skills()
+        all_skills = manager.list_skills(only_compatible=False)
         hermes_ids = [s["id"] for s in all_skills if s["id"].startswith("hermes:")]
         assert len(hermes_ids) >= 4
 
