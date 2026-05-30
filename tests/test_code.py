@@ -19,6 +19,8 @@ class TestCodeTool:
     @pytest.mark.asyncio
     async def test_execute_simple(self, code_tool: CodeTool) -> None:
         result = await code_tool.execute("print(2 + 2)")
+        if not result.success and "unshare failed" in result.error:
+            pytest.skip("Linux unshare is unavailable in this runner")
         assert result.success
         assert "4" in result.output
 

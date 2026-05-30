@@ -44,6 +44,8 @@ dist/
 
 # State / Data (persisted at runtime)
 state/
+!js/web/static/state/
+!js/web/static/state/*.js
 .js/
 workspace/
 data/
