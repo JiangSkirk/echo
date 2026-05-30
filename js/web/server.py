@@ -716,16 +716,16 @@ def create_app() -> FastAPI:
                         api_ctx = m.get("context_length") or m.get("max_context_length")
                         if api_ctx is None:
                             from js.models.discovery import LocalModelDiscovery
-                            inferred_ctx = LocalModelDiscovery._infer_context_window(None, model_id)
+                            context_window = LocalModelDiscovery._infer_context_window(model_id)
                         else:
-                            inferred_ctx = None
+                            context_window = int(api_ctx)
                         refreshed.append({
                             "model": ModelConfig(
                                 id=model_id,
                                 name=m.get("name", model_id.split("/")[-1]),
                                 provider=provider_cfg.name,
-                                context_window=int(api_ctx) if api_ctx is not None else int(inferred_ctx),
-                                max_tokens=min(int(api_ctx or inferred_ctx) // 4, 8192),
+                                context_window=context_window,
+                                max_tokens=min(context_window // 4, 8192),
                             ),
                             "api_ctx": api_ctx,
                         })

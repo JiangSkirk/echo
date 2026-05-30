@@ -286,7 +286,8 @@ class LocalModelDiscovery:
 
         return models
 
-    def _infer_context_window(self, model_id: str) -> int:
+    @staticmethod
+    def _infer_context_window(model_id: str) -> int:
         mid = model_id.lower()
         # Explicit context size markers first
         if "256k" in mid or "262k" in mid:

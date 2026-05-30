@@ -352,7 +352,6 @@ class JSSettings(BaseSettings):
             self.tools = ToolLimits(
                 shell_timeout=float(terminal.get("timeout", 300.0)),
                 shell_max_output_bytes=int(tool_output.get("max_bytes", 50_000)),
-                shell_max_output_lines=int(tool_output.get("max_lines", 2000)),
                 file_read_max_chars=int(raw.get("file_read_max_chars", 100_000)),
             )
 

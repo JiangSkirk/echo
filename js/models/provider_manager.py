@@ -148,7 +148,7 @@ class ProviderManager:
                         ctx = m.get("context_length") or m.get("max_context_length")
                     if ctx is None:
                         from js.models.discovery import LocalModelDiscovery
-                        ctx = LocalModelDiscovery._infer_context_window(None, model_id)
+                        ctx = LocalModelDiscovery._infer_context_window(model_id)
                     result_models.append({
                         "id": model_id,
                         "name": m.get("name", model_id.split("/")[-1]),

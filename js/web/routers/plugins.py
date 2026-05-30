@@ -57,7 +57,7 @@ async def install_plugin(body: dict[str, Any], auth: dict[str, Any] = Depends(re
     result = pm.install_from_url(url)
     if not result.get("success"):
         raise HTTPException(400, result.get("message", "Install failed"))
-    return result
+    return dict(result)
 
 
 @router.delete("/{plugin_id}")
@@ -70,4 +70,4 @@ async def uninstall_plugin(plugin_id: str, auth: dict[str, Any] = Depends(requir
     result = pm.uninstall(plugin_id)
     if not result.get("success"):
         raise HTTPException(400, result.get("message", "Uninstall failed"))
-    return result
+    return dict(result)
