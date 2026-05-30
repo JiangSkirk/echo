@@ -6,7 +6,10 @@ import re
 from pathlib import Path
 
 import pytest
-from playwright.sync_api import Page, expect
+
+playwright_sync = pytest.importorskip("playwright.sync_api")
+Page = playwright_sync.Page
+expect = playwright_sync.expect
 
 # Use system Chrome on macOS if Playwright browsers are not installed
 SYSTEM_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
