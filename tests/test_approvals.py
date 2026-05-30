@@ -2,7 +2,7 @@
 
 import pytest
 
-from js.approvals.queue import ApprovalMode, ApprovalQueue
+from js.security.approvals import ApprovalMode, ApprovalQueue
 
 
 class TestApprovalQueue:

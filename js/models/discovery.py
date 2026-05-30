@@ -167,11 +167,23 @@ class LocalModelDiscovery:
                 return None
 
             data = resp.json()
-            models = self._parse_models(data, probe["name"])
+
+            # Build a map of model_id -> context_window from provider-specific APIs
+            context_overrides: dict[str, int] = {}
+
+            # For LM Studio: query v0 API for actual context lengths
+            if probe["name"] == "lmstudio":
+                context_overrides = await self._lmstudio_context_lengths(probe["url"])
+
+            # For Ollama: try to get context lengths from tags API
+            if probe["name"] == "ollama":
+                context_overrides = await self._ollama_context_lengths(probe["url"])
+
+            models = self._parse_models(data, probe["name"], context_overrides)
 
             # For LM Studio: filter to only currently-loaded models via v0 API
             if probe["name"] == "lmstudio":
-                loaded_ids = await self._lmstudio_loaded_models(probe["url"])
+                loaded_ids = set(context_overrides.keys())
                 models = [m for m in models if m.id in loaded_ids]
 
             return DiscoveredProvider(
@@ -186,9 +198,12 @@ class LocalModelDiscovery:
             logger.debug(f"Probe failed for {probe['url']}: {e}")
             return None
 
-    async def _lmstudio_loaded_models(self, base_url: str) -> set[str]:
-        """Query LM Studio's v0 API for models currently loaded in GPU memory."""
-        loaded: set[str] = set()
+    async def _lmstudio_context_lengths(self, base_url: str) -> dict[str, int]:
+        """Query LM Studio's v0 API for loaded models and their actual context lengths.
+
+        Returns {model_id: max_context_length} for loaded models.
+        """
+        contexts: dict[str, int] = {}
         try:
             # base_url is like http://127.0.0.1:1234/v1 → strip /v1
             root = base_url.rsplit("/v1", 1)[0]
@@ -197,14 +212,44 @@ class LocalModelDiscovery:
                 data = resp.json()
                 for m in data.get("data", []):
                     if m.get("state") == "loaded":
-                        loaded.add(m["id"])
+                        model_id = m.get("id", "")
+                        ctx = m.get("max_context_length") or m.get("loaded_context_length")
+                        if model_id and ctx:
+                            contexts[model_id] = int(ctx)
         except Exception as e:
-            logger.debug(f"LM Studio v0 API probe failed: {e}")
-        return loaded
+            logger.debug(f"LM Studio v0 API context probe failed: {e}")
+        return contexts
 
-    def _parse_models(self, data: dict[str, Any], provider_type: str) -> list[ModelConfig]:
+    async def _ollama_context_lengths(self, base_url: str) -> dict[str, int]:
+        """Query Ollama's tags API for model context lengths.
+
+        Returns {model_id: context_length}.
+        """
+        contexts: dict[str, int] = {}
+        try:
+            root = base_url.rsplit("/v1", 1)[0]
+            resp = await self._client.get(f"{root}/api/tags", timeout=httpx.Timeout(5.0))
+            if resp.status_code == 200:
+                data = resp.json()
+                for m in data.get("models", []):
+                    model_id = m.get("name", "")
+                    # Ollama doesn't expose context length in tags API,
+                    # but model names may contain context markers
+                    if model_id:
+                        contexts[model_id] = self._infer_context_window(model_id)
+        except Exception as e:
+            logger.debug(f"Ollama tags API context probe failed: {e}")
+        return contexts
+
+    def _parse_models(
+        self,
+        data: dict[str, Any],
+        provider_type: str,
+        context_overrides: dict[str, int] | None = None,
+    ) -> list[ModelConfig]:
         models: list[ModelConfig] = []
         raw_models = data.get("data", data.get("models", []))
+        overrides = context_overrides or {}
 
         for m in raw_models:
             if isinstance(m, str):
@@ -215,7 +260,17 @@ class LocalModelDiscovery:
                 name = m.get("name", model_id)
 
             supports_vision = any(kw in model_id.lower() for kw in ["vision", "vl", "multimodal", "llava"])
-            context = self._infer_context_window(model_id)
+
+            # Priority 1: API-provided context length (from v0 API, etc.)
+            context = overrides.get(model_id)
+            # Priority 2: OpenAI-compatible /v1/models may expose context_length
+            if context is None:
+                context = m.get("context_length") or m.get("max_context_length")
+            # Priority 3: fallback to name-based inference
+            if context is None:
+                context = self._infer_context_window(model_id)
+
+            context = int(context)
 
             models.append(ModelConfig(
                 id=model_id,
@@ -234,19 +289,82 @@ class LocalModelDiscovery:
     def _infer_context_window(self, model_id: str) -> int:
         mid = model_id.lower()
         # Explicit context size markers first
+        if "256k" in mid or "262k" in mid:
+            return 262144
+        if "128k" in mid or "131k" in mid:
+            return 131072
+        if "200k" in mid:
+            return 200000
+        if "100k" in mid:
+            return 100000
+        if "96k" in mid:
+            return 96000
+        if "64k" in mid:
+            return 65536
         if "32k" in mid:
             return 32768
-        if "128k" in mid:
-            return 131072
-        if "256k" in mid:
-            return 262144
+        if "16k" in mid:
+            return 16384
         if "8k" in mid:
             return 8192
         if "4k" in mid:
             return 4096
-        # Model family defaults
-        if any(x in mid for x in ["qwen3", "llama3", "mistral", "gemma"]):
+        if "2k" in mid:
+            return 2048
+        # Model family defaults — updated with more accurate defaults
+        if "qwen3" in mid:
+            return 131072  # Qwen3 series: 128k typical
+        if "qwen2.5" in mid or "qwen2-" in mid:
+            return 131072
+        if "llama3" in mid or "llama-3" in mid:
+            return 131072  # Llama 3: 128k context
+        if "llama2" in mid or "llama-2" in mid:
+            return 4096  # Llama 2: 4k context
+        if "mistral" in mid:
+            return 32768  # Mistral: 32k context
+        if "mixtral" in mid:
+            return 32768
+        if "gemma-4" in mid or "gemma4" in mid:
+            return 262144  # Gemma 4: 256k context
+        if "gemma2" in mid or "gemma-2" in mid:
+            return 8192  # Gemma 2: 8k context
+        if "gemma" in mid:
+            return 8192
+        if "phi4" in mid or "phi-4" in mid:
+            return 131072
+        if "phi3" in mid or "phi-3" in mid:
+            return 131072
+        if "command-r" in mid:
+            return 131072  # Cohere Command-R: 128k
+        if "deepseek" in mid:
+            # DeepSeek model family has varied context windows
+            if "v4" in mid:
+                return 1_000_000  # DeepSeek V4 Flash/Pro: 1M context
+            if "v3.2" in mid:
+                return 131_072  # DeepSeek V3.2: 128k context
+            if "v3" in mid:
+                return 65_536  # DeepSeek-V3 (including deepseek-chat alias): 64k
+            if "coder" in mid:
+                return 65_536  # DeepSeek-Coder: 64k
+            if "reasoner" in mid or "r1" in mid:
+                return 65_536  # DeepSeek-R1: 64k
+            if "chat" in mid:
+                return 65_536  # deepseek-chat is the V3 alias: 64k
+            return 131_072  # Default for future DeepSeek models
+        if "yi-" in mid:
+            return 32768  # Yi: 32k
+        if "falcon" in mid:
+            return 8192
+        if "stablelm" in mid:
+            return 4096
+        if "gpt-4" in mid or "gpt4" in mid:
             return 128000
+        if "gpt-3.5" in mid or "gpt3.5" in mid:
+            return 16384
+        if "claude-3" in mid or "claude3" in mid:
+            return 200000
+        if "claude" in mid:
+            return 100000
         return 32768
 
     def to_provider_config(self, discovered: DiscoveredProvider) -> ModelProviderConfig:
@@ -254,7 +372,7 @@ class LocalModelDiscovery:
             name=discovered.provider_type,
             base_url=discovered.base_url,
             api_key="lm-studio" if discovered.provider_type == "lmstudio" else "ollama",
-            timeout=120.0,
+            timeout=300.0,
             max_retries=3,
             default_model=discovered.models[0].id if discovered.models else "",
             models=discovered.models,

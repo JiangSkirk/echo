@@ -40,11 +40,37 @@ async def chat(
             assistant_msg = msg.content
             break
 
+    # Record token usage
+    stats_store = get_stats_store()
+    total_in = state.total_tokens.get("input", 0)
+    total_out = state.total_tokens.get("output", 0)
+    if stats_store and total_in + total_out > 0:
+        model_id = getattr(state, "model", None)
+        if not isinstance(model_id, str):
+            model_id = None
+        model_id = model_id or model or "unknown"
+        cfg = agent.router.get_model_config(model_id)
+        provider = cfg.provider if cfg and hasattr(cfg, "provider") and isinstance(cfg.provider, str) else ""
+        cached_tokens = getattr(state, "cached_tokens", 0)
+        if not isinstance(cached_tokens, int):
+            cached_tokens = 0
+        stats_store.record(
+            model=model_id,
+            provider=provider,
+            prompt_tokens=total_in,
+            completion_tokens=total_out,
+            cost=state.cost_estimate,
+            cached_tokens=cached_tokens,
+            session_id=getattr(state, "session_id", ""),
+            run_id=getattr(state, "run_id", ""),
+        )
+
     return {
         "response": assistant_msg,
         "session_id": state.session_id,
         "turns": state.turn_count,
         "tokens": state.total_tokens,
+        "cost": round(state.cost_estimate, 6),
         "status": state.status,
     }
 
@@ -110,13 +136,25 @@ async def websocket_endpoint(
 
                 # Record token usage
                 stats_store = get_stats_store()
-                if stats_store and state.total_tokens["input"] + state.total_tokens["output"] > 0:
+                total_in = state.total_tokens.get("input", 0)
+                total_out = state.total_tokens.get("output", 0)
+                if stats_store and total_in + total_out > 0:
+                    model_id = getattr(state, "model", None)
+                    if not isinstance(model_id, str):
+                        model_id = None
+                    model_id = model_id or model or "unknown"
+                    cfg = agent.router.get_model_config(model_id)
+                    provider = cfg.provider if cfg and hasattr(cfg, "provider") and isinstance(cfg.provider, str) else ""
+                    cached_tokens = getattr(state, "cached_tokens", 0)
+                    if not isinstance(cached_tokens, int):
+                        cached_tokens = 0
                     stats_store.record(
-                        model=model or state.messages[-1].role or "unknown",
-                        provider="",
-                        prompt_tokens=state.total_tokens["input"],
-                        completion_tokens=state.total_tokens["output"],
+                        model=model_id,
+                        provider=provider,
+                        prompt_tokens=total_in,
+                        completion_tokens=total_out,
                         cost=state.cost_estimate,
+                        cached_tokens=cached_tokens,
                         session_id=session_id,
                         run_id=state.run_id,
                     )
@@ -180,6 +218,31 @@ async def websocket_endpoint(
                     "status": state.status,
                     "compression": state.compression_stats,
                 })
+
+                # Record token usage for stream path too
+                stats_store = get_stats_store()
+                total_in = state.total_tokens.get("input", 0)
+                total_out = state.total_tokens.get("output", 0)
+                if stats_store and total_in + total_out > 0:
+                    model_id = getattr(state, "model", None)
+                    if not isinstance(model_id, str):
+                        model_id = None
+                    model_id = model_id or model or "unknown"
+                    cfg = agent.router.get_model_config(model_id)
+                    provider = cfg.provider if cfg else ""
+                    cached_tokens = getattr(state, "cached_tokens", 0)
+                    if not isinstance(cached_tokens, int):
+                        cached_tokens = 0
+                    stats_store.record(
+                        model=model_id,
+                        provider=provider,
+                        prompt_tokens=total_in,
+                        completion_tokens=total_out,
+                        cost=state.cost_estimate,
+                        cached_tokens=cached_tokens,
+                        session_id=session_id,
+                        run_id=state.run_id,
+                    )
 
                 # Store memories for stream path (same as run() path)
                 try:

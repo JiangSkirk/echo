@@ -53,7 +53,10 @@ class BehaviorGuard:
         r"dd\s+if=/dev/zero",
         r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\};\s*:",
         r"mkfs\.",
-        r">\s*/dev/sd[a-z]",
+        r"\d*>>?\s*/dev/sd[a-z]\d*",
+        r"\d*>>?\s*/dev/nvme\d+n\d+",
+        r"\d*>>?\s*/dev/mmcblk\d+",
+        r"\d*>>?\s*/dev/vd[a-z]\d*",
         r"curl\s+.*\|\s*sh",
         r"wget\s+.*\|\s*sh",
         r"curl\s+.*\|\s*bash",
@@ -64,22 +67,24 @@ class BehaviorGuard:
     # Hardline blocklist — irreversible operations NEVER allowed, even in yolo mode.
     # These protect against catastrophic data loss regardless of user configuration.
     HARDLINE_PATTERNS = [
-        r"rm\s+-rf\s+/\s*($|\s|;)",
-        r"rm\s+-rf\s+/\s*\.",
+        r"rm\s+-rf\s+/+\s*($|\s|;|\*)",
+        r"rm\s+-rf\s+/+\s*\.",
         r"rm\s+(-r\s+|-f\s+)*\/\s*($|\s|;)",
-        r"dd\s+if=[^\s]*\s+of=/dev/sd[a-z]",
-        r"dd\s+if=/dev/zero\s+of=/dev/sd[a-z]",
-        r"mkfs\.[a-z0-9]+\s+/dev/sd[a-z]",
-        r"mkfs\.[a-z0-9]+\s+/dev/hd[a-z]",
-        r"mkfs\.[a-z0-9]+\s+/dev/nvme",
+        r"dd\s+if=[^\s]*\s+of=/dev/sd[a-z]\d*",
+        r"dd\s+if=/dev/zero\s+of=/dev/sd[a-z]\d*",
+        r"mkfs\.[a-z0-9]+\s+/dev/sd[a-z]\d*",
+        r"mkfs\.[a-z0-9]+\s+/dev/hd[a-z]\d*",
+        r"mkfs\.[a-z0-9]+\s+/dev/nvme\d+n\d+",
+        r"mkfs\.[a-z0-9]+\s+/dev/mmcblk\d+",
+        r"mkfs\.[a-z0-9]+\s+/dev/vd[a-z]\d*",
         r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\};\s*:",
         r"shutdown\s+-h\s+now",
         r"halt\s+-p",
         r"reboot\s+-f",
         r"init\s+0",
         r"poweroff\s+-f",
-        r"chmod\s+-R\s+777\s+/\s*($|\s|;)",
-        r"chmod\s+-R\s+000\s+/\s*($|\s|;)",
+        r"chmod\s+-R\s+777\s+/+\s*($|\s|;|\*)",
+        r"chmod\s+-R\s+000\s+/+\s*($|\s|;|\*)",
     ]
 
     def __init__(self, config: SecurityConfig, workspace: Path) -> None:
@@ -90,6 +95,7 @@ class BehaviorGuard:
         self._protected_pattern = [re.compile(p) for p in config.protected_commands]
         from cachetools import LRUCache
         self._loop_counters: LRUCache[str, int] = LRUCache(maxsize=1000)
+        self._tool_name_counters: LRUCache[str, int] = LRUCache(maxsize=1000)
         self._failure_counters: LRUCache[str, int] = LRUCache(maxsize=1000)
         self._script_artifacts: LRUCache[str, bool] = LRUCache(maxsize=1000)
 
@@ -182,13 +188,37 @@ class BehaviorGuard:
         if self.config.defense_mode == DefenseMode.OFF:
             return SecurityDecision(SecurityDecisionType.ALLOW)
 
+        # Security: reject paths with embedded null bytes early
+        if "\x00" in path:
+            return SecurityDecision(
+                SecurityDecisionType.BLOCK,
+                "Path contains null bytes",
+            )
+
         try:
-            resolved = Path(path).expanduser().resolve()
+            raw_path = Path(path).expanduser()
+            # resolve() follows symlinks — this is intentional so that a
+            # symlink pointing to /etc gets resolved to /etc and blocked.
+            resolved = raw_path.resolve()
         except (OSError, ValueError) as e:
             return SecurityDecision(
                 SecurityDecisionType.BLOCK,
                 f"Invalid path: {e}",
             )
+
+        # Warn if the original (unresolved) path is a symlink — not a block,
+        # because resolve() above already follows it to the real target, but
+        # symlink usage is worth logging for audit purposes.
+        try:
+            if raw_path.is_symlink():
+                logger.info(
+                    "Path operation on symlink: %s -> %s (op=%s)",
+                    raw_path,
+                    resolved,
+                    operation,
+                )
+        except OSError:
+            pass
 
         # Allow operations within workspace unconditionally
         try:
@@ -218,7 +248,7 @@ class BehaviorGuard:
                         f"{operation} operation blocked on protected path: {protected_path}",
                     )
             except ValueError:
-                logger.warning('Operation failed', exc_info=True)
+                pass  # Normal control flow — path is not under this protected root
 
         # Check workspace delete
         if operation == "delete" and not self.config.allow_workspace_delete:
@@ -230,14 +260,20 @@ class BehaviorGuard:
         return SecurityDecision(SecurityDecisionType.ALLOW)
 
     def check_loop(self, run_id: str, tool_name: str, args_key: str) -> SecurityDecision:
-        """Check if we're stuck in a tool loop."""
+        """Check if we're stuck in a tool loop.
+
+        Two layers:
+        1. Exact-args loop: same tool with identical args repeated.
+        2. Tool-name loop: same tool called repeatedly with *different* args
+           (catches weak FC models that spam the same tool name).
+        """
         if self.config.defense_mode == DefenseMode.OFF:
             return SecurityDecision(SecurityDecisionType.ALLOW)
 
+        # Layer 1: exact args loop
         key = f"{run_id}:{tool_name}:{args_key}"
         count = self._loop_counters.get(key, 0) + 1
         self._loop_counters[key] = count
-
 
         if count > self.config.max_loop_iterations:
             return SecurityDecision(
@@ -248,6 +284,18 @@ class BehaviorGuard:
             return SecurityDecision(
                 SecurityDecisionType.WARN,
                 f"Potential loop: {tool_name} called {count} times",
+            )
+
+        # Layer 2: same tool name regardless of args (catches navigational loops, etc.)
+        name_key = f"{run_id}:{tool_name}"
+        name_count = self._tool_name_counters.get(name_key, 0) + 1
+        self._tool_name_counters[name_key] = name_count
+        _name_loop_threshold = 4  # block after 4 calls to the same tool name
+        if name_count > _name_loop_threshold:
+            return SecurityDecision(
+                SecurityDecisionType.BLOCK,
+                f"Loop detected: {tool_name} called {name_count} times total. "
+                "Stop repeating the same tool and proceed to answer.",
             )
 
         return SecurityDecision(SecurityDecisionType.ALLOW)
@@ -394,6 +442,9 @@ class BehaviorGuard:
         keys_to_remove = [k for k in self._loop_counters if k.startswith(f"{run_id}:")]
         for k in keys_to_remove:
             del self._loop_counters[k]
+        n_keys = [k for k in self._tool_name_counters if k.startswith(f"{run_id}:")]
+        for k in n_keys:
+            del self._tool_name_counters[k]
         f_keys = [k for k in self._failure_counters if k.startswith(f"{run_id}:")]
         for k in f_keys:
             del self._failure_counters[k]

@@ -11,6 +11,7 @@ Inspired by Hermes Agent's ContextCompressor + OpenClaw identifier preservation:
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -72,6 +73,11 @@ class CompressionConfig:
     # Identifier preservation (OpenClaw-inspired)
     preserve_identifiers: bool = True
 
+    # Death-spiral prevention (Hermes v0.10 fix)
+    # Count compression restarts toward a hard limit. When the limit is
+    # exceeded we truncate instead of calling the LLM summariser again.
+    max_compression_restarts: int = 3
+
 
 @dataclass
 class CompressionResult:
@@ -107,6 +113,7 @@ class ContextCompressor:
         self.config = config or CompressionConfig()
         self._summarizer = summarizer
         self._feedback = feedback
+        self._compression_restarts = 0
         self._apply_adaptive_adjustments()
 
     def _apply_adaptive_adjustments(self) -> None:
@@ -127,8 +134,8 @@ class ContextCompressor:
         except Exception:
             logger.warning("Adaptive adjustment failed", exc_info=True)
 
-    def estimate_tokens(self, messages: list[ChatMessage]) -> int:
-        """Estimate token count for messages."""
+    def estimate_tokens(self, messages: list[ChatMessage], tools: list[dict[str, Any]] | None = None) -> int:
+        """Estimate token count for messages, optionally including tool schemas."""
         total = 0
         for msg in messages:
             if isinstance(msg.content, str):
@@ -145,6 +152,9 @@ class ContextCompressor:
             if msg.tool_calls:
                 for tc in msg.tool_calls:
                     total += len(str(tc)) // 4
+        if tools:
+            # Tool schema overhead: JSON-serialised schema + per-tool overhead
+            total += len(json.dumps(tools)) // 4 + 50 * len(tools)
         return total
 
     def _determine_level(self, estimated: int) -> CompressionLevel:
@@ -158,13 +168,17 @@ class ContextCompressor:
             return CompressionLevel.GENTLE
         return CompressionLevel.FULL
 
-    async def compress(self, messages: list[ChatMessage]) -> CompressionResult:
-        """Compress messages to fit within budget."""
-        estimated = self.estimate_tokens(messages)
+    async def compress(
+        self, messages: list[ChatMessage], tools: list[dict[str, Any]] | None = None
+    ) -> CompressionResult:
+        """Compress messages to fit within budget, accounting for tool schemas."""
+        estimated = self.estimate_tokens(messages, tools=tools)
         level = self._determine_level(estimated)
         ratio = estimated / self.config.max_tokens if self.config.max_tokens > 0 else 0.0
 
         if level == CompressionLevel.NONE:
+            # Reset counter when we are back within budget
+            self._compression_restarts = 0
             logger.debug(f"Context {estimated} tokens within budget, no compression needed")
             return CompressionResult(
                 messages=list(messages),
@@ -174,10 +188,27 @@ class ContextCompressor:
                 trigger_ratio=ratio,
             )
 
+        self._compression_restarts += 1
+        if self._compression_restarts > self.config.max_compression_restarts:
+            logger.warning(
+                f"Compression death-spiral guard triggered "
+                f"({self._compression_restarts} > {self.config.max_compression_restarts}). "
+                f"Using hard truncation instead of LLM summarisation."
+            )
+            truncated = self._truncate_tail(messages)
+            return CompressionResult(
+                messages=truncated,
+                level=CompressionLevel.FULL,
+                original_tokens=estimated,
+                compressed_tokens=self.estimate_tokens(truncated),
+                trigger_ratio=ratio,
+            )
+
         logger.info(
             f"Context compression triggered: {estimated} tokens "
             f"(ratio {ratio:.2%}, threshold {self.config.warning_threshold:.0%}/"
-            f"{self.config.critical_threshold:.0%}), level={level.value}"
+            f"{self.config.critical_threshold:.0%}), level={level.value}, "
+            f"restart={self._compression_restarts}/{self.config.max_compression_restarts}"
         )
 
         if level == CompressionLevel.GENTLE:
@@ -186,6 +217,8 @@ class ContextCompressor:
             pruned = sum(1 for o, r in zip(messages, result, strict=False) if o.content != r.content)
             final_estimate = self.estimate_tokens(result)
             if final_estimate <= self.config.max_tokens:
+                # Successful gentle compression resets the counter
+                self._compression_restarts = 0
                 logger.info(
                     f"Gentle compression: {estimated} -> {final_estimate} tokens "
                     f"({pruned} tool outputs pruned)"
@@ -249,6 +282,7 @@ class ContextCompressor:
         if summary:
             result.append(ChatMessage(role="system", content=SUMMARY_PREFIX + summary))
         result.extend(tail)
+        result = self._ensure_user_message_present(result, messages)
 
         final_estimate = self.estimate_tokens(result)
         logger.info(
@@ -408,6 +442,28 @@ class ContextCompressor:
 
         return summary
 
+    def _ensure_user_message_present(
+        self, result: list[ChatMessage], original: list[ChatMessage]
+    ) -> list[ChatMessage]:
+        """Ensure at least one user message exists in the compressed result.
+
+        Some local models (e.g. Qwen via LM Studio) have strict jinja templates
+        that raise errors when no user message is found in the conversation.
+        """
+        if any(m.role == "user" for m in result):
+            return result
+        # Find the most recent user message from original and inject it
+        for msg in reversed(original):
+            if msg.role == "user":
+                insert_idx = 1 if result and result[0].role == "system" else 0
+                result.insert(insert_idx, msg)
+                logger.warning(
+                    f"Injected missing user message into compressed context "
+                    f"(original had {len(original)} messages)"
+                )
+                break
+        return result
+
     def _truncate_tail(self, messages: list[ChatMessage]) -> list[ChatMessage]:
         """Fallback: truncate oldest messages from tail."""
         # Keep system prompt + as many recent messages as fit
@@ -425,7 +481,7 @@ class ContextCompressor:
                 break
 
         result.extend(tail_messages)
-        return result
+        return self._ensure_user_message_present(result, messages)
 
     def get_stats(self, original: list[ChatMessage], compressed: list[ChatMessage]) -> dict[str, Any]:
         """Return compression statistics."""

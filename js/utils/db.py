@@ -36,11 +36,17 @@ def db_connection(db_path: Path | str, *, row_factory: Any = None) -> Generator[
 async def adb_connection(db_path: Path | str, *, row_factory: Any = None) -> AsyncGenerator[aiosqlite.Connection, None]:
     """Open an async SQLite connection via aiosqlite.
 
+    Enables WAL mode and 5-second busy timeout for concurrency safety.
+
     Usage::
         async with adb_connection(path) as conn:
             await conn.execute(...)
     """
-    async with aiosqlite.connect(str(db_path)) as conn:
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    async with aiosqlite.connect(str(db_path), timeout=15.0) as conn:
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA busy_timeout=5000")
         if row_factory is not None:
             conn.row_factory = row_factory
         yield conn

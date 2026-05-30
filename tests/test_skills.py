@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest import mock
 
 import pytest
 
@@ -447,8 +448,14 @@ class TestSkillManagerFeedbackLoops:
         result = await manager.execute("test", {}, session_id="sess-1")
 
         assert result.get("success") is True
-        mock_evolver.select_best_variant.assert_called_once_with("test")
-        mock_evolver.record_result.assert_called_once_with("v1", True, 1.0)
+        mock_evolver.record_execution_feedback.assert_called_once_with(
+            skill_id="test",
+            success=True,
+            score=1.0,
+            error_message="",
+            context="sess-1",
+        )
+        mock_evolver.promote_variant.assert_called_once_with("test", mock.ANY, "main.py")
 
     @pytest.mark.anyio
     async def test_set_composer_and_record_transition(self, manager: SkillManager, tmp_path: Path) -> None:

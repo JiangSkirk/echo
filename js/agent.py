@@ -13,11 +13,9 @@ from typing import Any
 
 from cachetools import TTLCache
 
-from js.approvals.queue import ApprovalMode, ApprovalQueue
 from js.compression.compressor import CompressionConfig, ContextCompressor
 from js.compression.feedback import CompressionFeedback
 from js.config import JSSettings
-from js.core.attachments import extract_excel_text, extract_pdf_text, format_size
 from js.evolution.learner import SelfLearner
 from js.evolution.metacognition import MetacognitionLoop
 from js.evolution.optimizer import PromptOptimizer
@@ -27,6 +25,7 @@ from js.memory.store import MemoryStore
 from js.models.provider_manager import ProviderManager
 from js.models.providers import ChatMessage, ChatResponse
 from js.models.router import ModelRouter
+from js.security.approvals import ApprovalMode, ApprovalQueue
 from js.security.audit import AuditEventType, AuditLogger
 from js.security.guard import BehaviorGuard
 from js.security.sandbox import SandboxExecutor
@@ -37,6 +36,7 @@ from js.skills.curator import SkillCurator
 from js.skills.evolver import SkillEvolver
 from js.skills.manager import SkillManager
 from js.tools.registry import ParallelToolExecutor, ToolRegistry, ToolResult
+from js.utils.attachments import extract_excel_text, extract_pdf_text, format_size
 from js.utils.log import get_logger
 from js.utils.metrics import get_metrics, start_span
 
@@ -51,10 +51,12 @@ class AgentState:
     messages: list[ChatMessage] = field(default_factory=list)
     tool_results: list[ToolResult] = field(default_factory=list)
     total_tokens: dict[str, int] = field(default_factory=lambda: {"input": 0, "output": 0})
+    cached_tokens: int = 0
     cost_estimate: float = 0.0
     status: str = "running"  # running, completed, error, blocked
     error_message: str = ""
     compression_stats: dict[str, Any] = field(default_factory=dict)
+    model: str = ""  # Actual model used for the last turn (provider/model_id)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,7 +64,14 @@ class AgentState:
             "run_id": self.run_id,
             "turn_count": self.turn_count,
             "messages": [
-                {"role": m.role, "content": m.content, "name": getattr(m, "name", None)}
+                {
+                    "role": m.role,
+                    "content": m.content,
+                    "name": getattr(m, "name", None),
+                    "tool_calls": getattr(m, "tool_calls", None),
+                    "tool_call_id": getattr(m, "tool_call_id", None),
+                    "reasoning_content": getattr(m, "reasoning_content", None),
+                }
                 for m in self.messages
             ],
             "tool_results": [
@@ -70,17 +79,19 @@ class AgentState:
                 for r in self.tool_results
             ],
             "total_tokens": self.total_tokens,
+            "cached_tokens": self.cached_tokens,
             "cost_estimate": self.cost_estimate,
             "status": self.status,
             "error_message": self.error_message,
             "compression_stats": self.compression_stats,
+            "model": self.model,
         }
 
 
 class JSAgent:
     """Main agent orchestrator."""
 
-    SYSTEM_PROMPT = """You are JS, a helpful and capable AI assistant. You have access to tools for file operations, shell commands, and more.
+    SYSTEM_PROMPT = """You are JS, a helpful and capable AI assistant. You have access to tools for file operations, shell commands, code execution, and more.
 
 Key rules:
 1. Use tools when needed - don't guess about file contents or system state
@@ -90,11 +101,50 @@ Key rules:
 5. If a task is too complex, suggest breaking it down
 6. Never expose secrets, API keys, or tokens in your responses
 7. Respect the user's workspace - don't modify files outside it without permission
+
+Programming workflow (critical for code tasks):
+- STEP 1: EXPLORE. Use file_view to see directory structure, file_read or file_view to inspect code. Use code_search to find relevant code. Never write code blindly.
+- STEP 2: PLAN. Think before editing. If the change is small and precise, use file_edit with an exact search/replace block. If the change is large or creates a new file, use file_write.
+- STEP 3: EDIT. When editing existing files, prefer file_edit over file_write. The search block must match EXACTLY (including whitespace and newlines). If the search is ambiguous, read more context first.
+- STEP 4: VERIFY. After making changes, run tests or lint checks using shell or python tools. If errors appear, fix them immediately. Do not declare success until verification passes.
+- STEP 5: MINIMIZE. Make the smallest possible change to achieve the goal. Avoid rewriting entire files when a small edit suffices. This saves tokens and reduces error rates.
+
+File tool guidelines:
+- file_view: Use for browsing directories (tree view) or reading files WITH line numbers. Great for exploring project structure.
+- file_read: Use for reading file content without line numbers.
+- file_edit: Use for precise replacements. The "search" parameter must be a UNIQUE exact match in the file. Include enough surrounding lines to ensure uniqueness.
+- file_write: Use for creating new files or complete rewrites only.
+- code_search: Use to find where functions, classes, or variables are defined/used across the codebase.
+- shell: Use for running tests (pytest, cargo test, npm test), linters, build commands, and git operations.
+
+Web search tool:
+- web_search: Search the web for current information, news, facts, or documentation. Returns top results with title, URL, and snippet. Use this when the user asks about recent events, current data, or anything you don't already know.
+
+Browser automation tools (Kimi WebBridge — controls your real Chrome browser):
+- web_navigate: Open a URL in the browser. Use new_tab=true on first navigation. Supports any website including those requiring login.
+- web_snapshot: Capture the page accessibility tree with @e element references. ALWAYS use this after navigating to understand the page before clicking or filling.
+- web_click: Click an element using @e reference (from snapshot) or CSS selector.
+- web_fill: Fill input fields or textareas. Works on regular inputs and contenteditable editors.
+- web_screenshot: Take a screenshot of the current page. Use when you need to "see" the page visually.
+- web_evaluate: Execute JavaScript in the browser context. Use for complex interactions or extracting data.
+- web_extract_text: Extract visible text from the page using JavaScript. CRITICAL FALLBACK: when web_snapshot returns an empty or very sparse tree (common on JavaScript-heavy sites like Douyin/TikTok, React/Vue SPAs), use this tool to get the actual page content.
+- web_find_tab: Reuse an already-open tab instead of creating a new one.
+
+Browser workflow (efficient — minimize steps):
+1. Use web_navigate to open the site (or web_find_tab if already open)
+2. Use web_snapshot to see the page structure
+3. If the snapshot is too sparse (<200 chars), use web_extract_text ONCE to get the actual content
+4. Use web_click/web_fill to interact ONLY when necessary
+5. Use web_screenshot if visual confirmation is needed
+6. Report findings and STOP. Do NOT navigate to the same URL repeatedly.
+
+Search vs Fetch: Prefer web_search for finding information; use browser_fetch only when the user gives a specific URL. Do NOT use browser_fetch as a substitute for web_search.
 """
 
     def __init__(self, settings: JSSettings) -> None:
         self.settings = settings
         self.logger = get_logger("js.agent")
+        self._role: str | None = None  # Set by AgentFleet.spawn() for role-based tool restrictions
         self._init_subsystems()
 
     def _init_subsystems(self) -> None:
@@ -170,20 +220,101 @@ Key rules:
         self._init_default_prompt_variant()
 
         # Cancel & checkpoint support
-        self._cancel_tokens: dict[str, asyncio.Event] = {}
-        self._system_message_cache: TTLCache[tuple[str, str], str] = TTLCache(maxsize=100, ttl=60)
+        # Cancel-token storage: session_id -> (asyncio.Event, run_id)
+        # The run_id guards against concurrent runs on the same session
+        # popping each other's tokens.
+        self._cancel_tokens: dict[str, tuple[asyncio.Event, str]] = {}
+        self._shutdown_requested = False
+        self._system_message_cache: TTLCache[tuple[str, str, str], str] = TTLCache(maxsize=100, ttl=60)
         self._degraded = False
         self.degraded_reason = ""
+        self._current_allowed_tools: set[str] = set()
+        self._consecutive_tool_failures: int = 0
         from js.persistence.state_store import StateStore
         self.state_store = StateStore(settings.state_dir / "checkpoints.db")
+        from js.events.store import EventStore
+        self.event_store = EventStore(settings.state_dir / "events")
+
+        # Lane Queue: serial-by-default execution per session (OpenClaw-style)
+        try:
+            from js.orchestration.lane_queue import LaneExecutor
+            self._lane_executor = LaneExecutor()
+        except Exception:
+            self._lane_executor = None  # type: ignore[assignment]
+
+        # Quality scoring & self-learning闭环 (OpenHuman-style)
+        try:
+            from js.evolution.quality_scorer import QualityScorer
+            self._quality_scorer = QualityScorer(settings.state_dir)
+        except Exception:
+            self._quality_scorer = None  # type: ignore[assignment]
+
+        # Resource governance (started via start_background_tasks)
+        self._governor: Any | None = None
+        self._fleet_getter: Any | None = None
 
     @property
     def degraded(self) -> bool:
         return self._degraded
 
-    def _get_tools_schema(self) -> list[dict[str, Any]] | None:
-        """Return tool schemas, filtering network tools when degraded."""
+    def _get_tools_schema(self, model: str | None = None) -> list[dict[str, Any]] | None:
+        """Return tool schemas, filtering network tools when degraded.
+
+        If the selected model does not support function calling, returns None
+        so the provider receives a plain text completion instead of tools.
+
+        Trimming strategy:
+        - Cloud models: keep all tools (they have large context windows).
+        - Local models: aggressively trim to ~8 essentials to avoid context
+          overflow and reduce reasoning burden on weak FC models.
+        """
+        # Check model capability first
+        if model:
+            cfg = self.router.get_model_config(model)
+            if cfg and not cfg.supports_tools:
+                return None
+
         schemas = self.registry.to_openai_schemas()
+
+        context_window = 128_000
+        is_local = False
+        if model:
+            cfg = self.router.get_model_config(model)
+            if cfg:
+                context_window = cfg.context_window
+            is_local = self.router.is_local_model(model)
+
+        # Local models: aggressively trim to avoid prompt > context errors
+        # AND to reduce reasoning burden (weak FC models drown in too many tools).
+        if is_local and len(schemas) > 7:
+            # Local models struggle with browser_fetch (SPA sites, redirects)
+            # and multi-step WebBridge workflows.  Keep only the essentials.
+            _local_core = {
+                "web_search",
+                "file_read", "file_write", "file_edit", "file_view",
+                "shell", "python",
+            }
+            trimmed = [s for s in schemas if s.get("function", {}).get("name", "") in _local_core]
+            self.logger.info(
+                f"Local-model tool trim {model or 'default'}: {len(schemas)} -> {len(trimmed)}"
+            )
+            schemas = trimmed
+        elif context_window < 32_000 and len(schemas) > 15:
+            # Small-context cloud models: trim skills/office but keep browser tools
+            _cloud_core = {
+                "web_search", "browser_fetch",
+                "file_read", "file_write", "file_edit", "file_view", "file_list",
+                "code_search", "shell", "python",
+                "web_navigate", "web_snapshot", "web_click", "web_fill",
+                "web_screenshot", "web_evaluate", "web_extract_text",
+                "web_find_tab", "web_list_tabs",
+            }
+            trimmed = [s for s in schemas if s.get("function", {}).get("name", "") in _cloud_core]
+            self.logger.debug(
+                f"Cloud tool trim {model or 'default'}: {len(schemas)} -> {len(trimmed)}"
+            )
+            schemas = trimmed
+
         if not self._degraded:
             return schemas
         filtered = []
@@ -191,15 +322,17 @@ Key rules:
             name = s.get("function", {}).get("name", "")
             if name in ("web_search", "browser_fetch", "browser_open", "fetch_url"):
                 continue
+            if name.startswith("web_"):
+                continue
             filtered.append(s)
         return filtered
 
     def request_cancel(self, session_id: str) -> bool:
         """Request cancellation of an active run."""
-        token = self._cancel_tokens.get(session_id)
-        if token is None:
+        entry = self._cancel_tokens.get(session_id)
+        if entry is None:
             return False
-        token.set()
+        entry[0].set()
         return True
 
     async def _check_degraded(self) -> None:
@@ -234,6 +367,7 @@ Key rules:
             status=data["status"],
             error_message=data["error_message"],
             compression_stats=data["compression_stats"],
+            model=data.get("model", ""),
         )
 
     async def load_checkpoint(self, session_id: str) -> AgentState | None:
@@ -250,10 +384,26 @@ Key rules:
             status=data.get("status", "running"),
             error_message=data.get("error_message", ""),
             compression_stats=data.get("compression_stats", {}),
+            model=data.get("model", ""),
         )
         for m in data.get("messages", []):
             state.messages.append(
-                ChatMessage(role=m.get("role", "user"), content=m.get("content", ""))
+                ChatMessage(
+                    role=m.get("role", "user"),
+                    content=m.get("content", ""),
+                    name=m.get("name"),
+                    tool_calls=m.get("tool_calls"),
+                    tool_call_id=m.get("tool_call_id"),
+                    reasoning_content=m.get("reasoning_content"),
+                )
+            )
+        for r in data.get("tool_results", []):
+            state.tool_results.append(
+                ToolResult(
+                    success=r.get("success", False),
+                    output=r.get("output", ""),
+                    error=r.get("error", ""),
+                )
             )
         return state
 
@@ -302,9 +452,11 @@ Key rules:
         return "\n---\n".join(parts)
 
     def _setup_search(self) -> Any:
-        from js.search.engines import DuckDuckGoEngine, SearchManager, TavilyEngine
+        from js.search.engines import BingEngine, DuckDuckGoEngine, SearchManager, TavilyEngine
         manager = SearchManager()
-        manager.register(DuckDuckGoEngine(), default=True)
+        # Bing is more reliable in China-region networks (DDG often times out)
+        manager.register(BingEngine(timeout=10.0), default=True)
+        manager.register(DuckDuckGoEngine(timeout=8.0))
         # Try to load Tavily key from secrets
         tavily_key = self.secrets.retrieve("tavily_api_key")
         if tavily_key:
@@ -330,6 +482,14 @@ Key rules:
         self._browser_tool = BrowserTool(self.settings.tools, self.guard)
         self._browser_tool.register_all(self.registry)
 
+        # Kimi WebBridge — real browser control (navigate, click, screenshot, etc.)
+        try:
+            from js.tools.webbridge import WebBridgeTool
+            self._webbridge_tool = WebBridgeTool()
+            self._webbridge_tool.register_all(self.registry)
+        except Exception:
+            self.logger.warning("WebBridge tools not available (daemon may not be running)", exc_info=True)
+
         office_tools = OfficeTools(self.settings.workspace, self.settings.tools, self.guard)
         office_tools.register_all(self.registry)
 
@@ -337,6 +497,16 @@ Key rules:
         self._register_search_tool()
 
         # TODO: Register code-type skills as tools (requires async handler wrapper)
+
+    def register_fleet_tool(self, fleet_factory: Any) -> None:
+        """Register the fleet collaboration tool (called from web layer)."""
+        try:
+            from js.tools.fleet_tools import FleetCollaborateTool
+            fleet_tool = FleetCollaborateTool(fleet_factory)
+            fleet_tool.register(self.registry)
+            self.logger.info("Fleet collaboration tool registered")
+        except Exception:
+            self.logger.warning("Failed to register fleet collaboration tool", exc_info=True)
 
     def _init_plugins(self) -> None:
         """Discover and auto-enable builtin plugins."""
@@ -436,7 +606,7 @@ Key rules:
                     except Exception:
                         self.logger.warning('Operation failed', exc_info=True)
             else:
-                parts.append(f"- 📎 文件: `{path.name}` ({self._format_size(size)})")
+                parts.append(f"- 📎 文件: `{path.name}` ({format_size(size)})")
 
         return "\n".join(parts)
 
@@ -475,14 +645,43 @@ Key rules:
             return parts
         return ""
 
-    def _build_system_message(self, query: str = "", session_id: str = "", attachments: list[str] | None = None) -> str:
+    def _build_system_message(
+        self,
+        query: str = "",
+        session_id: str = "",
+        attachments: list[str] | None = None,
+        model: str | None = None,
+    ) -> str:
         """Build system message with rich multi-layer memory context."""
-        cache_key = (query, session_id)
+        cache_key = (query, session_id, model or "")
         cached = self._system_message_cache.get(cache_key)
         if cached is not None:
             return cached
 
         parts = [self.SYSTEM_PROMPT]
+
+        # Local-model appendix: simplify instructions because weak FC models
+        # struggle with long prompts and complex multi-step tool workflows.
+        # We also strip WebBridge references so the model doesn't hallucinate
+        # tools that have been removed from its schema.
+        if model and self.router.is_local_model(model):
+            parts = [
+                "You are JS, a helpful AI assistant with access to a small set of tools.",
+                "",
+                "Available tools:",
+                "- web_search: Search the web. Call it ONCE with your query, then answer.",
+                "- file_read / file_view: Read files.",
+                "- file_edit: Edit files with exact search/replace.",
+                "- file_write: Create new files.",
+                "- shell: Run shell commands.",
+                "- python: Run Python code.",
+                "",
+                "CRITICAL RULES:",
+                "1. Call web_search ONCE. Do NOT call it again.",
+                "2. If a tool returns an error, STOP and tell the user.",
+                "3. NEVER repeat the same tool call.",
+                "4. After any tool result, answer immediately.",
+            ]
 
         # Inject learned insights from past interactions
         if self.learner:
@@ -551,18 +750,84 @@ Key rules:
         session_id: str,
         run_id: str,
         user_input: str,
-    ) -> ChatMessage:
-        """Execute a single tool call and return the tool message."""
+        progress_callback: Callable[[str, ToolResult], Awaitable[None]] | None = None,
+    ) -> tuple[ChatMessage, ToolResult]:
+        """Execute a single tool call and return the tool message plus raw result."""
         func = tc.get("function", {}) if isinstance(tc, dict) else {}
         tool_name = func.get("name", "") if isinstance(func, dict) else ""
         raw_args = func.get("arguments", "{}") if isinstance(func, dict) else "{}"
-        tool_call_id = tc.get("id", "") if isinstance(tc, dict) else ""
+        raw_tool_call_id = tc.get("id", "") if isinstance(tc, dict) else ""
+        # Deterministic fallback for prompt-cache consistency
+        # (Hermes-style: same args → same ID across restarts)
+        if not raw_tool_call_id:
+            from js.utils.ids import tool_call_id as _det_tool_call_id
+            raw_tool_call_id = _det_tool_call_id(
+                tool_name=tool_name,
+                arguments=raw_args,
+                turn_idx=0,
+                session_id=session_id,
+            )
+        tool_call_id = raw_tool_call_id
         if not tool_name:
-            return ChatMessage(role="tool", content="Error: Tool call missing name", tool_call_id=tool_call_id, name="unknown")
+            err_result = ToolResult(success=False, error="Tool call missing name")
+            return (
+                ChatMessage(role="tool", content=err_result.to_text(), tool_call_id=tool_call_id, name="unknown"),
+                err_result,
+            )
+
+        # Hard block: model called a tool that is not in its allowed schema.
+        # This catches hallucinated tool calls from weak FC models (e.g. local
+        # models that infer tool names from the system prompt even when the
+        # tool was trimmed from their schema).
+        if self._current_allowed_tools and tool_name not in self._current_allowed_tools:
+            err_result = ToolResult(
+                success=False,
+                error=f"Tool '{tool_name}' is not available for this model. "
+                f"Available tools: {', '.join(sorted(self._current_allowed_tools))}. "
+                "Use one of the available tools or answer directly.",
+            )
+            return (
+                ChatMessage(role="tool", content=err_result.to_text(), tool_call_id=tool_call_id, name=tool_name),
+                err_result,
+            )
+
         try:
             arguments = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args if isinstance(raw_args, dict) else {})
-        except json.JSONDecodeError:
-            arguments = {}
+        except json.JSONDecodeError as e:
+            err_result = ToolResult(success=False, error=f"Invalid tool arguments JSON: {e}")
+            return (
+                ChatMessage(role="tool", content=err_result.to_text(), tool_call_id=tool_call_id, name=tool_name),
+                err_result,
+            )
+
+        # Role-based tool permissions (least privilege)
+        _role_tool_whitelist: dict[str, set[str]] = {
+            "orchestrator": {"web_search", "browser_fetch", "file_read", "file_view", "web_navigate", "web_snapshot", "web_extract_text"},
+            "coder": {"file_read", "file_write", "file_edit", "code_search", "shell", "python", "file_view", "file_list"},
+            "reviewer": {"file_read", "code_search", "file_view", "file_list"},
+            "researcher": {"web_search", "browser_fetch", "file_read", "file_view", "web_navigate", "web_snapshot", "web_click", "web_fill", "web_extract_text"},
+            "tester": {"shell", "python", "file_read", "file_view", "code_search"},
+            "generalist": {"file_read", "file_write", "file_edit", "shell", "python", "web_search", "code_search", "file_view", "file_list", "web_navigate", "web_snapshot", "web_click", "web_fill", "web_extract_text"},
+            "architect": {"file_read", "code_search", "file_view", "file_list"},
+            "designer": {"file_read", "file_view", "file_list"},
+            "doc_writer": {"file_read", "file_write", "file_edit", "file_view", "file_list"},
+            "security": {"file_read", "shell", "code_search", "file_view", "file_list", "web_navigate", "web_snapshot", "web_extract_text"},
+            "performance": {"file_read", "shell", "python", "code_search", "file_view", "file_list"},
+        }
+        if self._role and tool_name not in _role_tool_whitelist.get(self._role, set()):
+            denied_result = ToolResult(
+                success=False,
+                error=f"Permission denied: role '{self._role}' is not allowed to use tool '{tool_name}'",
+            )
+            return (
+                ChatMessage(
+                    role="tool",
+                    content=denied_result.to_text(),
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                ),
+                denied_result,
+            )
 
         # Strategy-based defense
         from js.security.strategies import DefenseContext
@@ -576,16 +841,29 @@ Key rules:
         )
         defense_result = self.defense_strategies.evaluate(defense_ctx)
         if defense_result.blocked:
-            return ChatMessage(
-                role="tool",
-                content=f"Error: Security blocked: {defense_result.reason}",
-                tool_call_id=tool_call_id,
-                name=tool_name,
+            blocked_result = ToolResult(success=False, error=f"Security blocked: {defense_result.reason}")
+            return (
+                ChatMessage(
+                    role="tool",
+                    content=blocked_result.to_text(),
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                ),
+                blocked_result,
             )
 
         # Approval check for dangerous tools (must be awaited, so runs inline)
         spec = self.registry.get(tool_name)
         if spec and spec.dangerous:
+            from js.events.models import AgentEvent
+            self.event_store.emit(
+                AgentEvent.approval_requested(
+                    session_id=session_id,
+                    run_id=run_id,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                )
+            )
             approved = await asyncio.to_thread(
                 self.approvals.request,
                 tool_name=tool_name,
@@ -593,12 +871,31 @@ Key rules:
                 context="cli",
             )
             if not approved:
-                return ChatMessage(
-                    role="tool",
-                    content="Error: Operation denied: approval required but not granted",
-                    tool_call_id=tool_call_id,
-                    name=tool_name,
+                self.event_store.emit(
+                    AgentEvent.approval_denied(
+                        session_id=session_id,
+                        run_id=run_id,
+                        tool_name=tool_name,
+                        reason="approval required but not granted",
+                    )
                 )
+                denied_result = ToolResult(success=False, error="Operation denied: approval required but not granted")
+                return (
+                    ChatMessage(
+                        role="tool",
+                        content=denied_result.to_text(),
+                        tool_call_id=tool_call_id,
+                        name=tool_name,
+                    ),
+                    denied_result,
+                )
+            self.event_store.emit(
+                AgentEvent.approval_granted(
+                    session_id=session_id,
+                    run_id=run_id,
+                    tool_name=tool_name,
+                )
+            )
 
         self.audit.log(
             AuditEventType.TOOL_CALL,
@@ -608,8 +905,24 @@ Key rules:
             tool_name,
             {"arguments": arguments},
         )
+        from js.events.models import AgentEvent
+        self.event_store.emit(
+            AgentEvent.tool_called(
+                session_id=session_id,
+                run_id=run_id,
+                tool_name=tool_name,
+                arguments=arguments,
+            )
+        )
 
         result = await self.registry.execute(run_id, tool_name, arguments)
+
+        # Notify progress callback (e.g. WebSocket frontend)
+        if progress_callback:
+            try:
+                await progress_callback(tool_name, result)
+            except Exception:
+                self.logger.debug("Progress callback failed", exc_info=True)
 
         # Repeated failure guard (Hermes-style)
         fail_check = self.guard.check_repeated_failure(run_id, tool_name, result.success)
@@ -620,11 +933,14 @@ Key rules:
         if result.output:
             result.output = self.secrets.detect_and_redact(result.output, f"tool:{tool_name}")
 
-        return ChatMessage(
-            role="tool",
-            content=result.to_text(),
-            tool_call_id=tool_call_id,
-            name=tool_name,
+        return (
+            ChatMessage(
+                role="tool",
+                content=result.to_text(),
+                tool_call_id=tool_call_id,
+                name=tool_name,
+            ),
+            result,
         )
 
 
@@ -686,6 +1002,24 @@ Key rules:
                 self.logger.debug(f"Failed to notify scheduler: {e}")
         except Exception as mem_err:
             self.logger.warning(f"Memory consolidation failed: {mem_err}")
+
+        # Inject learning context into working memory (OpenHuman-style)
+        if self._quality_scorer is not None:
+            try:
+                learning_ctx = self._quality_scorer.build_learning_context(
+                    max_tokens=200,
+                )
+                if learning_ctx:
+                    await asyncio.to_thread(
+                        self.memory.store_working,
+                        session_id=session_id,
+                        key="learning_context",
+                        value=learning_ctx,
+                        category="meta",
+                        importance=8,
+                    )
+            except Exception:
+                self.logger.debug("Learning context injection failed", exc_info=True)
 
         # Reset guard counters
         try:
@@ -790,15 +1124,52 @@ Key rules:
         attachments: list[str] | None = None,
         _resume_state: AgentState | None = None,
         stream_callback: Callable[[str], Awaitable[None]] | None = None,
+        progress_callback: Callable[[str, ToolResult], Awaitable[None]] | None = None,
     ) -> AgentState:
-        """Execute a full agent run."""
+        """Execute a full agent run.
+
+        When a LaneExecutor is available, runs are serialised per session
+        to prevent race conditions (OpenClaw Lane Queue pattern).
+        """
+        # Lane Queue: serialise per session
+        if self._lane_executor is not None:
+            result = await self._lane_executor.submit(
+                session_id=session_id or "default",
+                coro=lambda: self._do_run(
+                    user_input, session_id, model, attachments,
+                    _resume_state, stream_callback, progress_callback,
+                ),
+                task_id=f"run_{id(user_input)}",
+                name="agent_run",
+            )
+            return result  # type: ignore[no-any-return]
+        return await self._do_run(
+            user_input, session_id, model, attachments,
+            _resume_state, stream_callback, progress_callback,
+        )
+
+    async def _do_run(
+        self,
+        user_input: str,
+        session_id: str | None = None,
+        model: str | None = None,
+        attachments: list[str] | None = None,
+        _resume_state: AgentState | None = None,
+        stream_callback: Callable[[str], Awaitable[None]] | None = None,
+        progress_callback: Callable[[str, ToolResult], Awaitable[None]] | None = None,
+    ) -> AgentState:
+        """Core agent run logic."""
+        self._consecutive_tool_failures = 0
         session_id = session_id or str(uuid.uuid4())
         run_id = str(uuid.uuid4())
-        state = _resume_state or AgentState(session_id=session_id, run_id=run_id)
         if _resume_state:
-            state.run_id = run_id
+            state = _resume_state
+            # Preserve the original run_id for traceability; track the
+            # resume chain via parent_run_id if we ever add it.
+        else:
+            state = AgentState(session_id=session_id, run_id=run_id)
         attachments = attachments or []
-        self._cancel_tokens[session_id] = asyncio.Event()
+        self._cancel_tokens[session_id] = (asyncio.Event(), state.run_id)
 
         try:
             get_metrics().agent_runs_total.inc()
@@ -821,44 +1192,57 @@ Key rules:
         # Build attachment context
         attachment_ctx = await self._build_attachment_context(attachments)
 
-        # Load historical conversation context if continuing a session
-        try:
-            history = await asyncio.to_thread(
-                self.memory.get_session_messages, session_id
+        if _resume_state is None:
+            # Fresh run: load historical conversation context
+            try:
+                history = await asyncio.to_thread(
+                    self.memory.get_session_messages, session_id
+                )
+                for m in history[-50:]:  # Keep last 50 messages to fit context window
+                    if m.get("role") in ("user", "assistant") and m.get("content"):
+                        state.messages.append(
+                            ChatMessage(
+                                role=m["role"],
+                                content=m["content"],
+                                reasoning_content=m.get("reasoning_content"),
+                            )
+                        )
+            except Exception:
+                self.logger.warning("Failed to load session history", exc_info=True)
+
+            # Count historical user/assistant messages already persisted
+            history_ua_count = sum(
+                1 for m in state.messages
+                if m.role in ("user", "assistant") and isinstance(m.content, str)
             )
-            for m in history[-50:]:  # Keep last 50 messages to fit context window
-                if m.get("role") in ("user", "assistant") and m.get("content"):
-                    state.messages.append(
-                        ChatMessage(role=m["role"], content=m["content"])
-                    )
-        except Exception:
-            self.logger.warning("Failed to load session history", exc_info=True)
 
-        # Count historical user/assistant messages already persisted
-        history_ua_count = sum(
-            1 for m in state.messages
-            if m.role in ("user", "assistant") and isinstance(m.content, str)
-        )
-
-        # Initialize conversation with rich memory context
-        state.messages.insert(
-            0,
-            ChatMessage(
-                role="system",
-                content=self._build_system_message(
-                    query=user_input, session_id=session_id, attachments=attachments
+            # Initialize conversation with rich memory context
+            state.messages.insert(
+                0,
+                ChatMessage(
+                    role="system",
+                    content=self._build_system_message(
+                        query=user_input, session_id=session_id, attachments=attachments, model=model
+                    ),
                 ),
-            ),
-        )
+            )
 
-        # Build user message: support multimodal for vision models
-        model_config = self.router.get_model_config(model or "")
-        supports_vision = model_config.supports_vision if model_config else False
-        vision_parts = self._build_vision_content(user_input, attachments, supports_vision)
-        if isinstance(vision_parts, list):
-            state.messages.append(ChatMessage(role="user", content=vision_parts))
+            # Build user message: support multimodal for vision models
+            model_config = self.router.get_model_config(model or "")
+            supports_vision = model_config.supports_vision if model_config else False
+            vision_parts = self._build_vision_content(user_input, attachments, supports_vision)
+            if isinstance(vision_parts, list):
+                state.messages.append(ChatMessage(role="user", content=vision_parts))
+            else:
+                state.messages.append(ChatMessage(role="user", content=user_input + attachment_ctx))
         else:
-            state.messages.append(ChatMessage(role="user", content=user_input + attachment_ctx))
+            # Resuming from checkpoint: state already contains system + history + user messages.
+            # Count how many user/assistant messages are already in the state
+            # so that _finalize_run only persists the new ones.
+            history_ua_count = sum(
+                1 for m in state.messages
+                if m.role in ("user", "assistant") and isinstance(m.content, str)
+            )
 
         # Store working memory for this interaction
         await asyncio.to_thread(
@@ -873,8 +1257,16 @@ Key rules:
         with start_span("agent.run"):
             try:
                 while state.turn_count < self.settings.max_turns:
-                    # Check for cancellation request
-                    if self._cancel_tokens.get(session_id) and self._cancel_tokens[session_id].is_set():
+                    # Check for cancellation request (token or global shutdown)
+                    cancel_entry = self._cancel_tokens.get(session_id)
+                    if cancel_entry is not None:
+                        cancel_event, token_run_id = cancel_entry
+                        # Only honour the cancel token if it belongs to the current run
+                        if token_run_id == state.run_id and cancel_event.is_set():
+                            state.status = "cancelled"
+                            state.error_message = "Run cancelled by user request"
+                            break
+                    if self._shutdown_requested:
                         state.status = "cancelled"
                         state.error_message = "Run cancelled by user request"
                         break
@@ -882,10 +1274,35 @@ Key rules:
                     state.turn_count += 1
                     self.logger.debug(f"Turn {state.turn_count}", extra={"run": run_id})
 
+                    # OpenClaw trap defense: hard cap on message count to prevent
+                    # entropy death spiral (7,069 msg / 170k token per heartbeat).
+                    _msg_hard_limit = 200
+                    if len(state.messages) > _msg_hard_limit:
+                        self.logger.warning(
+                            f"Message count {len(state.messages)} exceeds hard limit {_msg_hard_limit}; "
+                            f"truncating oldest non-system messages"
+                        )
+                        # Keep system + last 100 messages
+                        trimmed = [m for m in state.messages if m.role == "system"]
+                        trimmed.extend(state.messages[-100:])
+                        state.messages = trimmed
+
                     turn_start = time.perf_counter()
+                    turn_tool_scores: list[Any] = []
                     try:
-                        # Compress context if needed
-                        compression_result = await self.compressor.compress(state.messages)
+                        # Adjust compressor budget to the actual model's context window
+                        # (local 8k models need aggressive compression, cloud 128k models don't)
+                        model_cfg = self.router.get_model_config(model or "")
+                        if model_cfg and model_cfg.context_window:
+                            self.compressor.config.max_tokens = model_cfg.context_window
+
+                        # Get tools schema first so compression accounts for tool overhead
+                        tools_schema = self._get_tools_schema(model)
+
+                        # Compress context if needed (tools included in token estimate)
+                        compression_result = await self.compressor.compress(
+                            state.messages, tools=tools_schema
+                        )
                         compressed_messages = compression_result.messages
                         if compression_result.level.value != "none":
                             self.logger.info(
@@ -903,7 +1320,9 @@ Key rules:
                             )
 
                         # Get model response
-                        tools_schema = self._get_tools_schema()
+                        self._current_allowed_tools = {
+                            s.get("function", {}).get("name", "") for s in (tools_schema or [])
+                        }
                         if stream_callback and not tools_schema:
                             # Stream final assistant response when no tools
                             decision = await self.router.select_model(preferred=model)
@@ -914,11 +1333,29 @@ Key rules:
                             ):
                                 stream_text += token
                                 await stream_callback(token)
+
+                            # Try to get accurate usage from provider; fallback to heuristic estimate
+                            stream_usage = getattr(decision.provider, "_last_stream_usage", None)
+                            if stream_usage:
+                                prompt_tokens = stream_usage.get("prompt_tokens", 0)
+                                completion_tokens = stream_usage.get("completion_tokens", 0)
+                                cached_tokens = stream_usage.get("cached_tokens", 0)
+                            else:
+                                # Rough heuristic: ~4 chars per token + overhead per message
+                                prompt_tokens = sum(len(str(m.content or "")) // 4 + 20 for m in compressed_messages) + 100
+                                completion_tokens = len(stream_text) // 4 + 20
+                                cached_tokens = 0
+
                             response = ChatResponse(
                                 content=stream_text,
                                 tool_calls=[],
                                 model=decision.model,
-                                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                                usage={
+                                    "prompt_tokens": prompt_tokens,
+                                    "completion_tokens": completion_tokens,
+                                    "total_tokens": prompt_tokens + completion_tokens,
+                                    "cached_tokens": cached_tokens,
+                                },
                                 finish_reason="stop",
                             )
                         else:
@@ -928,17 +1365,31 @@ Key rules:
                                 tools=tools_schema if tools_schema else None,
                             )
 
+                        # Track model used
+                        state.model = response.model
+
                         # Track usage
                         prompt_tokens = response.usage.get("prompt_tokens", 0)
                         completion_tokens = response.usage.get("completion_tokens", 0)
+                        cached_tokens = response.usage.get("cached_tokens", 0)
                         state.total_tokens["input"] += prompt_tokens
                         state.total_tokens["output"] += completion_tokens
+                        state.cached_tokens += cached_tokens
 
-                        # Calculate cost
+                        # Calculate cost (cached tokens billed at a discount when available)
                         model_config = self.router.get_model_config(response.model)
                         if model_config:
+                            # If we know cached tokens, charge them at 10% of input rate
+                            # (common discount across most providers). Otherwise full rate.
+                            if cached_tokens > 0 and model_config.cost_input > 0:
+                                effective_input_cost = (
+                                    (prompt_tokens - cached_tokens) * model_config.cost_input +
+                                    cached_tokens * model_config.cost_input * 0.10
+                                )
+                            else:
+                                effective_input_cost = prompt_tokens * model_config.cost_input
                             state.cost_estimate += (
-                                prompt_tokens * model_config.cost_input +
+                                effective_input_cost +
                                 completion_tokens * model_config.cost_output
                             )
 
@@ -955,17 +1406,47 @@ Key rules:
                             },
                         )
 
+                        # Emit event for observability
+                        from js.events.models import AgentEvent
+                        self.event_store.emit(
+                            AgentEvent.model_called(
+                                session_id=session_id,
+                                run_id=run_id,
+                                model=response.model,
+                                turn=state.turn_count,
+                                prompt_tokens=prompt_tokens,
+                                completion_tokens=completion_tokens,
+                            )
+                        )
+
                         # Add assistant message
                         state.messages.append(
                             ChatMessage(
                                 role="assistant",
                                 content=response.content,
                                 tool_calls=response.tool_calls if response.tool_calls else None,
+                                reasoning_content=response.reasoning_content or None,
                             )
                         )
 
                         # Check if done
                         if not response.tool_calls:
+                            # Local models occasionally return finish_reason="stop"
+                            # with empty content — treat this as a model failure and
+                            # retry (up to max_turns) rather than silently completing.
+                            if not response.content or not response.content.strip():
+                                self.logger.warning(
+                                    f"Model returned empty content "
+                                    f"(finish_reason={response.finish_reason}), retrying"
+                                )
+                                # Remove the empty assistant message so it doesn't
+                                # pollute the context for the retry.
+                                state.messages.pop()
+                                if state.turn_count >= self.settings.max_turns:
+                                    state.status = "error"
+                                    state.error_message = "Model returned empty response after maximum retries"
+                                    break
+                                continue
                             state.status = "completed"
                             break
 
@@ -977,17 +1458,115 @@ Key rules:
                         )
                         for batch in batches:
                             batch_tasks = [
-                                self._execute_tool_call(tc, session_id, run_id, user_input)
+                                self._execute_tool_call(tc, session_id, run_id, user_input, progress_callback)
                                 for tc in batch
                             ]
-                            batch_messages = await asyncio.gather(*batch_tasks)
-                            state.messages.extend(batch_messages)
+                            _raw_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+                            # unwrap any exceptions into error results so that one
+                            # failed tool does not cancel the others
+                            batch_results: list[tuple[ChatMessage, ToolResult]] = []
+                            for tc, res in zip(batch, _raw_results, strict=True):
+                                if isinstance(res, BaseException):
+                                    err = ToolResult(success=False, error=f"Tool execution error: {res}")
+                                    _tc_id = tc.get("id", "") if isinstance(tc, dict) else ""
+                                    if not _tc_id:
+                                        from js.utils.ids import tool_call_id as _det_tc_id
+                                        _tc_id = _det_tc_id(
+                                            tool_name=tc.get("function", {}).get("name", "") if isinstance(tc, dict) else "",
+                                            arguments=str(tc.get("function", {}).get("arguments", "{}")) if isinstance(tc, dict) else "{}",
+                                            turn_idx=0,
+                                            session_id=session_id,
+                                        )
+                                    batch_results.append((
+                                        ChatMessage(role="tool", content=err.to_text(), tool_call_id=_tc_id, name=tc.get("function", {}).get("name", "unknown") if isinstance(tc, dict) else "unknown"),
+                                        err,
+                                    ))
+                                else:
+                                    # mypy narrowing: res is the normal tuple result
+                                    batch_results.append(res)
+                            all_failed = True
+                            for msg, tr in batch_results:
+                                state.messages.append(msg)
+                                state.tool_results.append(tr)
+                                if tr.success:
+                                    all_failed = False
+                                # Quality scoring: record each tool call outcome
+                                if self._quality_scorer is not None:
+                                    from js.evolution.quality_scorer import ToolCallScore
+                                    turn_tool_scores.append(
+                                        ToolCallScore(
+                                            tool_name=tr.error.split(":")[0] if tr.error else (msg.name or "unknown"),
+                                            success=tr.success,
+                                            error_pattern=tr.error or "",
+                                        )
+                                    )
+                            # Dead-loop guard: if every tool in this batch failed,
+                            # count consecutive failure rounds.  After 2 all-failure
+                            # rounds we force-stop so weak local models don't spin.
+                            if all_failed and batch_results:
+                                self._consecutive_tool_failures += 1
+                                if self._consecutive_tool_failures >= 2:
+                                    self.logger.warning(
+                                        f"Dead-loop guard triggered after {self._consecutive_tool_failures} "
+                                        f"consecutive all-failure rounds (turn {state.turn_count})"
+                                    )
+                                    state.messages.append(
+                                        ChatMessage(
+                                            role="system",
+                                            content="STOP calling tools. All recent tool calls failed. Answer the user directly with what you know.",
+                                        )
+                                    )
+                                    # Do NOT break here — let the model see the
+                                    # system message and produce a final answer.
+                            else:
+                                self._consecutive_tool_failures = 0
+
+                            # Prevent unbounded growth of tool_results
+                            if len(state.tool_results) > 200:
+                                state.tool_results = state.tool_results[-200:]
+                            # Auto-save checkpoint after each tool batch (fire-and-forget)
+                            try:
+                                await self.save_checkpoint(state)
+                                from js.events.models import AgentEvent
+                                self.event_store.emit(
+                                    AgentEvent.checkpoint_saved(
+                                        session_id=session_id,
+                                        run_id=run_id,
+                                        turn=state.turn_count,
+                                    )
+                                )
+                            except Exception:
+                                self.logger.warning("Checkpoint auto-save failed", exc_info=True)
+                            # Emit tool_result events
+                            from js.events.models import AgentEvent
+                            for tr in state.tool_results[-len(batch_results):]:
+                                self.event_store.emit(
+                                    AgentEvent.tool_result(
+                                        session_id=session_id,
+                                        run_id=run_id,
+                                        tool_name=tr.error.split(":")[0] if not tr.success and tr.error else "unknown",
+                                        success=tr.success,
+                                        output_preview=tr.output or tr.error or "",
+                                    )
+                                )
                     finally:
                         turn_latency = time.perf_counter() - turn_start
                         try:
                             get_metrics().agent_turn_duration_seconds.observe(turn_latency)
                         except Exception:
                             self.logger.warning("Suppressed error", exc_info=True)
+                        # Record turn quality score (OpenHuman-style)
+                        if self._quality_scorer is not None:
+                            from js.evolution.quality_scorer import TurnScore
+                            self._quality_scorer.record_turn(
+                                TurnScore(
+                                    session_id=session_id,
+                                    turn_idx=state.turn_count,
+                                    model=state.model or "",
+                                    tool_scores=turn_tool_scores,
+                                    total_tokens=state.total_tokens.get("input", 0) + state.total_tokens.get("output", 0),
+                                )
+                            )
 
             except Exception as e:
                 state.status = "error"
@@ -1001,21 +1580,46 @@ Key rules:
                     "exception",
                     {"error": str(e)},
                 )
+                from js.events.models import AgentEvent
+                self.event_store.emit(
+                    AgentEvent.error(session_id=session_id, run_id=run_id, error=str(e))
+                )
                 await self._check_degraded()
 
             finally:
                 await self._finalize_run(state, session_id, run_id, user_input, history_ua_count)
-                self._cancel_tokens.pop(session_id, None)
+                # Only pop the token if it still belongs to this run, to avoid
+                # racing with a newer run on the same session.
+                entry = self._cancel_tokens.get(session_id)
+                if entry is not None and entry[1] == state.run_id:
+                    self._cancel_tokens.pop(session_id, None)
 
         return state
+
+    def set_fleet_getter(self, getter: Any) -> None:
+        """Provide a callable that returns the current AgentFleet instance.
+
+        Used by ResourceGovernor to reap idle agents and monitor fleet health.
+        """
+        self._fleet_getter = getter
 
     def start_background_tasks(self) -> None:
         """Start background scheduling loops."""
         self._dream_scheduler.start()
+        if self._governor is None:
+            from js.runtime.governor import ResourceGovernor
+            self._governor = ResourceGovernor(
+                self,
+                fleet_getter=self._fleet_getter,
+                state_dir=self.settings.state_dir,
+            )
+        self._governor.start()
 
     def stop_background_tasks(self) -> None:
         """Stop background scheduling loops."""
         self._dream_scheduler.stop()
+        if self._governor is not None:
+            self._governor.stop()
 
     async def _run_evolution_cycle(
         self, conversation_buffer: list[dict[str, str]]
@@ -1159,7 +1763,7 @@ Key rules:
 
             variant = await self.evolver.evolve_skill(
                 skill_id=skill_id,
-                current_code=getattr(spec, "content", ""),
+                current_code=getattr(spec, "full_content", ""),
                 llm_caller=_llm_caller,
             )
             if variant:
@@ -1172,13 +1776,15 @@ Key rules:
     async def close(self) -> None:
         """Clean up resources: HTTP clients, DB connections, etc."""
         # Signal cancellation for all active runs
-        for token in self._cancel_tokens.values():
-            token.set()
+        self._shutdown_requested = True
+        for event, _run_id in self._cancel_tokens.values():
+            event.set()
         self.stop_background_tasks()
         resources = [
             ("router", getattr(self, "router", None)),
             ("search", getattr(self, "search", None)),
             ("_browser_tool", getattr(self, "_browser_tool", None)),
+            ("_webbridge_tool", getattr(self, "_webbridge_tool", None)),
             ("memory", getattr(self, "memory", None)),
             ("audit", getattr(self, "audit", None)),
             ("skills", getattr(self, "skills", None)),

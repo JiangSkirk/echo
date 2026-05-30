@@ -111,7 +111,7 @@ class TestCancelAPI:
     @pytest.mark.asyncio
     async def test_request_cancel_sets_event(self, agent: JSAgent) -> None:
         token = asyncio.Event()
-        agent._cancel_tokens["sess-1"] = token
+        agent._cancel_tokens["sess-1"] = (token, "run-1")
         ok = agent.request_cancel("sess-1")
         assert ok is True
         assert token.is_set()

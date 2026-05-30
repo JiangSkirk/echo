@@ -353,6 +353,9 @@ class _StaticRouter:
 
         return ModelConfig(id=model or "mock", name="Mock", provider="mock")
 
+    def is_local_model(self, model: str | None = None) -> bool:
+        return False
+
     async def health_check(self) -> dict[str, bool]:
         return {"mock": True}
 
@@ -427,17 +430,12 @@ async def check_evolution(base: Path) -> None:
 
 async def check_fleet(base: Path) -> None:
     from js.config import JSSettings
-    from js.orchestration.fleet import AgentFleet, AgentRole, Task
+    from js.orchestration.fleet import AgentFleet, AgentInstance, AgentRole
 
     class SmokeFleet(AgentFleet):
-        def spawn(
-            self,
-            name: str,
-            role: AgentRole,
-            model: str | None = None,
-            capabilities: list[str] | None = None,
-        ) -> Any:
-            inst = super().spawn(name, role, model=model or "mock", capabilities=capabilities)
+        def _spawn_agent(self, name: str, role: AgentRole) -> AgentInstance:
+            inst = super()._spawn_agent(name, role)
+            inst.model = "mock"
             inst.agent.router = _StaticRouter()  # type: ignore[assignment]
             return inst
 
@@ -449,18 +447,13 @@ async def check_fleet(base: Path) -> None:
         auto_delegate=False,
         max_turns=3,
     )
-    fleet = SmokeFleet(settings, max_agents=4)
-    fleet.spawn("coder", AgentRole.CODER)
-    task_id = await fleet.dispatch(Task(id="release-smoke-task", description="检查功能是否能运行", role_hint=AgentRole.CODER))
-    task = fleet.tasks[task_id]
-    deadline = time.monotonic() + 20
-    while task.status not in {"done", "failed"} and time.monotonic() < deadline:
-        await asyncio.sleep(0.1)
-    if task.status != "done":
-        raise SmokeError(f"多 agent 单任务失败: status={task.status}, result={task.result}")
-
-    result = await fleet.collaborate("验证多 agent 协作", [("写实现建议", AgentRole.CODER), ("做测试建议", AgentRole.TESTER)])
-    for inst in fleet.agents.values():
+    fleet = SmokeFleet(settings, max_workers=4)
+    result = await fleet.collaborate(
+        "实现并测试一个多 agent 发布烟测流程",
+        ["写实现建议", "做测试建议"],
+        role_mapping={0: "coder", 1: "tester"},
+    )
+    for inst in list(fleet.agents.values()):
         await inst.agent.close()
     if not result.get("final") or len(result.get("subtasks", {})) != 2:
         raise SmokeError(f"多 agent 协作汇总失败: {result}")

@@ -115,6 +115,9 @@ class EnhancedMemoryStore:
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_semantic_category ON semantic_memories(category)
             """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_semantic_created_at ON semantic_memories(created_at DESC)
+            """)
 
             # Memory links: associations built during REM
             conn.execute("""
@@ -545,29 +548,63 @@ class EnhancedMemoryStore:
     def _detect_conflict(self, key: str, value: str, category: str, similarity_threshold: float = 0.7) -> list[int]:
         """Detect potentially conflicting memories.
 
-        Simple heuristic: same category + similar key (substring overlap)
-        but different value → potential conflict.
+        Uses a two-tier check:
+        1. Keyword overlap on keys (fast)
+        2. Embedding cosine similarity (semantic) for candidates
+
+        Conflicts are memories with similar keys but different values.
         """
         conflicts: list[int] = []
         key_lower = key.lower()
         value_lower = value.lower()
+
+        # Try to get an embedding for the new memory; fall back to None
+        query_vec: Any | None = None
+        try:
+            query_vec = self.embedder.embed(f"{key} {value}")
+        except Exception:
+            logger.debug("Embedding unavailable for conflict detection, using keyword fallback")
+
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
+            # Limit to recent 200 entries to avoid full-table scans
             rows = conn.execute(
-                "SELECT id, key, value FROM semantic_memories WHERE category = ?",
+                """
+                SELECT id, key, value, embedding FROM semantic_memories
+                WHERE category = ?
+                ORDER BY created_at DESC
+                LIMIT 200
+                """,
                 (category,),
             ).fetchall()
+
         for r in rows:
             other_key = r["key"].lower()
             other_value = r["value"].lower()
-            # Key similarity: shared words
+            if other_value == value_lower:
+                continue  # Same value is not a conflict
+
+            # Tier 1: keyword overlap
             key_words = set(key_lower.split())
             other_words = set(other_key.split())
-            if not key_words or not other_words:
-                continue
-            overlap = len(key_words & other_words) / max(len(key_words), len(other_words))
-            if overlap >= similarity_threshold and other_value != value_lower:
+            keyword_overlap = 0.0
+            if key_words and other_words:
+                keyword_overlap = len(key_words & other_words) / max(len(key_words), len(other_words))
+
+            # Tier 2: embedding similarity (if available)
+            embedding_score = 0.0
+            emb_raw = r["embedding"]
+            if query_vec is not None and emb_raw:
+                try:
+                    vec = self.embedder.from_json(emb_raw)
+                    embedding_score = cosine_similarity(query_vec, vec)
+                except Exception:
+                    pass
+
+            # Conflict if either keyword overlap or embedding similarity is high
+            if keyword_overlap >= similarity_threshold or embedding_score >= 0.85:
                 conflicts.append(r["id"])
+
         return conflicts
 
     def _evict_semantic_if_needed(

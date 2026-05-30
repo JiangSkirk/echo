@@ -43,6 +43,7 @@ class CodeTool:
             workspace=workspace,
             timeout=limits.shell_timeout,
             max_output_bytes=limits.shell_max_output_bytes,
+            strict_isolation=True,
         )
 
     def get_spec(self) -> ToolSpec:
@@ -71,6 +72,7 @@ class CodeTool:
                 [sys.executable, str(script_path)],
                 cwd=str(self.workspace),
                 timeout=timeout or self.limits.shell_timeout,
+                fs_restricted=True,
             )
 
             return ToolResult(

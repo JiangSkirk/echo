@@ -1,3 +1,3 @@
 """JS Agent — A stable, secure, and convenient AI agent framework."""
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"

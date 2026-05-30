@@ -22,6 +22,7 @@ class ShellTool:
             workspace=workspace,
             timeout=limits.shell_timeout,
             max_output_bytes=limits.shell_max_output_bytes,
+            strict_isolation=True,
         )
 
     def get_spec(self) -> ToolSpec:

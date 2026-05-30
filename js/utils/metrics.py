@@ -8,7 +8,7 @@ from typing import Any
 
 try:
     from opentelemetry import trace
-    from prometheus_client import Counter, Histogram
+    from prometheus_client import Counter, Gauge, Histogram
 
     tracer = trace.get_tracer("js.agent")
     _METRICS_AVAILABLE = True
@@ -27,6 +27,15 @@ except ImportError:
         def labels(self, *args: Any, **kwargs: Any) -> _DummyCounter:
             return self
 
+    class _DummyGauge:
+        """No-op gauge when prometheus_client is unavailable."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def set(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
     class _DummyHistogram:
         """No-op histogram when prometheus_client is unavailable."""
 
@@ -40,6 +49,7 @@ except ImportError:
             return self
 
     Counter = _DummyCounter  # type: ignore[misc,assignment]
+    Gauge = _DummyGauge  # type: ignore[misc,assignment]
     Histogram = _DummyHistogram  # type: ignore[misc,assignment]
 
 from js.utils.log import get_logger
@@ -132,6 +142,31 @@ class MetricsCollector:
             "Total number of memory search fallbacks to keyword",
             ["reason"],
         )
+        # Governor metrics
+        self.governor_memory_percent = Gauge(
+            "governor_memory_percent",
+            "System memory usage percent",
+        )
+        self.governor_cpu_percent = Gauge(
+            "governor_cpu_percent",
+            "Process CPU usage percent",
+        )
+        self.governor_active_agents = Gauge(
+            "governor_active_agents",
+            "Number of busy agents",
+        )
+        self.governor_idle_agents = Gauge(
+            "governor_idle_agents",
+            "Number of idle agents",
+        )
+        self.governor_in_flight_tasks = Gauge(
+            "governor_in_flight_tasks",
+            "Number of in-flight tasks",
+        )
+        self.governor_reaped_total = Counter(
+            "governor_reaped_total",
+            "Total number of idle agents reaped",
+        )
 
 
 _metrics = MetricsCollector()
@@ -160,4 +195,9 @@ def start_span(
                         logger.warning("Operation failed", exc_info=True)
             yield span
     except Exception:
-        yield None
+        # Failing open: log but **never** suppress the original exception.
+        # Using ``yield`` inside an ``except`` block of a @contextmanager
+        # generator triggers ``RuntimeError: generator didn't stop after
+        # throw()`` — we must re-raise instead.
+        logger.warning("Span cleanup failed", exc_info=True)
+        raise

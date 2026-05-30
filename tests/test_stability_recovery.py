@@ -199,6 +199,8 @@ class TestWebRestartRecovery:
         mock_agent.router = MagicMock()
         mock_agent.router.health_check.return_value = {"test": True}
         web_server._agent = mock_agent
+        from js.web.deps import set_globals
+        set_globals(mock_agent, mock_agent.settings)
         web_server._settings = mock_agent.settings
 
         app = create_app()
@@ -229,6 +231,8 @@ class TestWebRestartRecovery:
             mock_agent.router = MagicMock()
             mock_agent.router.health_check.return_value = {"test": True}
             web_server._agent = mock_agent
+            from js.web.deps import set_globals
+            set_globals(mock_agent, mock_agent.settings)
             web_server._settings = mock_agent.settings
 
             app = create_app()
@@ -260,6 +264,8 @@ class TestWebRestartRecovery:
         mock_agent.router = MagicMock()
         mock_agent.router.health_check.return_value = {"test": True}
         web_server._agent = mock_agent
+        from js.web.deps import set_globals
+        set_globals(mock_agent, mock_agent.settings)
         web_server._settings = mock_agent.settings
 
         app = create_app()

@@ -2,8 +2,9 @@
 """Quick diagnosis script for JS Agent model connectivity issues."""
 
 import asyncio
-import httpx
 from pathlib import Path
+
+import httpx
 
 # Check config
 config_path = Path.home() / ".config" / "js" / "config.yaml"

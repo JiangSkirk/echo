@@ -27,6 +27,9 @@ class TestDuckDuckGoEngine:
             for r in results:
                 assert r.title
                 assert r.url
+        except RuntimeError:
+            # Network failure in CI is acceptable; engines now raise on failure
+            pytest.skip("DuckDuckGo unavailable in this environment")
         finally:
             await engine.close()
 

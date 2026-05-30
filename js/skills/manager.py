@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 import sys
 import time
@@ -135,11 +136,23 @@ class SkillManager:
         self._register_skill_as_tool(spec)
         logger.info(f"Registered auto-skill: {spec.id}")
 
+    @staticmethod
+    def _skill_id_to_tool_name(skill_id: str) -> str:
+        """Convert a skill ID to a valid OpenAI tool name.
+
+        OpenAI requires tool names to match ``^[a-zA-Z0-9_-]+$``.
+        Hermes skills use ``hermes:<name>`` IDs which contain colons.
+        We replace any illegal character with an underscore.
+        """
+        raw = f"skill_{skill_id}"
+        # Replace anything that is NOT a-z, A-Z, 0-9, _ or -
+        return re.sub(r"[^a-zA-Z0-9_-]", "_", raw)
+
     def _register_skill_as_tool(self, spec: SkillSpec) -> None:
         if not self._tool_registry:
             return
 
-        tool_name = f"skill_{spec.id}"
+        tool_name = self._skill_id_to_tool_name(spec.id)
 
         # Build parameters from metadata if available, otherwise generic args
         params_meta = spec.metadata.get("parameters", []) if spec.metadata else []
@@ -187,8 +200,8 @@ class SkillManager:
 
     def _unregister_skill_as_tool(self, skill_id: str) -> None:
         if self._tool_registry:
-            self._tool_registry.unregister(f"skill_{skill_id}")
-            logger.debug(f"Unregistered skill tool: skill_{skill_id}")
+            self._tool_registry.unregister(self._skill_id_to_tool_name(skill_id))
+            logger.debug(f"Unregistered skill tool: {self._skill_id_to_tool_name(skill_id)}")
 
     # ------------------------------------------------------------------
     # Discovery
@@ -707,12 +720,20 @@ entry: main.py
         # Record evolution feedback
         if hasattr(self, "_evolver") and self._evolver:
             try:
-                best = self._evolver.select_best_variant(skill_id)
-                if best:
-                    score = 1.0 if success else 0.0
-                    self._evolver.record_result(best.id, success, score)
+                score = 1.0 if success else 0.0
+                error_msg = exec_result.get("error", "") if not success else ""
+                self._evolver.record_execution_feedback(
+                    skill_id=skill_id,
+                    success=success,
+                    score=score,
+                    error_message=error_msg,
+                    context=session_id or "",
+                )
+                # Try auto-promotion if the skill is performing well
+                if success and spec.path:
+                    self._evolver.promote_variant(skill_id, spec.path, getattr(spec, "entry", "main.py"))
             except Exception:
-                logger.warning(f"Failed to record evolution result for {skill_id}", exc_info=True)
+                logger.warning("Failed to record evolution result for %s", skill_id, exc_info=True)
 
         # Record composition chain for learning
         self._record_chain(skill_id, success, session_id)

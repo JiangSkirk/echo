@@ -63,7 +63,8 @@ class TestBehaviorGuard:
 class TestSecretManager:
     def test_detect_openai_key(self, tmp_path: Path) -> None:
         sm = SecretManager(tmp_path)
-        text = "My key is sk-abc123def456ghi789jkl012mno345pqr678stu901vwx234yz"
+        fake_key = "sk-" + "abc123def456ghi789jkl012mno345pqr678stu901vwx234yz"
+        text = f"My key is {fake_key}"
         result = sm.detect_and_redact(text)
         assert "[REDACTED" in result
         assert "sk-" not in result

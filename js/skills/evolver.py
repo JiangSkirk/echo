@@ -83,6 +83,21 @@ class SkillEvolver:
                     executed_at REAL NOT NULL
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS skill_feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    skill_id TEXT NOT NULL,
+                    variant_id TEXT,
+                    success INTEGER NOT NULL,
+                    score REAL,
+                    error_message TEXT,
+                    context TEXT,
+                    created_at REAL NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_feedback_skill ON skill_feedback(skill_id)
+            """)
             conn.commit()
 
     def create_variant(
@@ -273,20 +288,72 @@ class SkillEvolver:
             return float(row[0] or 0) / float(row[1])
         return None
 
-    def _collect_feedback(self, skill_id: str) -> str:
-        """Collect recent failure feedback for a skill."""
+    def record_execution_feedback(
+        self,
+        skill_id: str,
+        success: bool,
+        score: float,
+        error_message: str = "",
+        context: str = "",
+        variant_id: str | None = None,
+    ) -> None:
+        """Record detailed feedback from a single skill execution."""
         with db_connection(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO skill_feedback
+                    (skill_id, variant_id, success, score, error_message, context, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (skill_id, variant_id, int(success), score, error_message, context, time.time()),
+            )
+            conn.commit()
+
+    def _collect_feedback(self, skill_id: str) -> str:
+        """Collect recent failure feedback for a skill.
+
+        Returns a structured summary of recent errors and performance trends.
+        """
+        with db_connection(self.db_path) as conn:
+            # Recent failures with error messages
             rows = conn.execute(
                 """
-                SELECT code, prompt FROM skill_variants
-                WHERE skill_id = ? AND total_count > 0
-                ORDER BY created_at DESC LIMIT 5
+                SELECT success, score, error_message, created_at
+                FROM skill_feedback
+                WHERE skill_id = ?
+                ORDER BY created_at DESC
+                LIMIT 20
                 """,
                 (skill_id,),
             ).fetchall()
-        if rows:
-            return f"Based on {len(rows)} recent variant executions"
-        return ""
+            total = conn.execute(
+                """
+                SELECT COUNT(*), SUM(success) FROM skill_feedback
+                WHERE skill_id = ? AND created_at > ?
+                """,
+                (skill_id, time.time() - 86400),
+            ).fetchone()
+
+        if not rows:
+            return ""
+
+        failures = [r for r in rows if not r[0] and r[2]]
+        failure_msgs: list[str] = []
+        seen: set[str] = set()
+        for r in failures:
+            msg = r[2].strip()
+            if msg and msg not in seen:
+                seen.add(msg)
+                failure_msgs.append(msg)
+
+        recent_rate = (total[1] or 0) / max(total[0] or 1, 1)
+        parts: list[str] = []
+        parts.append(f"Recent 24h success rate: {recent_rate:.1%} ({total[1] or 0}/{total[0] or 0})")
+        if failure_msgs:
+            parts.append("Recent errors:")
+            for msg in failure_msgs[:5]:
+                parts.append(f"  - {msg[:200]}")
+        return "\n".join(parts)
 
     def _extract_test_cases(self, skill_id: str) -> list[dict[str, Any]]:
         """Extract test cases from skill history."""
@@ -302,6 +369,51 @@ class SkillEvolver:
             except json.JSONDecodeError:
                 logger.warning('Operation failed', exc_info=True)
         return [{"input": "example", "expected": "result"}]
+
+    def promote_variant(self, skill_id: str, skill_path: Path | None = None, entry: str = "main.py") -> bool:
+        """Promote the best variant to the primary skill code.
+
+        Writes the winning variant's code back to the skill's entry file.
+        Returns True if promotion happened.
+        """
+        best = self.select_best_variant(skill_id)
+        if not best:
+            return False
+
+        if best.total_count < self.MIN_EXECUTIONS:
+            logger.debug(
+                "Variant %s has only %d executions, need %d for promotion",
+                best.id, best.total_count, self.MIN_EXECUTIONS
+            )
+            return False
+
+        success_rate = best.success_count / best.total_count
+        if success_rate < self.AUTO_EVOLVE_THRESHOLD:
+            logger.debug(
+                "Variant %s success rate %.2f below threshold %.2f, skipping promotion",
+                best.id, success_rate, self.AUTO_EVOLVE_THRESHOLD
+            )
+            return False
+
+        if skill_path is None:
+            logger.debug("No skill_path provided for %s, cannot promote", skill_id)
+            return False
+
+        entry_file = skill_path / entry
+        if not entry_file.exists():
+            logger.warning("Entry file not found for skill %s: %s", skill_id, entry_file)
+            return False
+
+        try:
+            entry_file.write_text(best.code, encoding="utf-8")
+            logger.info(
+                "Promoted variant %s (success_rate=%.2f) to skill %s",
+                best.id, success_rate, skill_id
+            )
+            return True
+        except Exception as e:
+            logger.warning("Failed to promote variant %s: %s", best.id, e)
+            return False
 
     def get_evolution_report(self, skill_id: str) -> dict[str, Any]:
         """Get evolution statistics for a skill."""
@@ -320,11 +432,15 @@ class SkillEvolver:
             generations = conn.execute(
                 "SELECT MAX(generation) FROM evolution_generations WHERE skill_id = ?", (skill_id,)
             ).fetchone()[0] or 0
+            feedback_count = conn.execute(
+                "SELECT COUNT(*) FROM skill_feedback WHERE skill_id = ?", (skill_id,)
+            ).fetchone()[0]
 
         return {
             "skill_id": skill_id,
             "total_variants": total,
             "generations": generations,
+            "feedback_count": feedback_count,
             "best_variant": best[0] if best else None,
             "best_success_rate": best[1] / best[2] if best and best[2] > 0 else 0,
             "best_score": best[3] if best else 0,

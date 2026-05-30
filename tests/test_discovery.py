@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from js.config import JSSettings
-from js.discovery.local_models import LocalModelDiscovery
+from js.models.discovery import LocalModelDiscovery
 
 
 class TestLocalModelDiscovery:
@@ -21,8 +21,17 @@ class TestLocalModelDiscovery:
         await discovery.close()
 
     def test_infer_context_window(self, discovery: LocalModelDiscovery) -> None:
+        # Explicit context markers take priority
         assert discovery._infer_context_window("llama-3-8b-128k") == 131072
-        assert discovery._infer_context_window("qwen3-32b") == 128000
+        assert discovery._infer_context_window("model-256k-quant") == 262144
+        assert discovery._infer_context_window("model-32k-context") == 32768
+        # Model family defaults
+        assert discovery._infer_context_window("qwen3-32b") == 131072
+        assert discovery._infer_context_window("qwen2.5-72b") == 131072
+        assert discovery._infer_context_window("llama3-8b") == 131072
+        assert discovery._infer_context_window("llama2-7b") == 4096
+        assert discovery._infer_context_window("mistral-7b") == 32768
+        assert discovery._infer_context_window("deepseek-chat") == 65536
         assert discovery._infer_context_window("unknown") == 32768
 
     @pytest.mark.asyncio

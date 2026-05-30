@@ -81,6 +81,10 @@ def client(tmp_path: Path) -> TestClient:
     mock_agent.memory = mock_memory
 
     web_server._agent = mock_agent
+
+    from js.web.deps import set_globals
+
+    set_globals(mock_agent, mock_agent.settings)
     app = create_app()
     return TestClient(app)
 
@@ -162,6 +166,10 @@ class TestEvolutionRunErrors:
         mock_agent.memory = mock_memory
 
         web_server._agent = mock_agent
+
+        from js.web.deps import set_globals
+
+        set_globals(mock_agent, mock_agent.settings)
         app = create_app()
         client = TestClient(app)
         resp = client.post("/api/evolution/run")
@@ -188,6 +196,10 @@ class TestEvolutionRunErrors:
         mock_agent.memory = mock_memory
 
         web_server._agent = mock_agent
+
+        from js.web.deps import set_globals
+
+        set_globals(mock_agent, mock_agent.settings)
         app = create_app()
         client = TestClient(app)
         resp = client.post("/api/evolution/run")

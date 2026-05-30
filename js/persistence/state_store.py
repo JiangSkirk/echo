@@ -58,6 +58,11 @@ class StateStore:
                 ON checkpoints(session_id)
                 """
             )
+            # Migrate: add model column if missing (pre-3.51 schemas)
+            try:
+                conn.execute("ALTER TABLE checkpoints ADD COLUMN model TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
             conn.commit()
 
     def save(
@@ -72,6 +77,7 @@ class StateStore:
         status: str,
         error_message: str,
         compression_stats: dict[str, Any],
+        model: str = "",
     ) -> None:
         with self._conn() as conn:
             conn.execute(
@@ -79,8 +85,8 @@ class StateStore:
                 INSERT INTO checkpoints (
                     session_id, run_id, turn_count, messages, tool_results,
                     total_tokens, cost_estimate, status, error_message,
-                    compression_stats, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    compression_stats, model, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(session_id) DO UPDATE SET
                     run_id=excluded.run_id,
                     turn_count=excluded.turn_count,
@@ -91,6 +97,7 @@ class StateStore:
                     status=excluded.status,
                     error_message=excluded.error_message,
                     compression_stats=excluded.compression_stats,
+                    model=excluded.model,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -104,6 +111,7 @@ class StateStore:
                     status,
                     error_message,
                     json.dumps(compression_stats, ensure_ascii=False),
+                    model,
                 ),
             )
             conn.commit()
@@ -127,6 +135,7 @@ class StateStore:
             "status": row["status"],
             "error_message": row["error_message"] or "",
             "compression_stats": json.loads(row["compression_stats"] or "{}"),
+            "model": row["model"] or "",
         }
 
     def delete(self, session_id: str) -> bool:
@@ -144,3 +153,22 @@ class StateStore:
                 "SELECT session_id FROM checkpoints ORDER BY updated_at DESC"
             ).fetchall()
         return [r["session_id"] for r in rows]
+
+    def prune(self, keep: int = 1_000) -> int:
+        """Remove oldest checkpoints beyond the keep limit."""
+        with self._conn() as conn:
+            total = conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0]
+            if total <= keep:
+                return 0
+            row = conn.execute(
+                "SELECT updated_at FROM checkpoints ORDER BY updated_at DESC LIMIT 1 OFFSET ?",
+                (keep,),
+            ).fetchone()
+            if row is None:
+                return 0
+            cur = conn.execute(
+                "DELETE FROM checkpoints WHERE updated_at < ?",
+                (row["updated_at"],),
+            )
+            conn.commit()
+            return cur.rowcount

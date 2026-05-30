@@ -17,6 +17,11 @@ _settings: JSSettings | None = None
 _stats_store: TokenStatsStore | None = None
 _active_model: str = ""
 
+_agent_config: dict[str, str] = {
+    "worker": "",
+    "reviewer": "",
+}
+
 
 def set_globals(
     agent: JSAgent, settings: JSSettings, stats_store: TokenStatsStore | None = None

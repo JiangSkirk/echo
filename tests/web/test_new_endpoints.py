@@ -63,6 +63,10 @@ def client(tmp_path: Path) -> TestClient:
     mock_agent.memory = mock_memory
 
     web_server._agent = mock_agent
+
+    from js.web.deps import set_globals
+
+    set_globals(mock_agent, mock_agent.settings)
     web_server._settings = mock_agent.settings
     web_server._active_model = ""
     app = create_app()

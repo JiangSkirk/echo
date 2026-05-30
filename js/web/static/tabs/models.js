@@ -1,0 +1,458 @@
+import { state } from '../state/store.js';
+import { escapeHtml, showToast, showLoading, showError } from '../utils/dom.js';
+
+export function setCurrentModel(modelId) {
+  state.selectedModel = modelId;
+  localStorage.setItem('js-selected-model', modelId);
+  const select = document.getElementById('current-model');
+  if (select) select.value = modelId;
+  const label = state.availableModels.find(m => m.id === modelId);
+  const display = label ? (label.name || label.id) : '默认模型';
+  const badge = document.getElementById('model-badge');
+  if (badge) {
+    const icon = label ? (label.isPreset ? '⚪' : (label.healthy ? '🟢' : (label.hasKey ? '🔴' : '🟡'))) : '';
+    badge.textContent = `${icon} ${display}`;
+  }
+}
+
+export function toggleAddProvider() {
+  const form = document.getElementById('add-provider-form');
+  const chevron = document.getElementById('add-provider-chevron');
+  const isHidden = form.classList.contains('hidden');
+  form.classList.toggle('hidden');
+  chevron.classList.toggle('rotate-180');
+  if (isHidden) {
+    document.getElementById('provider-error').classList.add('hidden');
+    document.getElementById('discover-results').classList.add('hidden');
+    document.getElementById('btn-save-provider').classList.add('hidden');
+    state.discoveredModels = [];
+  }
+}
+
+export async function discoverModels() {
+  const url = document.getElementById('provider-url').value.trim();
+  const key = document.getElementById('provider-key').value.trim();
+  const errEl = document.getElementById('provider-error');
+  const btn = document.getElementById('btn-discover');
+  const resultsEl = document.getElementById('discover-results');
+  const listEl = document.getElementById('discover-list');
+
+  if (!url) {
+    errEl.textContent = '请输入 Base URL';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  try {
+    const u = new URL(url);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+      throw new Error('invalid protocol');
+    }
+  } catch {
+    errEl.textContent = '请输入有效的 URL（以 http:// 或 https:// 开头）';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  errEl.classList.add('hidden');
+  document.getElementById('btn-save-provider').classList.add('hidden');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>发现中...';
+
+  try {
+    const res = await fetch('/api/providers/discover', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url: url, api_key: key || null })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || '发现失败: HTTP ' + res.status);
+    }
+    const data = await res.json();
+
+    state.discoveredModels = data.models || [];
+    if (state.discoveredModels.length === 0) {
+      errEl.textContent = '未发现任何模型，请检查 URL 是否正确';
+      errEl.classList.remove('hidden');
+      resultsEl.classList.add('hidden');
+      document.getElementById('btn-save-provider').classList.add('hidden');
+      return;
+    }
+
+    listEl.innerHTML = state.discoveredModels.map(m => `
+      <label class="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-2 cursor-pointer hover:bg-gray-700">
+        <input type="checkbox" class="discover-model-check accent-blue-500" value="${escapeHtml(m.id)}" checked>
+        <span class="text-sm">${escapeHtml(m.name || m.id)}</span>
+        <span class="text-xs text-gray-500 font-mono">${escapeHtml(m.id)}</span>
+      </label>
+    `).join('');
+    resultsEl.classList.remove('hidden');
+    document.getElementById('btn-save-provider').classList.remove('hidden');
+  } catch (e) {
+    errEl.textContent = '发现失败: ' + e.message;
+    errEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-search mr-1"></i>自动发现模型';
+  }
+}
+
+export async function loadCloudPresets() {
+  const select = document.getElementById('cloud-preset-select');
+  if (!select) { console.warn('[loadCloudPresets] select element not found'); return; }
+  select.innerHTML = '<option value="">加载中...</option>';
+  try {
+    const res = await fetch('/api/providers/cloud-presets');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    state.cloudPresets = data.presets || [];
+    console.log('[loadCloudPresets] loaded', state.cloudPresets.length, 'presets');
+    if (state.cloudPresets.length === 0) {
+      select.innerHTML = '<option value="">暂无预设</option>';
+      return;
+    }
+    select.innerHTML = '<option value="">请选择云模型...</option>' +
+      state.cloudPresets.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
+  } catch (e) {
+    console.error('[loadCloudPresets] failed:', e);
+    select.innerHTML = '<option value="">加载失败: ' + escapeHtml(e.message) + '</option>';
+  }
+}
+
+export function onCloudPresetChange() {
+  const select = document.getElementById('cloud-preset-select');
+  const detailsEl = document.getElementById('cloud-preset-details');
+  const descEl = document.getElementById('cloud-preset-desc');
+  const modelsEl = document.getElementById('cloud-preset-models');
+  const errEl = document.getElementById('cloud-preset-error');
+  const sucEl = document.getElementById('cloud-preset-success');
+
+  errEl.classList.add('hidden');
+  sucEl.classList.add('hidden');
+
+  const presetId = select.value;
+  if (!presetId) {
+    detailsEl.classList.add('hidden');
+    return;
+  }
+
+  const preset = state.cloudPresets.find(p => p.id === presetId);
+  if (!preset) {
+    detailsEl.classList.add('hidden');
+    return;
+  }
+
+  descEl.textContent = preset.description || '';
+  modelsEl.innerHTML = (preset.models || []).map(m =>
+    `<span class="bg-gray-700 text-gray-300 px-2 py-0.5 rounded text-[10px]">${escapeHtml(m.name || m.id)}</span>`
+  ).join('');
+  detailsEl.classList.remove('hidden');
+}
+
+export async function testCloudProvider() {
+  const select = document.getElementById('cloud-preset-select');
+  const keyInput = document.getElementById('cloud-preset-key');
+  const errEl = document.getElementById('cloud-preset-error');
+  const sucEl = document.getElementById('cloud-preset-success');
+  const btn = document.getElementById('btn-test-cloud');
+
+  const presetId = select.value;
+  const apiKey = keyInput.value.trim();
+
+  if (!presetId) { errEl.textContent = '请选择云模型'; errEl.classList.remove('hidden'); sucEl.classList.add('hidden'); return; }
+  if (!apiKey) { errEl.textContent = '请输入 API Key'; errEl.classList.remove('hidden'); sucEl.classList.add('hidden'); return; }
+
+  errEl.classList.add('hidden');
+  sucEl.classList.add('hidden');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>测试中...';
+
+  try {
+    const res = await fetch('/api/providers/test-cloud', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preset_id: presetId, api_key: apiKey })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || '连接失败: HTTP ' + res.status);
+    }
+    const data = await res.json();
+    sucEl.textContent = '✅ 连接成功！发现 ' + (data.models?.length || 0) + ' 个模型';
+    sucEl.classList.remove('hidden');
+  } catch (e) {
+    errEl.textContent = '❌ ' + e.message;
+    errEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-plug mr-1"></i>测试连接';
+  }
+}
+
+export async function addCloudProvider() {
+  const select = document.getElementById('cloud-preset-select');
+  const keyInput = document.getElementById('cloud-preset-key');
+  const errEl = document.getElementById('cloud-preset-error');
+  const btn = document.getElementById('btn-add-cloud');
+
+  const presetId = select.value;
+  const apiKey = keyInput.value.trim();
+
+  if (!presetId) { errEl.textContent = '请选择云模型'; errEl.classList.remove('hidden'); return; }
+  if (!apiKey) { errEl.textContent = '请输入 API Key'; errEl.classList.remove('hidden'); return; }
+
+  const preset = state.cloudPresets.find(p => p.id === presetId);
+  if (!preset) { errEl.textContent = '预设不存在'; errEl.classList.remove('hidden'); return; }
+
+  errEl.classList.add('hidden');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>添加中...';
+
+  try {
+    const res = await fetch('/api/providers/add-cloud', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preset_id: presetId, api_key: apiKey })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || '添加失败: HTTP ' + res.status);
+    }
+    const data = await res.json();
+
+    keyInput.value = '';
+    select.value = '';
+    showToast('云模型添加成功: ' + (data.name || presetId));
+    loadModels();
+  } catch (e) {
+    errEl.textContent = '添加失败: ' + e.message;
+    errEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-plus mr-1"></i>添加云模型';
+  }
+}
+
+export async function saveProvider() {
+  const name = document.getElementById('provider-name').value.trim();
+  const url = document.getElementById('provider-url').value.trim();
+  const key = document.getElementById('provider-key').value.trim();
+  const errEl = document.getElementById('provider-error');
+  const btn = document.getElementById('btn-save-provider');
+
+  if (!name) { errEl.textContent = '请输入 Provider 名称'; errEl.classList.remove('hidden'); return; }
+  if (!url) { errEl.textContent = '请输入 Base URL'; errEl.classList.remove('hidden'); return; }
+
+  const checks = document.querySelectorAll('.discover-model-check:checked');
+  const selectedIds = new Set(Array.from(checks).map(c => c.value));
+  const selectedModels = state.discoveredModels.filter(m => selectedIds.has(m.id));
+  if (selectedModels.length === 0) { errEl.textContent = '请至少选择一个模型'; errEl.classList.remove('hidden'); return; }
+
+  errEl.classList.add('hidden');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>保存中...';
+
+  try {
+    const res = await fetch('/api/providers/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, base_url: url, api_key: key || null, models: selectedModels })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || '保存失败: HTTP ' + res.status);
+    }
+    const data = await res.json();
+
+    document.getElementById('provider-name').value = '';
+    document.getElementById('provider-url').value = '';
+    document.getElementById('provider-key').value = '';
+    document.getElementById('discover-results').classList.add('hidden');
+    document.getElementById('btn-save-provider').classList.add('hidden');
+    state.discoveredModels = [];
+
+    showToast('Provider 添加成功: ' + data.provider);
+    toggleAddProvider();
+    loadModels();
+  } catch (e) {
+    errEl.textContent = '保存失败: ' + e.message;
+    errEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-check mr-1"></i>保存 Provider';
+  }
+}
+
+export async function deleteProvider(name) {
+  const display = name.length > 50 ? name.slice(0, 50) + '...' : name;
+  if (!confirm('确定删除 Provider "' + display.replace(/[\r\n]/g, '') + '" 吗？')) return;
+  try {
+    const res = await fetch('/api/providers/' + encodeURIComponent(name), { method: 'DELETE' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    showToast('Provider 已删除');
+    loadModels();
+  } catch (e) {
+    showToast('删除失败: ' + e.message, 'error');
+  }
+}
+
+export async function switchModel(modelId) {
+  if (!modelId) return;
+  const model = state.availableModels.find(m => m.id === modelId);
+  if (model && model.isPreset) {
+    const presetId = model.provider;
+    showToast(`Provider '${presetId}' 尚未配置，请先添加 API Key`, 'warning');
+    switchTab('models');
+    return;
+  }
+  try {
+    const res = await fetch('/api/models/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_id: modelId }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || 'HTTP ' + res.status);
+    }
+    const result = await res.json();
+    setCurrentModel(modelId);
+    if (result.warning) {
+      showToast(result.warning, 'warning');
+    } else {
+      showToast('已切换到模型: ' + (model?.name || modelId));
+    }
+    loadModels();
+  } catch (e) {
+    showToast('切换模型失败: ' + e.message, 'error');
+  }
+}
+
+export async function loadModels() {
+  showLoading('models-content', '加载模型...');
+  try {
+    const res = await fetch('/api/models');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const container = document.getElementById('models-content');
+    const select = document.getElementById('current-model');
+
+    if (data.active_model) {
+      state.selectedModel = data.active_model;
+      localStorage.setItem('js-selected-model', state.selectedModel);
+    }
+
+    state.availableModels = [];
+    if (data.providers) {
+      data.providers.forEach(p => {
+        p.models.forEach(m => {
+          state.availableModels.push({
+            id: `${p.name}/${m.id}`,
+            name: `${p.name}/${m.name || m.id}`,
+            provider: p.name,
+            healthy: p.healthy,
+            hasKey: p.has_key,
+            ...m
+          });
+        });
+      });
+    }
+
+    if (select) {
+      const currentVal = select.value;
+      select.innerHTML = '<option value="">默认模型</option>' +
+        state.availableModels.map(m => {
+          const icon = m.isPreset ? '⚪' : (m.healthy ? '🟢' : (m.hasKey ? '🔴' : '🟡'));
+          return `<option value="${escapeHtml(m.id)}">${icon} ${escapeHtml(m.name)}</option>`;
+        }).join('');
+      select.value = state.selectedModel || '';
+    }
+
+    const activeModelName = document.getElementById('active-model-name');
+    const activeModelMeta = document.getElementById('active-model-meta');
+    const activeModel = state.availableModels.find(m => m.id === state.selectedModel);
+    if (activeModelName && activeModelMeta) {
+      if (activeModel) {
+        const icon = activeModel.isPreset ? '⚪' : (activeModel.healthy ? '🟢' : (activeModel.hasKey ? '🔴' : '🟡'));
+        activeModelName.textContent = `${icon} ${activeModel.name || activeModel.id}`;
+        activeModelMeta.textContent = `Provider: ${activeModel.provider} · 上下文: ${activeModel.context_window || '--'} tokens ${activeModel.isPreset ? '· 未配置' : ''}`;
+      } else {
+        activeModelName.textContent = '未选择';
+        activeModelMeta.textContent = '使用系统默认模型';
+      }
+    }
+
+    let html = '';
+
+    if (data.providers && data.providers.length > 0) {
+      html += data.providers.map(p => {
+        const statusColor = p.healthy ? 'bg-green-900 text-green-400' : (p.has_key ? 'bg-red-900 text-red-400' : 'bg-yellow-900 text-yellow-400');
+        const statusLabel = p.healthy ? '在线' : (p.has_key ? '离线' : '缺Key');
+        return `
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-bold text-lg">${escapeHtml(p.name)}</h3>
+        <div class="flex items-center gap-2">
+          <span class="text-xs px-2 py-1 rounded ${statusColor}">${statusLabel}</span>
+          ${p.user_configured ? `<button onclick='deleteProvider(${JSON.stringify(p.name)})' class="text-xs bg-red-900/50 hover:bg-red-900 text-red-400 px-2 py-1 rounded transition" title="删除"><i class="fas fa-trash"></i></button>` : ''}
+        </div>
+      </div>
+      <p class="text-sm text-gray-400 mb-3">${escapeHtml(p.base_url)} ${p.health_error ? `<span class="text-red-400 text-xs ml-2">${escapeHtml(p.health_error)}</span>` : ''}</p>
+      <div class="space-y-2">
+        ${p.models.map(m => {
+          const fullId = `${p.name}/${m.id}`;
+          const isActive = state.selectedModel === fullId;
+          return `
+          <div class="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2 ${isActive ? 'ring-1 ring-blue-500' : ''}">
+            <div>
+              <span class="text-sm">${escapeHtml(m.name || m.id)}</span>
+              <span class="text-xs text-gray-500 font-mono ml-2">${escapeHtml(m.id)}</span>
+              <span class="text-xs text-gray-500 ml-2">${m.context_window ? m.context_window + ' tokens' : ''}</span>
+              ${isActive ? '<span class="text-xs bg-blue-900 text-blue-400 px-1.5 py-0.5 rounded ml-2">当前</span>' : ''}
+            </div>
+            <button onclick="switchModel(${JSON.stringify(fullId)})" class="text-xs ${isActive ? 'bg-gray-700 text-gray-400 cursor-default' : 'bg-blue-600 hover:bg-blue-700 text-white'} px-2 py-1 rounded transition">
+              ${isActive ? '使用中' : '切换'}
+            </button>
+          </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+    `;
+      }).join('');
+    }
+
+    if (data.presets && data.presets.length > 0) {
+      html += `<div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mt-4">
+      <h3 class="font-bold text-lg mb-3"><i class="fas fa-cloud text-blue-400 mr-2"></i>可添加的云模型</h3>
+      <p class="text-sm text-gray-400 mb-3">以下云模型尚未配置，选择后会提示您添加 API Key。</p>
+      <div class="space-y-4">
+        ${data.presets.map(preset => `
+          <div class="border border-gray-700/50 rounded-lg p-3">
+            <div class="flex items-center justify-between mb-2">
+              <span class="font-medium">${escapeHtml(preset.name)}</span>
+              <span class="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">${escapeHtml(preset.api_key_env || 'API Key')}</span>
+            </div>
+            <p class="text-xs text-gray-500 mb-2">${escapeHtml(preset.description)}</p>
+            <div class="flex flex-wrap gap-2">
+              ${preset.models.map(m => `
+                <button onclick="switchModel('${escapeHtml(`${preset.id}/${m.id}`)}')" class="text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 px-2 py-1 rounded transition">
+                  ${escapeHtml(m.name || m.id)}
+                </button>
+              `).join('')}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>`;
+    }
+
+    if (!html) {
+      container.innerHTML = '<div class="text-gray-400">未配置模型 Provider</div>';
+      return;
+    }
+
+    container.innerHTML = html;
+  } catch (e) {
+    showError('models-content', '加载模型失败: ' + e.message);
+  }
+}

@@ -2,7 +2,7 @@
 
 An AI Agent framework synthesizing the best of OpenClaw and Hermes, leading in architectural modernity and actively growing its ecosystem.
 
-> **Status**: v0.1.0-alpha — APIs may change. Feedback welcome!
+> **Status**: v0.1.2-alpha — APIs may change. Feedback welcome!
 
 ## Core Features
 

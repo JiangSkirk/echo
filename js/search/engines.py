@@ -339,6 +339,92 @@ class SerperEngine(SearchEngine):
             return False
 
 
+class BingEngine(SearchEngine):
+    """Bing web search fallback (no API key required)."""
+
+    _USER_AGENT = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+
+    def __init__(self, timeout: float = 15.0) -> None:
+        self.timeout = timeout
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout),
+            follow_redirects=True,
+            headers={
+                "User-Agent": self._USER_AGENT,
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        # Prioritize cn.bing.com for China-region users; fall back to www.bing.com
+        for domain in ("https://cn.bing.com", "https://www.bing.com"):
+            for attempt in range(2):
+                try:
+                    resp = await self._client.get(
+                        f"{domain}/search",
+                        params={"q": query},
+                        headers={
+                            "User-Agent": self._USER_AGENT,
+                            "Accept-Language": "zh-CN,zh;q=0.9",
+                        },
+                    )
+                    if resp.status_code == 200:
+                        parsed = self._parse_html(resp.text, max_results)
+                        # Sanity check: if all results are from unrelated domains, try fallback
+                        if parsed and not all(
+                            any(bad in r.url for bad in ("minhaconexao", "speedtest", "bilibili.com"))
+                            for r in parsed
+                        ):
+                            return parsed
+                        logger.warning(f"Bing ({domain}) returned suspicious results, trying fallback")
+                    else:
+                        logger.warning(f"Bing ({domain}) returned {resp.status_code}, attempt {attempt + 1}/2")
+                except Exception as e:
+                    logger.warning(f"Bing ({domain}) request failed: {type(e).__name__}: {e}, attempt {attempt + 1}/2")
+                if attempt < 1:
+                    await asyncio.sleep(2)
+        raise RuntimeError("Bing search failed")
+
+    def _parse_html(self, html: str, max_results: int) -> list[SearchResult]:
+        import re
+        results: list[SearchResult] = []
+        html = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.S | re.I)
+        # Bing results: <li class="b_algo"> containers
+        for block in re.findall(r'<li class="b_algo"[^>]*>(.*?)</li>', html, re.S | re.I):
+            # Skip blocks that contain only stylesheets/icons (no real result)
+            if block.count("<link ") > block.count("<a "):
+                continue
+            title_match = re.search(r'<h2[^>]*>.*?<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?</h2>', block, re.S | re.I)
+            if not title_match:
+                continue
+            url = html_module.unescape(title_match.group(1))
+            # Skip Bing internal / redirect URLs
+            if url.startswith("/") or "bing.com" in url.lower():
+                continue
+            title = re.sub(r"<[^>]+>", "", title_match.group(2))
+            snippet_match = re.search(r'<p[^>]*>(.*?)</p>', block, re.S | re.I)
+            snippet = re.sub(r"<[^>]+>", "", snippet_match.group(1)) if snippet_match else ""
+            if url and title:
+                results.append(SearchResult(title=title.strip(), url=url, snippet=snippet.strip(), source="bing"))
+            if len(results) >= max_results:
+                break
+        return results
+
+    async def health_check(self) -> bool:
+        try:
+            resp = await self._client.get("https://cn.bing.com", timeout=5.0)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+
 class SearchCache:
     """Simple in-memory TTL cache for search results."""
 

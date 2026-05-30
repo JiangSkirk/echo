@@ -43,17 +43,9 @@ class BrowserTool:
                     ToolParam("max_chars", "integer", "Max characters to return", required=False),
                 ],
             ),
-            ToolSpec(
-                name="browser_search",
-                description="Search the web (placeholder - requires search provider config).",
-                parameters=[
-                    ToolParam("query", "string", "Search query"),
-                    ToolParam("max_results", "integer", "Max results", required=False),
-                ],
-            ),
         ]
 
-    async def fetch(self, url: str, max_chars: int = 0) -> ToolResult:
+    async def fetch(self, url: str, max_chars: int | None = None) -> ToolResult:
         max_chars = max_chars if max_chars is not None else self.limits.file_read_max_chars
 
         # Basic URL validation
@@ -100,12 +92,6 @@ class BrowserTool:
         except Exception as e:
             return ToolResult(success=False, error=f"Fetch error: {e}")
 
-    async def search(self, _query: str, _max_results: int = 5) -> ToolResult:
-        return ToolResult(
-            success=False,
-            error="Web search not configured. Please configure a search provider in settings.",
-        )
-
     async def close(self) -> None:
         if self._client:
             await self._client.aclose()
@@ -113,4 +99,3 @@ class BrowserTool:
     def register_all(self, registry: Any) -> None:
         specs = self.get_specs()
         registry.register(specs[0], self.fetch)
-        registry.register(specs[1], self.search)

@@ -281,7 +281,8 @@ class TestSecurity:
 
     def test_secret_redaction(self, settings: JSSettings) -> None:
         secrets = SecretManager(settings.state_dir)
-        text = "My key is sk-abcdefghijklmnopqrstuvwxyz12345"
+        fake_key = "sk-" + "abcdefghijklmnopqrstuvwxyz12345"
+        text = f"My key is {fake_key}"
         redacted = secrets.detect_and_redact(text, "test")
         assert "sk-" not in redacted
         assert "[REDACTED" in redacted

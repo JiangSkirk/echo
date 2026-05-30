@@ -36,6 +36,189 @@
 #session-list { transition: max-height 0.3s ease, opacity 0.3s ease; }
 .session-item { cursor: pointer; }
 .session-item:hover { background: #374151; }
+
+/* ════════════════════════════════════════
+   Fleet Workstation — Feishu-style Layout
+   ════════════════════════════════════════ */
+.fleet-workspace { background: #131519; }
+.fleet-sidebar { scrollbar-width: thin; scrollbar-color: #374151 #1a1d24; }
+.fleet-sidebar::-webkit-scrollbar { width: 4px; }
+.fleet-sidebar::-webkit-scrollbar-thumb { background: #374151; border-radius: 2px; }
+.fleet-chat-area { scrollbar-width: thin; scrollbar-color: #374151 #131519; }
+.fleet-chat-area::-webkit-scrollbar { width: 6px; }
+.fleet-chat-area::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
+
+/* Sidebar conversation items */
+.fleet-conv-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 6px;
+  cursor: pointer; transition: background 0.15s;
+}
+.fleet-conv-item:hover { background: #23262d; }
+.fleet-conv-item.active { background: #2a3a52; }
+.fleet-conv-item .conv-avatar {
+  width: 36px; height: 36px; border-radius: 50%;
+  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 600;
+}
+.fleet-conv-item .conv-meta { flex: 1; min-width: 0; }
+.fleet-conv-item .conv-name {
+  font-size: 12px; font-weight: 500; color: #d1d5db;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.fleet-conv-item .conv-preview {
+  font-size: 10px; color: #6b7280;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  margin-top: 1px;
+}
+.fleet-conv-item .conv-badge {
+  width: 7px; height: 7px; border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Chat message bubbles */
+.fleet-msg-row { display: flex; gap: 8px; max-width: 85%; }
+.fleet-msg-row.me { margin-left: auto; flex-direction: row-reverse; }
+.fleet-msg-avatar {
+  width: 32px; height: 32px; border-radius: 50%;
+  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 600;
+}
+.fleet-msg-bubble {
+  padding: 8px 12px; border-radius: 12px;
+  font-size: 13px; line-height: 1.5;
+  word-break: break-word;
+}
+.fleet-msg-row.me .fleet-msg-bubble {
+  background: #2a4a8a; color: #e5e7eb;
+  border-bottom-right-radius: 4px;
+}
+.fleet-msg-row.them .fleet-msg-bubble {
+  background: #23262d; color: #d1d5db;
+  border: 1px solid #2d3139;
+  border-bottom-left-radius: 4px;
+}
+.fleet-msg-row.system .fleet-msg-bubble {
+  background: transparent; color: #6b7280;
+  font-size: 11px; text-align: center; border: none;
+}
+.fleet-msg-time {
+  font-size: 9px; color: #4b5563; margin-top: 2px;
+}
+.fleet-msg-row.me .fleet-msg-time { text-align: right; }
+
+/* Typing indicator */
+.fleet-typing {
+  display: flex; gap: 3px; padding: 10px 12px;
+}
+.fleet-typing-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #6b7280; animation: fleetTypingBounce 1.4s infinite ease-in-out both;
+}
+.fleet-typing-dot:nth-child(1) { animation-delay: -0.32s; }
+.fleet-typing-dot:nth-child(2) { animation-delay: -0.16s; }
+@keyframes fleetTypingBounce {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
+}
+
+/* Detail panel tabs */
+.fleet-detail-section { padding: 12px 16px; border-bottom: 1px solid #23262d; }
+.fleet-detail-section:last-child { border-bottom: none; }
+
+/* Auto-grow textarea */
+
+
+/* Model config cards */
+.fleet-model-card {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; border-radius: 6px;
+  background: #23262d; border: 1px solid #2d3139;
+  transition: border-color 0.15s;
+}
+.fleet-model-card:hover { border-color: #3b82f6; }
+.fleet-model-card .model-icon {
+  width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; flex-shrink: 0;
+}
+.fleet-model-card .model-select {
+  flex: 1; min-width: 0;
+  background: transparent; border: none;
+  color: #d1d5db; font-size: 10px;
+  outline: none; cursor: pointer;
+}
+.fleet-model-card .model-select option { background: #1a1d24; }
+
+/* Group chat items */
+.fleet-group-avatar {
+  width: 36px; height: 36px; border-radius: 50%;
+  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+  font-size: 13px; color: white;
+}
+.fleet-group-avatar .member-count {
+  position: absolute; bottom: -2px; right: -2px;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #1a1d24; border: 1.5px solid #1a1d24;
+  font-size: 8px; display: flex; align-items: center; justify-content: center;
+  color: #9ca3af;
+}
+
+/* Group chat header — stacked avatars */
+.fleet-group-header-avatars {
+  display: flex; align-items: center;
+}
+.fleet-group-header-avatars .gh-avatar {
+  width: 24px; height: 24px; border-radius: 50%;
+  border: 2px solid #131519; margin-left: -8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 600; color: white;
+}
+.fleet-group-header-avatars .gh-avatar:first-child { margin-left: 0; }
+.fleet-group-header-avatars .gh-more {
+  width: 24px; height: 24px; border-radius: 50%;
+  border: 2px solid #131519; margin-left: -8px;
+  background: #374151; display: flex; align-items: center; justify-content: center;
+  font-size: 8px; color: #d1d5db;
+}
+  /* Typing cursor */
+  .typing-cursor::after {
+    content: '|';
+    animation: cursorBlink 1s step-end infinite;
+    color: #60a5fa;
+  }
+  @keyframes cursorBlink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+  /* Thinking block */
+  .thinking-block {
+    background: rgba(107, 33, 168, 0.1);
+    border: 1px solid rgba(168, 85, 247, 0.2);
+    border-radius: 0.5rem;
+    padding: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+  .thinking-block summary {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    color: #a78bfa;
+    font-size: 0.75rem;
+    user-select: none;
+  }
+  .thinking-block summary::-webkit-details-marker { display: none; }
+  .thinking-block .thinking-content {
+    color: #9ca3af;
+    font-size: 0.75rem;
+    font-family: monospace;
+    white-space: pre-wrap;
+    margin-top: 0.5rem;
+    padding-left: 0.5rem;
+    border-left: 2px solid rgba(168, 85, 247, 0.3);
+  }
 </style>
 </head>
 <body class="bg-gray-950 text-gray-100 h-screen flex overflow-hidden">
@@ -58,6 +241,9 @@
         <!-- Sessions loaded dynamically -->
       </div>
     </div>
+    <button onclick="switchTab('dashboard')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-dashboard">
+      <i class="fas fa-gauge-high w-5"></i> 仪表盘
+    </button>
     <button onclick="switchTab('files')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-files">
       <i class="fas fa-folder w-5"></i> 文件
     </button>
@@ -183,6 +369,28 @@
 
   <!-- Chat Tab -->
   <div id="tab-chat" class="tab-content flex-1 flex flex-col">
+    <!-- Mode Switch Bar -->
+    <div class="border-b border-gray-800 px-4 py-2 flex items-center justify-between bg-gray-900/30">
+      <div class="flex items-center gap-2">
+        <div id="mode-indicator-single" class="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-blue-600/20 text-blue-400 border border-blue-600/30">
+          <i class="fas fa-comment"></i> 单模型对话
+        </div>
+        <div id="mode-indicator-fleet" class="hidden flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-purple-600/20 text-purple-400 border border-purple-600/30">
+          <i class="fas fa-rocket"></i> Agent 集群协作
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <select id="fleet-mode-select" class="hidden bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-purple-500">
+          <option value="auto">🤖 自动模式</option>
+          <option value="manager">👔 经理模式</option>
+          <option value="debate">💬 辩论模式</option>
+          <option value="sequential">⛓️ 串行模式</option>
+        </select>
+        <button id="btn-mode-toggle" onclick="toggleFleetMode()" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
+          <i class="fas fa-exchange-alt"></i> <span id="mode-toggle-label">切换至集群</span>
+        </button>
+      </div>
+    </div>
     <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-4 min-h-0"></div>
     <div class="border-t border-gray-800 p-4">
       <div class="max-w-4xl mx-auto">
@@ -205,6 +413,58 @@
   </div>
 
   <!-- Files Tab -->
+  <!-- Dashboard Tab -->
+  <div id="tab-dashboard" class="tab-content flex-1 hidden p-4 overflow-y-auto">
+    <div class="max-w-7xl mx-auto space-y-6">
+      <div class="flex items-center justify-between">
+        <h2 class="text-2xl font-bold">仪表盘</h2>
+        <div class="flex items-center gap-2">
+          <span id="dashboard-refresh-indicator" class="text-xs text-gray-500">实时更新中</span>
+          <button onclick="loadDashboard()" class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1.5 rounded-lg text-sm transition">
+            <i class="fas fa-refresh mr-1"></i> 刷新
+          </button>
+        </div>
+      </div>
+      <!-- Top Cards -->
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4" id="dashboard-cards">
+        <!-- Filled by JS -->
+      </div>
+      <!-- Providers Grid -->
+      <div class="bg-gray-800 rounded-xl p-4">
+        <h3 class="text-lg font-semibold mb-4 flex items-center gap-2">
+          <i class="fas fa-server text-blue-400"></i> 模型提供者状态
+        </h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" id="dashboard-providers">
+          <!-- Filled by JS -->
+        </div>
+      </div>
+      <!-- Token Usage Chart -->
+      <div class="bg-gray-800 rounded-xl p-4">
+        <h3 class="text-lg font-semibold mb-4 flex items-center gap-2">
+          <i class="fas fa-coins text-yellow-400"></i> Token 用量趋势
+        </h3>
+        <div class="h-48 flex items-end gap-1" id="dashboard-token-chart">
+          <!-- Filled by JS -->
+        </div>
+      </div>
+      <!-- Bottom Grid -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="bg-gray-800 rounded-xl p-4">
+          <h3 class="text-lg font-semibold mb-3 flex items-center gap-2">
+            <i class="fas fa-wrench text-green-400"></i> 工具使用统计
+          </h3>
+          <div id="dashboard-tools" class="space-y-2"></div>
+        </div>
+        <div class="bg-gray-800 rounded-xl p-4">
+          <h3 class="text-lg font-semibold mb-3 flex items-center gap-2">
+            <i class="fas fa-memory text-purple-400"></i> 系统健康
+          </h3>
+          <div id="dashboard-health" class="space-y-2"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="tab-files" class="tab-content flex-1 hidden p-4 overflow-y-auto">
     <div class="max-w-4xl mx-auto">
       <div class="flex items-center gap-2 mb-4">
@@ -324,11 +584,40 @@
     </div>
   </div>
 
-  <!-- Agents Tab -->
-  <div id="tab-agents" class="tab-content flex-1 hidden p-4 overflow-y-auto">
-    <div class="max-w-4xl mx-auto">
-      <h2 class="text-xl font-bold mb-4">多 Agent 协作</h2>
-      <div id="agents-content" class="space-y-4"></div>
+  <!-- Agents Tab — Unified Role & Runtime Config -->
+  <div id="tab-agents" class="tab-content flex-1 hidden h-full p-4 overflow-y-auto">
+    <div class="max-w-4xl mx-auto space-y-6">
+      <!-- Header -->
+      <div class="flex items-center justify-between">
+        <h2 class="text-xl font-bold flex items-center gap-2">
+          <i class="fas fa-users-cog text-purple-400"></i> Agent 角色配置
+        </h2>
+        <div id="fleet-conn-status" class="text-xs text-gray-500 flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-gray-600"></span> 未连接
+        </div>
+      </div>
+
+      <!-- Unified Role Cards: Config + Runtime Status -->
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+        <h3 class="text-sm font-semibold mb-3 flex items-center gap-2">
+          <i class="fas fa-robot text-blue-400"></i> 角色列表
+        </h3>
+        <div id="fleet-model-config" class="space-y-2"></div>
+        <button onclick="addFleetRoleCard()" class="mt-3 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-2 rounded-lg transition flex items-center gap-1">
+          <i class="fas fa-plus mr-1"></i>添加角色
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fleet Session Detail Modal -->
+  <div id="fleet-session-detail" class="hidden fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+    <div class="bg-gray-900 border border-gray-700 rounded-xl max-w-2xl w-full max-h-[80vh] overflow-y-auto p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-bold text-gray-200">会话详情</h3>
+        <button onclick="document.getElementById('fleet-session-detail').classList.add('hidden')" class="text-gray-400 hover:text-white"><i class="fas fa-times"></i></button>
+      </div>
+      <div id="fleet-session-detail-content" class="space-y-3 text-sm"></div>
     </div>
   </div>
 
@@ -368,9 +657,49 @@
       </div>
 
       <!-- Add Provider Card -->
+      <!-- Cloud Provider Quick Add -->
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-4">
+        <h3 class="font-bold text-sm mb-3"><i class="fas fa-cloud text-blue-400 mr-2"></i>云模型快捷添加</h3>
+        <div class="space-y-3">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs text-gray-500 block mb-1">选择云模型</label>
+              <div class="flex gap-2">
+                <select id="cloud-preset-select" onchange="onCloudPresetChange()" class="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+                  <option value="">加载中...</option>
+                </select>
+                <button onclick="loadCloudPresets()" class="bg-gray-700 hover:bg-gray-600 text-white text-xs px-2 py-1 rounded transition" title="刷新">
+                  <i class="fas fa-sync-alt"></i>
+                </button>
+              </div>
+            </div>
+            <div>
+              <label class="text-xs text-gray-500 block mb-1">API Key</label>
+              <input id="cloud-preset-key" type="password" placeholder="sk-..." class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+            </div>
+          </div>
+          <!-- Preset details panel -->
+          <div id="cloud-preset-details" class="hidden bg-gray-800/50 rounded-lg p-3 text-xs text-gray-400">
+            <div id="cloud-preset-desc" class="mb-2"></div>
+            <div id="cloud-preset-models" class="flex flex-wrap gap-1"></div>
+          </div>
+          <div class="flex gap-2">
+            <button onclick="testCloudProvider()" id="btn-test-cloud" class="bg-gray-700 hover:bg-gray-600 text-white text-sm px-3 py-2 rounded-lg transition">
+              <i class="fas fa-plug mr-1"></i>测试连接
+            </button>
+            <button onclick="addCloudProvider()" id="btn-add-cloud" class="bg-blue-600 hover:bg-blue-700 text-white text-sm px-3 py-2 rounded-lg transition">
+              <i class="fas fa-plus mr-1"></i>添加云模型
+            </button>
+          </div>
+          <div id="cloud-preset-error" class="text-xs text-red-400 hidden"></div>
+          <div id="cloud-preset-success" class="text-xs text-green-400 hidden"></div>
+        </div>
+      </div>
+
+      <!-- Manual Provider Add -->
       <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-4">
         <div class="flex items-center justify-between mb-3 cursor-pointer" onclick="toggleAddProvider()">
-          <h3 class="font-bold text-sm"><i class="fas fa-plus-circle text-green-400 mr-2"></i>添加 Provider</h3>
+          <h3 class="font-bold text-sm"><i class="fas fa-sliders-h text-gray-400 mr-2"></i>手动添加 Provider（高级）</h3>
           <i id="add-provider-chevron" class="fas fa-chevron-down text-gray-500 transition-transform"></i>
         </div>
         <div id="add-provider-form" class="hidden space-y-3">
@@ -595,6 +924,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script type="module" src="/static/app.js?v=2"></script>
 </body>
 </html>

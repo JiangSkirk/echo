@@ -74,6 +74,14 @@ class TokenStatsStore:
             )
             conn.commit()
 
+    def prune(self, days: int = 90) -> int:
+        """Remove token usage records older than *days*. Returns rows deleted."""
+        since = time.time() - days * 86400
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("DELETE FROM token_usage WHERE timestamp < ?", (since,))
+            conn.commit()
+            return cursor.rowcount
+
     def get_summary(self, days: int = 30) -> dict[str, Any]:
         """Get aggregated token usage summary."""
         since = time.time() - days * 86400
@@ -115,7 +123,7 @@ class TokenStatsStore:
                 (since,),
             ).fetchall()
 
-            # Daily trend (last 14 days)
+            # Daily trend (respects requested days window)
             daily = conn.execute(
                 """
                 SELECT
@@ -127,9 +135,9 @@ class TokenStatsStore:
                 WHERE timestamp > ?
                 GROUP BY day
                 ORDER BY day DESC
-                LIMIT 14
+                LIMIT ?
                 """,
-                (since,),
+                (since, days),
             ).fetchall()
 
         total_calls = row["total_calls"] or 0

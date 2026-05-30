@@ -10,14 +10,19 @@ import signal
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from js.orchestration.fleet import AgentFleet
+from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 try:
@@ -38,9 +43,10 @@ from js.models.provider_manager import ProviderManager
 from js.models.providers import OpenAICompatibleProvider
 from js.utils.log import get_logger
 from js.web.auth import require_auth_dep
+from js.web.deps import _agent_config, set_active_model, set_globals
 
 # Imported routers (extracted from this file)
-from js.web.routers import cron, fleet
+from js.web.routers import cron, fleet, system
 from js.web.routers import plugins as plugins_router
 from js.web.stats_store import TokenStatsStore
 
@@ -53,17 +59,22 @@ SERVER_VERSION = f"{__version__}+evolution"
 _agent: JSAgent | None = None
 _settings: JSSettings | None = None
 _stats_store: TokenStatsStore | None = None
-_fleet: Any | None = None
 _active_model: str = ""
+_startup_time: float = 0.0
 
-# Agent fleet model assignment config: role -> model_id
-_agent_config: dict[str, str] = {
-    "orchestrator": "",
-    "coder": "",
-    "reviewer": "",
-    "researcher": "",
-    "tester": "",
-}
+# In-flight request tracking for graceful shutdown
+_active_requests: int = 0
+_active_lock = asyncio.Lock()
+
+
+async def _drain_inflight(timeout: float = 5.0) -> None:
+    """Wait for in-flight HTTP requests to complete."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        async with _active_lock:
+            if _active_requests <= 0:
+                return
+        await asyncio.sleep(0.1)
 
 
 def get_agent() -> JSAgent:
@@ -72,22 +83,44 @@ def get_agent() -> JSAgent:
     return _agent
 
 
-def get_fleet() -> AgentFleet:
-    global _fleet
-    if _fleet is None:
-        from js.orchestration.fleet import AgentFleet
+def _resolve_provider_from_state(state: Any) -> str:
+    """Extract provider name from agent state via router model lookup."""
+    agent = get_agent()
+    model_id = getattr(state, "model", None) or ""
+    if not model_id:
+        return ""
+    cfg = agent.router.get_model_config(model_id)
+    if cfg:
+        return cfg.provider or ""
+    return ""
 
-        settings = _settings
-        if settings is None:
-            try:
-                settings = JSSettings.from_file()
-            except Exception as e:
-                raise HTTPException(503, f"Settings not loaded: {e}") from e
-        try:
-            _fleet = AgentFleet(settings, agent_config=_agent_config)
-        except Exception as e:
-            raise HTTPException(500, f"Failed to initialize fleet: {e}") from e
-    return _fleet
+
+def _record_usage(state: Any, explicit_model: str | None = None) -> None:
+    """Record token usage to stats store with provider resolution."""
+    if _stats_store is None:
+        return
+    total_in = state.total_tokens.get("input", 0)
+    total_out = state.total_tokens.get("output", 0)
+    if total_in + total_out <= 0:
+        return
+    model_id = getattr(state, "model", None)
+    if not isinstance(model_id, str):
+        model_id = None
+    model_id = model_id or explicit_model or "unknown"
+    provider = _resolve_provider_from_state(state)
+    cached_tokens = getattr(state, "cached_tokens", 0)
+    if not isinstance(cached_tokens, int):
+        cached_tokens = 0
+    _stats_store.record(
+        model=model_id,
+        provider=provider,
+        prompt_tokens=total_in,
+        completion_tokens=total_out,
+        cost=state.cost_estimate,
+        cached_tokens=cached_tokens,
+        session_id=getattr(state, "session_id", ""),
+        run_id=getattr(state, "run_id", ""),
+    )
 
 
 @asynccontextmanager
@@ -99,22 +132,94 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         _settings.state_dir = Path(state_dir_env)
         _settings.state_dir.mkdir(parents=True, exist_ok=True)
     _agent = JSAgent(_settings)
+    # Register fleet collaboration tool so the agent can delegate to multi-agent team
+    try:
+        from js.web.routers.fleet import get_fleet
+        _agent.register_fleet_tool(get_fleet)
+        _agent.set_fleet_getter(get_fleet)
+    except Exception:
+        logger.warning("Fleet tool registration failed (fleet may be unavailable)", exc_info=True)
     _agent.start_background_tasks()
     _stats_store = TokenStatsStore(_settings.state_dir)
-    # Clean up empty sessions on startup
+    # Sync shared deps so routers can access agent and stats store
+    set_globals(_agent, _settings, _stats_store)
+    # Also sync system router globals for endpoints that reference them directly
+    system._agent = _agent
+    system._settings = _settings
+    system._stats_store = _stats_store
+    # Clean up empty sessions on startup (sessions with no messages are orphaned)
     try:
+        before_cleanup = _agent.memory.enhanced.list_sessions(limit=1000)
         cleaned = _agent.memory.cleanup_empty_sessions()
-        if cleaned:
-            logger.info(f"Cleaned up {cleaned} empty sessions on startup")
+        after_cleanup = _agent.memory.enhanced.list_sessions(limit=1000)
+        logger.info(
+            f"Sessions on startup: {len(before_cleanup)} total, "
+            f"{cleaned} empty cleaned, {len(after_cleanup)} remaining"
+        )
     except Exception:
         logger.warning("Failed to clean up empty sessions", exc_info=True)
-    # Load Hermes skills asynchronously so the web server starts immediately
+
+    # Startup self-diagnostics
     try:
-        asyncio.create_task(_agent.skills.load_hermes_async())
-        logger.info("Hermes skill loading started in background")
+        import shutil
+        state_dir = _settings.state_dir
+        total, used, free = shutil.disk_usage(str(state_dir))
+        free_gb = free / (1024**3)
+        if free_gb < 1.0:
+            logger.warning("CRITICAL: state_dir has only %.1fGB free space remaining", free_gb)
+        elif free_gb < 5.0:
+            logger.warning("Disk low: state_dir has %.1fGB free space remaining", free_gb)
+        else:
+            logger.info("Disk check: state_dir has %.1fGB free", free_gb)
+
+        # Check WAL size
+        import sqlite3
+        for db_file in state_dir.rglob("*.db"):
+            wal = db_file.with_suffix(".db-wal")
+            if wal.exists() and wal.stat().st_size > 100 * 1024 * 1024:
+                logger.warning("Large WAL file detected: %s (%.1fMB), checkpointing", wal, wal.stat().st_size / (1024**2))
+                try:
+                    with sqlite3.connect(str(db_file), timeout=5.0) as conn:
+                        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except Exception:
+                    pass
+
+        # Check event logs size
+        event_dir = state_dir / "events"
+        if event_dir.exists():
+            total_size = sum(f.stat().st_size for f in event_dir.rglob("*") if f.is_file())
+            if total_size > 1024**3:
+                logger.warning("Event log directory > 1GB (%.1fMB), consider pruning", total_size / (1024**2))
     except Exception:
-        logger.warning("Failed to start Hermes skill loading", exc_info=True)
+        logger.debug("Startup self-diagnostics failed", exc_info=True)
+
+    # Load Hermes skills asynchronously so the web server starts immediately
+    warm_start = os.getenv("JS_WARM_START")
+    if warm_start:
+        try:
+            await asyncio.wait_for(_agent.skills.load_hermes_async(), timeout=60.0)
+            logger.info("Warm start: Hermes skills loaded")
+        except TimeoutError:
+            logger.warning("Warm start: Hermes skill loading timed out after 60s")
+        except Exception:
+            logger.warning("Warm start: Hermes skill loading failed", exc_info=True)
+
+        # Warm up provider connections
+        for name, provider in _agent.router._providers.items():
+            try:
+                healthy = await provider.health_check()
+                logger.info("Warm start: provider %s healthy=%s", name, healthy)
+            except Exception:
+                logger.warning("Warm start: provider %s health check failed", name)
+    else:
+        try:
+            asyncio.create_task(_agent.skills.load_hermes_async())
+            logger.info("Hermes skill loading started in background")
+        except Exception:
+            logger.warning("Failed to start Hermes skill loading", exc_info=True)
     logger.info("Web UI agent initialized")
+    global _startup_time
+    _startup_time = asyncio.get_event_loop().time()
 
     # SIGTERM handler for graceful shutdown
     _shutdown_event = asyncio.Event()
@@ -135,6 +240,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     try:
         yield
     finally:
+        logger.info("Shutting down JS Agent Web UI")
         try:
             loop = asyncio.get_running_loop()
             try:
@@ -143,9 +249,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
                 pass
         except RuntimeError:
             pass
+        # Graceful: give in-flight requests a brief window to finish
+        try:
+            await asyncio.wait_for(_drain_inflight(), timeout=5.0)
+        except TimeoutError:
+            logger.warning("Some in-flight requests did not finish within grace period")
         if _agent:
             await _agent.close()
         _agent = None
+        logger.info("Shutdown complete")
 
 
 def create_app() -> FastAPI:
@@ -160,6 +272,14 @@ def create_app() -> FastAPI:
     app.include_router(cron.router)
     app.include_router(plugins_router.router)
     app.include_router(fleet.router)
+    app.include_router(system.router)
+
+    # Wire up the diag endpoint's route list helper
+    system._get_app_routes = lambda: [
+        {"path": r.path, "methods": list(r.methods)}
+        for r in app.routes
+        if hasattr(r, "methods") and hasattr(r, "path")
+    ]
 
     @app.get("/", response_class=HTMLResponse)
     async def root() -> str:
@@ -472,37 +592,196 @@ def create_app() -> FastAPI:
     async def models(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
         await _refresh_local_provider_models(agent)
-        return {
-            "providers": [
-                {
-                    "name": p.name,
-                    "base_url": p.base_url,
+        await _refresh_cloud_provider_models(agent)
+
+        # Health check all providers (async, may take time)
+        health: dict[str, bool] = {}
+        health_errors: dict[str, str] = {}
+        for p in agent.settings.providers:
+            try:
+                provider = agent.router._providers.get(p.name)
+                if provider:
+                    healthy = await provider.health_check()
+                    health[p.name] = healthy
+                else:
+                    health[p.name] = False
+                    health_errors[p.name] = "Provider not registered in router"
+            except Exception as e:
+                health[p.name] = False
+                health_errors[p.name] = str(e)
+
+        # Determine which providers are user-configured (from provider_manager)
+        dyn_names = {p.name for p in agent.provider_manager.get_all()}
+
+        # Build provider list with embedded health status
+        providers_out = []
+        for p in agent.settings.providers:
+            has_key = bool(p.api_key)
+            providers_out.append({
+                "name": p.name,
+                "base_url": p.base_url,
+                "healthy": health.get(p.name, False),
+                "health_error": health_errors.get(p.name),
+                "has_key": has_key,
+                "user_configured": p.name in dyn_names,
+                "models": [
+                    {
+                        "id": m.id,
+                        "name": m.name or m.id,
+                        "context_window": m.context_window,
+                        "max_tokens": m.max_tokens,
+                        "cost_input": m.cost_input,
+                        "cost_output": m.cost_output,
+                    }
+                    for m in p.models
+                ],
+            })
+
+        # Include cloud presets that are NOT yet configured
+        # so users can see what's available
+        from js.models.cloud_providers import ALL_PRESETS
+        configured_names = {p.name for p in agent.settings.providers}
+        presets_out = []
+        for preset in ALL_PRESETS:
+            if preset.id not in configured_names:
+                presets_out.append({
+                    "id": preset.id,
+                    "name": preset.name,
+                    "description": preset.description,
+                    "base_url": preset.base_url,
+                    "api_key_env": preset.api_key_env,
                     "models": [
                         {
                             "id": m.id,
                             "name": m.name or m.id,
                             "context_window": m.context_window,
-                            "max_tokens": m.max_tokens,
-                            "cost_input": m.cost_input,
-                            "cost_output": m.cost_output,
                         }
-                        for m in p.models
+                        for m in preset.models
                     ],
-                }
-                for p in agent.settings.providers
-            ],
-            "health": await agent.router.health_check(),
+                })
+
+        return {
+            "providers": providers_out,
+            "presets": presets_out,
             "active_model": _active_model,
         }
 
+    _last_model_refresh: float = 0.0
+    _last_cloud_refresh: float = 0.0
+
+    async def _refresh_cloud_provider_models(agent: JSAgent) -> None:
+        """Refresh model lists for cloud providers via their /v1/models API.
+
+        Throttled to at most once every 60 seconds.
+        """
+        import time
+
+        nonlocal _last_cloud_refresh
+        now = time.time()
+        if now - _last_cloud_refresh < 60.0:
+            return
+        _last_cloud_refresh = now
+
+        import httpx
+
+        for provider_cfg in agent.settings.providers:
+            base_url = getattr(provider_cfg, "base_url", "")
+            api_key = getattr(provider_cfg, "api_key", "")
+            if not isinstance(base_url, str) or not api_key:
+                continue
+            parsed = urlparse(base_url)
+            hostname = parsed.hostname or ""
+            if hostname in ("127.0.0.1", "localhost", "0.0.0.0", "::1"):
+                continue
+
+            try:
+                async with httpx.AsyncClient(timeout=15.0, trust_env=False) as client:
+                    resp = await client.get(
+                        f"{base_url.rstrip('/')}/models",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                    )
+                    if resp.status_code != 200:
+                        continue
+                    data = resp.json()
+                    raw_models = data.get("data", [])
+                    if not raw_models:
+                        continue
+
+                    refreshed = []
+                    for m in raw_models:
+                        model_id = m.get("id", "")
+                        if not model_id:
+                            continue
+                        # Try to get context from API response or infer from name
+                        api_ctx = m.get("context_length") or m.get("max_context_length")
+                        if api_ctx is None:
+                            from js.models.discovery import LocalModelDiscovery
+                            inferred_ctx = LocalModelDiscovery._infer_context_window(None, model_id)
+                        else:
+                            inferred_ctx = None
+                        refreshed.append({
+                            "model": ModelConfig(
+                                id=model_id,
+                                name=m.get("name", model_id.split("/")[-1]),
+                                provider=provider_cfg.name,
+                                context_window=int(api_ctx) if api_ctx is not None else int(inferred_ctx),
+                                max_tokens=min(int(api_ctx or inferred_ctx) // 4, 8192),
+                            ),
+                            "api_ctx": api_ctx,
+                        })
+
+                    if refreshed:
+                        # Merge with existing models: preserve cost/pricing from hardcoded presets
+                        existing = {m.id: m for m in provider_cfg.models}
+                        merged = []
+                        for item in refreshed:
+                            m = item["model"]
+                            api_ctx = item["api_ctx"]
+                            old = existing.get(m.id)
+                            if old:
+                                # If the API explicitly returned a context window, trust it;
+                                # otherwise keep the preset value (more accurate for providers
+                                # like DeepSeek that don't expose context lengths in their API).
+                                final_ctx = int(api_ctx) if api_ctx is not None else old.context_window
+                                merged.append(ModelConfig(
+                                    id=m.id,
+                                    name=m.name or old.name,
+                                    provider=m.provider,
+                                    context_window=final_ctx,
+                                    max_tokens=m.max_tokens or old.max_tokens,
+                                    supports_vision=old.supports_vision,
+                                    supports_tools=old.supports_tools,
+                                    cost_input=old.cost_input,
+                                    cost_output=old.cost_output,
+                                ))
+                            else:
+                                merged.append(m)
+                        provider_cfg.models = merged
+            except Exception as e:
+                logger.debug(f"Cloud model refresh failed for {provider_cfg.name}: {e}")
+
     async def _refresh_local_provider_models(agent: JSAgent) -> None:
-        """Refresh models for local providers so LM Studio model changes show up."""
+        """Refresh models for local providers so LM Studio model changes show up.
+
+        Throttled to at most one discovery call every 15 seconds to avoid
+        hammering the local server on every dashboard poll.
+        """
+        import time
+
+        nonlocal _last_model_refresh
+        now = time.time()
+        if now - _last_model_refresh < 15.0:
+            return
+        _last_model_refresh = now
+
         for provider_cfg in agent.settings.providers:
             name = getattr(provider_cfg, "name", "")
             base_url = getattr(provider_cfg, "base_url", "")
-            if name not in {"lmstudio", "ollama"}:
+            if not isinstance(base_url, str):
                 continue
-            if not isinstance(base_url, str) or not base_url.startswith("http://127.0.0.1"):
+            parsed = urlparse(base_url)
+            hostname = parsed.hostname or ""
+            if hostname not in ("127.0.0.1", "localhost", "0.0.0.0", "::1"):
                 continue
             result = await ProviderManager.discover_models(
                 base_url,
@@ -516,6 +795,8 @@ def create_app() -> FastAPI:
                     id=str(m["id"]),
                     name=str(m.get("name") or m["id"]),
                     provider=name,
+                    context_window=int(m.get("context_window", 32768)),
+                    max_tokens=min(int(m.get("context_window", 32768)) // 4, 8192),
                 )
                 for m in discovered
                 if isinstance(m, dict) and m.get("id")
@@ -524,7 +805,10 @@ def create_app() -> FastAPI:
                 continue
             old_ids = [m.id for m in provider_cfg.models]
             new_ids = [m.id for m in refreshed_models]
-            if old_ids == new_ids:
+            # Also refresh when context windows change
+            old_ctx = {m.id: m.context_window for m in provider_cfg.models}
+            new_ctx = {m.id: m.context_window for m in refreshed_models}
+            if old_ids == new_ids and old_ctx == new_ctx:
                 continue
             provider_cfg.models = refreshed_models
             provider_cfg.default_model = refreshed_models[0].id
@@ -541,15 +825,41 @@ def create_app() -> FastAPI:
         if not model_id:
             raise HTTPException(400, "model_id is required")
         agent = get_agent()
+
+        # Valid = configured providers + all cloud presets
         valid_models = {
             f"{p.name}/{m.id}"
             for p in agent.settings.providers
             for m in p.models
         }
-        if model_id not in valid_models:
+        from js.models.cloud_providers import ALL_PRESETS
+        for preset in ALL_PRESETS:
+            for m in preset.models:
+                valid_models.add(f"{preset.id}/{m.id}")
+
+        # Also accept models that the router knows about (catches stale
+        # mappings and dynamically-discovered models that may not yet be
+        # reflected in settings.providers).
+        if model_id not in valid_models and agent.router.get_model_config(model_id) is None:
+            logger.warning(
+                "Model switch rejected: model_id=%r not in valid_models (count=%d) "
+                "and not in router._model_map",
+                model_id,
+                len(valid_models),
+            )
             raise HTTPException(400, f"Invalid model '{model_id}'")
+
         _active_model = model_id
-        return {"success": True, "model_id": model_id}
+        set_active_model(model_id)
+
+        # Warn if the provider is not yet configured
+        provider_name = model_id.split("/", 1)[0] if "/" in model_id else ""
+        configured_providers = {p.name for p in agent.settings.providers}
+        warning = None
+        if provider_name and provider_name not in configured_providers:
+            warning = f"Provider '{provider_name}' 尚未配置 API Key，调用时会报错。请先添加该云模型。"
+
+        return {"success": True, "model_id": model_id, "warning": warning}
 
     def _validate_provider_name(name: str) -> None:
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", name):
@@ -674,10 +984,41 @@ def create_app() -> FastAPI:
         from js.models.cloud_providers import list_presets
         return {"presets": list_presets()}
 
+    @app.post("/api/providers/test-cloud")
+    async def test_cloud_provider(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+        """Test a cloud provider preset before adding it."""
+        from js.models.cloud_providers import get_preset
+        from js.models.provider_manager import ProviderManager
+
+        preset_id = payload.get("preset_id", "").strip()
+        api_key = payload.get("api_key", "").strip()
+
+        if not preset_id:
+            raise HTTPException(400, "preset_id is required")
+
+        preset = get_preset(preset_id)
+        if not preset:
+            raise HTTPException(404, f"Unknown preset: {preset_id}")
+
+        if not api_key:
+            raise HTTPException(400, "API key required")
+
+        result = await ProviderManager.discover_models(preset.base_url, api_key)
+        if "error" in result:
+            raise HTTPException(401, result["error"])
+
+        return {
+            "success": True,
+            "provider": preset_id,
+            "name": preset.name,
+            "models": result.get("models", []),
+        }
+
     @app.post("/api/providers/add-cloud")
     async def add_cloud_provider(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """One-click add a cloud provider from presets."""
         from js.models.cloud_providers import build_provider_config, get_preset
+        from js.models.provider_manager import ProviderManager
 
         preset_id = payload.get("preset_id", "").strip()
         api_key = payload.get("api_key", "").strip()
@@ -700,6 +1041,25 @@ def create_app() -> FastAPI:
                 )
 
         cfg = build_provider_config(preset, api_key)
+
+        # Discover actual models from the remote endpoint so the user sees
+        # exactly what the provider reports (e.g. LM Studio with 2 loaded
+        # models instead of the preset's full catalog).
+        discovered = await ProviderManager.discover_models(cfg.base_url, cfg.api_key)
+        if "models" in discovered and discovered["models"]:
+            from js.config import ModelConfig
+            cfg.models = [
+                ModelConfig(
+                    id=str(m["id"]),
+                    name=str(m.get("name") or m["id"]),
+                    provider=preset_id,
+                )
+                for m in discovered["models"]
+                if m.get("id")
+            ]
+            if cfg.models:
+                cfg.default_model = cfg.models[0].id
+
         agent = get_agent()
 
         # Prevent overriding static config
@@ -740,7 +1100,7 @@ def create_app() -> FastAPI:
         auth: dict[str, Any] = Depends(require_auth_dep),
     ) -> dict[str, Any]:
         """Scan the local network for model servers."""
-        from js.discovery.local_models import LocalModelDiscovery
+        from js.models.discovery import LocalModelDiscovery
 
         subnet = (payload or {}).get("subnet", "192.168")
         discovery = LocalModelDiscovery(timeout=2.0)
@@ -890,11 +1250,23 @@ def create_app() -> FastAPI:
             for p in agent.settings.providers
             for m in p.models
         }
+        # Also allow preset models (not yet configured)
+        from js.models.cloud_providers import ALL_PRESETS
+        for preset in ALL_PRESETS:
+            for m in preset.models:
+                valid_models.add(f"{preset.id}/{m.id}")
         for role, model in new_config.items():
-            if role in _agent_config:
-                if model and model not in valid_models and model != "":
-                    raise HTTPException(400, f"Invalid model '{model}' for role '{role}'")
-                _agent_config[role] = model
+            if not role or not re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", role):
+                continue
+            if model and model not in valid_models and model != "":
+                raise HTTPException(400, f"Invalid model '{model}' for role '{role}'")
+            _agent_config[role] = model
+        # Propagate to existing fleet so new agents use updated models
+        try:
+            fleet_instance = fleet.get_fleet()
+            fleet_instance.update_agent_config(dict(_agent_config))
+        except Exception:
+            pass  # Fleet not initialized yet
         return {"success": True, "config": _agent_config}
 
     @app.get("/api/search")
@@ -1313,16 +1685,7 @@ def create_app() -> FastAPI:
                 break
 
         # Record token usage
-        if _stats_store and state.total_tokens["input"] + state.total_tokens["output"] > 0:
-            _stats_store.record(
-                model=getattr(state, "model", None) or model or "unknown",
-                provider="",
-                prompt_tokens=state.total_tokens["input"],
-                completion_tokens=state.total_tokens["output"],
-                cost=state.cost_estimate,
-                session_id=state.session_id,
-                run_id=state.run_id,
-            )
+        _record_usage(state, explicit_model=model)
 
         return {
             "response": assistant_msg,
@@ -1392,39 +1755,63 @@ def create_app() -> FastAPI:
 
                     await websocket.send_json({"type": "status", "content": "thinking..."})
 
-                    state = await agent.run(user_msg, session_id=session_id, model=model, attachments=attachments)
+                    # Progress callback: notify frontend of each tool execution
+                    async def _progress(tool_name: str, result: Any) -> None:
+                        try:
+                            output_preview = result.output[:200] if getattr(result, "output", None) else ""
+                            await websocket.send_json({
+                                "type": "progress",
+                                "tool": tool_name,
+                                "success": getattr(result, "success", False),
+                                "preview": output_preview,
+                            })
+                        except Exception:
+                            pass
+
+                    state = await agent.run(
+                        user_msg,
+                        session_id=session_id,
+                        model=model,
+                        attachments=attachments,
+                        progress_callback=_progress,
+                    )
                     session_id = state.session_id
 
-                    assistant_msg = ""
-                    for msg in reversed(state.messages):
-                        if msg.role == "assistant" and isinstance(msg.content, str) and msg.content:
-                            assistant_msg = msg.content
-                            break
-
                     # Record token usage
-                    if _stats_store and state.total_tokens["input"] + state.total_tokens["output"] > 0:
-                        _stats_store.record(
-                            model=getattr(state, "model", None) or model or "unknown",
-                            provider="",
-                            prompt_tokens=state.total_tokens["input"],
-                            completion_tokens=state.total_tokens["output"],
-                            cost=state.cost_estimate,
-                            session_id=session_id,
-                            run_id=state.run_id,
-                        )
+                    _record_usage(state, explicit_model=model)
 
-                    await websocket.send_json(
-                        {
-                            "type": "response",
-                            "content": assistant_msg,
-                            "session_id": session_id,
-                            "turns": state.turn_count,
-                            "tokens": state.total_tokens,
-                            "cost": round(state.cost_estimate, 6),
-                            "status": state.status,
-                            "compression": state.compression_stats,
-                        }
-                    )
+                    if state.status == "error":
+                        await websocket.send_json(
+                            {
+                                "type": "error",
+                                "content": state.error_message or "Agent run failed",
+                                "session_id": session_id,
+                                "turns": state.turn_count,
+                                "tokens": state.total_tokens,
+                                "cost": round(state.cost_estimate, 6),
+                                "model": state.model or model or "unknown",
+                            }
+                        )
+                    else:
+                        assistant_msg = ""
+                        for msg in reversed(state.messages):
+                            if msg.role == "assistant" and isinstance(msg.content, str) and msg.content:
+                                assistant_msg = msg.content
+                                break
+
+                        await websocket.send_json(
+                            {
+                                "type": "response",
+                                "content": assistant_msg,
+                                "session_id": session_id,
+                                "turns": state.turn_count,
+                                "tokens": state.total_tokens,
+                                "cost": round(state.cost_estimate, 6),
+                                "status": state.status,
+                                "compression": state.compression_stats,
+                                "model": state.model or model or "unknown",
+                            }
+                        )
 
                 elif msg_type == "stream":
                     user_msg = data.get("content", "")
@@ -1452,26 +1839,37 @@ def create_app() -> FastAPI:
                     )
                     session_id = state.session_id
 
-                    assistant_msg = ""
-                    for msg in reversed(state.messages):
-                        if msg.role == "assistant" and isinstance(msg.content, str) and msg.content:
-                            assistant_msg = msg.content
-                            break
+                    if state.status == "error":
+                        await websocket.send_json({
+                            "type": "error",
+                            "content": state.error_message or "Agent run failed",
+                            "session_id": session_id,
+                            "turns": state.turn_count,
+                            "tokens": state.total_tokens,
+                            "cost": round(state.cost_estimate, 6),
+                            "model": state.model or model or "unknown",
+                        })
+                    else:
+                        assistant_msg = ""
+                        for msg in reversed(state.messages):
+                            if msg.role == "assistant" and isinstance(msg.content, str) and msg.content:
+                                assistant_msg = msg.content
+                                break
 
-                    # Fallback: if streaming never fired (all tool turns or provider
-                    # doesn't support streaming), send the full response in one go.
-                    if not streamed and assistant_msg:
-                        await websocket.send_json({"type": "response", "content": assistant_msg})
+                        # Fallback: if streaming never fired (all tool turns or provider
+                        # doesn't support streaming), send the full response in one go.
+                        if not streamed and assistant_msg:
+                            await websocket.send_json({"type": "response", "content": assistant_msg})
 
-                    await websocket.send_json({
-                        "type": "done",
-                        "session_id": session_id,
-                        "turns": state.turn_count,
-                        "tokens": state.total_tokens,
-                        "cost": round(state.cost_estimate, 6),
-                        "status": state.status,
-                        "compression": state.compression_stats,
-                    })
+                        await websocket.send_json({
+                            "type": "done",
+                            "session_id": session_id,
+                            "turns": state.turn_count,
+                            "tokens": state.total_tokens,
+                            "cost": round(state.cost_estimate, 6),
+                            "status": state.status,
+                            "compression": state.compression_stats,
+                        })
 
                     # Store memories for stream path (same as run() path)
                     try:
@@ -1518,6 +1916,275 @@ def create_app() -> FastAPI:
                 await websocket.send_json({"type": "error", "content": str(e)})
             except Exception:
                 logger.warning("Failed to send error to websocket", exc_info=True)
+
+    @app.websocket("/ws/fleet")
+    async def fleet_websocket_endpoint(websocket: WebSocket) -> None:
+        """Real-time fleet dashboard WebSocket."""
+        from js.exceptions import AuthRequiredError
+        from js.web.auth import AuthManager
+        from js.web.routers.fleet import get_fleet
+
+        api_key = websocket.headers.get("x-api-key", "")
+        settings = get_agent().settings
+        if settings.security.api_key_required:
+            auth_mgr = AuthManager(settings.state_dir)
+            if auth_mgr.has_admin():
+                try:
+                    auth_mgr.verify(api_key)
+                except AuthRequiredError as e:
+                    await websocket.close(code=1008, reason=str(e))
+                    return
+        await websocket.accept()
+
+        fleet = get_fleet()
+        event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=500)
+
+        async def _on_event(event: dict[str, Any]) -> None:
+            try:
+                event_queue.put_nowait(event)
+            except asyncio.QueueFull:
+                pass
+
+        fleet.on_event(_on_event)
+
+        # Send initial status
+        try:
+            await websocket.send_json({
+                "type": "status",
+                "data": fleet.get_status(),
+            })
+        except Exception:
+            pass
+
+        try:
+            while True:
+                # Drain event queue with timeout to also check for client messages
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=0.5)
+                    await websocket.send_json(event)
+                    continue
+                except TimeoutError:
+                    pass
+                except RuntimeError as e:
+                    if "disconnect" in str(e).lower():
+                        break
+                    raise
+
+                # Check for client messages (non-blocking)
+                try:
+                    raw = await asyncio.wait_for(websocket.receive(), timeout=0.1)
+                    if isinstance(raw, str):
+                        data = json.loads(raw)
+                    else:
+                        data = json.loads(raw.get("text") or raw.get("bytes", b"").decode("utf-8"))
+
+                    msg_type = data.get("type", "")
+                    if msg_type == "status":
+                        await websocket.send_json({
+                            "type": "status",
+                            "data": fleet.get_status(),
+                        })
+                    elif msg_type == "collaborate":
+                        subtasks_raw = data.get("subtasks", [])
+                        subtasks: list[str] = [st.get("description", "") for st in subtasks_raw if st.get("description")]
+                        role_mapping_raw = data.get("role_mapping", {})
+                        role_mapping: dict[int, str] = {int(k): v for k, v in role_mapping_raw.items() if v}
+                        asyncio.create_task(fleet.collaborate(
+                            main_task=data.get("task", ""),
+                            subtasks=subtasks or None,
+                            role_mapping=role_mapping or None,
+                            session_id=data.get("session_id") or None,
+                            mode=data.get("mode", "auto"),
+                        ))
+                        await websocket.send_json({"type": "ack", "action": "collaborate"})
+                    elif msg_type == "continue":
+                        session_id = data.get("session_id")
+                        if session_id:
+                            asyncio.create_task(fleet.continue_session(
+                                session_id=session_id,
+                                follow_up=data.get("task", ""),
+                            ))
+                            await websocket.send_json({"type": "ack", "action": "continue"})
+                        else:
+                            await websocket.send_json({"type": "error", "message": "session_id required for continue"})
+                    elif msg_type == "spawn":
+                        # Spawn is no longer supported; agents are created on-demand
+                        await websocket.send_json({
+                            "type": "ack",
+                            "action": "spawn",
+                            "warning": "Spawn is deprecated. Agents are created automatically.",
+                        })
+                    elif msg_type == "ping":
+                        await websocket.send_json({"type": "pong"})
+                except TimeoutError:
+                    pass
+                except WebSocketDisconnect:
+                    break
+                except RuntimeError as e:
+                    if "disconnect" in str(e).lower():
+                        break
+                    raise
+                except Exception as e:
+                    logger.warning(f"Fleet WS client message error: {e}")
+        except WebSocketDisconnect:
+            logger.info("Fleet WebSocket disconnected")
+        except Exception as e:
+            logger.error(f"Fleet WebSocket error: {e}")
+        finally:
+            fleet.off_event(_on_event)
+
+    # ------------------------------------------------------------------
+    # Resource-aware rate-limiting middleware
+    # ------------------------------------------------------------------
+    global _active_requests, _active_lock
+
+    @app.middleware("http")
+    async def resource_limit_middleware(request: Request, call_next: Any) -> Any:
+        global _active_requests
+
+        # Skip static files and lightweight health probes
+        path = request.url.path
+        if path.startswith("/static") or path in ("/api/health", "/api/status", "/api/diag"):
+            return await call_next(request)
+
+        agent = _agent
+        if agent is None:
+            return await call_next(request)
+
+        from js.runtime.governor import ResourceGovernor
+
+        governor = getattr(agent, "_governor", None)
+        is_governor = isinstance(governor, ResourceGovernor)
+
+        # Critical memory: reject new requests immediately
+        if is_governor:
+            assert governor is not None
+            if governor.paused:
+                return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "Server is under memory pressure. Please try again later."
+                },
+            )
+
+        # Dynamic concurrency cap based on memory pressure
+        max_concurrent = 100
+        if is_governor:
+            assert governor is not None
+            history = governor.get_history(limit=1)
+            if history:
+                mem_pct = history[0].get("system_memory_percent", 0)
+                if mem_pct > 80:
+                    max_concurrent = 20
+                elif mem_pct > 60:
+                    max_concurrent = 50
+
+        # Wait for a free slot (with 30s total timeout)
+        acquired = False
+        for _ in range(300):  # 300 * 0.1s = 30s
+            async with _active_lock:
+                if _active_requests < max_concurrent:
+                    _active_requests += 1
+                    acquired = True
+                    break
+            await asyncio.sleep(0.1)
+
+        if not acquired:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Server is at maximum capacity. Please try again later."},
+            )
+
+        try:
+            return await call_next(request)
+        finally:
+            async with _active_lock:
+                _active_requests -= 1
+
+    # ------------------------------------------------------------------
+    # Health & resource metrics endpoints
+    # ------------------------------------------------------------------
+
+    @app.get("/api/health")
+    async def health(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+        """Return comprehensive server health including resource usage."""
+        agent = get_agent()
+        from js.runtime.governor import ResourceGovernor
+
+        governor = getattr(agent, "_governor", None)
+        is_governor = isinstance(governor, ResourceGovernor)
+
+        # Latest resource snapshot
+        memory_info: dict[str, Any] = {"status": "unknown"}
+        agents_info: dict[str, Any] = {"active": 0, "idle": 0, "total_spawned": 0}
+        tasks_info: dict[str, Any] = {"in_flight": 0, "completed_today": 0}
+
+        if is_governor:
+            assert governor is not None
+            history = governor.get_history(limit=1)
+            if history:
+                snap = history[0]
+                mem_pct = snap.get("system_memory_percent", 0)
+                mem_status = "normal"
+                if mem_pct > 90:
+                    mem_status = "critical"
+                elif mem_pct > 80:
+                    mem_status = "pressure"
+                elif mem_pct > 70:
+                    mem_status = "warning"
+
+                memory_info = {
+                    "process_rss_mb": snap.get("process_rss_mb"),
+                    "system_used_percent": mem_pct,
+                    "status": mem_status,
+                }
+                agents_info = {
+                    "active": snap.get("active_agents", 0),
+                    "idle": snap.get("idle_agents", 0),
+                }
+                tasks_info = {
+                    "in_flight": snap.get("in_flight_tasks", 0),
+                }
+
+        # Uptime
+        uptime = 0.0
+        if _startup_time:
+            uptime = round(asyncio.get_event_loop().time() - _startup_time, 1)
+
+        # Overall status
+        status = "healthy"
+        if is_governor:
+            assert governor is not None
+            if governor.paused:
+                status = "degraded"
+        if agent.degraded:
+            status = "degraded"
+
+        return {
+            "status": status,
+            "uptime_seconds": uptime,
+            "memory": memory_info,
+            "agents": agents_info,
+            "tasks": tasks_info,
+            "degraded": agent.degraded,
+            "paused": governor.paused if is_governor else False,  # type: ignore[union-attr]
+        }
+
+    @app.get("/api/metrics/resources")
+    async def resource_metrics(
+        auth: dict[str, Any] = Depends(require_auth_dep),
+    ) -> dict[str, Any]:
+        """Return historical resource snapshots for observability."""
+        agent = get_agent()
+        from js.runtime.governor import ResourceGovernor
+
+        governor = getattr(agent, "_governor", None)
+        is_governor = isinstance(governor, ResourceGovernor)
+        history = governor.get_history(limit=200) if is_governor else []  # type: ignore[union-attr]
+        return {
+            "samples": history,
+            "count": len(history),
+        }
 
     return app
 

@@ -14,6 +14,7 @@ def _make_app() -> FastAPI:
     app = FastAPI()
     app.include_router(chat_router)
     patch("js.web.server._settings", None).start()
+    patch("js.web.deps._stats_store", None).start()
     return app
 
 

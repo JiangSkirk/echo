@@ -12,7 +12,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from js.config import JSSettings
-from js.discovery.local_models import LocalModelDiscovery
+from js.models.discovery import LocalModelDiscovery
 from js.search.engines import DuckDuckGoEngine, SearchManager, TavilyEngine
 from js.utils.log import get_logger
 

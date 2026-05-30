@@ -10,7 +10,7 @@ import pytest
 from js.agent import JSAgent
 from js.config import JSSettings
 from js.models.circuit_breaker import CircuitBreaker, CircuitState
-from js.orchestration.fleet import AgentFleet, AgentRole
+from js.orchestration.fleet import AgentFleet
 from js.security.guard import BehaviorGuard, SecurityDecisionType
 from js.security.sandbox import SandboxExecutor
 from js.skills.spec import SkillSpec, SkillType
@@ -195,8 +195,8 @@ class TestFleetIsolation:
         )
 
         fleet = AgentFleet(settings)
-        a1 = fleet.spawn("a1", AgentRole.CODER)
-        a2 = fleet.spawn("a2", AgentRole.TESTER)
+        a1 = fleet._spawn_worker()
+        a2 = fleet._spawn_reviewer()
 
         assert a1.agent.settings.state_dir != a2.agent.settings.state_dir
         assert a1.agent.settings.state_dir.parent.name == "fleet"
@@ -215,7 +215,7 @@ class TestFleetIsolation:
         # This should complete (or timeout gracefully) rather than hang forever
         result = await fleet.collaborate(
             "Say hello",
-            [("Say hello in one word", AgentRole.GENERALIST)],
+            ["Say hello in one word"],
         )
         assert "final" in result
         # Cleanup

@@ -64,12 +64,14 @@ class SandboxExecutor:
         max_output_bytes: int = 50_000,
         max_memory_mb: int = 1024,
         env_passthrough: list[str] | None = None,
+        strict_isolation: bool = False,
     ) -> None:
         self.workspace = workspace.resolve()
         self.timeout = timeout
         self.max_output_bytes = max_output_bytes
         self.max_memory_mb = max_memory_mb
         self.env_passthrough = env_passthrough or ["PATH", "HOME", "USER", "LANG", "TERM"]
+        self.strict_isolation = strict_isolation
         self._has_sandbox_exec = shutil.which("sandbox-exec") is not None
         self._has_unshare = shutil.which("unshare") is not None
 
@@ -105,12 +107,19 @@ class SandboxExecutor:
         if system == "Linux" and self._has_unshare:
             # Linux: unshare network namespace (no interfaces = no outbound)
             return ["unshare", "-n", *cmd]
-        # Fallback: warn but still execute (fail-open to avoid breaking skills)
-        import logging
-        logging.getLogger("js.security.sandbox").warning(
+        # Fail-closed: when strict isolation is required, block execution
+        if self.strict_isolation:
+            raise RuntimeError(
+                f"Network isolation requested but no sandbox tool available "
+                f"(platform={system}, sandbox-exec={self._has_sandbox_exec}, "
+                f"unshare={self._has_unshare})"
+            )
+        logger.warning(
             "Network isolation requested but no sandbox tool available "
-            f"(platform={system}, sandbox-exec={self._has_sandbox_exec}, "
-            f"unshare={self._has_unshare})"
+            "(platform=%s, sandbox-exec=%s, unshare=%s)",
+            system,
+            self._has_sandbox_exec,
+            self._has_unshare,
         )
         return cmd
 
@@ -145,10 +154,19 @@ class SandboxExecutor:
                 "-c",
                 f"cd {quoted_ws} && {quoted_cmd}",
             ]
+        # Fail-closed: when strict isolation is required, block execution
+        if self.strict_isolation:
+            raise RuntimeError(
+                f"Filesystem isolation requested but no sandbox tool available "
+                f"(platform={system}, sandbox-exec={self._has_sandbox_exec}, "
+                f"unshare={self._has_unshare})"
+            )
         logger.warning(
             "Filesystem isolation requested but no sandbox tool available "
-            f"(platform={system}, sandbox-exec={self._has_sandbox_exec}, "
-            f"unshare={self._has_unshare})"
+            "(platform=%s, sandbox-exec=%s, unshare=%s)",
+            system,
+            self._has_sandbox_exec,
+            self._has_unshare,
         )
         return cmd
 

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2-alpha] - 2026-05-30
+
+### Added
+
+- **Stronger multi-agent runtime**: Added event/task stores, lane queues, fleet strategies, fleet tools, and richer multi-agent orchestration controls.
+- **Model connection upgrades**: Added model discovery/transports and improved OpenAI-compatible provider handling for LM Studio, Ollama, and cloud providers.
+- **Dream memory and evolution polish**: Added dream auto-trigger coverage, quality scoring, semantic snapshots, and expanded evolution/front-end validation tests.
+- **Web UI modularization**: Split large front-end behavior into tab-specific modules for agents, audit, cron, dashboard, evolution, files, memory, models, search, skills, stats, and status.
+- **WebBridge and tool improvements**: Added WebBridge tooling, attachment helpers, stable ID utilities, fleet tools, and expanded tool tests.
+- **Release safety**: Added local secret ignore rules and converted static fake API-key test strings to runtime-built values to reduce false positive secret-scanner blocks.
+
+### Changed
+
+- **macOS-first positioning remains**: This release continues to prioritize a simple macOS install and Web UI experience.
+- **Version consistency**: Updated package, README, and module version display to `0.1.2`.
+
+### Verified
+
+- `ruff check js tests scripts pyproject.toml`
+- `pytest -q -p no:cacheprovider` -> 964 passed, 11 skipped.
+- `python -m build --sdist --wheel`
+- `python scripts/release_smoke.py --all`
+
 ## [0.1.1-alpha] - 2026-05-25
 
 ### Added
@@ -132,3 +155,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [0.1.0]: https://github.com/JiangSkirk/titan-agent/releases/tag/v0.1.0
 [0.1.1-alpha]: https://github.com/JiangSkirk/titan-agent/releases/tag/v0.1.1-alpha
+[0.1.2-alpha]: https://github.com/JiangSkirk/titan-agent/releases/tag/v0.1.2-alpha

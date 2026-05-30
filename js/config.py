@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -40,6 +40,10 @@ class ModelProviderConfig(BaseModel):
     embedding_model: str | None = Field(
         default=None, description="Optional embedding model override for this provider"
     )
+    transport_type: str = Field(
+        default="chat_completions",
+        description="Transport protocol: chat_completions, anthropic, bedrock",
+    )
     models: list[ModelConfig] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -61,7 +65,6 @@ class ModelConfig(BaseModel):
     supports_tools: bool = True
     cost_input: float = Field(default=0.0, ge=0.0)
     cost_output: float = Field(default=0.0, ge=0.0)
-    reasoning_effort: Literal["low", "medium", "high"] = "medium"
 
 
 class ToolLimits(BaseModel):
@@ -69,7 +72,6 @@ class ToolLimits(BaseModel):
 
     shell_timeout: float = Field(default=300.0, ge=1.0)
     shell_max_output_bytes: int = Field(default=50_000, ge=1024)
-    shell_max_output_lines: int = Field(default=2000, ge=100)
     file_read_max_chars: int = Field(default=100_000, ge=1000)
     file_write_max_chars: int = Field(default=500_000, ge=1000)
     browser_timeout: float = Field(default=60.0, ge=1.0)
@@ -104,8 +106,6 @@ class SecurityConfig(BaseModel):
         ]
     )
     allow_workspace_delete: bool = False
-    secret_redaction: bool = True
-    audit_enabled: bool = True
     audit_retention_days: int = Field(default=90, ge=1)
     max_loop_iterations: int = Field(default=10, ge=1)
     encoding_guard: bool = True
@@ -114,7 +114,6 @@ class SecurityConfig(BaseModel):
 
     # API authentication
     api_key_required: bool = Field(default=False, description="Require X-API-Key for all web API endpoints")
-    api_key_auto_bootstrap: bool = Field(default=True, description="Allow first access without key to bootstrap admin key")
 
     @field_validator("protected_paths")
     @classmethod
@@ -128,19 +127,12 @@ class MemoryConfig(BaseModel):
     enabled: bool = True
     max_memory_chars: int = Field(default=2000, ge=0)
     compression_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
-    context_window_target: float = Field(default=0.8, ge=0.1, le=1.0)
-    auto_summarize: bool = True
-    persistent_store: bool = True
 
 
 class DisplayConfig(BaseModel):
     """UI and display preferences."""
 
-    compact: bool = False
     show_cost: bool = False
-    show_reasoning: bool = False
-    streaming: bool = True
-    theme: Literal["default", "dark", "light"] = "default"
 
 
 class PipelineConfig(BaseModel):
@@ -152,6 +144,10 @@ class PipelineConfig(BaseModel):
     vault_dir: str = ""
     # Per-source configs keyed by connector name
     sources: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
+# Module-level cache for parsed config files: path -> (mtime, instance)
+_settings_file_cache: dict[Path, tuple[float, JSSettings]] = {}
 
 
 class JSSettings(BaseSettings):
@@ -167,12 +163,8 @@ class JSSettings(BaseSettings):
     version: str = "0.1.1"
     workspace: Path = Field(default_factory=lambda: Path.home() / ".js" / "workspace")
     state_dir: Path = Field(default_factory=lambda: Path.home() / ".js" / "state")
-    log_level: LogLevel = LogLevel.INFO
-
     # Agent behavior
     max_turns: int = Field(default=50, ge=1)
-    auto_delegate: bool = True
-    delegation_threshold: Literal["simple", "complex", "always"] = "complex"
 
     # Sub-configs
     models: list[ModelConfig] = Field(default_factory=list)
@@ -189,6 +181,23 @@ class JSSettings(BaseSettings):
     def ensure_directories(self) -> JSSettings:
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        return self
+
+    @model_validator(mode="after")
+    def dedupe_providers(self) -> JSSettings:
+        """Remove duplicate providers by name, keeping the first occurrence.
+
+        Duplicate providers can appear when the config file is edited
+        manually or when dynamic providers are merged back into the
+        settings list.
+        """
+        seen: set[str] = set()
+        unique: list[ModelProviderConfig] = []
+        for p in self.providers:
+            if p.name not in seen:
+                seen.add(p.name)
+                unique.append(p)
+        self.providers = unique
         return self
 
     def get_provider(self, name: str) -> ModelProviderConfig | None:
@@ -211,6 +220,9 @@ class JSSettings(BaseSettings):
         1. Explicit *path* argument
         2. JS_CONFIG_PATH environment variable
         3. Default locations (~/.config/js/config.{yaml,toml})
+        4. Hermes config fallback (~/.hermes/config.yaml)
+
+        Parsed instances are cached by file mtime to avoid repeated I/O.
         """
         if path:
             p = Path(path).expanduser().resolve()
@@ -219,46 +231,149 @@ class JSSettings(BaseSettings):
         else:
             p = None
 
+        instance: JSSettings | None = None
+        config_path: Path | None = None
+
         if p is not None:
-            # Guard against path traversal attempts
             if ".." in str(p):
                 raise ValueError(f"Path traversal not allowed: {p}")
             if not p.exists():
-                # Graceful fallback: return defaults so the app can still start
-                # (setup wizard will guide the user to create a proper config)
                 instance = cls()
-                instance._config_path = p  # type: ignore[attr-defined]
-                return instance
-            if p.suffix in (".yaml", ".yml"):
+                config_path = p
+            elif p.suffix in (".yaml", ".yml"):
+                # Check cache first
+                if p in _settings_file_cache:
+                    mtime, cached = _settings_file_cache[p]
+                    try:
+                        if p.stat().st_mtime == mtime:
+                            return cached
+                    except Exception:
+                        pass
                 import yaml
-
                 with open(p) as f:
                     data = yaml.safe_load(f) or {}
                 instance = cls(**data)
-                instance._config_path = p  # type: ignore[attr-defined]
-                return instance
+                config_path = p
             elif p.suffix == ".toml":
+                if p in _settings_file_cache:
+                    mtime, cached = _settings_file_cache[p]
+                    try:
+                        if p.stat().st_mtime == mtime:
+                            return cached
+                    except Exception:
+                        pass
                 import tomllib
-
                 with open(p, "rb") as f:
                     data = tomllib.load(f)
                 instance = cls(**data)
-                instance._config_path = p  # type: ignore[attr-defined]
-                return instance
+                config_path = p
 
-        # Try default locations
-        for candidate in [
-            Path.home() / ".config" / "js" / "config.yaml",
-            Path.home() / ".config" / "js" / "config.toml",
-        ]:
-            if candidate.exists():
-                instance = cls.from_file(candidate)
-                instance._config_path = candidate  # type: ignore[attr-defined]
-                return instance
+        if instance is None:
+            for candidate in [
+                Path.home() / ".config" / "js" / "config.yaml",
+                Path.home() / ".config" / "js" / "config.toml",
+            ]:
+                if candidate.exists():
+                    instance = cls.from_file(candidate)
+                    config_path = candidate
+                    break
 
-        instance = cls()
-        instance._config_path = Path.home() / ".config" / "js" / "config.yaml"  # type: ignore[attr-defined]
+        if instance is None:
+            instance = cls()
+            config_path = Path.home() / ".config" / "js" / "config.yaml"
+
+        instance._config_path = config_path  # type: ignore[attr-defined]
+        instance._merge_hermes()
+
+        # Cache by mtime
+        if config_path is not None and config_path.exists():
+            try:
+                _settings_file_cache[config_path] = (config_path.stat().st_mtime, instance)
+            except Exception:
+                pass
+
         return instance
+
+    def _merge_hermes(self) -> None:
+        """Overlay Hermes config (~/.hermes/config.yaml) when JS config is default."""
+        hermes_path = Path.home() / ".hermes" / "config.yaml"
+        if not hermes_path.exists():
+            return
+        try:
+            import yaml
+            with open(hermes_path, encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+        except Exception:
+            return
+
+        # Map Hermes model/provider → JS providers
+        existing_names = {p.name for p in self.providers}
+        model = raw.get("model", {})
+        default_model = model.get("default", "")
+        provider_name = model.get("provider", "")
+        base_url = model.get("base_url", "")
+        if provider_name and base_url and provider_name not in existing_names:
+            self.providers.append(
+                ModelProviderConfig(
+                    name=provider_name,
+                    base_url=base_url,
+                    default_model=default_model,
+                    models=[ModelConfig(id=default_model, name=default_model, provider=provider_name)]
+                    if default_model else [],
+                )
+            )
+            existing_names.add(provider_name)
+        for fb in raw.get("fallback_providers", []):
+            if isinstance(fb, dict):
+                fb_name = fb.get("provider", "")
+                fb_model = fb.get("model", "")
+                if fb_name and fb_name not in existing_names:
+                    self.providers.append(
+                        ModelProviderConfig(
+                            name=fb_name,
+                            base_url="",
+                            default_model=fb_model,
+                            models=[ModelConfig(id=fb_model, name=fb_model, provider=fb_name)]
+                            if fb_model else [],
+                        )
+                    )
+                    existing_names.add(fb_name)
+
+        # Map Hermes agent.max_turns → JS max_turns
+        agent = raw.get("agent", {})
+        hermes_turns = agent.get("max_turns")
+        if hermes_turns is not None and self.max_turns == 50:
+            self.max_turns = int(hermes_turns)
+
+        # Map Hermes terminal/tool limits → JS ToolLimits
+        terminal = raw.get("terminal", {})
+        tool_output = raw.get("tool_output", {})
+        if self.tools == ToolLimits():
+            self.tools = ToolLimits(
+                shell_timeout=float(terminal.get("timeout", 300.0)),
+                shell_max_output_bytes=int(tool_output.get("max_bytes", 50_000)),
+                shell_max_output_lines=int(tool_output.get("max_lines", 2000)),
+                file_read_max_chars=int(raw.get("file_read_max_chars", 100_000)),
+            )
+
+        # Map Hermes compression → JS MemoryConfig
+        compression = raw.get("compression", {})
+        if self.memory == MemoryConfig():
+            self.memory = MemoryConfig(
+                enabled=compression.get("enabled", True),
+                compression_threshold=float(compression.get("threshold", 0.7)),
+            )
+
+        # Map Hermes guardrails → JS SecurityConfig
+        guardrails = raw.get("tool_loop_guardrails", {})
+        hard = guardrails.get("hard_stop_after", {})
+        if self.security == SecurityConfig():
+            max_loop = max(
+                int(hard.get("exact_failure", 5)),
+                int(hard.get("same_tool_failure", 8)),
+                int(hard.get("idempotent_no_progress", 5)),
+            )
+            self.security = SecurityConfig(max_loop_iterations=max_loop)
 
     def save(
         self,

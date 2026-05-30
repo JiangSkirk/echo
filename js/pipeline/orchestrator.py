@@ -59,6 +59,11 @@ class AutoFetchOrchestrator:
         self._build_connectors()
         self._init_obsidian()
 
+    def register_connector(self, name: str, cls: type[Connector]) -> None:
+        """Dynamically register a connector class (OpenHuman-style extensibility)."""
+        _CONNECTOR_MAP[name] = cls
+        logger.info(f"Registered connector type: {name}")
+
     def _build_connectors(self) -> None:
         for name, cls in _CONNECTOR_MAP.items():
             src_cfg = self.config.sources.get(name)
@@ -138,42 +143,92 @@ class AutoFetchOrchestrator:
                 logger.error(f"Connector {connector.name} failed", exc_info=True)
 
     async def _ingest(self, result: ConnectorResult) -> None:
-        """Chunk and store a connector result."""
-        all_chunks: list[Chunk] = []
+        """Chunk, canonicalise, score, and store a connector result.
+
+        OpenHuman-style pipeline:
+        Canonicalise → Chunk (≤3k) → Store → Score → Summarise.
+        """
+        # 1. Canonicalise: provenance-tagged Markdown
+        canonical_items: list[str] = []
         for item in result.items:
+            canonical_items.append(self._canonicalize(item, result.source))
+
+        # 2. Chunk
+        all_chunks: list[Chunk] = []
+        for idx, raw in enumerate(result.items):
             chunks = self.chunker.chunk(
                 source=result.source,
-                title=item.get("title", "Untitled"),
-                content=item.get("content", ""),
-                url=item.get("url", ""),
+                title=raw.get("title", "Untitled"),
+                content=canonical_items[idx],
+                url=raw.get("url", ""),
                 metadata={
-                    "raw_id": item.get("id", ""),
+                    "raw_id": raw.get("id", ""),
                     "fetched_at": result.fetched_at.isoformat(),
-                    **item.get("metadata", {}),
+                    **raw.get("metadata", {}),
                 },
             )
             all_chunks.extend(chunks)
 
-        # Write to Obsidian
+        # 3. Score chunks by hotness/recency
+        scored_chunks = [(c, self._score_chunk(c, result.fetched_at)) for c in all_chunks]
+        scored_chunks.sort(key=lambda x: x[1], reverse=True)
+
+        # 4. Summarise top chunks per source
+        summary = await self._summarize_source(result.source, [c for c, _ in scored_chunks[:10]])
+
+        # 5. Write to Obsidian
         if self._obsidian:
             try:
-                self._obsidian.sync(all_chunks)
+                self._obsidian.sync([c for c, _ in scored_chunks])
+                if summary:
+                    logger.info(f"Source summary: {summary}")
             except Exception:
                 logger.warning("Obsidian sync failed", exc_info=True)
 
-        # Write to semantic memory (fire-and-forget to thread)
-        for chunk in all_chunks:
+        # 6. Write to semantic memory (fire-and-forget to thread)
+        for chunk, score in scored_chunks:
             try:
                 await asyncio.to_thread(
                     self.memory.store_semantic,
                     key=chunk.id,
                     value=f"# {chunk.title}\n\n{chunk.body}",
                     category="external",
-                    confidence=0.85,
+                    confidence=min(0.95, 0.7 + score * 0.25),
                     source=chunk.source,
                 )
             except Exception:
                 logger.warning(f"Memory store failed for {chunk.id}", exc_info=True)
+
+    def _canonicalize(self, item: dict[str, Any], source: str) -> str:
+        """Normalise connector output into provenance-tagged Markdown."""
+        lines = [
+            f"## {item.get('title', 'Untitled')}",
+            "",
+            item.get("content", "").strip(),
+            "",
+            f"_Source: {source} | ID: {item.get('id', 'n/a')}_",
+        ]
+        return "\n".join(lines)
+
+    def _score_chunk(self, chunk: Chunk, fetched_at: datetime) -> float:
+        """Hotness scoring: recency + content density.
+
+        Returns 0.0-1.0. Higher = more likely to be relevant.
+        """
+        age_hours = (datetime.now(UTC) - fetched_at).total_seconds() / 3600
+        recency = max(0.0, 1.0 - age_hours / 24.0)  # Decay over 24h
+        density = min(1.0, len(chunk.body) / 1000.0)  # Reward denser content
+        return recency * 0.6 + density * 0.4
+
+    async def _summarize_source(self, source: str, chunks: list[Chunk]) -> str | None:
+        """Generate a per-source summary from top-scored chunks."""
+        if not chunks:
+            return None
+        # Simple rule-based summary; can be upgraded to LLM summary
+        titles = [c.title for c in chunks if c.title]
+        if not titles:
+            return None
+        return f"**{source}** — {len(chunks)} items: " + ", ".join(titles[:5])
 
     async def refresh(self, _query: str = "") -> dict[str, Any]:
         """On-demand refresh, optionally biased by *query*."""

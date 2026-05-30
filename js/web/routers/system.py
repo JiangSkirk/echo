@@ -8,7 +8,7 @@ import signal
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 
@@ -17,11 +17,8 @@ from js.agent import JSAgent
 from js.config import JSSettings
 from js.utils.log import get_logger
 from js.web.auth import require_auth_dep
-from js.web.deps import get_agent, set_globals
+from js.web.deps import get_agent, get_settings, set_globals
 from js.web.stats_store import TokenStatsStore
-
-if TYPE_CHECKING:
-    from js.orchestration.fleet import AgentFleet
 
 logger = get_logger("js.web")
 
@@ -33,15 +30,7 @@ SERVER_VERSION = f"{__version__}+evolution"
 _agent: JSAgent | None = None
 _settings: JSSettings | None = None
 _stats_store: TokenStatsStore | None = None
-_fleet: Any | None = None
 
-_agent_config: dict[str, str] = {
-    "orchestrator": "",
-    "coder": "",
-    "reviewer": "",
-    "researcher": "",
-    "tester": "",
-}
 
 def _get_app_routes() -> list[dict[str, Any]]:
     return []
@@ -60,24 +49,6 @@ def _load_index_html() -> str:
     if path.exists():
         return path.read_text(encoding="utf-8")
     return "<h1>Template not found</h1>"
-
-
-def get_fleet() -> AgentFleet:
-    global _fleet
-    if _fleet is None:
-        from js.orchestration.fleet import AgentFleet
-
-        settings = _settings
-        if settings is None:
-            try:
-                settings = JSSettings.from_file()
-            except Exception as e:
-                raise HTTPException(503, f"Settings not loaded: {e}") from e
-        try:
-            _fleet = AgentFleet(settings, agent_config=_agent_config)
-        except Exception as e:
-            raise HTTPException(500, f"Failed to initialize fleet: {e}") from e
-    return _fleet
 
 
 @asynccontextmanager
@@ -264,26 +235,166 @@ async def diag(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, An
     }
 
 
+@router.get("/api/dashboard")
+async def dashboard(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+    """Real-time dashboard aggregating model status, providers, tokens, and system health."""
+    agent = get_agent()
+    health = await agent.router.health_check()
+
+    # Provider details with circuit breaker state
+    providers: list[dict[str, Any]] = []
+    for p in agent.settings.providers:
+        prov_health = health.get(p.name, False)
+        # Try to get circuit breaker stats if available
+        circuit_info: dict[str, Any] = {"state": "unknown"}
+        try:
+            prov = agent.router._providers.get(p.name)
+            if prov and hasattr(prov, "circuit"):
+                cb = prov.circuit
+                can_exec = True
+                try:
+                    _can = cb.can_execute
+                    if callable(_can):
+                        can_exec = await _can() if asyncio.iscoroutinefunction(_can) else _can()
+                except Exception:
+                    pass
+                # Get actual circuit state value (state is async method)
+                try:
+                    _state_val = await cb.state() if asyncio.iscoroutinefunction(cb.state) else cb.state
+                except Exception:
+                    _state_val = getattr(cb, '_state', 'unknown')
+                circuit_info = {
+                    "state": _state_val.name if hasattr(_state_val, "name") else str(_state_val),
+                    "failures": getattr(cb, "failure_count", getattr(cb, "_failures", 0)),
+                    "last_failure": getattr(cb, "last_failure_time", getattr(cb, "_last_failure_time", None)),
+                    "can_execute": can_exec,
+                }
+        except Exception:
+            pass
+
+        latency = {"p50_ms": None, "p95_ms": None, "p99_ms": None, "count": 0}
+        try:
+            from prometheus_client import REGISTRY
+            for family in REGISTRY.collect():
+                if family.name == "model_latency_seconds":
+                    for sample in family.samples:
+                        if sample.labels.get("provider") == p.name and sample.name.endswith("_count"):
+                            latency["count"] = int(sample.value)
+                        if sample.labels.get("provider") == p.name and sample.name.endswith("_sum"):
+                            pass
+        except Exception:
+            pass
+
+        providers.append({
+            "name": p.name,
+            "base_url": p.base_url,
+            "healthy": prov_health,
+            "default_model": p.default_model,
+            "models_count": len(p.models),
+            "circuit": circuit_info,
+            "latency": latency,
+        })
+
+    # Active model
+    active_model = ""
+    try:
+        active_model = agent.settings.default_model or ""  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    # Token stats (today + total)
+    token_stats: dict[str, Any] = {"today": {}, "total": {}}
+    if _stats_store is not None:
+        try:
+            total = _stats_store.get_summary(days=30)
+            token_stats["total"] = {
+                "calls": total.get("total_calls", 0),
+                "prompt_tokens": total.get("total_prompt_tokens", 0),
+                "completion_tokens": total.get("total_completion_tokens", 0),
+                "cost": round(total.get("total_cost", 0.0), 6),
+                "cache_rate": total.get("cache_rate", 0.0),
+            }
+            token_stats["per_model"] = total.get("per_model", [])
+            token_stats["daily_trend"] = total.get("daily_trend", [])
+        except Exception:
+            pass
+
+    # Tool stats
+    tool_stats = agent.registry.get_stats()
+
+    # Session count
+    session_count = 0
+    try:
+        session_count = len(agent.memory.get_sessions(limit=1000))
+    except Exception:
+        pass
+
+    # Embedder health
+    embedder_health = agent.memory.embedder.health()
+
+    # Fleet status (if available)
+    fleet_info: dict[str, Any] = {"enabled": False}
+    try:
+        from js.web.routers.fleet import get_fleet
+
+        f = get_fleet()
+        fleet_info = {
+            "enabled": True,
+            "agents": len(getattr(f, "agents", {})),
+            "max_agents": getattr(f, "max_agents", 0),
+        }
+    except Exception:
+        pass
+
+    # Skill counts
+    skill_counts = {"total": 0, "builtin": 0, "hermes": 0}
+    try:
+        all_skills = agent.skills.get_all()
+        skill_counts["total"] = len(all_skills)
+        skill_counts["hermes"] = sum(1 for s in all_skills.values() if s.id.startswith("hermes:"))
+        skill_counts["builtin"] = sum(1 for s in all_skills.values() if getattr(s, "trust_level", None) and getattr(s.trust_level, "value", "") == "builtin")
+    except Exception:
+        pass
+
+    return {
+        "version": SERVER_VERSION,
+        "active_model": active_model,
+        "overall_healthy": any(p["healthy"] for p in providers),
+        "degraded": agent.degraded,
+        "providers": providers,
+        "token_stats": token_stats,
+        "tool_stats": tool_stats,
+        "session_count": session_count,
+        "embedder": {
+            "provider": embedder_health.provider,
+            "active": embedder_health.active,
+            "fallback": embedder_health.fallback_provider,
+            "failures": embedder_health.failure_count,
+        },
+        "fleet": fleet_info,
+        "skills": skill_counts,
+        "timestamp": asyncio.get_event_loop().time(),
+    }
+
+
 @router.get("/api/setup/first-start")
 async def setup_first_start(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-    if _settings is None:
-        return {"first_run_completed": False}
-    return {"first_run_completed": _settings.first_run_completed}
+    settings = get_settings()
+    return {"first_run_completed": settings.first_run_completed}
 
 
 @router.post("/api/setup/complete")
 async def setup_complete(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-    if _settings is None:
-        raise HTTPException(503, "Settings not initialized")
-    _settings.first_run_completed = True
+    settings = get_settings()
+    settings.first_run_completed = True
     try:
         # Use field-restricted save so we don't clobber providers/models/paths
-        await asyncio.to_thread(_settings.save, None, ["first_run_completed"])
+        await asyncio.to_thread(settings.save, None, ["first_run_completed"])
     except PermissionError:
         # Fallback: save to state_dir/config.yaml when home dir is not writable
         try:
-            fallback = _settings.state_dir / "config.yaml"
-            await asyncio.to_thread(_settings.save, fallback, ["first_run_completed"])
+            fallback = settings.state_dir / "config.yaml"
+            await asyncio.to_thread(settings.save, fallback, ["first_run_completed"])
         except OSError as e:
             raise HTTPException(
                 500,

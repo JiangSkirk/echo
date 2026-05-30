@@ -1,12 +1,33 @@
-let sessionId = null;
-let ws = null;
-let currentTab = 'chat';
-let selectedModel = localStorage.getItem('js-selected-model') || '';
-let availableModels = [];
+import { state } from './state/store.js';
+import { escapeHtml, showToast, toggleSidebar, showLoading, showError } from './utils/dom.js';
+import { renderMarkdown } from './utils/markdown.js';
+import { loadStats } from './tabs/stats.js';
+import { loadSearch, doSearch } from './tabs/search.js';
+import { loadDashboard } from './tabs/dashboard.js';
+import { loadEvolution, runEvolutionNow } from './tabs/evolution.js';
+import { loadSkills, showSkillDetail, closeSkillModal, updateTrust, uninstallSkill } from './tabs/skills.js';
+import {
+  setCurrentModel, toggleAddProvider, discoverModels, loadCloudPresets,
+  onCloudPresetChange, testCloudProvider, addCloudProvider,
+  saveProvider, deleteProvider, switchModel, loadModels,
+} from './tabs/models.js';
+import { loadFiles } from './tabs/files.js';
+import { loadStatus } from './tabs/status.js';
+import { loadAudit } from './tabs/audit.js';
+import { loadAgents } from './tabs/agents.js';
+import {
+  loadMemory, renderSemanticMemoryItem, editSemanticMemory, saveSemanticMemory,
+  deleteSemanticMemory, recoverEmbedder, searchSemantic, showAddSemanticModal,
+  submitSemanticMemory, openMemoryFileEditor, closeMemoryFileEditor, saveMemoryFile,
+} from './tabs/memory.js';
+import {
+  refreshCronJobs, renderCronJobs, runCronJob, toggleCronJob, deleteCronJob,
+  loadCronTemplates, showCronCreateModal, hideCronCreateModal,
+  onCronTemplateChange, parseCronNatural, submitCronJob,
+} from './tabs/cron.js';
 
-// ===== First-Start Wizard =====
-let wizardStep = 1;
-let wizardSelectedModel = '';
+let wizardStep = state.wizardStep;
+let wizardSelectedModel = state.wizardSelectedModel;
 
 async function checkFirstStart() {
   // Skip if already completed locally
@@ -72,7 +93,7 @@ async function wizardComplete() {
     hideWizard();
     showToast('设置完成，欢迎使用！');
   } catch (e) {
-    showToast('完成设置失败: ' + e.message, true);
+    showToast('完成设置失败: ' + e.message, 'error');
   }
 }
 
@@ -84,14 +105,36 @@ async function loadWizardModels() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     const flatModels = [];
+    // Configured providers
     if (data.providers) {
       data.providers.forEach(p => {
+        const statusIcon = p.healthy ? '🟢' : (p.has_key ? '🔴' : '🟡');
         p.models.forEach(m => {
           flatModels.push({
             id: `${p.name}/${m.id}`,
             name: `${p.name}/${m.name || m.id}`,
             provider: p.name,
             contextWindow: m.context_window,
+            statusIcon,
+            healthy: p.healthy,
+            hasKey: p.has_key,
+          });
+        });
+      });
+    }
+    // Presets (not configured)
+    if (data.presets) {
+      data.presets.forEach(preset => {
+        preset.models.forEach(m => {
+          flatModels.push({
+            id: `${preset.id}/${m.id}`,
+            name: `${preset.id}/${m.name || m.id}`,
+            provider: preset.id,
+            contextWindow: m.context_window,
+            statusIcon: '⚪',
+            healthy: false,
+            hasKey: false,
+            isPreset: true,
           });
         });
       });
@@ -105,8 +148,8 @@ async function loadWizardModels() {
       <label class="flex items-center gap-3 bg-gray-800 rounded-lg px-3 py-2 cursor-pointer hover:bg-gray-700 transition border border-transparent ${wizardSelectedModel === m.id ? 'border-blue-500' : ''}">
         <input type="radio" name="wizard-model" value="${escapeHtml(m.id)}" ${wizardSelectedModel === m.id ? 'checked' : ''} onchange="wizardSelectModel('${escapeHtml(m.id)}')" class="accent-blue-500">
         <div class="flex-1">
-          <div class="text-sm font-medium">${escapeHtml(m.name)}</div>
-          <div class="text-xs text-gray-500">Provider: ${escapeHtml(m.provider)} · 上下文: ${m.contextWindow || '--'} tokens</div>
+          <div class="text-sm font-medium">${m.statusIcon} ${escapeHtml(m.name)}</div>
+          <div class="text-xs text-gray-500">Provider: ${escapeHtml(m.provider)} · 上下文: ${m.contextWindow || '--'} tokens ${m.isPreset ? '· 未配置' : ''}</div>
         </div>
       </label>
     `).join('');
@@ -127,22 +170,22 @@ function wizardSelectModel(modelId) {
 }
 
 // ===== File Attachments =====
-let pendingAttachments = []; // { id, path, name, type, size, previewUrl? }
+state.pendingAttachments = []; // { id, path, name, type, size, previewUrl? }
 
 function connectWS() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-  ws.onopen = () => {
+  state.ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+  state.ws.onopen = () => {
     document.getElementById('conn-status').innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span> <span class="text-green-400">已连接</span>';
   };
-  ws.onclose = () => {
+  state.ws.onclose = () => {
     document.getElementById('conn-status').innerHTML = '<span class="w-2 h-2 rounded-full bg-red-500"></span> <span class="text-red-400">断开 - 重连中...</span>';
     setTimeout(connectWS, 3000);
   };
-  ws.onerror = () => {
+  state.ws.onerror = () => {
     document.getElementById('conn-status').innerHTML = '<span class="w-2 h-2 rounded-full bg-yellow-500"></span> <span class="text-yellow-400">连接错误</span>';
   };
-  ws.onmessage = (e) => {
+  state.ws.onmessage = (e) => {
     let data;
     try {
       data = JSON.parse(e.data);
@@ -153,20 +196,22 @@ function connectWS() {
     if (data.type === 'token') {
       appendToken(data.content);
     } else if (data.type === 'response') {
-      sessionId = data.session_id;
-      finishResponse(data.content);
+      state.sessionId = data.session_id;
+      finishResponse(data.content, data.model);
     } else if (data.type === 'done') {
-      if (data.session_id) sessionId = data.session_id;
+      if (data.session_id) state.sessionId = data.session_id;
       finishStream();
     } else if (data.type === 'status') {
       showTyping();
+    } else if (data.type === 'progress') {
+      showProgress(data.tool, data.preview);
     } else if (data.type === 'error') {
       appendMessage('system', '错误: ' + data.content);
     }
   };
 }
 
-function appendMessage(role, content) {
+function appendMessage(role, content, model) {
   const container = document.getElementById('chat-messages');
   const div = document.createElement('div');
   div.className = `flex ${role === 'user' ? 'justify-end' : 'justify-start'}`;
@@ -174,6 +219,13 @@ function appendMessage(role, content) {
   bubble.className = `max-w-3xl px-4 py-3 rounded-2xl ${role === 'user' ? 'msg-user text-white rounded-br-md' : 'msg-assistant text-gray-200 rounded-bl-md markdown'}`;
   bubble.innerHTML = role === 'user' ? escapeHtml(content) : renderMarkdown(content);
   div.appendChild(bubble);
+  // Model label for assistant messages
+  if (role === 'assistant' && model) {
+    const label = document.createElement('div');
+    label.className = 'text-xs text-gray-500 mt-1 ml-1';
+    label.textContent = model;
+    div.appendChild(label);
+  }
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
   return bubble;
@@ -191,58 +243,322 @@ function showTyping() {
   container.scrollTop = container.scrollHeight;
 }
 
-let currentBubble = null;
-let streamBuffer = '';
+function showProgress(tool, preview) {
+  const container = document.getElementById('chat-messages');
+  let indicator = document.getElementById('typing-indicator');
+  if (!indicator) {
+    indicator = document.createElement('div');
+    indicator.id = 'typing-indicator';
+    indicator.className = 'flex justify-start';
+    container.appendChild(indicator);
+  }
+  const toolLabels = {
+    web_navigate: '正在打开网页',
+    web_snapshot: '正在获取页面结构',
+    web_click: '正在点击元素',
+    web_fill: '正在填写内容',
+    web_screenshot: '正在截图',
+    web_evaluate: '正在执行脚本',
+    web_extract_text: '正在提取页面内容',
+    web_find_tab: '正在查找标签页',
+    web_list_tabs: '正在列出标签页',
+    file_read: '正在读取文件',
+    file_write: '正在写入文件',
+    file_edit: '正在编辑文件',
+    shell: '正在执行命令',
+    python: '正在运行代码',
+    browser_fetch: '正在获取网页',
+    web_search: '正在搜索',
+  };
+  const label = toolLabels[tool] || ('正在执行: ' + tool);
+  const previewText = preview ? preview.substring(0, 60) : '';
+  indicator.innerHTML = `<div class="msg-assistant px-4 py-2 rounded-2xl rounded-bl-md text-sm text-gray-300">${escapeHtml(label)}${previewText ? ' — ' + escapeHtml(previewText) : ''}</div>`;
+  container.scrollTop = container.scrollHeight;
+}
 
-function appendToken(token) {
+state.currentBubble = null;
+state.streamBuffer = '';
+state.inThinking = false;
+state.thinkingBuffer = '';
+state.responseBuffer = '';
+state.thinkingBlock = null;
+state.responseSpan = null;
+state.tokenRAF = null;
+
+const THINK_START_TAGS = ['<think>', '<thinking>', '<reasoning>', '<thought>'];
+const THINK_END_TAGS = ['</think>', '</thinking>', '</reasoning>', '</thought>'];
+
+function _checkThinkingTransition(text) {
+  for (const tag of THINK_START_TAGS) {
+    const idx = text.indexOf(tag);
+    if (idx !== -1) return { type: 'start', tag, index: idx };
+  }
+  for (const tag of THINK_END_TAGS) {
+    const idx = text.indexOf(tag);
+    if (idx !== -1) return { type: 'end', tag, index: idx };
+  }
+  return null;
+}
+
+function _ensureThinkingBlock() {
+  if (!state.thinkingBlock) {
+    state.thinkingBlock = document.createElement('details');
+    state.thinkingBlock.className = 'thinking-block';
+    state.thinkingBlock.open = true;
+    state.thinkingBlock.innerHTML = `
+      <summary><i class="fas fa-brain mr-1"></i>思考过程 <span class="thinking-status"></span></summary>
+      <div class="thinking-content"></div>
+    `;
+    if (state.currentBubble) {
+      state.currentBubble.insertBefore(state.thinkingBlock, state.currentBubble.firstChild);
+    }
+  }
+}
+
+function _flushTokenQueue() {
+  state.tokenRAF = null;
   const indicator = document.getElementById('typing-indicator');
   if (indicator) indicator.remove();
-  if (!currentBubble) {
-    currentBubble = appendMessage('assistant', '');
-    currentBubble.id = 'streaming-bubble';
+
+  if (!state.currentBubble) {
+    state.currentBubble = appendMessage('assistant', '');
+    state.currentBubble.id = 'streaming-bubble';
+    state.currentBubble.classList.add('typing-cursor');
   }
-  streamBuffer += token;
-  currentBubble.innerHTML = renderMarkdown(streamBuffer);
+
+  const buf = state.streamBuffer;
+  state.streamBuffer = '';
+
+  // Process thinking tags in accumulated buffer
+  let remaining = buf;
+  while (remaining.length > 0) {
+    const trans = _checkThinkingTransition(remaining);
+    if (!trans) {
+      if (state.inThinking) {
+        state.thinkingBuffer += remaining;
+        if (state.thinkingBlock) {
+          const tc = state.thinkingBlock.querySelector('.thinking-content');
+          if (tc) tc.textContent = state.thinkingBuffer;
+        }
+      } else {
+        state.responseBuffer += remaining;
+        if (!state.responseSpan) {
+          state.responseSpan = document.createElement('span');
+          state.responseSpan.className = 'response-span';
+          state.currentBubble.appendChild(state.responseSpan);
+        }
+        state.responseSpan.textContent = state.responseBuffer;
+      }
+      break;
+    }
+
+    const before = remaining.slice(0, trans.index);
+    if (state.inThinking) {
+      state.thinkingBuffer += before;
+      if (state.thinkingBlock) {
+        const tc = state.thinkingBlock.querySelector('.thinking-content');
+        if (tc) tc.textContent = state.thinkingBuffer;
+      }
+    } else {
+      state.responseBuffer += before;
+      if (!state.responseSpan) {
+        state.responseSpan = document.createElement('span');
+        state.responseSpan.className = 'response-span';
+        state.currentBubble.appendChild(state.responseSpan);
+      }
+      state.responseSpan.textContent = state.responseBuffer;
+    }
+
+    if (trans.type === 'start') {
+      state.inThinking = true;
+      state.thinkingBuffer = '';
+      _ensureThinkingBlock();
+      remaining = remaining.slice(trans.index + trans.tag.length);
+    } else {
+      state.inThinking = false;
+      if (state.thinkingBlock) {
+        state.thinkingBlock.open = false;
+      }
+      remaining = remaining.slice(trans.index + trans.tag.length);
+    }
+  }
+
   const container = document.getElementById('chat-messages');
   container.scrollTop = container.scrollHeight;
 }
 
-function finishResponse(content) {
+function appendToken(token) {
+  state.streamBuffer += token;
+  if (!state.tokenRAF) {
+    state.tokenRAF = requestAnimationFrame(_flushTokenQueue);
+  }
+}
+
+function _finalizeStreamBubble(model) {
+  if (!state.currentBubble) return;
+  state.currentBubble.classList.remove('typing-cursor');
+  state.currentBubble.id = '';
+
+  // Combine thinking + response and render as markdown
+  let fullText = '';
+  if (state.thinkingBlock) {
+    const tc = state.thinkingBlock.querySelector('.thinking-content');
+    if (tc) {
+      const thinkText = tc.textContent;
+      if (thinkText) fullText += '<think>\n' + thinkText + '\n</think>\n\n';
+    }
+  }
+  fullText += state.responseBuffer;
+
+  state.currentBubble.innerHTML = renderMarkdown(fullText);
+
+  // Add model label
+  if (model && state.currentBubble.parentElement) {
+    const existing = state.currentBubble.parentElement.querySelector('.model-label');
+    if (!existing) {
+      const label = document.createElement('div');
+      label.className = 'model-label text-xs text-gray-500 mt-1 ml-1';
+      label.textContent = model;
+      state.currentBubble.parentElement.appendChild(label);
+    }
+  }
+
+  state.currentBubble = null;
+  state.streamBuffer = '';
+  state.inThinking = false;
+  state.thinkingBuffer = '';
+  state.responseBuffer = '';
+  state.thinkingBlock = null;
+  state.responseSpan = null;
+}
+
+function finishResponse(content, model) {
   const indicator = document.getElementById('typing-indicator');
   if (indicator) indicator.remove();
-  if (!currentBubble) {
-    appendMessage('assistant', content);
+  if (state.tokenRAF) {
+    cancelAnimationFrame(state.tokenRAF);
+    state.tokenRAF = null;
+  }
+  if (!state.currentBubble) {
+    appendMessage('assistant', content, model);
   } else {
-    currentBubble.innerHTML = renderMarkdown(content || streamBuffer);
-    currentBubble.id = '';
-    currentBubble = null;
-    streamBuffer = '';
+    _finalizeStreamBubble(model);
   }
   const container = document.getElementById('chat-messages');
   container.scrollTop = container.scrollHeight;
 }
 
 function finishStream() {
-  if (currentBubble) {
-    currentBubble.id = '';
-    currentBubble = null;
+  const indicator = document.getElementById('typing-indicator');
+  if (indicator) indicator.remove();
+  if (state.tokenRAF) {
+    cancelAnimationFrame(state.tokenRAF);
+    state.tokenRAF = null;
   }
-  streamBuffer = '';
+  if (state.currentBubble) {
+    _finalizeStreamBubble();
+  }
+}
+
+function toggleFleetMode() {
+  state.fleetMode = !state.fleetMode;
+  localStorage.setItem('js-fleet-mode', state.fleetMode ? '1' : '0');
+
+  const singleIndicator = document.getElementById('mode-indicator-single');
+  const fleetIndicator = document.getElementById('mode-indicator-fleet');
+  const modeSelect = document.getElementById('fleet-mode-select');
+  const toggleLabel = document.getElementById('mode-toggle-label');
+
+  if (singleIndicator) singleIndicator.classList.toggle('hidden', state.fleetMode);
+  if (fleetIndicator) fleetIndicator.classList.toggle('hidden', !state.fleetMode);
+  if (modeSelect) modeSelect.classList.toggle('hidden', !state.fleetMode);
+  if (toggleLabel) toggleLabel.textContent = state.fleetMode ? '切换至单模型' : '切换至集群';
+
+  const input = document.getElementById('chat-input');
+  if (input) {
+    input.placeholder = state.fleetMode
+      ? '输入复杂任务，多个AI Agent会分工协作完成...'
+      : '输入消息... (Shift+Enter 换行, Enter 发送，或直接拖拽文件到页面)';
+  }
+
+  const container = document.getElementById('chat-messages');
+  if (container) {
+    container.innerHTML = '';
+    if (state.fleetMode) {
+      appendMessage('system', '🚀 已切换到 Agent 集群协作模式。输入复杂任务，多个AI Agent会分工协作完成。');
+    } else {
+      appendMessage('system', '💬 已切换到单模型对话模式。');
+    }
+  }
+
+  state.currentFleetSessionId = null;
+  showToast(state.fleetMode ? '已开启 Agent 集群协作模式' : '已切换到单模型对话模式', 'success');
+}
+
+function restoreFleetMode() {
+  if (localStorage.getItem('js-fleet-mode') === '1') {
+    state.fleetMode = true;
+    const singleIndicator = document.getElementById('mode-indicator-single');
+    const fleetIndicator = document.getElementById('mode-indicator-fleet');
+    const modeSelect = document.getElementById('fleet-mode-select');
+    const toggleLabel = document.getElementById('mode-toggle-label');
+    const input = document.getElementById('chat-input');
+    if (singleIndicator) singleIndicator.classList.add('hidden');
+    if (fleetIndicator) fleetIndicator.classList.remove('hidden');
+    if (modeSelect) modeSelect.classList.remove('hidden');
+    if (toggleLabel) toggleLabel.textContent = '切换至单模型';
+    if (input) input.placeholder = '输入复杂任务，多个AI Agent会分工协作完成...';
+    const container = document.getElementById('chat-messages');
+    if (container && container.children.length === 0) {
+      appendMessage('system', '🚀 Agent 集群协作模式。输入复杂任务，多个AI Agent会分工协作完成。');
+    }
+  }
 }
 
 function sendMessage() {
   const input = document.getElementById('chat-input');
   const text = input.value.trim();
-  if (!text && pendingAttachments.length === 0) return;
+  if (!text && state.pendingAttachments.length === 0) return;
 
   // Build display text with attachment names
   let displayText = text || '';
-  if (pendingAttachments.length > 0) {
-    const attNames = pendingAttachments.map(a => `[${a.name}]`).join(' ');
+  if (state.pendingAttachments.length > 0) {
+    const attNames = state.pendingAttachments.map(a => `[${a.name}]`).join(' ');
     displayText = (text ? text + ' ' : '') + attNames;
   }
 
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
+  // Fleet mode: multi-agent collaboration
+  if (state.fleetMode) {
+    if (!state.fleetWS || state.fleetWS.readyState !== WebSocket.OPEN) {
+      connectFleetWS();
+      appendMessage('system', '正在建立协作连接，请稍候再试...');
+      return;
+    }
+    input.value = '';
+    appendMessage('user', displayText);
+
+    const modeSelect = document.getElementById('fleet-mode-select');
+    const mode = modeSelect ? modeSelect.value : 'auto';
+
+    if (state.currentFleetSessionId) {
+      state.fleetWS.send(JSON.stringify({
+        type: 'continue',
+        task: text,
+        session_id: state.currentFleetSessionId,
+      }));
+    } else {
+      state.fleetWS.send(JSON.stringify({
+        type: 'collaborate',
+        task: text,
+        subtasks: [],
+        mode: mode,
+      }));
+    }
+    clearAttachments();
+    return;
+  }
+
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
     appendMessage('system', '连接已断开，请等待重连或刷新页面');
     return;
   }
@@ -251,12 +567,12 @@ function sendMessage() {
   appendMessage('user', displayText);
   showTyping();
 
-  ws.send(JSON.stringify({
+  state.ws.send(JSON.stringify({
     type: 'message',
     content: text,
-    session_id: sessionId,
-    model: selectedModel || null,
-    attachments: pendingAttachments.map(a => a.path),
+    session_id: state.sessionId,
+    model: state.selectedModel || null,
+    attachments: state.pendingAttachments.map(a => a.path),
   }));
 
   // Clear attachments after sending
@@ -264,10 +580,10 @@ function sendMessage() {
 }
 
 function clearAttachments() {
-  pendingAttachments.forEach(a => {
+  state.pendingAttachments.forEach(a => {
     if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
   });
-  pendingAttachments = [];
+  state.pendingAttachments = [];
   document.getElementById('attachment-bar').innerHTML = '';
   updateAttachmentBar();
 }
@@ -299,7 +615,7 @@ async function handleFileSelect(files) {
   if (successes.length > 0) {
     // Add to pending attachments
     successes.forEach(r => {
-      pendingAttachments.push(r.attachment);
+      state.pendingAttachments.push(r.attachment);
       addAttachmentCard(r.attachment);
     });
     // Show in chat messages
@@ -457,18 +773,18 @@ function addAttachmentCard(att) {
     nameHtml = `<span class="truncate text-gray-300" title="${escapeHtml(att.name)} (${formatFileSize(att.size)})">${escapeHtml(att.name)}</span>`;
   }
 
-  card.innerHTML = `${iconHtml}${nameHtml}<button onclick="removeAttachment('${att.id}')" class="ml-1 text-gray-500 hover:text-red-400 transition flex-shrink-0" title="移除"><i class="fas fa-times"></i></button>`;
+  card.innerHTML = `${iconHtml}${nameHtml}<button onclick="removeAttachment('${escapeHtml(att.id)}')" class="ml-1 text-gray-500 hover:text-red-400 transition flex-shrink-0" title="移除"><i class="fas fa-times"></i></button>`;
   bar.appendChild(card);
   updateAttachmentBar();
 }
 
 function removeAttachment(id) {
-  const idx = pendingAttachments.findIndex(a => a.id === id);
+  const idx = state.pendingAttachments.findIndex(a => a.id === id);
   if (idx >= 0) {
-    if (pendingAttachments[idx].previewUrl) {
-      URL.revokeObjectURL(pendingAttachments[idx].previewUrl);
+    if (state.pendingAttachments[idx].previewUrl) {
+      URL.revokeObjectURL(state.pendingAttachments[idx].previewUrl);
     }
-    pendingAttachments.splice(idx, 1);
+    state.pendingAttachments.splice(idx, 1);
   }
   const card = document.getElementById(id);
   if (card) card.remove();
@@ -533,7 +849,7 @@ function initDragDrop() {
 }
 
 function newSession() {
-  sessionId = null;
+  state.sessionId = null;
   document.getElementById('chat-messages').innerHTML = '';
   appendMessage('system', '新会话已开始');
 }
@@ -574,7 +890,7 @@ async function loadSessions() {
     }
     container.innerHTML = sessions.map(s => {
       const summary = (s.summary || '无摘要').replace(/\n/g, ' ').slice(0, 40);
-      const isActive = s.session_id === sessionId;
+      const isActive = s.session_id === state.sessionId;
       const msgCount = s.message_count || 0;
       const countBadge = msgCount > 0 ? `<span class="text-[10px] text-gray-600 ml-1">(${msgCount})</span>` : '';
       return `<div class="session-item mx-2 px-3 py-1.5 rounded text-xs flex items-center justify-between gap-1 ${isActive ? 'bg-blue-900/40 text-blue-300' : 'text-gray-400'}" title="${escapeHtml(summary)}">
@@ -590,7 +906,7 @@ async function loadSessions() {
 }
 
 async function switchSession(sid) {
-  sessionId = sid;
+  state.sessionId = sid;
   switchTab('chat');
   const container = document.getElementById('chat-messages');
   container.innerHTML = '';
@@ -608,7 +924,7 @@ async function switchSession(sid) {
       appendMessage('system', '该会话为空，已自动清理');
       try {
         await fetch('/api/sessions/' + encodeURIComponent(sid), { method: 'DELETE' });
-        if (sessionId === sid) sessionId = null;
+        if (state.sessionId === sid) state.sessionId = null;
       } catch (e) {
         console.error('Auto-delete empty session failed:', e);
       }
@@ -633,15 +949,15 @@ async function deleteSession(sid) {
   try {
     const res = await fetch('/api/sessions/' + encodeURIComponent(sid), { method: 'DELETE' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    if (sessionId === sid) {
-      sessionId = null;
+    if (state.sessionId === sid) {
+      state.sessionId = null;
       document.getElementById('chat-messages').innerHTML = '';
       appendMessage('system', '会话已删除');
     }
     showToast('会话已删除');
     loadSessions();
   } catch (e) {
-    showToast('删除失败: ' + e.message, true);
+    showToast('删除失败: ' + e.message, 'error');
   }
 }
 
@@ -665,1684 +981,674 @@ function switchTab(tab) {
   });
   const navBtn = document.getElementById(`nav-${tab}`);
   if (navBtn) navBtn.classList.add('text-blue-400', 'bg-gray-800/50');
-  currentTab = tab;
+  state.currentTab = tab;
 
   if (tab === 'files') loadFiles();
   if (tab === 'memory') loadMemory();
   if (tab === 'audit') loadAudit();
   if (tab === 'status') loadStatus();
+  if (tab === 'dashboard') loadDashboard();
   if (tab === 'skills') loadSkills();
   if (tab === 'agents') loadAgents();
   if (tab === 'evolution') loadEvolution();
-  if (tab === 'models') loadModels();
+  if (tab === 'models') { loadModels(); loadCloudPresets().catch(e => console.error('[switchTab] loadCloudPresets failed:', e)); }
   if (tab === 'search') loadSearch();
   if (tab === 'stats') loadStats();
 }
 
-function showLoading(id, text = '加载中...') {
-  const el = document.getElementById(id);
-  if (el) el.innerHTML = `<div class="text-gray-400 text-sm"><i class="fas fa-spinner fa-spin mr-2"></i>${text}</div>`;
+// Dashboard state
+let dashboardTimer = null;
+
+state.currentSkillId = null;
+
+
+// ═══════════════════════════════════════════════════════════════
+//  Simplified Fleet Collaboration
+// ═══════════════════════════════════════════════════════════════
+let fleetReconnectDelay = 3000;
+
+const ROLE_META = {
+  worker:   { label: '执行', icon: 'fa-hammer', color: '#3b82f6', bg: 'bg-blue-500' },
+  reviewer: { label: '审查', icon: 'fa-eye', color: '#eab308', bg: 'bg-yellow-500' },
+};
+
+function getRoleMeta(role) { return ROLE_META[role] || ROLE_META.worker; }
+
+function connectFleetWS() {
+  if (state.fleetWS && state.fleetWS.readyState === WebSocket.OPEN) return;
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  state.fleetWS = new WebSocket(`${protocol}//${window.location.host}/ws/fleet`);
+
+  state.fleetWS.onopen = () => {
+    fleetReconnectDelay = 3000;
+    const el = document.getElementById('fleet-conn-status');
+    if (el) el.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span> <span class="text-green-400">已连接</span>';
+  };
+
+  state.fleetWS.onclose = () => {
+    const el = document.getElementById('fleet-conn-status');
+    if (el) el.innerHTML = '<span class="w-2 h-2 rounded-full bg-red-500"></span> <span class="text-red-400">断开</span>';
+    setTimeout(connectFleetWS, fleetReconnectDelay);
+    fleetReconnectDelay = Math.min(fleetReconnectDelay * 1.5, 30000);
+  };
+
+  state.fleetWS.onerror = () => {
+    const el = document.getElementById('fleet-conn-status');
+    if (el) el.innerHTML = '<span class="w-2 h-2 rounded-full bg-yellow-500"></span> <span class="text-yellow-400">错误</span>';
+  };
+
+  state.fleetWS.onmessage = (e) => {
+    let data;
+    try { data = JSON.parse(e.data); } catch (err) { return; }
+    handleFleetEvent(data);
+  };
 }
 
-function showError(id, text) {
-  const el = document.getElementById(id);
-  if (el) el.innerHTML = `<div class="text-red-400 text-sm"><i class="fas fa-exclamation-circle mr-2"></i>${text}</div>`;
+// ===== Fleet WeChat-style Group Chat =====
+
+const FLEET_ROLE_COLORS = {
+  worker:   { bg: 'bg-blue-500',    text: 'text-blue-400',    hex: '#3b82f6', label: '执行' },
+  reviewer: { bg: 'bg-yellow-500',  text: 'text-yellow-400',  hex: '#eab308', label: '审查' },
+};
+
+function getFleetRoleColor(role) {
+  if (FLEET_ROLE_COLORS[role]) return FLEET_ROLE_COLORS[role];
+  // Generate consistent color from role name
+  const colors = [
+    { bg: 'bg-green-500',   text: 'text-green-400',   hex: '#22c55e' },
+    { bg: 'bg-purple-500',  text: 'text-purple-400',  hex: '#a855f7' },
+    { bg: 'bg-pink-500',    text: 'text-pink-400',    hex: '#ec4899' },
+    { bg: 'bg-orange-500',  text: 'text-orange-400',  hex: '#f97316' },
+    { bg: 'bg-cyan-500',    text: 'text-cyan-400',    hex: '#06b6d4' },
+    { bg: 'bg-red-500',     text: 'text-red-400',     hex: '#ef4444' },
+    { bg: 'bg-indigo-500',  text: 'text-indigo-400',  hex: '#6366f1' },
+    { bg: 'bg-teal-500',    text: 'text-teal-400',    hex: '#14b8a6' },
+  ];
+  let hash = 0;
+  for (let i = 0; i < role.length; i++) hash = role.charCodeAt(i) + ((hash << 5) - hash);
+  return colors[Math.abs(hash) % colors.length];
 }
 
-async function loadFiles() {
-  showLoading('files-content', '加载文件...');
-  try {
-    const res = await fetch('/api/files');
-    const data = await res.json();
-    document.getElementById('files-content').textContent = data.output || data.error || '无内容';
-  } catch (e) {
-    showError('files-content', '加载失败: ' + e.message);
+function getFleetRoleInitial(role) {
+  return (role.charAt(0).toUpperCase() || 'A');
+}
+// ===== Fleet / Multi-Agent Collaboration =====
+
+state.currentFleetSessionId = null;
+
+function handleFleetEvent(data) {
+  if (data.type === 'status') {
+    if (data.data && data.data.agents) {
+      data.data.agents.forEach(a => { state.fleetAgents[a.id] = a; });
+    }
+    renderFleetRoleStatuses();
+    return;
+  }
+  if (data.type === 'agent_start') {
+    updateFleetMemberStatus(data.agent_id, data.agent_name, data.agent_role, 'busy', data.task_description);
+    if (!state.fleetMode) return;
+    return;
+  }
+  if (data.type === 'agent_done') {
+    updateFleetMemberStatus(data.agent_id, data.agent_name, data.agent_role, 'idle', '');
+    if (!state.fleetMode) return;
+    const statusText = data.status === 'done' ? '完成' : '失败';
+    const statusColor = data.status === 'done' ? 'text-green-400' : 'text-red-400';
+    appendFleetAgentMessage(data.agent_id, data.agent_name, data.agent_role, data.result, statusText, statusColor);
+    return;
+  }
+  // Only render remaining chat messages when in fleet mode
+  if (!state.fleetMode) return;
+  if (data.type === 'collaborate_progress') {
+    appendFleetSystemMessage(data.message);
+    return;
+  }
+  if (data.type === 'agent_thinking') {
+    appendFleetThinkingMessage(data.agent_name, data.agent_role, data.content);
+    return;
+  }
+  if (data.type === 'agent_tool_call') {
+    appendFleetToolCallMessage(data.agent_name, data.agent_role, data.tool_name, data.arguments);
+    return;
+  }
+  if (data.type === 'agent_tool_result') {
+    appendFleetToolResultMessage(data.agent_name, data.agent_role, data.tool_name, data.preview, data.success);
+    return;
+  }
+  if (data.type === 'review_done') {
+    if (data.review) appendFleetReviewerMessage(data.review);
+    return;
+  }
+  if (data.type === 'collaborate_result') {
+    showCollaborateResult(data);
+    return;
   }
 }
 
-async function loadMemory() {
-  // Set loading states for all sections
-  showLoading('memory-context', '加载记忆中...');
-  showLoading('memory-working', '加载工作记忆...');
-  showLoading('memory-semantic', '加载长期知识...');
-  showLoading('memory-episodes', '加载情景记忆...');
-  showLoading('memory-dreams', '加载梦境日志...');
-  showLoading('memory-files', '加载记忆文件...');
+// sendFleetChatMessage / sendFleetChatMessageFromMain removed — Fleet uses unified #chat-input via sendMessage()
 
-  try {
-    // Fetch embedder status in parallel
-    let embedderStatus = null;
-    try {
-      const diagRes = await fetch('/api/diag');
-      if (diagRes.ok) {
-        const diag = await diagRes.json();
-        embedderStatus = diag.embedder || null;
-      }
-    } catch (_) {}
+function showCollaborateResult(data) {
+  state.currentFleetSessionId = data.session_id || null;
+  const container = document.getElementById('chat-messages');
+  if (!container) return;
 
-    const res = await fetch('/api/memory/enhanced');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
+  const subtaskCount = data.subtasks ? Object.keys(data.subtasks).length : 0;
+  const subtaskItems = data.subtasks ? Object.entries(data.subtasks).map(([desc, result], i) => `
+    <details class="group">
+      <summary class="cursor-pointer flex items-center gap-2 text-xs text-gray-400 hover:text-gray-300 py-1">
+        <i class="fas fa-chevron-right text-[10px] group-open:rotate-90 transition-transform"></i>
+        <span>子任务 ${i + 1}</span>
+      </summary>
+      <div class="pl-4 text-xs text-gray-300 mt-1 border-l-2 border-gray-700">${escapeHtml(result.substring(0, 300))}${result.length > 300 ? '...' : ''}</div>
+    </details>
+  `).join('') : '';
 
-    // Show embedder status
-    const statusEl = document.getElementById('memory-embedder-status');
-    const recoverBtn = document.getElementById('memory-embedder-recover');
-    if (statusEl && embedderStatus) {
-      statusEl.classList.remove('hidden');
-      if (embedderStatus.active) {
-        statusEl.className = 'text-xs px-2 py-1 rounded bg-green-900/40 text-green-400';
-        statusEl.innerHTML = '<i class="fas fa-microchip mr-1"></i>' + escapeHtml(embedderStatus.provider);
-        if (recoverBtn) recoverBtn.classList.add('hidden');
-      } else if (embedderStatus.fallback) {
-        statusEl.className = 'text-xs px-2 py-1 rounded bg-yellow-900/40 text-yellow-400';
-        statusEl.innerHTML = '<i class="fas fa-exclamation-triangle mr-1"></i>降级: ' + escapeHtml(embedderStatus.fallback);
-        if (recoverBtn) recoverBtn.classList.remove('hidden');
-      } else {
-        statusEl.className = 'text-xs px-2 py-1 rounded bg-gray-800 text-gray-400';
-        statusEl.textContent = escapeHtml(embedderStatus.provider);
-        if (recoverBtn) recoverBtn.classList.add('hidden');
-      }
-    }
-
-    // Active context
-    const ctxEl = document.getElementById('memory-context');
-    if (ctxEl) ctxEl.textContent = data.context || '暂无上下文';
-
-    // Working memories
-    const workEl = document.getElementById('memory-working');
-    if (workEl) {
-      const items = data.working_memories || [];
-      if (items.length === 0) {
-        workEl.innerHTML = '<div class="text-gray-400 text-sm">暂无工作记忆</div>';
-      } else {
-        workEl.innerHTML = items.map(w => `
-          <div class="bg-gray-800 rounded-lg px-3 py-2">
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-mono text-cyan-400">${escapeHtml(w.key || 'unknown')}</span>
-              <span class="text-[10px] text-gray-500">${w.category || 'general'} · 重要性 ${w.importance || 0}</span>
-            </div>
-            <div class="text-sm text-gray-300 mt-0.5">${escapeHtml(w.value || '')}</div>
-          </div>
-        `).join('');
-      }
-    }
-
-    // Semantic memories
-    const semEl = document.getElementById('memory-semantic');
-    if (semEl) {
-      const items = data.semantic_memories || [];
-      if (items.length === 0) {
-        semEl.innerHTML = '<div class="text-gray-400 text-sm">暂无长期知识</div>';
-      } else {
-        semEl.innerHTML = items.map(s => renderSemanticMemoryItem(s)).join('');
-      }
-    }
-
-    // Episodes
-    const epEl = document.getElementById('memory-episodes');
-    if (epEl) {
-      if (!data.episodes || data.episodes.length === 0) {
-        epEl.innerHTML = '<div class="text-gray-400 text-sm">暂无情景记忆</div>';
-      } else {
-        epEl.innerHTML = data.episodes.map(e => `
-          <div class="bg-gray-800 rounded-lg px-3 py-2">
-            <div class="text-sm">${escapeHtml(e.summary)}</div>
-            <div class="text-xs text-gray-500 mt-1">
-              <span class="mr-2"><i class="fas fa-calendar mr-1"></i>${new Date(e.created_at * 1000).toLocaleDateString()}</span>
-              <span class="mr-2"><i class="fas fa-comment mr-1"></i>${e.turn_count} 轮</span>
-              <span class="mr-2"><i class="fas fa-coins mr-1"></i>${e.tokens_used} tokens</span>
-              ${e.topics && e.topics.length > 0 ? `<span class="text-blue-400">${e.topics.map(t => '#' + escapeHtml(t)).join(' ')}</span>` : ''}
-            </div>
-          </div>
-        `).join('');
-      }
-    }
-
-    // Dream logs
-    const dreamEl = document.getElementById('memory-dreams');
-    if (dreamEl) {
-      if (!data.dream_logs || data.dream_logs.length === 0) {
-        dreamEl.innerHTML = '<div class="text-gray-400 text-sm">暂无梦境日志</div>';
-      } else {
-        dreamEl.innerHTML = data.dream_logs.map(d => `
-          <div class="bg-gray-800 rounded-lg px-3 py-2">
-            <div class="flex items-center gap-2">
-              <span class="text-xs px-2 py-0.5 rounded ${d.phase === 'deep' ? 'bg-purple-900 text-purple-400' : d.phase === 'rem' ? 'bg-blue-900 text-blue-400' : 'bg-gray-700 text-gray-400'}">${escapeHtml(d.phase)}</span>
-              <span class="text-xs text-gray-500">${new Date(d.created_at * 1000).toLocaleString()}</span>
-            </div>
-            <div class="text-sm mt-1">${escapeHtml(d.summary)}</div>
-          </div>
-        `).join('');
-      }
-    }
-
-    // Memory files (dynamic)
-    const filesEl = document.getElementById('memory-files');
-    if (filesEl) {
-      const files = data.memory_files || [];
-      if (files.length === 0) {
-        filesEl.innerHTML = '<div class="text-gray-400 text-sm col-span-3">暂无记忆文件</div>';
-      } else {
-        filesEl.innerHTML = files.map(f => `
-          <div onclick="openMemoryFileEditor('${escapeHtml(f)}')" class="cursor-pointer bg-gray-800 rounded-lg p-3 hover:bg-gray-700 transition">
-            <div class="text-sm font-medium">${escapeHtml(f.toUpperCase())}.md</div>
-            <div class="text-xs text-gray-500">点击编辑</div>
-          </div>
-        `).join('');
-      }
-    }
-  } catch (e) {
-    showError('memory-context', '加载记忆失败: ' + e.message);
-    ['memory-working','memory-semantic','memory-episodes','memory-dreams','memory-files'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.innerHTML = '<div class="text-gray-500 text-sm">加载失败</div>';
-    });
-  }
-}
-
-function renderSemanticMemoryItem(s) {
-  const catColor = {
-    fact: 'bg-blue-900/40 text-blue-400',
-    preference: 'bg-pink-900/40 text-pink-400',
-    insight: 'bg-purple-900/40 text-purple-400',
-  }[s.category] || 'bg-gray-700 text-gray-400';
-  return `
-    <div class="bg-gray-800 rounded-lg px-3 py-2" data-memory-id="${s.id}">
-      <div class="flex items-center justify-between flex-wrap gap-1">
-        <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-xs font-mono text-pink-400">${escapeHtml(s.key || 'unknown')}</span>
-          <span class="text-[10px] px-1.5 py-0.5 rounded ${catColor}">${escapeHtml(s.category || 'fact')}</span>
-          <span class="text-[10px] text-gray-500">置信度 ${((s.confidence || 0.5) * 100).toFixed(0)}%</span>
-        </div>
-        <div class="flex items-center gap-1">
-          <button onclick="editSemanticMemory(${s.id})" class="text-[10px] bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded transition" title="编辑">
-            <i class="fas fa-pen"></i>
-          </button>
-          <button onclick="deleteSemanticMemory(${s.id})" class="text-[10px] bg-red-900/40 hover:bg-red-900/60 text-red-400 px-2 py-1 rounded transition" title="删除">
-            <i class="fas fa-trash"></i>
-          </button>
-        </div>
+  const div = document.createElement('div');
+  div.className = 'flex justify-start gap-2';
+  div.innerHTML = `
+    <div class="w-8 h-8 rounded-full bg-green-500 flex-shrink-0 flex items-center justify-center text-white text-xs font-bold">结</div>
+    <div class="max-w-[80%]">
+      <div class="flex items-baseline gap-2 mb-0.5">
+        <span class="text-xs font-medium text-gray-300">协作结果</span>
+        <span class="text-[10px] text-green-400">${subtaskCount} 个子任务</span>
       </div>
-      <div class="text-sm text-gray-300 mt-1 memory-value">${escapeHtml(s.value || '')}</div>
-      ${s.source ? `<div class="text-[10px] text-gray-500 mt-1"><i class="fas fa-source mr-1"></i>来源: ${escapeHtml(s.source)}</div>` : ''}
+      <div class="bg-gray-800 border border-green-800/30 text-gray-200 px-4 py-2.5 rounded-2xl rounded-tl-md text-sm markdown">${renderMarkdown(data.final || '无结果')}</div>
+      ${data.review ? `<div class="mt-1 text-[10px] text-yellow-500"><i class="fas fa-eye mr-1"></i>已审查</div>` : ''}
+      ${subtaskItems ? `<div class="mt-2 pt-2 border-t border-gray-700 space-y-1">${subtaskItems}</div>` : ''}
     </div>
   `;
+  container.appendChild(div);
+  scrollFleetChatToBottom();
+
+  showToast('协作完成', 'success');
 }
 
-function editSemanticMemory(id) {
-  const card = document.querySelector(`[data-memory-id="${id}"]`);
-  if (!card) return;
-  const valueEl = card.querySelector('.memory-value');
-  const currentValue = valueEl.textContent;
-  const currentCategory = card.querySelector('[class*="rounded"].text-blue-400, [class*="rounded"].text-pink-400, [class*="rounded"].text-purple-400, [class*="rounded"].text-gray-400')?.textContent || 'fact';
-
-  valueEl.innerHTML = `
-    <textarea id="sem-edit-${id}" rows="3" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-gray-300 resize-none focus:outline-none focus:border-pink-500">${escapeHtml(currentValue)}</textarea>
-    <div class="flex items-center gap-2 mt-2">
-      <select id="sem-cat-${id}" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
-        <option value="fact" ${currentCategory === 'fact' ? 'selected' : ''}>事实</option>
-        <option value="preference" ${currentCategory === 'preference' ? 'selected' : ''}>偏好</option>
-        <option value="insight" ${currentCategory === 'insight' ? 'selected' : ''}>洞察</option>
-      </select>
-      <button onclick="saveSemanticMemory(${id})" class="bg-pink-900/40 hover:bg-pink-900/60 text-pink-300 px-3 py-1 rounded text-xs">保存</button>
-      <button onclick="loadMemory()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-xs">取消</button>
-    </div>
-  `;
-}
-
-async function saveSemanticMemory(id) {
-  const value = document.getElementById(`sem-edit-${id}`)?.value.trim();
-  const category = document.getElementById(`sem-cat-${id}`)?.value;
-  if (!value) {
-    showToast('内容不能为空', true);
-    return;
-  }
+async function loadFleetSessionToChat(sessionId) {
   try {
-    const res = await fetch(`/api/memory/semantic/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ value, category }),
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    loadMemory();
-    showToast('知识已更新');
-  } catch (e) {
-    showToast('更新失败: ' + e.message, true);
-  }
-}
-
-async function deleteSemanticMemory(id) {
-  if (!confirm('确定删除这条知识吗？此操作不可恢复。')) return;
-  try {
-    const res = await fetch(`/api/memory/semantic/${id}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    loadMemory();
-    showToast('知识已删除');
-  } catch (e) {
-    showToast('删除失败: ' + e.message, true);
-  }
-}
-
-// Search semantic memories
-async function searchSemantic() {
-  const input = document.getElementById('semantic-search');
-  const query = input.value.trim();
-  if (!query) {
-    loadMemory();
-    return;
-  }
-  const container = document.getElementById('memory-semantic');
-  showLoading('memory-semantic', '搜索中...');
-  try {
-    const res = await fetch('/api/memory/enhanced');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const res = await fetch('/api/fleet/sessions/' + encodeURIComponent(state.sessionId));
+    if (!res.ok) throw new Error('API error');
     const data = await res.json();
-    const items = (data.semantic_memories || []).filter(s =>
-      (s.key || '').toLowerCase().includes(query.toLowerCase()) ||
-      (s.value || '').toLowerCase().includes(query.toLowerCase())
-    );
+    const session = data.session;
+    if (!session) return;
+
+    const container = document.getElementById('chat-messages');
+    if (!container) return;
+    container.innerHTML = '';
+    state.currentFleetSessionId = state.sessionId;
+    state.fleetMode = true;
+    restoreFleetMode();
+
+    appendFleetSystemMessage('─── 历史会话 ───');
+    appendFleetUserMessage(session.main_task);
+
+    const subtaskResults = session.subtask_results || {};
+    (session.subtasks || []).forEach((sub, idx) => {
+      const result = subtaskResults[sub] || '';
+      if (result) {
+        appendFleetAgentMessage('sub-' + idx, 'Agent', 'worker', result, '完成', 'text-green-400');
+      }
+    });
+
+    if (session.review) appendFleetReviewerMessage(session.review);
+
+    if (session.final) {
+      const div = document.createElement('div');
+      div.className = 'flex justify-start gap-2';
+      div.innerHTML = `
+        <div class="w-8 h-8 rounded-full bg-green-500 flex-shrink-0 flex items-center justify-center text-white text-xs font-bold">结</div>
+        <div class="max-w-[80%]">
+          <div class="bg-gray-800 border border-green-800/30 text-gray-200 px-4 py-2.5 rounded-2xl rounded-tl-md text-sm markdown">${renderMarkdown(session.final)}</div>
+        </div>
+      `;
+      container.appendChild(div);
+    }
+
+    appendFleetSystemMessage('─── 输入消息继续对话 ───');
+    scrollFleetChatToBottom();
+    showToast('已加载历史会话', 'success');
+  } catch (e) {
+    showToast('加载会话失败', 'error');
+  }
+}
+
+async function refreshFleetHistory() {
+  const container = document.getElementById('fleet-history-list');
+  if (!container) return;
+  try {
+    const res = await fetch('/api/fleet/history');
+    if (!res.ok) throw new Error('API error');
+    const data = await res.json();
+    const items = data.history || [];
     if (items.length === 0) {
-      container.innerHTML = '<div class="text-gray-400 text-sm">未找到匹配的知识</div>';
-    } else {
-      container.innerHTML = items.map(s => renderSemanticMemoryItem(s)).join('');
-    }
-  } catch (e) {
-    container.innerHTML = '<div class="text-red-400 text-sm">搜索失败: ' + escapeHtml(e.message) + '</div>';
-  }
-}
-
-// Show inline add semantic memory form
-function showAddSemanticModal() {
-  const container = document.getElementById('memory-semantic');
-  const existing = document.getElementById('semantic-add-form');
-  if (existing) {
-    existing.remove();
-    return;
-  }
-  const form = document.createElement('div');
-  form.id = 'semantic-add-form';
-  form.className = 'bg-gray-800 rounded-lg p-3 space-y-2';
-  form.innerHTML = `
-    <div class="flex gap-2">
-      <input id="semantic-add-key" type="text" placeholder="键 (如: user_name)" class="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm">
-      <select id="semantic-add-cat" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-gray-300">
-        <option value="fact">事实</option>
-        <option value="preference">偏好</option>
-        <option value="insight">洞察</option>
-      </select>
-    </div>
-    <textarea id="semantic-add-value" rows="2" placeholder="值..." class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm resize-none"></textarea>
-    <div class="flex gap-2">
-      <button onclick="submitSemanticMemory()" class="bg-pink-900/40 hover:bg-pink-900/60 text-pink-300 px-3 py-1 rounded text-sm">保存</button>
-      <button onclick="document.getElementById('semantic-add-form').remove()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm">取消</button>
-    </div>
-  `;
-  container.insertBefore(form, container.firstChild);
-}
-
-async function submitSemanticMemory() {
-  const key = document.getElementById('semantic-add-key').value.trim();
-  const value = document.getElementById('semantic-add-value').value.trim();
-  const category = document.getElementById('semantic-add-cat').value;
-  if (!key || !value) {
-    showToast('键和值不能为空', true);
-    return;
-  }
-  try {
-    const res = await fetch('/api/memory/semantic', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key, value, category }),
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    document.getElementById('semantic-add-form').remove();
-    loadMemory();
-    showToast('知识已保存');
-  } catch (e) {
-    showToast('保存失败: ' + e.message, true);
-  }
-}
-
-// Run evolution cycle on demand
-async function runEvolutionNow() {
-  const btn = document.querySelector('#tab-evolution button[onclick="runEvolutionNow()"]');
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin text-xs"></i> 检查中...';
-  }
-
-  // Pre-flight diagnostic to catch stale server versions gracefully
-  try {
-    const diagRes = await fetch('/api/diag');
-    if (diagRes.ok) {
-      const diag = await diagRes.json();
-      if (!diag.has_evolution_api) {
-        showToast('服务器版本过旧，请重启服务器以支持自主进化', true);
-        if (btn) {
-          btn.disabled = false;
-          btn.innerHTML = '<i class="fas fa-play text-xs"></i> 立即运行';
-        }
-        return;
-      }
-    }
-  } catch (_) {
-    // Proceed anyway; the main call will surface real errors
-  }
-
-  if (btn) {
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin text-xs"></i> 运行中...';
-  }
-
-  try {
-    const res = await fetch('/api/evolution/run', { method: 'POST' });
-    if (!res.ok) {
-      let detail = '';
-      try {
-        const errData = await res.json();
-        detail = errData.detail || '';
-      } catch (_) {}
-      if (res.status === 404) {
-        throw new Error('404 — 服务器未暴露进化接口，请重启服务器');
-      } else if (res.status === 501) {
-        throw new Error('501 — ' + (detail || 'Agent 不支持进化，请更新代码并重启'));
-      } else if (res.status === 502) {
-        throw new Error('502 — ' + (detail || 'LLM API 错误，请检查模型配置'));
-      } else if (res.status === 503) {
-        throw new Error('503 — ' + (detail || '进化子系统未就绪，请稍后再试'));
-      } else {
-        throw new Error('HTTP ' + res.status + (detail ? ': ' + detail : ''));
-      }
-    }
-    const data = await res.json();
-    const report = data.report || {};
-    const parts = [];
-    if (report.profile_update && report.profile_update.ok) parts.push('画像更新');
-    if (report.dreaming && report.dreaming.ok) parts.push('记忆整合');
-    if (report.skill_evolution && report.skill_evolution.evolved && report.skill_evolution.evolved.length) {
-      parts.push('技能进化(' + report.skill_evolution.evolved.length + ')');
-    }
-    const msg = parts.length ? '进化完成: ' + parts.join('、') : '进化周期已完成';
-    showToast(msg);
-    loadEvolution();
-  } catch (e) {
-    showToast('运行失败: ' + e.message, true);
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.innerHTML = '<i class="fas fa-play text-xs"></i> 立即运行';
-    }
-  }
-}
-
-// ----- Memory File Editor -----
-
-async function openMemoryFileEditor(name) {
-  const modal = document.getElementById('memory-file-modal');
-  const title = document.getElementById('memory-file-modal-title');
-  const textarea = document.getElementById('memory-file-editor');
-  const saveBtn = document.getElementById('memory-file-save-btn');
-
-  title.textContent = name.toUpperCase() + '.md';
-  textarea.value = '加载中...';
-  saveBtn.onclick = () => saveMemoryFile(name);
-
-  modal.classList.remove('hidden');
-  modal.classList.add('flex');
-
-  try {
-    const res = await fetch(`/api/memory/files/${name}`);
-    const data = await res.json();
-    textarea.value = data.content || '';
-  } catch (e) {
-    textarea.value = '加载失败: ' + e.message;
-  }
-}
-
-async function saveMemoryFile(name) {
-  const textarea = document.getElementById('memory-file-editor');
-  try {
-    const res = await fetch(`/api/memory/files/${name}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: textarea.value }),
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    closeMemoryFileEditor();
-    // Refresh memory tab so prompt context picks up changes
-    loadMemory();
-  } catch (e) {
-    alert('保存失败: ' + e.message);
-  }
-}
-
-function closeMemoryFileEditor() {
-  const modal = document.getElementById('memory-file-modal');
-  modal.classList.add('hidden');
-  modal.classList.remove('flex');
-}
-
-async function loadAudit() {
-  showLoading('audit-content', '加载审计日志...');
-  try {
-    const res = await fetch('/api/audit?limit=50');
-    const data = await res.json();
-    const container = document.getElementById('audit-content');
-    if (!data.events || data.events.length === 0) {
-      container.innerHTML = '<div class="text-gray-400 text-sm">暂无审计日志</div>';
+      container.innerHTML = '<div class="text-gray-600 text-xs p-2">暂无记录</div>';
       return;
     }
-    container.innerHTML = data.events.map(e => `
-      <div class="bg-gray-900 border border-gray-800 rounded-lg p-3 text-sm">
-        <span class="text-blue-400 font-mono">${new Date(e.timestamp * 1000).toLocaleTimeString()}</span>
-        <span class="text-gray-400 mx-2">${escapeHtml(e.type)}</span>
-        <span class="text-green-400">${escapeHtml(e.actor)}</span>:
-        <span class="text-gray-300">${escapeHtml(e.action)}</span>
-      </div>
-    `).join('');
-  } catch (e) {
-    showError('audit-content', '加载失败: ' + e.message);
-  }
-}
-
-async function loadStatus() {
-  showLoading('status-content', '加载系统状态...');
-  try {
-    const res = await fetch('/api/status');
-    const data = await res.json();
-    document.getElementById('status-content').textContent = JSON.stringify(data, null, 2);
-  } catch (e) {
-    showError('status-content', '加载失败: ' + e.message);
-  }
-}
-
-let currentSkillId = null;
-
-async function loadSkills() {
-  showLoading('skills-content', '加载 Skills...');
-  try {
-    const category = document.getElementById('skill-category-filter').value;
-    const skillType = document.getElementById('skill-type-filter').value;
-    const query = document.getElementById('skill-search').value;
-  let url = '/api/skills';
-  const params = [];
-  if (category) params.push('category=' + encodeURIComponent(category));
-  if (skillType) params.push('skill_type=' + encodeURIComponent(skillType));
-  if (query) params.push('query=' + encodeURIComponent(query));
-  if (params.length) url += '?' + params.join('&');
-
-  const res = await fetch(url);
-  if (!res.ok) {
-    const container = document.getElementById('skills-content');
-    container.innerHTML = '<div class="text-red-400">加载 Skills 失败: HTTP ' + res.status + '</div>';
-    return;
-  }
-  const data = await res.json();
-  const container = document.getElementById('skills-content');
-
-  // Update category filter options
-  const catSelect = document.getElementById('skill-category-filter');
-  const currentCat = catSelect.value;
-  if (data.categories && catSelect.options.length <= 1) {
-    data.categories.forEach(c => {
-      const opt = document.createElement('option');
-      opt.value = c.name;
-      opt.textContent = `${c.name} (${c.count})`;
-      catSelect.appendChild(opt);
-    });
-    catSelect.value = currentCat;
-  }
-
-  if (!data.skills || data.skills.length === 0) {
-    container.innerHTML = '<div class="text-gray-400 col-span-full">暂无匹配的 Skills</div>';
-    return;
-  }
-
-  container.innerHTML = data.skills.map(s => {
-    const trustCls = s.trust_css || 'bg-gray-800 text-gray-400';
-    const compatIcon = s.compatible ? '<i class="fas fa-check-circle text-green-400" title="Compatible"></i>' : '<i class="fas fa-times-circle text-red-400" title="Incompatible"></i>';
-    const prereqIcon = s.prerequisites_ok ? '' : '<i class="fas fa-exclamation-triangle text-yellow-400 ml-1" title="Prerequisites missing"></i>';
-    const riskBadge = s.risk_flags && s.risk_flags.length > 0 ? `<span class="text-xs bg-red-900 text-red-400 px-2 py-0.5 rounded ml-1">${s.risk_flags.length} risk</span>` : '';
-
-    return `
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 cursor-pointer hover:border-blue-500 transition" onclick="showSkillDetail(${JSON.stringify(s.id)})">
-      <div class="flex items-center justify-between mb-2">
-        <div class="flex items-center gap-2">
-          <h3 class="font-bold">${escapeHtml(s.name)}</h3>
-          ${prereqIcon}
+    container.innerHTML = items.map(item => `
+      <div class="fleet-conv-item group rounded-lg px-2 py-1.5 hover:bg-gray-800/50 transition cursor-pointer relative"
+           data-session-id="${escapeHtml(item.session_id)}">
+        <div class="text-xs text-gray-300 truncate pr-5">${escapeHtml(item.main_task)}</div>
+        <div class="flex items-center gap-1 mt-0.5">
+          <span class="text-[10px] text-gray-500">${item.subtask_count} 子任务</span>
+          ${item.has_review ? '<span class="text-[10px] text-yellow-500">已审查</span>' : ''}
+          <span class="text-[10px] text-gray-600 ml-auto">${new Date(item.created_at * 1000).toLocaleDateString()}</span>
         </div>
-        <span class="text-xs ${trustCls} px-2 py-1 rounded">${escapeHtml(s.trust_level)}</span>
-      </div>
-      <p class="text-sm text-gray-400 mb-2">${escapeHtml(s.description || '')}</p>
-      <div class="flex items-center gap-3 text-xs text-gray-500">
-        <span>${compatIcon} ${escapeHtml(s.type)}</span>
-        <span><i class="fas fa-folder mr-1"></i>${escapeHtml(s.category)}</span>
-        <span><i class="fas fa-bolt mr-1"></i>${s.usage_count}</span>
-        <span><i class="fas fa-percentage mr-1"></i>${(s.success_rate * 100).toFixed(0)}%</span>
-        ${riskBadge}
-      </div>
-      ${s.tags && s.tags.length > 0 ? `<div class="flex flex-wrap gap-1 mt-2">${s.tags.map(t => `<span class="text-xs bg-gray-800 px-2 py-0.5 rounded">${escapeHtml(t)}</span>`).join('')}</div>` : ''}
-    </div>
-  `}).join('');
-  } catch (e) {
-    showError('skills-content', '加载失败: ' + e.message);
-  }
-}
-
-async function showSkillDetail(skillId) {
-  currentSkillId = skillId;
-  try {
-  const res = await fetch('/api/skills/' + encodeURIComponent(skillId));
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  const s = await res.json();
-  if (s.error) {
-    alert(s.error);
-    return;
-  }
-
-  document.getElementById('modal-skill-name').textContent = `${escapeHtml(s.name)} v${escapeHtml(String(s.version))}`;
-  document.getElementById('modal-trust-select').value = s.trust_level;
-
-  const trustColor = escapeHtml(s.trust_color || 'gray');
-
-  let html = `
-    <div class="grid grid-cols-2 gap-2">
-      <div><span class="text-gray-500">ID:</span> <span class="font-mono">${escapeHtml(s.id)}</span></div>
-      <div><span class="text-gray-500">Type:</span> ${escapeHtml(s.type)}</div>
-      <div><span class="text-gray-500">Category:</span> ${escapeHtml(s.category)}</div>
-      <div><span class="text-gray-500">Author:</span> ${escapeHtml(s.author)}</div>
-      <div><span class="text-gray-500">Trust:</span> <span class="text-${trustColor}-400">${escapeHtml(s.trust_level)}</span></div>
-      <div><span class="text-gray-500">Compatible:</span> ${s.compatible ? '<span class="text-green-400">Yes</span>' : '<span class="text-red-400">No</span>'}</div>
-      <div><span class="text-gray-500">Prerequisites:</span> ${s.prerequisites_ok ? '<span class="text-green-400">OK</span>' : '<span class="text-yellow-400">Missing</span>'}</div>
-      <div><span class="text-gray-500">Usage:</span> ${s.usage_count} calls | ${(s.success_rate * 100).toFixed(1)}% success</div>
-    </div>
-  `;
-
-  if (s.risk_flags && s.risk_flags.length > 0) {
-    html += `<div class="mt-2 p-2 bg-red-900/30 border border-red-800 rounded"><span class="text-red-400 font-bold">Risk Flags:</span> ${s.risk_flags.map(f => escapeHtml(f)).join(', ')}</div>`;
-  }
-  if (s.tags && s.tags.length > 0) {
-    html += `<div class="mt-2"><span class="text-gray-500">Tags:</span> ${s.tags.map(t => `<span class="bg-gray-800 px-2 py-0.5 rounded text-xs">${escapeHtml(t)}</span>`).join(' ')}</div>`;
-  }
-  if (s.platforms && s.platforms.length > 0) {
-    html += `<div class="mt-1"><span class="text-gray-500">Platforms:</span> ${s.platforms.map(p => escapeHtml(p)).join(', ')}</div>`;
-  }
-  if (s.content) {
-    html += `<div class="mt-3 p-3 bg-gray-950 rounded-lg border border-gray-800"><pre class="whitespace-pre-wrap text-gray-300">${escapeHtml(s.content.substring(0, 3000))}${s.content.length > 3000 ? '...' : ''}</pre></div>`;
-  }
-
-  document.getElementById('modal-skill-content').innerHTML = html;
-  document.getElementById('skill-detail-modal').classList.remove('hidden');
-  } catch (e) {
-    alert('加载 Skill 详情失败: ' + e.message);
-  }
-}
-
-function closeSkillModal() {
-  document.getElementById('skill-detail-modal').classList.add('hidden');
-  currentSkillId = null;
-}
-
-async function updateTrust() {
-  if (!currentSkillId) return;
-  const level = document.getElementById('modal-trust-select').value;
-  try {
-    const res = await fetch('/api/skills/' + encodeURIComponent(currentSkillId) + '/trust', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({level}),
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || 'HTTP ' + res.status);
-    }
-    const data = await res.json();
-    if (data.success) {
-      loadSkills();
-      closeSkillModal();
-      showToast('信任级别已更新');
-    } else {
-      showToast(data.error || '更新失败', true);
-    }
-  } catch (e) {
-    showToast('更新信任级别失败: ' + e.message, true);
-  }
-}
-
-async function uninstallSkill() {
-  if (!currentSkillId) return;
-  if (!confirm(`Uninstall skill '${currentSkillId}'?`)) return;
-  try {
-    const res = await fetch('/api/skills/' + encodeURIComponent(currentSkillId), {method: 'DELETE'});
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || 'HTTP ' + res.status);
-    }
-    loadSkills();
-    closeSkillModal();
-    showToast('Skill 已卸载');
-  } catch (e) {
-    showToast('卸载失败: ' + e.message, true);
-  }
-}
-
-async function loadAgents() {
-  const container = document.getElementById('agents-content');
-
-  // Fetch current config and available models
-  let config = {};
-  try {
-    const cfgRes = await fetch('/api/agents/config');
-    const cfgData = await cfgRes.json();
-    config = cfgData.config || {};
-  } catch (e) {
-    console.error('Failed to load agent config', e);
-  }
-
-  const roles = [
-    { key: 'orchestrator', label: '主控 (Orchestrator)', icon: 'fa-chess-king', color: 'text-red-400' },
-    { key: 'coder', label: '编码 (Coder)', icon: 'fa-code', color: 'text-blue-400' },
-    { key: 'reviewer', label: '审查 (Reviewer)', icon: 'fa-eye', color: 'text-yellow-400' },
-    { key: 'researcher', label: '研究 (Researcher)', icon: 'fa-search', color: 'text-green-400' },
-    { key: 'tester', label: '测试 (Tester)', icon: 'fa-vial', color: 'text-purple-400' },
-  ];
-
-  const modelOptions = availableModels.length > 0
-    ? availableModels.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join('')
-    : '<option value="">加载中...</option>';
-
-  container.innerHTML = `
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-4">
-      <h3 class="font-bold mb-2">多 Agent 模型分配</h3>
-      <p class="text-sm text-gray-400 mb-4">为每个 Agent 角色分配专用模型，未设置时将使用默认模型。</p>
-      <div class="space-y-3">
-        ${roles.map(r => `
-          <div class="flex items-center justify-between bg-gray-800 rounded-lg px-4 py-3">
-            <div class="flex items-center gap-3">
-              <i class="fas ${r.icon} ${r.color} w-5"></i>
-              <span class="text-sm font-medium">${r.label}</span>
-            </div>
-            <select
-              id="agent-model-${r.key}"
-              onchange="updateAgentModel('${r.key}', this.value)"
-              class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-300 focus:outline-none focus:border-blue-500 min-w-[200px]"
-            >
-              <option value="">默认模型</option>
-              ${modelOptions}
-            </select>
-          </div>
-        `).join('')}
-      </div>
-      <div class="mt-4 flex justify-end">
-        <button onclick="saveAgentConfig()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm transition">
-          <i class="fas fa-save mr-1"></i>保存配置
+        <button class="fleet-delete-btn absolute top-1.5 right-1.5 text-[10px] text-gray-500 hover:text-red-400 opacity-70 hover:opacity-100 transition-opacity px-1">
+          <i class="fas fa-trash"></i>
         </button>
       </div>
-    </div>
+    `).join('');
+    // 事件委托：点击列表项加载会话，点击删除按钮删除会话
+    container.onclick = function(e) {
+      const item = e.target.closest('.fleet-conv-item');
+      if (!item) return;
+      const sessionId = item.dataset.sessionId;
+      if (e.target.closest('.fleet-delete-btn')) {
+        e.stopPropagation();
+        deleteFleetSession(state.sessionId);
+      } else {
+        loadFleetSessionToChat(state.sessionId);
+      }
+    };
+  } catch (e) {
+    container.innerHTML = '<div class="text-gray-600 text-xs p-2">加载失败</div>';
+  }
+}
 
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <p class="text-gray-400 text-sm">多 Agent 协作系统已就绪。通过 CLI 使用 <code>js run</code> 或 API 调用触发。</p>
-      <div class="mt-4 grid grid-cols-2 md:grid-cols-5 gap-3">
-        ${roles.map(r => `
-          <div class="bg-gray-800 rounded-lg p-3 text-center">
-            <i class="fas ${r.icon} ${r.color} mb-1"></i>
-            <div class="text-xs">${r.label.split(' ')[0]}</div>
-          </div>
-        `).join('')}
-      </div>
+async function deleteFleetSession(sessionId) {
+  if (!confirm('确定删除这条记录吗？')) return;
+  try {
+    const res = await fetch('/api/fleet/sessions/' + encodeURIComponent(state.sessionId), { method: 'DELETE' });
+    if (!res.ok) throw new Error('API error');
+    showToast('已删除', 'success');
+    refreshFleetHistory();
+    if (state.currentFleetSessionId === state.sessionId) {
+      state.currentFleetSessionId = null;
+      const container = document.getElementById('chat-messages');
+      if (container) {
+        container.innerHTML = '';
+      }
+    }
+  } catch (e) {
+    showToast('删除失败: ' + (e.message || ''), 'error');
+  }
+}
+
+async function loadFleetSessionDetail(sessionId) {
+  try {
+    const res = await fetch('/api/fleet/sessions/' + encodeURIComponent(state.sessionId));
+    if (!res.ok) throw new Error('API error');
+    const data = await res.json();
+    const session = data.session;
+    if (!session) return;
+
+    const detail = document.getElementById('fleet-session-detail');
+    const content = document.getElementById('fleet-session-detail-content');
+    if (!detail || !content) return;
+
+    let html = `<div class="text-gray-300 font-medium mb-1">${escapeHtml(session.main_task)}</div>`;
+    html += '<div class="space-y-2">';
+    const subtaskResults = session.subtask_results || {};
+    (session.subtasks || []).forEach((sub, idx) => {
+      const result = subtaskResults[sub] || '无结果';
+      html += `
+        <div class="bg-gray-800 rounded-lg p-2">
+          <div class="text-xs text-blue-400 font-medium mb-1">子任务 ${idx + 1}</div>
+          <div class="text-xs text-gray-400 mb-1">${escapeHtml(sub)}</div>
+          <div class="text-xs text-gray-300">${escapeHtml(result.substring(0, 300))}${result.length > 300 ? '...' : ''}</div>
+        </div>
+      `;
+    });
+    html += '</div>';
+    if (session.review) {
+      html += `<div class="mt-2 bg-yellow-900/20 border border-yellow-800 rounded-lg p-2">
+        <div class="text-xs text-yellow-500 font-medium mb-1">审查意见</div>
+        <div class="text-xs text-gray-300">${escapeHtml(session.review.substring(0, 300))}${session.review.length > 300 ? '...' : ''}</div>
+      </div>`;
+    }
+    html += `<div class="mt-3 flex gap-2">
+      <button onclick="loadFleetSessionToChat('${escapeHtml(session.session_id)}'); document.getElementById('fleet-session-detail').classList.add('hidden');" class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded transition">
+        <i class="fas fa-reply mr-1"></i>继续对话
+      </button>
+      <button onclick="deleteFleetSession('${escapeHtml(session.session_id)}'); document.getElementById('fleet-session-detail').classList.add('hidden');" class="text-xs bg-red-900/40 hover:bg-red-900/60 text-red-300 px-3 py-1.5 rounded transition">
+        <i class="fas fa-trash mr-1"></i>删除
+      </button>
+    </div>`;
+
+    content.innerHTML = html;
+    detail.classList.remove('hidden');
+  } catch (e) {
+    showToast('加载详情失败', 'error');
+  }
+}
+
+// ===== Fleet UI Helpers =====
+
+function appendFleetSystemMessage(text) {
+  const container = document.getElementById('chat-messages');
+  if (!container) return;
+  const div = document.createElement('div');
+  div.className = 'flex justify-center';
+  div.innerHTML = `<div class="bg-gray-800/50 rounded-lg px-3 py-1.5 text-xs text-gray-500">${escapeHtml(text)}</div>`;
+  container.appendChild(div);
+  scrollFleetChatToBottom();
+}
+
+function appendFleetUserMessage(text) {
+  const container = document.getElementById('chat-messages');
+  if (!container) return;
+  const div = document.createElement('div');
+  div.className = 'flex justify-end';
+  div.innerHTML = `
+    <div class="max-w-[75%]">
+      <div class="bg-blue-600 text-white px-4 py-2.5 rounded-2xl rounded-br-md text-sm">${escapeHtml(text)}</div>
     </div>
   `;
-
-  // Restore current values
-  roles.forEach(r => {
-    const sel = document.getElementById(`agent-model-${r.key}`);
-    if (sel && config[r.key]) sel.value = config[r.key];
-  });
+  container.appendChild(div);
+  scrollFleetChatToBottom();
 }
 
-let _agentConfigDraft = {};
-
-function updateAgentModel(role, modelId) {
-  _agentConfigDraft[role] = modelId;
-}
-
-async function saveAgentConfig() {
-  const res = await fetch('/api/agents/config', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({config: _agentConfigDraft}),
-  });
-  const data = await res.json();
-  if (data.success) {
-    alert('配置已保存');
-    _agentConfigDraft = {};
-  } else {
-    alert('保存失败: ' + (data.error || '未知错误'));
-  }
-}
-
-async function loadEvolution() {
-  const container = document.getElementById('evolution-content');
-  container.innerHTML = '<div class="text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>加载进化数据...</div>';
-
-  try {
-    const [reportsRes, insightsRes] = await Promise.all([
-      fetch('/api/evolution/reports?limit=5'),
-      fetch('/api/evolution/insights?limit=10'),
-    ]);
-    if (!reportsRes.ok || !insightsRes.ok) throw new Error('API error');
-    const reportsData = await reportsRes.json();
-    const insightsData = await insightsRes.json();
-
-    const reports = reportsData.reports || [];
-    const learning = insightsData.learning || {};
-    const compression = insightsData.compression || {};
-    const stats = learning.stats || {};
-
-    // Health score from latest report
-    const latestHealth = reports.length > 0 ? (reports[0].health_score || 0) : 1.0;
-    const healthColor = latestHealth >= 0.8 ? 'text-green-400' : latestHealth >= 0.5 ? 'text-yellow-400' : 'text-red-400';
-    const healthLabel = latestHealth >= 0.8 ? '健康' : latestHealth >= 0.5 ? '一般' : '需关注';
-
-    // Proposals from latest report
-    const latestProposals = reports.length > 0 ? (reports[0].proposals || []) : [];
-    const proposalHtml = latestProposals.length > 0
-      ? latestProposals.map(p => `
-        <div class="bg-gray-800 rounded-lg px-3 py-2 text-sm">
-          <span class="text-xs px-1.5 py-0.5 rounded ${p.area === 'compression' ? 'bg-blue-900 text-blue-400' : p.area === 'learning' ? 'bg-green-900 text-green-400' : p.area === 'optimization' ? 'bg-yellow-900 text-yellow-400' : 'bg-purple-900 text-purple-400'}">${p.area}</span>
-          <span class="text-gray-300 ml-2">${escapeHtml(p.proposal)}</span>
-        </div>
-      `).join('')
-      : '<div class="text-gray-500 text-sm">暂无改进建议</div>';
-
-    // Learning insights
-    const insights = learning.insights || [];
-    const insightHtml = insights.length > 0
-      ? insights.slice(0, 5).map(i => `
-        <div class="bg-gray-800 rounded-lg px-3 py-2 text-sm flex items-center justify-between">
-          <span class="text-gray-300">${escapeHtml(i.pattern || i.name || '未知')}</span>
-          <span class="text-xs ${(i.success_rate || 1) >= 0.8 ? 'text-green-400' : 'text-yellow-400'}">${((i.success_rate || 1) * 100).toFixed(0)}% 成功率</span>
-        </div>
-      `).join('')
-      : '<div class="text-gray-500 text-sm">交互数据不足，多使用几次后会自动生成洞察</div>';
-
-    // Subsystem status
-    const hasInteractions = (stats.total_interactions || 0) > 0;
-    const selfLearnStatus = hasInteractions
-      ? { icon: 'fa-check-circle', color: 'text-green-400', label: '活跃', detail: `${stats.total_interactions || 0} 条交互记录` }
-      : { icon: 'fa-clock', color: 'text-gray-400', label: '等待数据', detail: '暂无交互记录' };
-    const dreamStatus = { icon: 'fa-moon', color: 'text-purple-400', label: '自动触发', detail: '空闲 30 秒后自动运行' };
-    const skillEvolveStatus = { icon: 'fa-dna', color: 'text-cyan-400', label: '后台运行', detail: '低成功率技能自动进化' };
-
-    // Prompt optimizer status — driven by real backend data
-    const opt = insightsData.optimization || {};
-    const promptOptStatus = (opt.total_variants || 0) > 0
-      ? ((opt.best_usage || 0) > 0
-        ? { icon: 'fa-check-circle', color: 'text-green-400', label: '活跃', detail: `${opt.total_variants} 变体 · 最佳 ${((opt.best_success_rate || 0) * 100).toFixed(0)}%` }
-        : { icon: 'fa-flask', color: 'text-blue-400', label: '已注册', detail: `${opt.total_variants} 个变体等待测试` })
-      : { icon: 'fa-clock', color: 'text-gray-400', label: '等待数据', detail: '暂无变体记录' };
-
-    container.innerHTML = `
-      <!-- Subsystem Status -->
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <h3 class="font-bold mb-3"><i class="fas fa-server text-blue-400 mr-2"></i>子系统状态</h3>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div class="bg-gray-800 rounded-lg p-3 text-center">
-            <i class="fas ${selfLearnStatus.icon} ${selfLearnStatus.color} mb-1"></i>
-            <div class="text-sm font-medium">自学习</div>
-            <div class="text-[10px] text-gray-500">${selfLearnStatus.label}</div>
-            <div class="text-[10px] text-gray-600 mt-0.5">${selfLearnStatus.detail}</div>
-          </div>
-          <div class="bg-gray-800 rounded-lg p-3 text-center">
-            <i class="fas ${dreamStatus.icon} ${dreamStatus.color} mb-1"></i>
-            <div class="text-sm font-medium">梦境整合</div>
-            <div class="text-[10px] text-gray-500">${dreamStatus.label}</div>
-            <div class="text-[10px] text-gray-600 mt-0.5">${dreamStatus.detail}</div>
-          </div>
-          <div class="bg-gray-800 rounded-lg p-3 text-center">
-            <i class="fas ${skillEvolveStatus.icon} ${skillEvolveStatus.color} mb-1"></i>
-            <div class="text-sm font-medium">技能进化</div>
-            <div class="text-[10px] text-gray-500">${skillEvolveStatus.label}</div>
-            <div class="text-[10px] text-gray-600 mt-0.5">${skillEvolveStatus.detail}</div>
-          </div>
-          <div class="bg-gray-800 rounded-lg p-3 text-center">
-            <i class="fas ${promptOptStatus.icon} ${promptOptStatus.color} mb-1"></i>
-            <div class="text-sm font-medium">Prompt 优化</div>
-            <div class="text-[10px] text-gray-500">${promptOptStatus.label}</div>
-            <div class="text-[10px] text-gray-600 mt-0.5">${promptOptStatus.detail}</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Health Overview -->
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <div class="flex items-center justify-between mb-3">
-          <h3 class="font-bold">系统健康度</h3>
-          <span class="text-sm ${healthColor} font-bold">${(latestHealth * 100).toFixed(0)}% · ${healthLabel}</span>
-        </div>
-        <div class="w-full bg-gray-800 rounded-full h-2 mb-4">
-          <div class="h-2 rounded-full ${latestHealth >= 0.8 ? 'bg-green-500' : latestHealth >= 0.5 ? 'bg-yellow-500' : 'bg-red-500'} transition-all" style="width: ${(latestHealth * 100).toFixed(0)}%"></div>
-        </div>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div class="bg-gray-800 rounded-lg p-3 text-center">
-            <div class="text-xl font-bold text-blue-400">${stats.total_interactions || 0}</div>
-            <div class="text-xs text-gray-500">总交互</div>
-          </div>
-          <div class="bg-gray-800 rounded-lg p-3 text-center">
-            <div class="text-xl font-bold text-green-400">${stats.learned_patterns || 0}</div>
-            <div class="text-xs text-gray-500">学习模式</div>
-          </div>
-          <div class="bg-gray-800 rounded-lg p-3 text-center">
-            <div class="text-xl font-bold text-yellow-400">${stats.intent_clusters || 0}</div>
-            <div class="text-xs text-gray-500">意图聚类</div>
-          </div>
-          <div class="bg-gray-800 rounded-lg p-3 text-center">
-            <div class="text-xl font-bold text-purple-400">${compression.total_compression_events || 0}</div>
-            <div class="text-xs text-gray-500">压缩事件</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <!-- Proposals -->
-        <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-          <h3 class="font-bold mb-3"><i class="fas fa-lightbulb text-yellow-400 mr-2"></i>改进建议 (${latestProposals.length})</h3>
-          <div class="space-y-2 max-h-64 overflow-y-auto">${proposalHtml}</div>
-        </div>
-
-        <!-- Insights -->
-        <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-          <h3 class="font-bold mb-3"><i class="fas fa-brain text-green-400 mr-2"></i>学习洞察</h3>
-          <div class="space-y-2 max-h-64 overflow-y-auto">${insightHtml}</div>
-        </div>
-      </div>
-
-      <!-- Compression Stats -->
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <h3 class="font-bold mb-3"><i class="fas fa-compress-alt text-blue-400 mr-2"></i>上下文压缩</h3>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <div class="bg-gray-800 rounded-lg p-3">
-            <div class="text-xs text-gray-500">压缩次数</div>
-            <div class="text-sm text-gray-300 mt-1">${compression.total_compression_events || 0} 次</div>
-          </div>
-          <div class="bg-gray-800 rounded-lg p-3">
-            <div class="text-xs text-gray-500">平均减少 tokens</div>
-            <div class="text-sm text-blue-400 mt-1">${compression.avg_token_reduction || 0}</div>
-          </div>
-          <div class="bg-gray-800 rounded-lg p-3">
-            <div class="text-xs text-gray-500">压缩成功率</div>
-            <div class="text-sm text-gray-300 mt-1">${compression.compression_success_rate !== undefined ? (compression.compression_success_rate * 100).toFixed(0) : '—'}%</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Reports History -->
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <h3 class="font-bold mb-3"><i class="fas fa-history text-blue-400 mr-2"></i>历史报告 (${reports.length})</h3>
-        ${reports.length > 0 ? `
-          <div class="space-y-2">
-            ${reports.map(r => `
-              <div class="bg-gray-800 rounded-lg px-3 py-2 text-sm flex items-center justify-between">
-                <div>
-                  <span class="text-gray-400">${new Date(r.timestamp * 1000).toLocaleString()}</span>
-                  <span class="ml-2 ${(r.health_score || 0) >= 0.8 ? 'text-green-400' : 'text-yellow-400'}">${((r.health_score || 0) * 100).toFixed(0)}%</span>
-                </div>
-                <span class="text-xs text-gray-500">${(r.proposals || []).length} 建议 · ${(r.actions_taken || []).length} 行动</span>
-              </div>
-            `).join('')}
-          </div>
-        ` : '<div class="text-gray-500 text-sm">暂无历史报告</div>'}
-      </div>
-    `;
-  } catch (e) {
-    container.innerHTML = `<div class="text-red-400 p-4">加载失败: ${escapeHtml(e.message)} <button onclick="loadEvolution()" class="ml-2 text-blue-400 hover:text-blue-300 underline">重试</button></div>`;
-  }
-}
-
-function setCurrentModel(modelId) {
-  selectedModel = modelId;
-  localStorage.setItem('js-selected-model', modelId);
-  const select = document.getElementById('current-model');
-  if (select) select.value = modelId;
-  const label = availableModels.find(m => m.id === modelId);
-  const display = label ? (label.name || label.id) : '默认模型';
-  const badge = document.getElementById('model-badge');
-  if (badge) badge.textContent = display;
-}
-
-let discoveredModels = [];
-
-function toggleAddProvider() {
-  const form = document.getElementById('add-provider-form');
-  const chevron = document.getElementById('add-provider-chevron');
-  const isHidden = form.classList.contains('hidden');
-  form.classList.toggle('hidden');
-  chevron.classList.toggle('rotate-180');
-  if (isHidden) {
-    // Reset state when opening
-    document.getElementById('provider-error').classList.add('hidden');
-    document.getElementById('discover-results').classList.add('hidden');
-    document.getElementById('btn-save-provider').classList.add('hidden');
-    discoveredModels = [];
-  }
-}
-
-async function discoverModels() {
-  const url = document.getElementById('provider-url').value.trim();
-  const key = document.getElementById('provider-key').value.trim();
-  const errEl = document.getElementById('provider-error');
-  const btn = document.getElementById('btn-discover');
-  const resultsEl = document.getElementById('discover-results');
-  const listEl = document.getElementById('discover-list');
-
-  if (!url) {
-    errEl.textContent = '请输入 Base URL';
-    errEl.classList.remove('hidden');
-    return;
-  }
-  // Basic URL validation
-  try {
-    const u = new URL(url);
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
-      throw new Error('invalid protocol');
-    }
-  } catch {
-    errEl.textContent = '请输入有效的 URL（以 http:// 或 https:// 开头）';
-    errEl.classList.remove('hidden');
-    return;
-  }
-  errEl.classList.add('hidden');
-  document.getElementById('btn-save-provider').classList.add('hidden');
-  btn.disabled = true;
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>发现中...';
-
-  try {
-    const res = await fetch('/api/providers/discover', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base_url: url, api_key: key || null })
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || '发现失败: HTTP ' + res.status);
-    }
-    const data = await res.json();
-
-    discoveredModels = data.models || [];
-    if (discoveredModels.length === 0) {
-      errEl.textContent = '未发现任何模型，请检查 URL 是否正确';
-      errEl.classList.remove('hidden');
-      resultsEl.classList.add('hidden');
-      document.getElementById('btn-save-provider').classList.add('hidden');
-      return;
-    }
-
-    listEl.innerHTML = discoveredModels.map(m => `
-      <label class="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-2 cursor-pointer hover:bg-gray-700">
-        <input type="checkbox" class="discover-model-check accent-blue-500" value="${escapeHtml(m.id)}" checked>
-        <span class="text-sm">${escapeHtml(m.name || m.id)}</span>
-        <span class="text-xs text-gray-500 font-mono">${escapeHtml(m.id)}</span>
-      </label>
-    `).join('');
-    resultsEl.classList.remove('hidden');
-    document.getElementById('btn-save-provider').classList.remove('hidden');
-  } catch (e) {
-    errEl.textContent = '发现失败: ' + e.message;
-    errEl.classList.remove('hidden');
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = '<i class="fas fa-search mr-1"></i>自动发现模型';
-  }
-}
-
-async function saveProvider() {
-  const name = document.getElementById('provider-name').value.trim();
-  const url = document.getElementById('provider-url').value.trim();
-  const key = document.getElementById('provider-key').value.trim();
-  const errEl = document.getElementById('provider-error');
-  const btn = document.getElementById('btn-save-provider');
-
-  if (!name) { errEl.textContent = '请输入 Provider 名称'; errEl.classList.remove('hidden'); return; }
-  if (!url) { errEl.textContent = '请输入 Base URL'; errEl.classList.remove('hidden'); return; }
-
-  const checks = document.querySelectorAll('.discover-model-check:checked');
-  const selectedIds = new Set(Array.from(checks).map(c => c.value));
-  const selectedModels = discoveredModels.filter(m => selectedIds.has(m.id));
-  if (selectedModels.length === 0) { errEl.textContent = '请至少选择一个模型'; errEl.classList.remove('hidden'); return; }
-
-  errEl.classList.add('hidden');
-  btn.disabled = true;
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>保存中...';
-
-  try {
-    const res = await fetch('/api/providers/connect', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, base_url: url, api_key: key || null, models: selectedModels })
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || '保存失败: HTTP ' + res.status);
-    }
-    const data = await res.json();
-
-    // Reset form
-    document.getElementById('provider-name').value = '';
-    document.getElementById('provider-url').value = '';
-    document.getElementById('provider-key').value = '';
-    document.getElementById('discover-results').classList.add('hidden');
-    document.getElementById('btn-save-provider').classList.add('hidden');
-    discoveredModels = [];
-
-    showToast('Provider 添加成功: ' + data.provider);
-    toggleAddProvider(); // collapse form
-    loadModels();
-  } catch (e) {
-    errEl.textContent = '保存失败: ' + e.message;
-    errEl.classList.remove('hidden');
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = '<i class="fas fa-check mr-1"></i>保存 Provider';
-  }
-}
-
-async function deleteProvider(name) {
-  const display = name.length > 50 ? name.slice(0, 50) + '...' : name;
-  if (!confirm('确定删除 Provider "' + display.replace(/[\r\n]/g, '') + '" 吗？')) return;
-  try {
-    const res = await fetch('/api/providers/' + encodeURIComponent(name), { method: 'DELETE' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    showToast('Provider 已删除');
-    loadModels();
-  } catch (e) {
-    showToast('删除失败: ' + e.message, true);
-  }
-}
-
-function showToast(msg, isError) {
+function appendFleetAgentMessage(agentId, agentName, agentRole, result, statusText, statusColor) {
+  const container = document.getElementById('chat-messages');
+  if (!container) return;
+  const color = getFleetRoleColor(agentRole);
   const div = document.createElement('div');
-  div.className = `fixed bottom-4 right-4 px-4 py-2 rounded-lg text-sm z-50 transition-opacity ${isError ? 'bg-red-600' : 'bg-green-600'} text-white`;
-  div.textContent = msg;
-  document.body.appendChild(div);
-  setTimeout(() => { div.style.opacity = '0'; setTimeout(() => div.remove(), 300); }, 2500);
+  div.className = 'flex justify-start gap-2';
+  div.innerHTML = `
+    <div class="w-8 h-8 rounded-full ${color.bg} flex-shrink-0 flex items-center justify-center text-white text-xs font-bold">${getFleetRoleInitial(agentRole)}</div>
+    <div class="max-w-[75%]">
+      <div class="flex items-baseline gap-2 mb-0.5">
+        <span class="text-xs font-medium text-gray-300">${escapeHtml(agentName)}</span>
+        <span class="text-[10px] ${statusColor}">${statusText}</span>
+      </div>
+      <div class="bg-gray-800 border border-gray-700 text-gray-200 px-4 py-2.5 rounded-2xl rounded-tl-md text-sm markdown">${renderMarkdown(result)}</div>
+    </div>
+  `;
+  container.appendChild(div);
+  scrollFleetChatToBottom();
 }
 
-async function switchModel(modelId) {
-  if (!modelId) return;
-  try {
-    const res = await fetch('/api/models/switch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model_id: modelId }),
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || 'HTTP ' + res.status);
-    }
-    setCurrentModel(modelId);
-    showToast('已切换到模型: ' + (availableModels.find(m => m.id === modelId)?.name || modelId));
-    loadModels();
-  } catch (e) {
-    showToast('切换模型失败: ' + e.message, true);
-  }
+function appendFleetReviewerMessage(review) {
+  const container = document.getElementById('chat-messages');
+  if (!container) return;
+  const div = document.createElement('div');
+  div.className = 'flex justify-start gap-2';
+  div.innerHTML = `
+    <div class="w-8 h-8 rounded-full bg-yellow-500 flex-shrink-0 flex items-center justify-center text-white text-xs font-bold">审</div>
+    <div class="max-w-[75%]">
+      <div class="flex items-baseline gap-2 mb-0.5">
+        <span class="text-xs font-medium text-gray-300">审查员</span>
+        <span class="text-[10px] text-yellow-400">已审查</span>
+      </div>
+      <div class="bg-yellow-900/20 border border-yellow-800 text-yellow-200 px-4 py-2.5 rounded-2xl rounded-tl-md text-sm">${escapeHtml(review)}</div>
+    </div>
+  `;
+  container.appendChild(div);
+  scrollFleetChatToBottom();
 }
 
-async function loadModels() {
-  showLoading('models-content', '加载模型...');
-  try {
-  const res = await fetch('/api/models');
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  const data = await res.json();
-  const container = document.getElementById('models-content');
-  const select = document.getElementById('current-model');
+function appendFleetThinkingMessage(agentName, agentRole, content) {
+  const container = document.getElementById('chat-messages');
+  if (!container) return;
+  const color = getFleetRoleColor(agentRole);
+  const div = document.createElement('div');
+  div.className = 'flex justify-start gap-2 my-1';
+  div.innerHTML = `
+    <div class="w-7 h-7 rounded-full ${color.bg} flex-shrink-0 flex items-center justify-center text-white text-[10px] font-bold">${getFleetRoleInitial(agentRole)}</div>
+    <div class="max-w-[75%]">
+      <div class="flex items-baseline gap-2 mb-0.5">
+        <span class="text-xs font-medium text-gray-300">${escapeHtml(agentName)}</span>
+        <span class="text-[10px] text-blue-400">思考中</span>
+      </div>
+      <details class="group">
+        <summary class="cursor-pointer text-[10px] text-gray-500 hover:text-gray-400 flex items-center gap-1">
+          <i class="fas fa-brain text-blue-400 mr-1"></i>查看推理过程
+        </summary>
+        <div class="bg-gray-900/50 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-400 mt-1 font-mono whitespace-pre-wrap">${escapeHtml(content)}</div>
+      </details>
+    </div>
+  `;
+  container.appendChild(div);
+  scrollFleetChatToBottom();
+}
 
-  // Use server-side active model if available
-  if (data.active_model) {
-    selectedModel = data.active_model;
-    localStorage.setItem('js-selected-model', selectedModel);
-  }
+function appendFleetToolCallMessage(agentName, agentRole, toolName, args) {
+  const container = document.getElementById('chat-messages');
+  if (!container) return;
+  const color = getFleetRoleColor(agentRole);
+  const div = document.createElement('div');
+  div.className = 'flex justify-start gap-2 my-0.5';
+  div.innerHTML = `
+    <div class="w-7 h-7 rounded-full ${color.bg} flex-shrink-0 flex items-center justify-center text-white text-[10px] font-bold">${getFleetRoleInitial(agentRole)}</div>
+    <div class="max-w-[75%]">
+      <div class="flex items-center gap-1.5 text-[10px] text-gray-500">
+        <i class="fas fa-wrench text-orange-400"></i>
+        <span>${escapeHtml(agentName)} 调用 <span class="text-orange-300 font-mono">${escapeHtml(toolName)}</span></span>
+      </div>
+      <div class="text-[10px] text-gray-600 font-mono truncate">${escapeHtml(args)}</div>
+    </div>
+  `;
+  container.appendChild(div);
+  scrollFleetChatToBottom();
+}
 
-  // Build flat model list for dropdown
-  availableModels = [];
-  if (data.providers) {
-    data.providers.forEach(p => {
-      p.models.forEach(m => {
-        availableModels.push({
-          id: `${p.name}/${m.id}`,
-          name: `${p.name}/${m.name || m.id}`,
-          provider: p.name,
-          ...m
-        });
-      });
+function appendFleetToolResultMessage(agentName, agentRole, toolName, preview, success) {
+  const container = document.getElementById('chat-messages');
+  if (!container) return;
+  const color = getFleetRoleColor(agentRole);
+  const statusIcon = success ? '<i class="fas fa-check text-green-400 text-[8px]"></i>' : '<i class="fas fa-times text-red-400 text-[8px]"></i>';
+  const div = document.createElement('div');
+  div.className = 'flex justify-start gap-2 my-0.5';
+  div.innerHTML = `
+    <div class="w-7 h-7 rounded-full ${color.bg} flex-shrink-0 flex items-center justify-center text-white text-[10px] font-bold">${getFleetRoleInitial(agentRole)}</div>
+    <div class="max-w-[75%]">
+      <div class="flex items-center gap-1.5 text-[10px]">
+        ${statusIcon}
+        <span class="text-gray-500">${escapeHtml(toolName)} 结果</span>
+      </div>
+      <div class="text-[10px] text-gray-600 truncate">${escapeHtml(preview)}</div>
+    </div>
+  `;
+  container.appendChild(div);
+  scrollFleetChatToBottom();
+}
+
+function scrollFleetChatToBottom() {
+  const container = document.getElementById('chat-messages');
+  if (container) container.scrollTop = container.scrollHeight;
+}
+
+function renderFleetRoleStatuses() {
+  // Update status indicators on each role card based on runtime state.fleetAgents
+  const agents = Object.values(state.fleetAgents);
+  if (agents.length === 0) {
+    // No runtime agents yet — reset all status dots to gray
+    document.querySelectorAll('.fleet-status-dot').forEach(el => {
+      el.className = 'fleet-status-dot absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-gray-600 border-2 border-gray-900';
     });
-  }
-
-  // Update header dropdown
-  if (select) {
-    const currentVal = select.value;
-    select.innerHTML = '<option value="">默认模型</option>' +
-      availableModels.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join('');
-    select.value = selectedModel || '';
-  }
-
-  // Update active model display in models tab
-  const activeModelDisplay = document.getElementById('active-model-display');
-  const activeModelName = document.getElementById('active-model-name');
-  const activeModelMeta = document.getElementById('active-model-meta');
-  const activeModel = availableModels.find(m => m.id === selectedModel);
-  if (activeModelName && activeModelMeta) {
-    if (activeModel) {
-      activeModelName.textContent = activeModel.name || activeModel.id;
-      activeModelMeta.textContent = `Provider: ${activeModel.provider} · 上下文窗口: ${activeModel.context_window || '--'} tokens`;
-    } else {
-      activeModelName.textContent = '未选择';
-      activeModelMeta.textContent = '使用系统默认模型';
-    }
-  }
-
-  if (!data.providers || data.providers.length === 0) {
-    container.innerHTML = '<div class="text-gray-400">未配置模型 Provider</div>';
+    document.querySelectorAll('.fleet-status-text').forEach(el => {
+      el.textContent = '未运行';
+      el.className = 'fleet-status-text text-[10px] text-gray-600';
+    });
+    document.querySelectorAll('.fleet-task-text').forEach(el => el.textContent = '');
     return;
   }
+  agents.forEach(a => {
+    const card = document.querySelector(`.fleet-role-card[data-role="${CSS.escape(a.role)}"]`);
+    if (!card) return;
+    const dot = card.querySelector('.fleet-status-dot');
+    const statusText = card.querySelector('.fleet-status-text');
+    const taskText = card.querySelector('.fleet-task-text');
+    if (dot) {
+      const color = a.status === 'idle' ? 'bg-green-400' : a.status === 'busy' ? 'bg-blue-400' : 'bg-red-400';
+      dot.className = `fleet-status-dot absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ${color} border-2 border-gray-900`;
+    }
+    if (statusText) {
+      const text = a.status === 'idle' ? '空闲' : a.status === 'busy' ? '运行中' : '错误';
+      const cls = a.status === 'idle' ? 'text-green-400' : a.status === 'busy' ? 'text-blue-400' : 'text-red-400';
+      statusText.textContent = text;
+      statusText.className = `fleet-status-text text-[10px] ${cls}`;
+    }
+    if (taskText) {
+      taskText.textContent = a.task || '';
+    }
+  });
+}
 
-  container.innerHTML = data.providers.map(p => `
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <div class="flex items-center justify-between mb-3">
-        <h3 class="font-bold text-lg">${escapeHtml(p.name)}</h3>
+function updateFleetMemberStatus(agentId, agentName, agentRole, status, task) {
+  state.fleetAgents[agentId] = { id: agentId, name: agentName, role: agentRole, status, task };
+  renderFleetRoleStatuses();
+}
+
+function addFleetRoleCard(roleName, modelId, label, colorClass) {
+  const container = document.getElementById('fleet-model-config');
+  if (!container) return;
+  const id = 'fleet-role-' + (roleName || 'custom-' + Date.now());
+  const div = document.createElement('div');
+  div.className = 'fleet-role-card border border-gray-700 rounded-lg p-3';
+  div.dataset.role = roleName || '';
+  div.id = id;
+  const safeLabel = escapeHtml(label || roleName || '自定义角色');
+  const bg = colorClass || 'bg-gray-500';
+  const initial = getFleetRoleInitial(roleName || 'A');
+  div.innerHTML = `
+    <div class="flex items-center gap-3">
+      <div class="relative flex-shrink-0">
+        <div class="w-8 h-8 rounded-full ${bg} flex items-center justify-center text-white text-xs font-bold">${initial}</div>
+        <div class="fleet-status-dot absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-gray-600 border-2 border-gray-900"></div>
+      </div>
+      <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2">
-          <span class="text-xs px-2 py-1 rounded ${data.health && p.name in data.health ? (data.health[p.name] ? 'bg-green-900 text-green-400' : 'bg-red-900 text-red-400') : 'bg-gray-800 text-gray-500'}">
-            ${data.health && p.name in data.health ? (data.health[p.name] ? '在线' : '离线') : '未知'}
-          </span>
-          <button onclick='deleteProvider(${JSON.stringify(p.name)})' class="text-xs bg-red-900/50 hover:bg-red-900 text-red-400 px-2 py-1 rounded transition" title="删除">
-            <i class="fas fa-trash"></i>
-          </button>
+          <input type="text" value="${safeLabel}" class="fleet-role-label bg-transparent border-none text-xs text-gray-300 font-medium focus:outline-none px-0 w-24" placeholder="角色名" onchange="renameFleetRole('${id}', this.value)">
+          <span class="fleet-status-text text-[10px] text-gray-600">未运行</span>
         </div>
+        <div class="fleet-task-text text-[10px] text-gray-600 truncate"></div>
       </div>
-      <p class="text-sm text-gray-400 mb-3">${escapeHtml(p.base_url)}</p>
-      <div class="space-y-2">
-        ${p.models.map(m => {
-          const fullId = `${p.name}/${m.id}`;
-          const isActive = selectedModel === fullId;
-          return `
-          <div class="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2 ${isActive ? 'ring-1 ring-blue-500' : ''}">
-            <div>
-              <span class="text-sm">${escapeHtml(m.name || m.id)}</span>
-              <span class="text-xs text-gray-500 font-mono ml-2">${escapeHtml(m.id)}</span>
-              <span class="text-xs text-gray-500 ml-2">${m.context_window ? m.context_window + ' tokens' : ''}</span>
-              ${isActive ? '<span class="text-xs bg-blue-900 text-blue-400 px-1.5 py-0.5 rounded ml-2">当前</span>' : ''}
-            </div>
-            <button onclick="switchModel(${JSON.stringify(fullId)})" class="text-xs ${isActive ? 'bg-gray-700 text-gray-400 cursor-default' : 'bg-blue-600 hover:bg-blue-700 text-white'} px-2 py-1 rounded transition">
-              ${isActive ? '使用中' : '切换'}
-            </button>
-          </div>
-          `;
-        }).join('')}
-      </div>
-    </div>
-  `).join('');
-  } catch (e) {
-    showError('models-content', '加载模型失败: ' + e.message);
-  }
-}
-
-async function loadSearch() {
-  document.getElementById('search-results').innerHTML = '';
-}
-
-async function doSearch() {
-  const input = document.getElementById('search-input');
-  const query = input.value.trim();
-  if (!query) return;
-  const container = document.getElementById('search-results');
-  container.innerHTML = '<div class="text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>搜索中...</div>';
-  try {
-    const res = await fetch('/api/search?query=' + encodeURIComponent(query) + '&max_results=5');
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.detail || 'HTTP ' + res.status);
-    }
-    const data = await res.json();
-    if (!data.results || data.results.length === 0) {
-      container.innerHTML = '<div class="text-gray-400">未找到结果</div>';
-      return;
-    }
-    container.innerHTML = data.results.map((r, i) => `
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <div class="flex items-start gap-3">
-          <span class="text-blue-400 font-bold">${i + 1}</span>
-          <div class="flex-1">
-            <a href="${escapeHtml(r.url)}" target="_blank" class="font-bold hover:text-blue-400 transition">${escapeHtml(r.title)}</a>
-            <p class="text-sm text-gray-400 mt-1">${escapeHtml(r.snippet)}</p>
-            <span class="text-xs text-gray-600 mt-1 inline-block">${escapeHtml(r.source)}</span>
-          </div>
-        </div>
-      </div>
-    `).join('');
-  } catch (e) {
-    container.innerHTML = '<div class="text-red-400">搜索失败: ' + escapeHtml(e.message) + '</div>';
-  }
-}
-
-async function loadStats() {
-  showLoading('stats-content', '加载统计...');
-  try {
-  const res = await fetch('/api/stats/tokens');
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  const data = await res.json();
-  const container = document.getElementById('stats-content');
-
-  if (data.error) {
-    container.innerHTML = `<div class="text-red-400">${escapeHtml(data.error)}</div>`;
-    return;
-  }
-
-  const totalPrompt = data.total_prompt_tokens || 0;
-  const totalCompletion = data.total_completion_tokens || 0;
-  const totalTokens = data.total_tokens || 0;
-  const totalCost = data.total_cost || 0;
-  const cacheRate = data.cache_rate || 0;
-
-  let html = `
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 text-center">
-        <div class="text-2xl font-bold text-blue-400">${data.total_calls || 0}</div>
-        <div class="text-xs text-gray-500 mt-1">总调用次数</div>
-      </div>
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 text-center">
-        <div class="text-2xl font-bold text-green-400">${totalTokens.toLocaleString()}</div>
-        <div class="text-xs text-gray-500 mt-1">总 Token 数</div>
-      </div>
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 text-center">
-        <div class="text-2xl font-bold text-purple-400">$${totalCost.toFixed(4)}</div>
-        <div class="text-xs text-gray-500 mt-1">预估成本</div>
-      </div>
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 text-center">
-        <div class="text-2xl font-bold text-yellow-400">${cacheRate}%</div>
-        <div class="text-xs text-gray-500 mt-1">缓存率</div>
-      </div>
-    </div>
-
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-4">
-      <h3 class="font-bold mb-3">模型用量明细</h3>
-      ${!data.models || data.models.length === 0 ? '<div class="text-gray-400">暂无数据</div>' : `
-        <div class="space-y-2">
-          ${data.models.map(m => `
-            <div class="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2">
-              <div class="flex-1">
-                <div class="text-sm font-medium">${escapeHtml(m.model)}</div>
-                <div class="text-xs text-gray-500">调用 ${m.calls} 次 | 缓存率 ${m.cache_rate}%</div>
-              </div>
-              <div class="text-right">
-                <div class="text-sm text-blue-400">${(m.total_tokens || 0).toLocaleString()}</div>
-                <div class="text-xs text-gray-500">$${(m.cost || 0).toFixed(4)}</div>
-              </div>
-            </div>
-          `).join('')}
-        </div>
-      `}
-    </div>
-
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <h3 class="font-bold mb-3">近 14 日趋势</h3>
-      ${!data.daily || data.daily.length === 0 ? '<div class="text-gray-400">暂无数据</div>' : `
-        <div class="space-y-2">
-          ${data.daily.map(d => `
-            <div class="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2">
-              <span class="text-sm">${d.day}</span>
-              <div class="text-right">
-                <span class="text-sm text-blue-400 mr-3">${(d.tokens || 0).toLocaleString()} tokens</span>
-                <span class="text-xs text-gray-500">${d.calls} 次</span>
-              </div>
-            </div>
-          `).join('')}
-        </div>
-      `}
+      <select class="fleet-role-model bg-gray-800 border border-gray-700 rounded text-xs text-gray-200 px-2 py-1 focus:outline-none focus:border-blue-500" onchange="saveFleetModelConfig()">
+        <option value="">默认模型</option>
+      </select>
+      <button onclick="removeFleetRoleCard('${id}')" class="text-red-400 hover:text-red-300 text-xs flex-shrink-0"><i class="fas fa-times"></i></button>
     </div>
   `;
-
-  container.innerHTML = html;
-  } catch (e) {
-    showError('stats-content', '加载统计失败: ' + e.message);
-  }
+  container.appendChild(div);
+  populateFleetRoleSelect(div.querySelector('.fleet-role-model'), modelId);
+  refreshFleetSubtaskRoles();
+  renderFleetRoleStatuses();
 }
 
-function toggleSidebar() {
-  const sidebar = document.getElementById('sidebar');
-  sidebar.classList.toggle('-translate-x-full');
+function removeFleetRoleCard(id) {
+  const card = document.getElementById(id);
+  if (card) card.remove();
+  saveFleetModelConfig();
+  refreshFleetSubtaskRoles();
 }
 
-function escapeHtml(text) {
-  if (text == null) return '';
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
-
-async function recoverEmbedder() {
-  const btn = document.getElementById('memory-embedder-recover');
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>恢复中...';
+function renameFleetRole(id, newLabel) {
+  const card = document.getElementById(id);
+  if (!card) return;
+  // 支持中文及 Unicode 角色名
+  let roleValue = newLabel.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^\p{L}\p{N}_-]/gu, '');
+  if (!roleValue) {
+    // 如果清理后为空（纯特殊字符），保留原始输入作为后备
+    roleValue = newLabel.trim().replace(/\s+/g, '-');
   }
-  try {
-    const res = await fetch('/api/memory/embedder/recover', { method: 'POST' });
-    const data = await res.json();
-    if (data.success) {
-      showToast('嵌入器已恢复: ' + (data.provider || 'OK'), 'success');
-    } else {
-      showToast('恢复失败: ' + (data.reason || '嵌入器仍不可用'), 'warning');
-    }
-    loadMemory();
-  } catch (e) {
-    showToast('恢复请求失败: ' + e.message, 'error');
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.innerHTML = '<i class="fas fa-undo mr-1"></i>恢复嵌入器';
-    }
-  }
-}
-
-
-
-document.getElementById('chat-input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    sendMessage();
-  }
-});
-
-// Close modals on Escape key
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    closeSkillModal();
-    closeMemoryFileEditor();
-  }
-});
-
-// Debounced skill search
-let _skillSearchTimeout;
-document.getElementById('skill-search').addEventListener('input', () => {
-  clearTimeout(_skillSearchTimeout);
-  _skillSearchTimeout = setTimeout(loadSkills, 300);
-});
-
-// Add fade-in keyframes for attachment cards
-const styleSheet = document.createElement('style');
-styleSheet.textContent = `
-  @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(4px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-`;
-document.head.appendChild(styleSheet);
-
-connectWS();
-loadModels();
-loadSessions();
-initDragDrop();
-checkFirstStart();
-
-function renderMarkdown(text) {
-  if (!text) return '';
-  const result = [];
-  const blockRegex = /(```(?:\w+)?\n[\s\S]*?```)/g;
-  let lastIndex = 0;
-  let match;
-  while ((match = blockRegex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      result.push(_renderTextSegment(text.slice(lastIndex, match.index)));
-    }
-    const m = match[1].match(/```(\w+)?\n([\s\S]*?)```/);
-    if (m) {
-      result.push(`<pre class="bg-gray-950 p-3 rounded-lg overflow-x-auto my-2"><code>${escapeHtml(m[2])}</code></pre>`);
-    }
-    lastIndex = match.index + match[1].length;
-  }
-  if (lastIndex < text.length) {
-    result.push(_renderTextSegment(text.slice(lastIndex)));
-  }
-  if (result.length === 0) {
-    result.push(_renderTextSegment(text));
-  }
-  return result.join('');
-
-  function _renderTextSegment(seg) {
-    let html = escapeHtml(seg);
-    html = html.replace(/`([^`]+)`/g, '<code class="bg-gray-700 px-1 rounded text-sm">$1</code>');
-    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
-    return html.replace(/\n/g, '<br>');
-  }
-}
-
-
-// ===== Cron / Scheduled Tasks =====
-
-async function refreshCronJobs() {
-  try {
-    const res = await fetch('/api/cron/jobs');
-    const data = await res.json();
-    renderCronJobs(data.jobs || []);
-  } catch (e) {
-    console.error('Failed to load cron jobs:', e);
-    document.getElementById('cron-jobs-list').innerHTML =
-      '<tr><td colspan="7" class="p-4 text-red-400 text-center">加载失败</td></tr>';
-  }
-  // Also refresh stats
-  try {
-    const statsRes = await fetch('/api/cron/stats');
-    const stats = await statsRes.json();
-    document.getElementById('cron-stat-total').textContent = stats.total_jobs || 0;
-    document.getElementById('cron-stat-active').textContent = stats.active_jobs || 0;
-    document.getElementById('cron-stat-runs').textContent = stats.total_runs || 0;
-    document.getElementById('cron-stat-rate').textContent =
-      (stats.success_rate || 0).toFixed(1) + '%';
-  } catch (e) {
-    console.error('Failed to load cron stats:', e);
-  }
-}
-
-function renderCronJobs(jobs) {
-  const tbody = document.getElementById('cron-jobs-list');
-  if (!jobs.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-gray-500 text-center">暂无定时任务</td></tr>';
+  if (!roleValue) {
+    showToast('角色名不能为空', 'error');
     return;
   }
-  tbody.innerHTML = jobs.map(job => {
-    const statusColor = {
-      'pending': 'text-gray-400',
-      'running': 'text-blue-400',
-      'completed': 'text-green-400',
-      'failed': 'text-red-400',
-      'paused': 'text-yellow-400',
-      'disabled': 'text-gray-600'
-    }[job.status] || 'text-gray-400';
-    const nextRun = job.next_run_at ? new Date(job.next_run_at * 1000).toLocaleString('zh-CN', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '-';
-    const isEnabled = job.enabled;
-    return `<tr class="hover:bg-gray-800/50">
-      <td class="p-3"><span class="${statusColor} text-xs">● ${job.status}</span></td>
-      <td class="p-3">${escapeHtml(job.name)}</td>
-      <td class="p-3 text-gray-400 text-xs">${escapeHtml(job.schedule_summary || job.cron_expr)}</td>
-      <td class="p-3 text-xs"><span class="bg-gray-800 px-2 py-0.5 rounded">${job.task_type}</span></td>
-      <td class="p-3 text-gray-400 text-xs">${nextRun}</td>
-      <td class="p-3 text-xs">${job.run_count} / ${job.fail_count}</td>
-      <td class="p-3 text-right">
-        <button onclick="runCronJob('${job.id}')" class="text-xs text-blue-400 hover:text-blue-300 mr-2" title="立即执行"><i class="fas fa-play"></i></button>
-        <button onclick="toggleCronJob('${job.id}', ${!isEnabled})" class="text-xs ${isEnabled ? 'text-yellow-400' : 'text-green-400'} hover:opacity-80 mr-2" title="${isEnabled ? '暂停' : '启用'}"><i class="fas fa-${isEnabled ? 'pause' : 'play'}"></i></button>
-        <button onclick="deleteCronJob('${job.id}')" class="text-xs text-red-400 hover:text-red-300" title="删除"><i class="fas fa-trash"></i></button>
-      </td>
-    </tr>`;
-  }).join('');
+  card.dataset.role = roleValue;
+  saveFleetModelConfig();
+  refreshFleetSubtaskRoles();
 }
 
-async function runCronJob(jobId) {
-  try {
-    const res = await fetch(`/api/cron/jobs/${jobId}/run`, {method: 'POST'});
-    const data = await res.json();
-    if (data.success) {
-      showToast('任务执行成功', 'success');
-    } else {
-      showToast('任务执行失败: ' + (data.error || ''), 'error');
+function refreshFleetSubtaskRoles() {
+  const options = buildFleetRoleOptions();
+  document.querySelectorAll('.fleet-subtask-role').forEach(sel => {
+    const current = sel.value;
+    sel.innerHTML = options;
+    if (current) {
+      for (let i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === current) { sel.value = current; break; }
+      }
     }
-    refreshCronJobs();
-  } catch (e) {
-    showToast('执行失败', 'error');
-  }
+  });
 }
 
-async function toggleCronJob(jobId, enabled) {
-  try {
-    await fetch(`/api/cron/jobs/${jobId}`, {
-      method: 'PUT',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({enabled})
-    });
-    showToast(enabled ? '任务已启用' : '任务已暂停', 'success');
-    refreshCronJobs();
-  } catch (e) {
-    showToast('操作失败', 'error');
-  }
+let _fleetAvailableModels = [];
+
+function populateFleetRoleSelect(selectEl, selectedModel) {
+  if (!selectEl) return;
+  selectEl.innerHTML = '<option value="">默认模型</option>' +
+    _fleetAvailableModels.map(m => `<option value="${escapeHtml(m.id)}" ${m.id === selectedModel ? 'selected' : ''}>${escapeHtml(m.model_name || m.id)}</option>`).join('');
 }
 
-async function deleteCronJob(jobId) {
-  if (!confirm('确定要删除这个定时任务吗？')) return;
+async function loadFleetModelOptions() {
   try {
-    await fetch(`/api/cron/jobs/${jobId}`, {method: 'DELETE'});
-    showToast('任务已删除', 'success');
-    refreshCronJobs();
-  } catch (e) {
-    showToast('删除失败', 'error');
-  }
-}
-
-// Cron create modal
-async function loadCronTemplates() {
-  try {
-    const res = await fetch('/api/cron/templates');
+    const res = await fetch('/api/agents/config');
+    if (!res.ok) return;
     const data = await res.json();
-    const select = document.getElementById('cron-template-select');
-    data.templates.forEach(t => {
-      const opt = document.createElement('option');
-      opt.value = t.id;
-      opt.textContent = `${t.icon} ${t.name}`;
-      select.appendChild(opt);
+    _fleetAvailableModels = data.available_models || [];
+    const cfg = data.config || {};
+
+    const container = document.getElementById('fleet-model-config');
+    if (container) container.innerHTML = '';
+
+    addFleetRoleCard('worker', cfg.worker || '', '执行 Agent', 'bg-blue-500');
+    addFleetRoleCard('reviewer', cfg.reviewer || '', '审查 Agent', 'bg-yellow-500');
+
+    const known = new Set(['worker', 'reviewer']);
+    Object.entries(cfg).forEach(([role, model]) => {
+      if (!known.has(role) && role) {
+        addFleetRoleCard(role, model || '', role.charAt(0).toUpperCase() + role.slice(1), 'bg-gray-500');
+      }
     });
   } catch (e) {
-    console.error('Failed to load templates:', e);
+    console.error('Failed to load fleet model options:', e);
   }
 }
 
-function showCronCreateModal() {
-  document.getElementById('cron-create-modal').classList.remove('hidden');
-  loadCronTemplates();
-}
-
-function hideCronCreateModal() {
-  document.getElementById('cron-create-modal').classList.add('hidden');
-}
-
-async function onCronTemplateChange() {
-  const templateId = document.getElementById('cron-template-select').value;
-  if (!templateId) return;
+async function saveFleetModelConfig() {
+  const cards = document.querySelectorAll('#fleet-model-config .fleet-role-card');
+  const config = {};
+  cards.forEach(card => {
+    const role = card.dataset.role;
+    const model = card.querySelector('.fleet-role-model')?.value || '';
+    if (role) config[role] = model;
+  });
   try {
-    const res = await fetch('/api/cron/templates');
-    const data = await res.json();
-    const t = data.templates.find(x => x.id === templateId);
-    if (t) {
-      document.getElementById('cron-name').value = t.name;
-      document.getElementById('cron-expr').value = t.default_cron;
-      document.getElementById('cron-task-type').value = t.task_type;
-      document.getElementById('cron-payload').value = JSON.stringify(t.default_payload || {}, null, 2);
-    }
-  } catch (e) {
-    console.error(e);
-  }
-}
-
-async function parseCronNatural() {
-  const text = document.getElementById('cron-natural').value;
-  if (!text) return;
-  try {
-    const res = await fetch('/api/cron/parse', {
+    const res = await fetch('/api/agents/config', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({text})
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config }),
     });
-    const data = await res.json();
-    const resultEl = document.getElementById('cron-parse-result');
-    if (data.matched) {
-      document.getElementById('cron-expr').value = data.cron_expr;
-      resultEl.textContent = `✓ 解析为: ${data.summary}`;
-      resultEl.classList.remove('hidden', 'text-red-400');
-      resultEl.classList.add('text-green-400');
-    } else {
-      resultEl.textContent = '✗ 无法解析，请尝试标准 Cron 表达式';
-      resultEl.classList.remove('hidden', 'text-green-400');
-      resultEl.classList.add('text-red-400');
-    }
+    if (!res.ok) throw new Error('API error');
+    showToast('模型分配已保存');
   } catch (e) {
-    console.error(e);
+    showToast('保存失败', 'error');
   }
 }
 
-async function submitCronJob() {
-  const name = document.getElementById('cron-name').value;
-  const cronExpr = document.getElementById('cron-expr').value;
-  const taskType = document.getElementById('cron-task-type').value;
-  const payloadStr = document.getElementById('cron-payload').value;
-  const templateId = document.getElementById('cron-template-select').value;
-
-  if (!name || !cronExpr) {
-    showToast('请填写任务名称和调度规则', 'error');
-    return;
-  }
-
-  let payload = {};
-  try {
-    payload = JSON.parse(payloadStr || '{}');
-  } catch (e) {
-    showToast('参数 JSON 格式错误', 'error');
-    return;
-  }
-
-  const body = templateId
-    ? {template_id: templateId, name, cron_expr: cronExpr, payload}
-    : {name, cron_expr: cronExpr, task_type: taskType, payload};
-
-  try {
-    const res = await fetch('/api/cron/jobs', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body)
-    });
-    const data = await res.json();
-    if (data.success) {
-      showToast('任务创建成功', 'success');
-      hideCronCreateModal();
-      refreshCronJobs();
-    } else {
-      showToast(data.error || '创建失败', 'error');
-    }
-  } catch (e) {
-    showToast('创建失败', 'error');
-  }
-}
-
-// Toast helper
-function showToast(message, type) {
-  const div = document.createElement('div');
-  const color = type === 'success' ? 'bg-green-600' : type === 'error' ? 'bg-red-600' : 'bg-blue-600';
-  div.className = `fixed bottom-4 right-4 ${color} text-white px-4 py-2 rounded-lg text-sm shadow-lg z-50 transition-opacity`;
-  div.textContent = message;
-  document.body.appendChild(div);
-  setTimeout(() => {
-    div.style.opacity = '0';
-    setTimeout(() => div.remove(), 300);
-  }, 3000);
-}
+// ---- Window mounts for HTML onclick/onchange compatibility ----
+const _windowFuncs = {
+  showToast, escapeHtml, toggleSidebar, renderMarkdown,
+  switchTab, sendMessage, toggleFleetMode, newSession, toggleSessionList,
+  loadDashboard, loadFiles, loadMemory, loadSkills, loadEvolution, loadStats, loadSearch, doSearch, runEvolutionNow,
+  discoverModels, saveProvider, testCloudProvider, toggleAddProvider,
+  addCloudProvider, onCloudPresetChange, switchModel, deleteProvider,
+  addFleetRoleCard, removeFleetRoleCard, renameFleetRole, saveFleetModelConfig,
+  loadAgents, populateFleetRoleSelect, refreshFleetSubtaskRoles,
+  showAddSemanticModal, submitSemanticMemory, searchSemantic, editSemanticMemory,
+  deleteSemanticMemory, saveSemanticMemory, recoverEmbedder,
+  openMemoryFileEditor, closeMemoryFileEditor, saveMemoryFile,
+  showSkillDetail, closeSkillModal, uninstallSkill, updateTrust,
+  showWizard, hideWizard, wizardNext, wizardPrev, wizardComplete, wizardSelectModel,
+  loadWizardModels, checkFirstStart,
+  showCronCreateModal, hideCronCreateModal, submitCronJob, refreshCronJobs,
+  runCronJob, deleteCronJob, toggleCronJob, parseCronNatural, onCronTemplateChange,
+  loadCronTemplates, renderCronJobs, triggerFileSelect, handleFileSelect,
+  loadSessions, switchSession, deleteSession, setCurrentModel,
+  loadCloudPresets, loadAudit, loadStatus, loadModels,
+};
+Object.entries(_windowFuncs).forEach(([k, v]) => { if (typeof v === 'function') window[k] = v; });
 
 // Hook: refresh cron jobs when tab is shown
 const _origSwitchTab = window.switchTab;
@@ -2352,3 +1658,19 @@ window.switchTab = function(tab) {
     refreshCronJobs();
   }
 };
+
+// ---- Bootstrap: initialize on page load ----
+connectWS();
+initDragDrop();
+checkFirstStart();
+
+// Bind Enter key on chat input
+const chatInput = document.getElementById('chat-input');
+if (chatInput) {
+  chatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+}

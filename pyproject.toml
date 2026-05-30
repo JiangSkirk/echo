@@ -1,6 +1,6 @@
 [project]
 name = "js-agent"
-version = "0.1.1"
+version = "0.1.2"
 description = "A stable, secure, and convenient AI agent framework"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -85,6 +85,7 @@ python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+warn_unused_ignores = false
 exclude = []
 
 [[tool.mypy.overrides]]

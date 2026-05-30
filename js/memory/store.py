@@ -199,7 +199,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
     def search(self, query: str, category: str | None = None, limit: int = 10) -> list[MemoryEntry]:
         """Search memories by content match."""
         # Escape SQL LIKE wildcards to prevent unexpected full-table scans
-        safe_query = query.replace("%", "\\%").replace("_", "\\_")
+        safe_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         pattern = f"%{safe_query}%"
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row

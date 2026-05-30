@@ -107,8 +107,9 @@ class JSCLI:
                             break
 
                     if self.settings.display.show_cost:
+                        cost_str = f"${state.cost_estimate:.6f}" if state.cost_estimate > 0 else "$0.00"
                         console.print(
-                            f"[dim]Tokens: {state.total_tokens} | Turns: {state.turn_count}[/dim]"
+                            f"[dim]Tokens: {state.total_tokens} | Turns: {state.turn_count} | Cost: {cost_str}[/dim]"
                         )
 
             except Exception as e:
@@ -382,14 +383,137 @@ def status(config: str | None) -> None:
     cli._show_status()
 
 
-@main.command()
+@main.group(invoke_without_command=True)
 @click.option("--host", default="127.0.0.1", help="Bind host")
 @click.option("--port", default=8000, help="Bind port")
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
 @click.option("--reload", is_flag=True, help="Enable auto-reload on code changes (dev mode)")
-def web(host: str, port: int, config: str | None, reload: bool) -> None:
-    """Launch Web UI."""
-    _launch_web(host, port, config, open_browser=False, reload=reload)
+@click.option("--warm", is_flag=True, help="Pre-load skills and warm up provider connections on startup")
+@click.option("--daemon", is_flag=True, help="Run as a supervised daemon (auto-restart on crash)")
+@click.pass_context
+def web(ctx: click.Context, host: str, port: int, config: str | None, reload: bool, warm: bool, daemon: bool) -> None:
+    """Web UI server management.\n\nExamples:\n  js web start --port 8000\n  js web stop\n  js web restart --port 8000\n  js web status"""
+    if ctx.invoked_subcommand is None:
+        # Backward compatibility: js web --daemon --port 8000
+        if daemon:
+            _run_as_daemon(host, port, config, warm)
+        else:
+            _launch_web(host, port, config, open_browser=False, reload=reload, warm=warm)
+
+
+@web.command()
+@click.option("--host", default="127.0.0.1", help="Bind host")
+@click.option("--port", default=8000, help="Bind port")
+@click.option("--config", "-c", type=click.Path(), help="Config file path")
+@click.option("--warm", is_flag=True, help="Pre-load skills and warm up provider connections on startup")
+def start(host: str, port: int, config: str | None, warm: bool) -> None:
+    """Start the web server as a supervised daemon."""
+    pid_file = Path.home() / ".js" / "run" / "js-web.pid"
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            if _pid_alive(pid):
+                console.print(f"[yellow]Web server already running (PID {pid}). Use 'js web restart' or 'js web stop' first.[/yellow]")
+                return
+        except ValueError:
+            pass
+        pid_file.unlink(missing_ok=True)
+    _run_as_daemon(host, port, config, warm)
+
+
+@web.command()
+def stop() -> None:
+    """Stop the running web server daemon."""
+    import os
+    import signal
+    import time
+
+    pid_file = Path.home() / ".js" / "run" / "js-web.pid"
+    if not pid_file.exists():
+        console.print("[yellow]No PID file found. Server may not be running.[/yellow]")
+        return
+
+    try:
+        pid = int(pid_file.read_text().strip())
+    except ValueError:
+        console.print("[red]PID file is corrupted.[/red]")
+        pid_file.unlink(missing_ok=True)
+        return
+
+    if not _pid_alive(pid):
+        console.print("[yellow]Server is not running (stale PID file removed).[/yellow]")
+        pid_file.unlink(missing_ok=True)
+        return
+
+    console.print(f"[yellow]Stopping server (PID {pid})...[/yellow]")
+    try:
+        os.kill(pid, signal.SIGINT)
+    except ProcessLookupError:
+        console.print("[yellow]Server process not found (already stopped).[/yellow]")
+        pid_file.unlink(missing_ok=True)
+        return
+
+    # Wait up to 10s for graceful shutdown
+    for _ in range(20):
+        if not _pid_alive(pid):
+            console.print("[green]Server stopped.[/green]")
+            pid_file.unlink(missing_ok=True)
+            return
+        time.sleep(0.5)
+
+    # Force kill
+    try:
+        os.kill(pid, signal.SIGKILL)
+        console.print("[red]Server force-killed.[/red]")
+    except ProcessLookupError:
+        console.print("[green]Server stopped.[/green]")
+    pid_file.unlink(missing_ok=True)
+
+
+@web.command()
+@click.option("--host", default="127.0.0.1", help="Bind host")
+@click.option("--port", default=8000, help="Bind port")
+@click.option("--config", "-c", type=click.Path(), help="Config file path")
+@click.option("--warm", is_flag=True, help="Pre-load skills and warm up provider connections on startup")
+def restart(host: str, port: int, config: str | None, warm: bool) -> None:
+    """Restart the web server daemon."""
+    ctx = click.get_current_context()
+    import time as _time
+    ctx.invoke(stop)
+    _time.sleep(1)
+    ctx.invoke(start, host=host, port=port, config=config, warm=warm)
+
+
+@web.command(name="status")
+def web_status() -> None:
+    """Check whether the web server is running."""
+    import platform
+
+    pid_file = Path.home() / ".js" / "run" / "js-web.pid"
+    if not pid_file.exists():
+        console.print("[yellow]Server is not running.[/yellow]")
+        return
+
+    try:
+        pid = int(pid_file.read_text().strip())
+    except ValueError:
+        console.print("[red]PID file is corrupted.[/red]")
+        return
+
+    if not _pid_alive(pid):
+        console.print("[yellow]Server is not running (stale PID file).[/yellow]")
+        return
+
+    console.print(f"[green]Server is running (PID {pid}).[/green]")
+    if platform.system() == "Darwin":
+        import subprocess
+        try:
+            proc_info = subprocess.run(["ps", "-p", str(pid), "-o", "etime,args"], capture_output=True, text=True, check=True)
+            lines = proc_info.stdout.strip().split("\n")
+            if len(lines) >= 2:
+                console.print(f"[dim]{lines[1].strip()}[/dim]")
+        except Exception:
+            pass
 
 
 @main.command(name="open")
@@ -401,7 +525,17 @@ def open_cmd(host: str, port: int, config: str | None) -> None:
     _launch_web(host, port, config, open_browser=True, reload=False)
 
 
-def _launch_web(host: str, port: int, _config: str | None, open_browser: bool, reload: bool = False) -> None:
+def _pid_alive(pid: int) -> bool:
+    """Check whether a process with the given PID exists."""
+    import os
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return False
+    return True
+
+
+def _launch_web(host: str, port: int, _config: str | None, open_browser: bool, reload: bool = False, warm: bool = False) -> None:
     import threading
     import time
     import webbrowser
@@ -409,6 +543,11 @@ def _launch_web(host: str, port: int, _config: str | None, open_browser: bool, r
     import uvicorn
 
     from js.web import create_app
+
+    if warm:
+        import os
+        os.environ["JS_WARM_START"] = "1"
+        console.print("[yellow]Warm start enabled: pre-loading skills and providers...[/yellow]")
 
     url = f"http://{host}:{port}"
     console.print(f"[green]Starting JS Web UI at {url}[/green]")
@@ -422,6 +561,73 @@ def _launch_web(host: str, port: int, _config: str | None, open_browser: bool, r
 
     app = create_app()
     uvicorn.run(app, host=host, port=port, reload=reload)
+
+
+def _run_as_daemon(host: str, port: int, config: str | None, warm: bool) -> None:
+    """Run the web server as a supervised daemon with auto-restart."""
+    import os
+    import signal
+    import subprocess
+    import sys
+    import time
+    from pathlib import Path
+
+    pid_file = Path.home() / ".js" / "run" / "js-web.pid"
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Build the child command (without --daemon to avoid recursion)
+    cmd = [sys.executable, "-m", "js", "web", "--host", host, "--port", str(port)]
+    if config:
+        cmd.extend(["--config", config])
+    if warm:
+        cmd.append("--warm")
+
+    child: subprocess.Popen[str] | None = None
+    shutdown = False
+    restarts: list[float] = []
+    max_restarts = 5
+    restart_window = 3600.0  # 1 hour
+
+    def _on_signal(signum: int, _frame: Any) -> None:
+        nonlocal shutdown
+        shutdown = True
+        if child is not None:
+            child.send_signal(signum)
+
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
+
+    # Write supervisor PID
+    pid_file.write_text(str(os.getpid()))
+    console.print(f"[green]Daemon supervisor PID {os.getpid()} started[/green]")
+
+    while not shutdown:
+        now = time.time()
+        restarts = [t for t in restarts if now - t < restart_window]
+        if len(restarts) >= max_restarts:
+            console.print(f"[red]Too many restarts ({max_restarts}) in {restart_window}s, giving up.[/red]")
+            pid_file.unlink(missing_ok=True)
+            sys.exit(1)
+
+        console.print(f"[green]Starting web server: {' '.join(cmd)}[/green]")
+        child = subprocess.Popen(cmd, text=True)
+        restarts.append(time.time())
+        assert child is not None
+        exit_code = child.wait()
+
+        if shutdown:
+            console.print("[green]Daemon shutdown complete.[/green]")
+            break
+
+        if exit_code == 0:
+            console.print("[green]Server exited cleanly.[/green]")
+            break
+
+        backoff = min(2 ** len(restarts[-5:]), 30)
+        console.print(f"[yellow]Server crashed (exit {exit_code}), restarting in {backoff}s...[/yellow]")
+        time.sleep(backoff)
+
+    pid_file.unlink(missing_ok=True)
 
 
 @main.command()

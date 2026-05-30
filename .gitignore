@@ -9,6 +9,16 @@ venv/
 ENV/
 env/
 
+# Local secrets / user config
+.env
+.env.*
+!.env.example
+config.local.*
+secrets.*
+*.pem
+*.key
+*.crt
+
 # IDEs
 .idea/
 .vscode/
@@ -34,9 +44,19 @@ dist/
 
 # State / Data (persisted at runtime)
 state/
+.js/
+workspace/
+data/
 *.db
 *.db-journal
+*.sqlite
+*.sqlite3
 
 # Logs
 *.log
 logs/
+
+# Generated release artifacts
+*.egg-info/
+*.whl
+*.tar.gz

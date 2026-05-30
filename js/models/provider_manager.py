@@ -106,12 +106,28 @@ class ProviderManager:
         """Query an OpenAI-compatible endpoint for available models.
 
         Returns {"models": [...]} on success or {"error": "..."} on failure.
+        Each model dict includes id, name, and context_window when available.
         """
         import httpx
 
         headers: dict[str, str] = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+
+        # Try to get enhanced context info for known local providers
+        context_overrides: dict[str, int] = {}
+        if "127.0.0.1:1234" in base_url or "localhost:1234" in base_url:
+            try:
+                async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+                    root = base_url.rstrip("/").rsplit("/v1", 1)[0]
+                    resp = await client.get(f"{root}/api/v0/models")
+                    if resp.status_code == 200:
+                        for m in resp.json().get("data", []):
+                            ctx = m.get("max_context_length") or m.get("loaded_context_length")
+                            if m.get("id") and ctx:
+                                context_overrides[m["id"]] = int(ctx)
+            except Exception:
+                pass
 
         try:
             async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
@@ -121,15 +137,24 @@ class ProviderManager:
                 resp.raise_for_status()
                 data = resp.json()
                 models = data.get("data", [])
-                return {
-                    "models": [
-                        {
-                            "id": m.get("id", ""),
-                            "name": m.get("id", "").split("/")[-1],
-                        }
-                        for m in models if m.get("id")
-                    ]
-                }
+                result_models = []
+                for m in models:
+                    model_id = m.get("id", "")
+                    if not model_id:
+                        continue
+                    # Priority: v0 API context > v1 API context_length > name inference
+                    ctx = context_overrides.get(model_id)
+                    if ctx is None:
+                        ctx = m.get("context_length") or m.get("max_context_length")
+                    if ctx is None:
+                        from js.models.discovery import LocalModelDiscovery
+                        ctx = LocalModelDiscovery._infer_context_window(None, model_id)
+                    result_models.append({
+                        "id": model_id,
+                        "name": m.get("name", model_id.split("/")[-1]),
+                        "context_window": int(ctx),
+                    })
+                return {"models": result_models}
         except httpx.ConnectTimeout:
             return {"error": "连接超时，请检查网络或 IP 地址是否正确"}
         except httpx.ConnectError as e:

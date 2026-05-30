@@ -57,21 +57,42 @@ class ModelRouter:
                 self._model_map[p_config.default_model] = (p_config.name, default_cfg)
 
     def add_provider(self, name: str, provider: ModelProvider, models: list[ModelConfig]) -> None:
+        # Clear stale mappings for this provider first so that old model ids
+        # (e.g. from a previous discover_models refresh) don't linger.
+        old_provider = self._providers.pop(name, None)
+        self._model_map = {
+            k: v for k, v in self._model_map.items() if v[0] != name
+        }
         self._providers[name] = provider
         for m in models:
             self._model_map[m.id] = (name, m)
             self._model_map[f"{name}/{m.id}"] = (name, m)
         self._routing_cache.clear()
+        # Close the old provider asynchronously without blocking the caller.
+        if old_provider is not None:
+            try:
+                import asyncio
+                asyncio.get_running_loop()
+                asyncio.create_task(old_provider.close())
+            except RuntimeError:
+                pass
 
     def remove_provider(self, name: str) -> bool:
         """Remove a provider and all its model mappings."""
         if name not in self._providers:
             return False
-        del self._providers[name]
+        old_provider = self._providers.pop(name)
         self._model_map = {
             k: v for k, v in self._model_map.items() if v[0] != name
         }
         self._routing_cache.clear()
+        # Close the old provider asynchronously without blocking the caller.
+        try:
+            import asyncio
+            asyncio.get_running_loop()
+            asyncio.create_task(old_provider.close())
+        except RuntimeError:
+            pass
         return True
 
     def get_model_config(self, model_id: str) -> ModelConfig | None:
@@ -80,6 +101,17 @@ class ModelRouter:
         if entry:
             return entry[1]
         return None
+
+    def is_local_model(self, model_id: str) -> bool:
+        """Return True if the model is served by a local provider (e.g. LMStudio, Ollama)."""
+        entry = self._model_map.get(model_id)
+        if not entry:
+            return False
+        provider_name = entry[0]
+        provider = self._providers.get(provider_name)
+        if isinstance(provider, OpenAICompatibleProvider):
+            return getattr(provider, "_is_local", False)
+        return False
 
     async def _provider_healthy(self, provider: ModelProvider) -> bool:
         """Check if provider is healthy and circuit is not OPEN."""
@@ -115,8 +147,18 @@ class ModelRouter:
                     provider_name=provider_name,
                     reason=f"User preferred: {preferred}",
                 )
-                self._routing_cache[cache_key] = decision
-                return decision
+            else:
+                # Respect user's explicit choice even if the provider appears
+                # unhealthy.  Let the actual API call fail and surface the
+                # error rather than silently falling back to a different model.
+                decision = RoutingDecision(
+                    provider=provider,
+                    model=config.id,
+                    provider_name=provider_name,
+                    reason=f"User preferred (unhealthy): {preferred}",
+                )
+            self._routing_cache[cache_key] = decision
+            return decision
 
         # Build a unified view of provider → default_model from both
         # settings.providers (static config) and _model_map (runtime adds).
@@ -172,7 +214,13 @@ class ModelRouter:
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
     ) -> ChatResponse:
-        """Send chat request with automatic fallback."""
+        """Send chat request with automatic fallback.
+
+        When ``model`` is explicitly specified by the user we respect that
+        choice and do **not** silently fall back to another provider – the
+        user should see an error if their chosen model fails.  Fallback is
+        only allowed when ``model`` is ``None`` (auto-select).
+        """
         decision = await self.select_model(preferred=model)
         errors: list[str] = []
 
@@ -185,7 +233,13 @@ class ModelRouter:
             )
         except Exception as e:
             errors.append(f"{decision.provider_name}/{decision.model}: {e}")
+            if model is not None:
+                # User explicitly requested this model – do not silently fallback.
+                raise RuntimeError(
+                    f"Requested model '{model}' failed: {e}"
+                ) from e
 
+        # Fallback is only reached when ``model`` is None (auto-select).
         # Try fallback providers (skip unhealthy ones)
         for name, provider in self._providers.items():
             if name == decision.provider_name:
@@ -228,7 +282,11 @@ class ModelRouter:
         model: str | None = None,
         temperature: float = 0.7,
     ) -> AsyncIterator[str]:
-        """Stream tokens from the selected model with fallback."""
+        """Stream tokens from the selected model with fallback.
+
+        When ``model`` is explicitly specified by the user we respect that
+        choice and do **not** silently fall back to another provider.
+        """
         decision = await self.select_model(preferred=model)
         errors: list[str] = []
 
@@ -242,7 +300,12 @@ class ModelRouter:
             return
         except Exception as e:
             errors.append(f"{decision.provider_name}/{decision.model}: {e}")
+            if model is not None:
+                raise RuntimeError(
+                    f"Requested model '{model}' failed: {e}"
+                ) from e
 
+        # Fallback is only reached when ``model`` is None (auto-select).
         # Fallback providers (skip unhealthy)
         for name, provider in self._providers.items():
             if name == decision.provider_name:

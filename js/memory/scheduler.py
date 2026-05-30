@@ -91,9 +91,14 @@ class DreamScheduler:
             self._conversation_buffer.clear()
             raise
         except Exception as e:
-            self.logger.warning(f"Evolution cycle failed: {e}", exc_info=True)
-        self._pending = False
-        self._conversation_buffer = self._conversation_buffer[len(buffer_copy):]
+            self.logger.warning("Evolution cycle failed: %s", e, exc_info=True)
+        finally:
+            # Always advance the buffer so it doesn't grow unboundedly on
+            # repeated failures.  If the cycle succeeded we drop the copied
+            # items; if it failed we still drop them to avoid re-processing
+            # stale conversation fragments in the next cycle.
+            self._pending = False
+            self._conversation_buffer = self._conversation_buffer[len(buffer_copy):]
 
     async def _loop(self) -> None:
         """Main scheduling loop — checks idle time and triggers evolution."""

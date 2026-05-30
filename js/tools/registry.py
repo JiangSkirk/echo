@@ -36,7 +36,14 @@ class ToolSpec:
         """Convert to OpenAI function calling schema."""
         properties: dict[str, Any] = {}
         required: list[str] = []
+        seen: set[str] = set()
         for p in self.parameters:
+            # Deduplicate by parameter name — some Hermes scripts define the
+            # same flag in multiple sub-parsers and our regex scanner picks
+            # them all up. OpenAI rejects duplicate property names.
+            if p.name in seen:
+                continue
+            seen.add(p.name)
             prop: dict[str, Any] = {"type": p.type, "description": p.description}
             if p.enum:
                 prop["enum"] = p.enum
@@ -246,13 +253,16 @@ class ParallelToolExecutor:
     - NEVER_PARALLEL_TOOLS (shell, file_write, etc.) never run concurrently
     """
 
-    NEVER_PARALLEL_TOOLS: set[str] = {
+    NEVER_PARALLEL_TOOLS: frozenset[str] = frozenset({
         "file_write",
         "shell",
         "python",
         "code_execute",
         "file_delete",
-    }
+        "file_edit",
+        "file_append",
+        "file_move",
+    })
 
     def __init__(self, max_parallel: int = 4) -> None:
         self.max_parallel = max_parallel
@@ -278,7 +288,7 @@ class ParallelToolExecutor:
         """Check if two tool calls target the same file path."""
         args1 = self._get_arguments(call1)
         args2 = self._get_arguments(call2)
-        for key in ("path", "file", "filename", "dest"):
+        for key in ("path", "file", "filename", "dest", "source", "src", "target", "to", "dir", "cwd"):
             p1 = args1.get(key)
             p2 = args2.get(key)
             if p1 and p2 and str(p1) == str(p2):

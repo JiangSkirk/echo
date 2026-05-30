@@ -1,6 +1,6 @@
 # JS Agent
 
-> **⚠️ 当前版本: v0.1.1-alpha — API 可能变更，欢迎反馈！**
+> **⚠️ 当前版本: v0.1.2-alpha — API 可能变更，欢迎反馈！**
 >
 > [English README](README_en.md)
 
