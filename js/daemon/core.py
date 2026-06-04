@@ -316,13 +316,20 @@ class JSDaemon:
     async def _cb_shell(self, job: ScheduledJob) -> None:
         cmd = job.payload.get("command", "")
         logger.info(f"[cron] Shell task: {cmd[:50]}")
+        # Set cron context so dangerous tools are auto-denied
+        if self.agent:
+            self.agent._run_context = "cron"  # type: ignore[attr-defined]
 
     async def _cb_chat(self, job: ScheduledJob) -> None:
         prompt = job.payload.get("prompt", "")
         logger.info(f"[cron] Chat task: {prompt[:50]}")
+        if self.agent:
+            self.agent._run_context = "cron"  # type: ignore[attr-defined]
 
     async def _cb_custom(self, job: ScheduledJob) -> None:
         logger.info(f"[cron] Custom task: {job.name}")
+        if self.agent:
+            self.agent._run_context = "cron"  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------
     # Job persistence

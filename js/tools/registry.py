@@ -262,6 +262,18 @@ class ParallelToolExecutor:
         "file_edit",
         "file_append",
         "file_move",
+        # Desktop control: sequential to avoid interference
+        "desktop_click",
+        "desktop_move",
+        "desktop_scroll",
+        "desktop_drag",
+        "desktop_type",
+        "desktop_key",
+        "desktop_app",
+        "desktop_window",
+        "desktop_set_mode",
+        "desktop_emergency_stop",
+        "desktop_clear_stop",
     })
 
     def __init__(self, max_parallel: int = 4) -> None:

@@ -43,7 +43,12 @@ class AuditEvent:
 
 
 class AuditLogger:
-    """Tamper-evident audit logger using hash chains."""
+    """Tamper-evident audit logger using hash chains.
+
+    Audit log payloads are encrypted at rest using the same Fernet key
+    managed by SecretManager.  The hash chain is computed from the
+    encrypted form, so both integrity AND confidentiality are preserved.
+    """
 
     def __init__(self, state_dir: Path, retention_days: int = 90) -> None:
         self.state_dir = state_dir
@@ -52,6 +57,14 @@ class AuditLogger:
         self._lock = threading.RLock()
         self._last_hash: str = "0" * 64
         self._init_db()
+
+    @property
+    def _secrets(self) -> Any:
+        """Lazy-loaded SecretManager for payload encryption."""
+        if not hasattr(self, "_secrets_inst"):
+            from js.security.secrets import SecretManager
+            self._secrets_inst = SecretManager(self.state_dir)
+        return self._secrets_inst
 
     def _init_db(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -103,10 +116,16 @@ class AuditLogger:
         with self._lock:
             timestamp = time.time()
             details = details or {}
-            payload = json.dumps(details, sort_keys=True, default=str)
+            raw_payload = json.dumps(details, sort_keys=True, default=str)
+            # Encrypt the payload at rest — the hash chain is computed from the
+            # encrypted form, so both integrity and confidentiality are preserved.
+            payload = self._secrets.encrypt_blob(raw_payload.encode("utf-8"))
 
-            # Build chain hash
-            data = f"{self._last_hash}:{timestamp}:{event_type.value}:{session_id}:{run_id}:{actor}:{action}:{payload}"
+            # Build chain hash from the encrypted payload
+            # Fernet tokens are URL-safe base64 (ASCII).  The stored form and
+            # the hash-chain input are identical ASCII strings.
+            _stored = payload.decode("ascii")
+            data = f"{self._last_hash}:{timestamp}:{event_type.value}:{session_id}:{run_id}:{actor}:{action}:{_stored}"
             checksum = hashlib.sha256(data.encode()).hexdigest()
 
             event = AuditEvent(
@@ -134,7 +153,7 @@ class AuditLogger:
                         run_id,
                         actor,
                         action,
-                        payload,
+                        _stored,
                         checksum,
                         self._last_hash,
                     ),
@@ -180,6 +199,7 @@ class AuditLogger:
                 (*params, limit, offset),
             ).fetchall()
 
+        _dec = self._secrets.decrypt_blob
         return [
             AuditEvent(
                 timestamp=row["timestamp"],
@@ -188,21 +208,37 @@ class AuditLogger:
                 run_id=row["run_id"],
                 actor=row["actor"],
                 action=row["action"],
-                details=json.loads(row["details"]),
+                details=json.loads(
+                    _dec(row["details"].encode("ascii")).decode("utf-8")
+                ),
                 checksum=row["checksum"],
             )
             for row in rows
         ]
 
     def verify_chain(self) -> tuple[bool, int]:
-        """Verify the integrity of the audit chain. Returns (valid, first_invalid_id)."""
+        """Verify the integrity of the audit chain. Returns (valid, first_invalid_id).
+
+        Uses the first row's prev_checksum as the genesis hash so that
+        verification survives pruning.  When the chain has never been
+        pruned, the first row's prev_checksum will be the chain genesis
+        (``\"0\" * 64``).  After pruning, the oldest remaining row's
+        prev_checksum points to a now-deleted predecessor, and verification
+        correctly validates continuity from that point forward.
+        """
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM audit_log ORDER BY id ASC"
             ).fetchall()
 
-        prev_hash = "0" * 64
+        if not rows:
+            return True, 0
+
+        # Use the first row's prev_checksum as the genesis — this handles
+        # both pristine chains (genesis = "0"*64) and pruned chains (where
+        # the first remaining row's prev_checksum points to a deleted predecessor).
+        prev_hash = rows[0]["prev_checksum"]
         for row in rows:
             payload = row["details"]
             data = f"{prev_hash}:{row['timestamp']}:{row['event_type']}:{row['session_id']}:{row['run_id']}:{row['actor']}:{row['action']}:{payload}"

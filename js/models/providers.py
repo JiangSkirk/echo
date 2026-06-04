@@ -61,7 +61,6 @@ logger = get_logger("js.models")
 
 
 @dataclass
-@dataclass
 class ChatMessage:
     role: str
     content: str | list[dict[str, Any]]
@@ -186,12 +185,16 @@ class OpenAICompatibleProvider(ModelProvider):
             http2=_http2,
         )
 
-        self.client = AsyncOpenAI(
-            base_url=config.base_url,
-            api_key=config.api_key or "not-needed",
-            http_client=_http_client,
-            max_retries=0,  # We handle retries ourselves
-        )
+        client_kwargs: dict[str, Any] = {
+            "base_url": config.base_url,
+            "api_key": config.api_key or "not-needed",
+            "http_client": _http_client,
+            "max_retries": 0,  # We handle retries ourselves
+        }
+        if config.auth_adapter == "query_param" and config.api_key and config.query_param_name:
+            client_kwargs["default_query"] = {config.query_param_name: config.api_key}
+            client_kwargs["api_key"] = "not-needed"  # Prevent Authorization Bearer token
+        self.client = AsyncOpenAI(**client_kwargs)
 
         self._last_health_check = 0.0
         self._health_status = False

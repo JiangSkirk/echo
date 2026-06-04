@@ -13,7 +13,7 @@ import sqlite3
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -269,14 +269,25 @@ class TestWebRestartRecovery:
         web_server._settings = mock_agent.settings
 
         app = create_app()
-        client = TestClient(app)
+
+        # Create an admin API key for admin-only memory endpoints
+        from js.web.auth import AuthManager
+        auth_mgr = AuthManager(mock_agent.settings.state_dir)
+        admin_key = auth_mgr.create_key("test-admin", role="admin")
+        client = TestClient(app, headers={"X-API-Key": admin_key})
 
         resp = client.delete("/api/memory/semantic/42")
         assert resp.status_code == 200
         assert resp.json()["success"] is True
-        mock_agent.memory.delete_semantic.assert_called_once_with(42)
+        mock_agent.memory.delete_semantic.assert_called_once_with(
+            42, source='user', owner_key_hash=ANY
+        )
 
         resp = client.put("/api/memory/semantic/42", json={"value": "updated"})
         assert resp.status_code == 200
         assert resp.json()["success"] is True
-        mock_agent.memory.update_semantic.assert_called_once_with(42, "updated", category=None)
+        mock_agent.memory.update_semantic.assert_called_once_with(
+            42, "updated", category=None, source='user',
+            memory_path=None, entity_type=None, entity_name=None,
+            parent_id=None, relation_type=None, owner_key_hash=ANY,
+        )

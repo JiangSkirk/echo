@@ -1,13 +1,16 @@
 """Skill security scanner with trust levels and risk detection.
+# noqa: N806 (intentional UPPER_CASE for path constant)
 
 Inspired by OpenClaw's ClawAegis skill security model.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from js.skills.spec import SkillSpec, TrustLevel
 from js.utils.log import get_logger
@@ -108,9 +111,47 @@ def scan_skill(spec: SkillSpec) -> ScanResult:
 
 def _assess_trust(spec: SkillSpec, risk_flags: list[str]) -> TrustLevel:
     """Assess trust level based on multiple signals."""
-    # Builtin skills are always trusted
+    # Only honor BUILTIN trust for skills actually residing in the builtin directory.
+    # Self-declared `trust_level: builtin` in a SKILL.md YAML frontmatter must not
+    # bypass security scanning — the only legitimate source of BUILTIN trust is the
+    # physical location of the skill under js/skills/builtin/.
     if spec.trust_level == TrustLevel.BUILTIN:
-        return TrustLevel.BUILTIN
+        builtin_dir = (Path(__file__).parent / "builtin").resolve()
+        is_genuine_builtin = (
+            spec.path is not None
+            and str(spec.path.resolve()).startswith(str(builtin_dir) + os.sep)
+        )
+        if is_genuine_builtin:
+            return TrustLevel.BUILTIN
+        # Self-declared from outside — fall through to normal risk assessment
+        logger.warning(
+            "Skill '%s' self-declared trust_level=builtin but is not in %s — "
+            "treating as untrusted",
+            spec.id, builtin_dir,
+        )
+
+    # ── Ed25519 signature verification ──
+    # A valid cryptographic signature from a built-in or trusted public key
+    # overrides risk flags and grants TRUSTED trust level.
+    if spec.signature and spec.public_key:
+        try:
+            from js.security.signer import is_builtin_public_key, verify_skill_manifest
+
+            manifest_path = spec.path / "SKILL.md" if spec.path else None
+            if manifest_path and manifest_path.exists():
+                if verify_skill_manifest(manifest_path, spec.signature, spec.public_key):
+                    if is_builtin_public_key(spec.public_key):
+                        return TrustLevel.BUILTIN
+                    return TrustLevel.TRUSTED
+                else:
+                    logger.warning(
+                        "Skill '%s' has invalid Ed25519 signature — "
+                        "downgrading to COMMUNITY",
+                        spec.id,
+                    )
+                    return TrustLevel.COMMUNITY
+        except Exception:
+            logger.debug("Signature verification failed for '%s'", spec.id, exc_info=True)
 
     # High risk = quarantine
     if len(risk_flags) >= 3:
@@ -176,4 +217,6 @@ def runtime_security_check(spec: SkillSpec) -> tuple[bool, list[str]]:
             except Exception:
                 logger.warning(f"Failed to read entry {entry}", exc_info=True)
 
-    return len(warnings) == 0 or spec.trust_level != TrustLevel.QUARANTINE, warnings
+    # Block execution for any trust level when integrity or sensitive-path
+    # warnings are present — not just for QUARANTINE.
+    return len(warnings) == 0, warnings

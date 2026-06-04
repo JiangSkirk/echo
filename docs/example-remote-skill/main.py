@@ -3,7 +3,6 @@
 
 import json
 import os
-import sys
 from pathlib import Path
 
 TODO_FILE = Path(os.environ.get("JS_SKILL_WORKSPACE", ".")) / "todos.json"

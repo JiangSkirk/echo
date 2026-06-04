@@ -12,9 +12,28 @@ from js.pipeline.connector import Connector, ConnectorConfig, ConnectorResult
 class FileConnector(Connector):
     """Ingest local markdown / text files from a directory."""
 
+    # Paths that must never be used as a watch_dir — reading system files via
+    # the pipeline connector would exfiltrate sensitive content into LLM prompts.
+    _FORBIDDEN_WATCH_ROOTS: frozenset[str] = frozenset({
+        "/", "/etc", "/usr", "/bin", "/sbin", "/var", "/root",
+        "/sys", "/proc", "/dev", "/boot", "/lib", "/lib64",
+        "/Users", "/home", "/opt", "/Applications",
+        "/Library", "/System", "/Network",
+        "/tmp", "/mnt",
+    })
+
     def __init__(self, config: ConnectorConfig) -> None:
         super().__init__(config)
-        self.watch_dir = Path(config.extra.get("watch_dir", "."))
+        raw = Path(config.extra.get("watch_dir", ".")).resolve()
+        # Reject dangerous system paths
+        if str(raw) in self._FORBIDDEN_WATCH_ROOTS or any(
+            str(raw).startswith(p + "/") for p in self._FORBIDDEN_WATCH_ROOTS
+        ):
+            from js.utils.log import get_logger
+            _log = get_logger("js.pipeline.file")
+            _log.warning("watch_dir %s is a forbidden system path — using '.' instead", raw)
+            raw = Path(".")
+        self.watch_dir = raw
         self.patterns = config.extra.get("patterns", ["*.md", "*.txt", "*.rst"])
 
     @property
@@ -43,6 +62,9 @@ class FileConnector(Connector):
         if self.watch_dir.exists():
             for pattern in self.patterns:
                 for path in self.watch_dir.rglob(pattern):
+                    # Skip symlinks to prevent traversal outside watch_dir
+                    if path.is_symlink():
+                        continue
                     stat = path.stat()
                     items.append({
                         "id": str(path.resolve()),

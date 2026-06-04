@@ -48,7 +48,12 @@ class ShellTool:
             # Still allow but mark
             pass
 
-        # Path check for cwd
+        # Path check for cwd — reject absolute paths and traversal attempts
+        if cwd.startswith("/") or ".." in cwd:
+            return ToolResult(
+                success=False,
+                error="cwd must be a relative path within the workspace",
+            )
         path_decision = self.guard.check_path_operation(
             str(self.workspace / cwd), "read"
         )
@@ -59,6 +64,7 @@ class ShellTool:
             command,
             cwd=cwd,
             timeout=timeout or self.limits.shell_timeout,
+            network_allowed=False,
             fs_restricted=True,
         )
 

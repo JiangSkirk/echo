@@ -54,7 +54,7 @@ class ApprovalQueue:
         input_stream: Callable[[str], str] | None = None,
         default_timeout: float = DEFAULT_APPROVAL_TIMEOUT,
     ) -> None:
-        self.default_mode = default_mode
+        self._default_mode = default_mode
         self._input_stream = input_stream or input
         self._default_timeout = default_timeout
         self._pending: dict[str, ApprovalRequest] = {}
@@ -62,6 +62,25 @@ class ApprovalQueue:
         self._lock = threading.RLock()
         self._counter = 0
         self._history: dict[str, int] = {"total": 0, "approved": 0, "denied": 0}
+
+    @property
+    def default_mode(self) -> ApprovalMode:
+        return self._default_mode
+
+    @default_mode.setter
+    def default_mode(self, value: ApprovalMode) -> None:
+        """Immutable after init — reject runtime changes for safety."""
+        prev = getattr(self, '_default_mode', None)
+        if prev is not None and prev != value:
+            logger.error(
+                "Rejected attempt to change approval default_mode from %s to %s",
+                prev, value,
+            )
+            raise RuntimeError(
+                f"Cannot change approval mode from {prev} to {value} at runtime. "
+                "Create a new ApprovalQueue with the desired mode."
+            )
+        self._default_mode = value
 
     def _next_id(self) -> str:
         with self._lock:
@@ -184,15 +203,20 @@ class ApprovalQueue:
         with self._lock:
             self._pending[req.id] = req
 
-        # Try session callback first
-        if session_id and session_id in self._callbacks:
+        # Try session callback first (lookup under lock to avoid TOCTOU)
+        callback: Callable[[ApprovalRequest], bool] | None = None
+        if session_id:
+            with self._lock:
+                callback = self._callbacks.get(session_id)
+
+        if callback:
             try:
-                approved = self._callbacks[session_id](req)
-                req.resolved = True
-                req.approved = approved
-                self._record_outcome(approved)
+                approved = callback(req)
                 with self._lock:
+                    req.resolved = True
+                    req.approved = approved
                     self._pending.pop(req.id, None)
+                self._record_outcome(approved)
                 self._emit_metrics(tool_name, resolved_mode, approved)
                 self._audit_log(req, "approved" if approved else "denied", "callback")
                 return approved
@@ -209,8 +233,14 @@ class ApprovalQueue:
             self._audit_log(req, "approved" if approved else "denied", "cli_prompt")
             return approved
 
-        # No callback and not CLI: deny for safety
-        logger.warning("No approval handler for %s, defaulting to deny", tool_name)
+        # Unknown context (not cli, not cron, not web): deny for safety.
+        # This closes the "or 'cli'" fallback gap — when _run_context is
+        # not properly set, operations are denied instead of silently
+        # treated as interactive.
+        logger.warning(
+            "No approval handler for %s (context=%s), defaulting to deny",
+            tool_name, context,
+        )
         req.resolved = True
         req.approved = False
         self._record_outcome(False)

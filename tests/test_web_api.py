@@ -22,6 +22,7 @@ def client(tmp_path: Path) -> TestClient:
     mock_agent.settings.max_turns = 10
     mock_agent.settings.security.defense_mode = DefenseMode.ENFORCE
     mock_agent.settings.default_model = "test/model"
+    mock_agent.settings.security.api_key_required = False
     mock_agent.registry.get_stats.return_value = {}
     mock_agent.secrets.get_stats.return_value = {"stored_secrets": 0, "detected_leaks": 0}
 
@@ -81,12 +82,18 @@ def client(tmp_path: Path) -> TestClient:
     mock_agent.memory = mock_memory
 
     web_server._agent = mock_agent
+    web_server._settings = mock_agent.settings
 
     from js.web.deps import set_globals
 
     set_globals(mock_agent, mock_agent.settings)
     app = create_app()
-    return TestClient(app)
+
+    # Create an admin API key so admin-only endpoints work in tests
+    from js.web.auth import AuthManager
+    auth_mgr = AuthManager(mock_agent.settings.state_dir)
+    admin_key = auth_mgr.create_key("test-admin", role="admin")
+    return TestClient(app, headers={"X-API-Key": admin_key})
 
 
 class TestDiagEndpoint:
@@ -151,6 +158,7 @@ class TestEvolutionRunErrors:
         mock_agent.settings.state_dir = tmp_path / "state"
         mock_agent.settings.max_turns = 10
         mock_agent.settings.security.defense_mode = DefenseMode.ENFORCE
+        mock_agent.settings.security.api_key_required = False
         mock_agent.registry.get_stats.return_value = {}
         mock_agent.secrets.get_stats.return_value = {"stored_secrets": 0, "detected_leaks": 0}
         mock_agent.metacognition = MagicMock()
@@ -166,12 +174,17 @@ class TestEvolutionRunErrors:
         mock_agent.memory = mock_memory
 
         web_server._agent = mock_agent
+        web_server._settings = mock_agent.settings
 
         from js.web.deps import set_globals
 
         set_globals(mock_agent, mock_agent.settings)
         app = create_app()
-        client = TestClient(app)
+
+        from js.web.auth import AuthManager
+        auth_mgr = AuthManager(mock_agent.settings.state_dir)
+        admin_key = auth_mgr.create_key("test-admin", role="admin")
+        client = TestClient(app, headers={"X-API-Key": admin_key})
         resp = client.post("/api/evolution/run")
         assert resp.status_code == 501
         assert "restart" in resp.json()["detail"].lower()
@@ -183,6 +196,7 @@ class TestEvolutionRunErrors:
         mock_agent.settings.state_dir = tmp_path / "state"
         mock_agent.settings.max_turns = 10
         mock_agent.settings.security.defense_mode = DefenseMode.ENFORCE
+        mock_agent.settings.security.api_key_required = False
         mock_agent.registry.get_stats.return_value = {}
         mock_agent.secrets.get_stats.return_value = {"stored_secrets": 0, "detected_leaks": 0}
         mock_agent.metacognition = None
@@ -196,12 +210,17 @@ class TestEvolutionRunErrors:
         mock_agent.memory = mock_memory
 
         web_server._agent = mock_agent
+        web_server._settings = mock_agent.settings
 
         from js.web.deps import set_globals
 
         set_globals(mock_agent, mock_agent.settings)
         app = create_app()
-        client = TestClient(app)
+
+        from js.web.auth import AuthManager
+        auth_mgr = AuthManager(mock_agent.settings.state_dir)
+        admin_key = auth_mgr.create_key("test-admin", role="admin")
+        client = TestClient(app, headers={"X-API-Key": admin_key})
         resp = client.post("/api/evolution/run")
         assert resp.status_code == 503
         assert "metacognition" in resp.json()["detail"].lower()

@@ -18,18 +18,24 @@ class FileTools:
         self.limits = limits
         self.guard = guard
 
-    def _resolve(self, path: str) -> Path:
-        """Resolve path relative to workspace."""
+    def _resolve(self, path: str, *, follow_symlinks: bool = True) -> Path:
+        """Resolve path relative to workspace.
+
+        When follow_symlinks=False (for write/delete operations), rejects
+        symlinks to prevent TOCTOU attacks where a symlink is swapped after
+        the workspace check.
+        """
         p = Path(path)
-        if p.is_absolute():
-            resolved = p.resolve()
-        else:
-            resolved = (self.workspace / p).resolve()
+        raw = self.workspace / p if not p.is_absolute() else p
+        resolved = raw.resolve()
         # Ensure resolved path is inside workspace
         try:
             resolved.relative_to(self.workspace)
         except ValueError as e:
             raise ValueError(f"Path escapes workspace: {path}") from e
+        # Reject symlinks for write/delete: check the unresolved path
+        if not follow_symlinks and raw.is_symlink():
+            raise ValueError(f"Symlinks are not allowed for write operations: {path}")
         return resolved
 
     def get_specs(self) -> list[ToolSpec]:
@@ -155,7 +161,7 @@ class FileTools:
 
     async def write(self, path: str, content: str, append: bool = False) -> ToolResult:
         try:
-            target = self._resolve(path)
+            target = self._resolve(path, follow_symlinks=False)
             decision = self.guard.check_path_operation(str(target), "write")
             if decision.decision == SecurityDecisionType.BLOCK:
                 return ToolResult(success=False, error=decision.reason)
@@ -169,10 +175,18 @@ class FileTools:
             )
 
         try:
+            import os as _os
             target.parent.mkdir(parents=True, exist_ok=True)
             mode = "a" if append else "w"
-            with open(target, mode, encoding="utf-8") as f:
+            # Atomic write: write to a temp file then atomically replace.
+            # Prevents corruption if the process crashes mid-write.
+            tmp_path = target.with_suffix(target.suffix + ".js_tmp")
+            # Remove any existing symlink at tmp_path to prevent TOCTOU bypass
+            if tmp_path.is_symlink():
+                tmp_path.unlink()
+            with open(tmp_path, mode, encoding="utf-8") as f:
                 f.write(content)
+            _os.replace(str(tmp_path), str(target))
 
             # Track script provenance
             if target.suffix in (".sh", ".py", ".js", ".ts", ".bash", ".zsh"):
@@ -235,7 +249,7 @@ class FileTools:
 
     async def delete(self, path: str) -> ToolResult:
         try:
-            target = self._resolve(path)
+            target = self._resolve(path, follow_symlinks=False)
             decision = self.guard.check_path_operation(str(target), "delete")
             if decision.decision == SecurityDecisionType.BLOCK:
                 return ToolResult(success=False, error=decision.reason)
@@ -258,7 +272,7 @@ class FileTools:
     async def edit(self, path: str, search: str, replace: str) -> ToolResult:
         """Precisely edit a file by replacing a unique search block."""
         try:
-            target = self._resolve(path)
+            target = self._resolve(path, follow_symlinks=False)
             decision = self.guard.check_path_operation(str(target), "write")
             if decision.decision == SecurityDecisionType.BLOCK:
                 return ToolResult(success=False, error=decision.reason)
@@ -286,7 +300,13 @@ class FileTools:
                 )
 
             new_content = content.replace(search, replace, 1)
-            target.write_text(new_content, encoding="utf-8")
+            # Atomic write: remove any symlink at temp path first
+            import os as _os
+            tmp_path = target.with_suffix(target.suffix + ".js_tmp")
+            if tmp_path.is_symlink():
+                tmp_path.unlink()
+            tmp_path.write_text(new_content, encoding="utf-8")
+            _os.replace(str(tmp_path), str(target))
 
             # Track script provenance
             if target.suffix in (".sh", ".py", ".js", ".ts", ".bash", ".zsh"):
@@ -396,6 +416,8 @@ class FileTools:
             max_results = min(max_results, 100)
 
             for p in target.rglob("*"):
+                if p.is_symlink():
+                    continue  # Block symlink traversal in code search
                 if not p.is_file():
                     continue
                 if file_pattern and not p.match(file_pattern):

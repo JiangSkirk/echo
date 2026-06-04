@@ -98,6 +98,10 @@ class SkillSpec:
     trust_level: TrustLevel = TrustLevel.COMMUNITY
     risk_flags: list[str] = field(default_factory=list)
     content_hash: str = ""
+    # Ed25519 cryptographic signature and public key (base64-encoded).
+    # When present, these override self-declared trust fields.
+    signature: str = ""
+    public_key: str = ""
 
     # Runtime requirements (Hermes-style)
     prerequisites: Prerequisites = field(default_factory=Prerequisites)
@@ -153,7 +157,7 @@ class SkillSpec:
             for f in sorted(scripts_dir.rglob("*")):
                 if f.is_file() and not f.is_symlink():
                     h.update(f.read_bytes())
-        return h.hexdigest()[:16]
+        return h.hexdigest()[:32]  # 128-bit truncation for collision resistance
 
     def to_summary_dict(self) -> dict[str, Any]:
         """Return minimal metadata for list_skills() — progressive disclosure."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -36,6 +37,7 @@ class ModelRouter:
         self._providers: dict[str, ModelProvider] = {}
         self._model_map: dict[str, tuple[str, ModelConfig]] = {}  # model_id -> (provider_name, config)
         self._routing_cache: TTLCache[str, RoutingDecision] = TTLCache(maxsize=50, ttl=10)
+        self.preferred_model: str | None = None
         self._init_providers()
 
     def _init_providers(self) -> None:
@@ -132,6 +134,8 @@ class ModelRouter:
         preferred: str | None = None,
     ) -> RoutingDecision:
         """Select best model for task, skipping unhealthy providers."""
+        if preferred is None and self.preferred_model:
+            preferred = self.preferred_model
         cache_key = preferred or "__default__"
         cached: RoutingDecision | None = self._routing_cache.get(cache_key)
         if cached is not None:
@@ -168,29 +172,36 @@ class ModelRouter:
                 provider_defaults[p_config.name] = p_config.default_model
             elif p_config.models:
                 chat_models = [m for m in p_config.models if "embed" not in m.id.lower()]
-                candidates = chat_models if chat_models else p_config.models
-                if candidates:
-                    provider_defaults[p_config.name] = candidates[0].id
+                model_candidates = chat_models if chat_models else p_config.models
+                if model_candidates:
+                    provider_defaults[p_config.name] = model_candidates[0].id
 
         # Fallback: infer from _model_map for providers added at runtime
         for full_id, (provider_name, config) in self._model_map.items():
             if provider_name not in provider_defaults and "/" not in full_id:
                 provider_defaults[provider_name] = config.id
 
-        # Select first healthy provider
-        for provider_name, default_model in provider_defaults.items():
-            maybe_provider = self._providers.get(provider_name)
-            if maybe_provider is None:
-                continue
-            if await self._provider_healthy(maybe_provider):
-                decision = RoutingDecision(
-                    provider=maybe_provider,
-                    model=default_model,
-                    provider_name=provider_name,
-                    reason=f"Default model: {default_model}",
-                )
-                self._routing_cache[cache_key] = decision
-                return decision
+        # Select first healthy provider (parallel health checks for speed)
+        candidates = [
+            (name, model, self._providers[name])
+            for name, model in provider_defaults.items()
+            if name in self._providers
+        ]
+        if candidates:
+            health_results = await asyncio.gather(
+                *[self._provider_healthy(p) for _, _, p in candidates],
+                return_exceptions=True,
+            )
+            for (name, model, _provider), healthy in zip(candidates, health_results, strict=False):
+                if isinstance(healthy, bool) and healthy:
+                    decision = RoutingDecision(
+                        provider=self._providers[name],
+                        model=model,
+                        provider_name=name,
+                        reason=f"Default model: {model}",
+                    )
+                    self._routing_cache[cache_key] = decision
+                    return decision
 
         # Last resort: first configured provider even if unhealthy
         for provider_name, default_model in provider_defaults.items():

@@ -22,6 +22,7 @@ class MockSecurityConfig:
         self.tool_result_scan = True
         self.script_provenance = False
         self.max_loop_iterations = 5
+        self.tool_name_loop_threshold = 4
 
 
 class TestHardlineBlocklist:

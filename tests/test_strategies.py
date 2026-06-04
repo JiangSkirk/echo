@@ -50,7 +50,7 @@ class TestStrategyRegistry:
         assert result.blocked
         assert "High-risk" in result.reason
 
-    def test_crashing_strategy_is_fail_open(self, registry: StrategyRegistry) -> None:
+    def test_crashing_strategy_is_fail_closed(self, registry: StrategyRegistry) -> None:
         def bad_strategy(ctx: DefenseContext) -> DefenseResult:
             raise RuntimeError("crash")
 
@@ -64,4 +64,4 @@ class TestStrategyRegistry:
             config=SecurityConfig(),
         )
         result = registry.evaluate(ctx)
-        assert not result.blocked  # Fail-open
+        assert result.blocked  # Fail-closed

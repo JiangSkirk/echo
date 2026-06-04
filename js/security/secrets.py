@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import threading
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -26,6 +27,8 @@ class SecretManager:
         "password": re.compile(r"[pP][aA][sS][sS][wW][oO][rR][dD]\s*[:=]\s*['\"]?([^'\"\s]{8,})['\"]?"),
         "token": re.compile(r"[tT][oO][kK][eE][nN]\s*[:=]\s*['\"]?([a-zA-Z0-9_\-]{16,})['\"]?"),
     }
+
+    _init_lock = threading.Lock()
 
     def __init__(self, state_dir: Path, master_key: str | None = None) -> None:
         self.state_dir = state_dir
@@ -65,32 +68,38 @@ class SecretManager:
         if master_key:
             import base64
 
-            # PBKDF2 with SHA-256 and a random salt persisted to disk.
-            if salt_path.exists():
-                salt = salt_path.read_bytes()
-            else:
-                salt = os.urandom(16)
-                fd = os.open(str(salt_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-                try:
-                    os.write(fd, salt)
-                finally:
-                    os.close(fd)
-            key = hashlib.pbkdf2_hmac("sha256", master_key.encode(), salt, 100_000, dklen=32)
-            fernet_key = base64.urlsafe_b64encode(key)
-            return Fernet(fernet_key)
+            with self._init_lock:
+                # PBKDF2 with SHA-256 and a random salt persisted to disk.
+                if salt_path.exists():
+                    salt = salt_path.read_bytes()
+                else:
+                    salt = os.urandom(16)
+                    fd = os.open(
+                        str(salt_path), os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o600
+                    )
+                    try:
+                        os.write(fd, salt)
+                    finally:
+                        os.close(fd)
+                key = hashlib.pbkdf2_hmac("sha256", master_key.encode(), salt, 100_000, dklen=32)
+                fernet_key = base64.urlsafe_b64encode(key)
+                return Fernet(fernet_key)
 
-        if key_path.exists():
-            with open(key_path, "rb") as f:
-                return Fernet(f.read())
+        with self._init_lock:
+            if key_path.exists():
+                with open(key_path, "rb") as f:
+                    return Fernet(f.read())
 
-        key = Fernet.generate_key()
-        # Atomic create with restricted permissions to avoid TOCTOU
-        fd = os.open(str(key_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, key)
-        finally:
-            os.close(fd)
-        return Fernet(key)
+            key = Fernet.generate_key()
+            # Atomic create with O_EXCL to avoid TOCTOU race between check and write
+            fd = os.open(
+                str(key_path), os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o600
+            )
+            try:
+                os.write(fd, key)
+            finally:
+                os.close(fd)
+            return Fernet(key)
 
     def store(self, name: str, value: str, category: str = "general") -> None:
         """Store a secret securely."""
@@ -119,6 +128,28 @@ class SecretManager:
             return self._fernet.decrypt(row[0]).decode()
         return None
 
+    _BLOB_PREFIX: bytes = b"ENC:v1:"  # Version tag for encrypted blobs
+
+    def encrypt_blob(self, data: bytes) -> bytes:
+        """Encrypt arbitrary binary data with the Fernet key.
+
+        Prepends a version tag so that ``decrypt_blob`` can distinguish
+        encrypted payloads from pre-upgrade plaintext data.
+        """
+        return self._BLOB_PREFIX + self._fernet.encrypt(data)
+
+    def decrypt_blob(self, data: bytes) -> bytes:
+        """Decrypt data previously encrypted with ``encrypt_blob``.
+
+        If the data does not carry the version prefix, it is assumed to be
+        legacy plaintext and returned unchanged.  This provides seamless
+        backward compatibility with data written before encryption was
+        introduced.
+        """
+        if not data.startswith(self._BLOB_PREFIX):
+            return data  # Legacy plaintext — return as-is
+        return self._fernet.decrypt(data[len(self._BLOB_PREFIX) :])
+
     def detect_and_redact(self, text: str, source: str = "unknown") -> str:
         """Detect secrets in text and replace with [REDACTED]."""
         result = text
@@ -138,7 +169,8 @@ class SecretManager:
         return result
 
     def _log_detection(self, source: str, secret_hash: str, secret_type: str, value: str) -> None:
-        preview = value[:4] + "****" + value[-4:] if len(value) > 8 else "****"
+        # Never store partial secret values — only the type and hash.
+        preview = f"[{secret_type}]"
         with db_connection(self.db_path) as conn:
             conn.execute(
                 """

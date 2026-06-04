@@ -175,8 +175,8 @@ class TestDefenseStrategyBypass:
         assert result.blocked
         assert "protected" in result.reason.lower() or "workspace" in result.reason.lower()
 
-    def test_strategy_fail_open(self, tmp_path: Path) -> None:
-        """If a strategy crashes, the registry must fail-open (not block)."""
+    def test_strategy_fail_closed(self, tmp_path: Path) -> None:
+        """If a strategy crashes, the registry must fail-closed (block)."""
         registry = StrategyRegistry()
 
         def crashing_strategy(ctx: DefenseContext):
@@ -192,7 +192,8 @@ class TestDefenseStrategyBypass:
             config=SecurityConfig(defense_mode="enforce"),
         )
         result = registry.evaluate(ctx)
-        assert not result.blocked, "Strategy crash must not cause global block (fail-open)"
+        assert result.blocked, "Strategy crash must cause global block (fail-closed)"
+        assert "crashed" in result.reason.lower()
 
 
 class TestRepeatedFailureGuard:

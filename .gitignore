@@ -62,3 +62,6 @@ logs/
 *.egg-info/
 *.whl
 *.tar.gz
+
+# Security scan reports (machine-generated, not for repo)
+js_agent_*.md

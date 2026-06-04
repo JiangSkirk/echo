@@ -6,6 +6,7 @@ import base64
 import binascii
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -114,6 +115,16 @@ class BehaviorGuard:
             normalized = re.sub(r"\b(\w)\s+(\w)\b", r"\1\2", normalized)
         return normalized
 
+    @staticmethod
+    def _normalize_unicode(text: str) -> str:
+        """Normalize Unicode to NFKC form to defeat homoglyph attacks.
+
+        Attackers may use visually identical characters from different
+        scripts (e.g. Cyrillic 'а' U+0430 vs Latin 'a' U+0061) to
+        bypass string-based filters.
+        """
+        return unicodedata.normalize("NFKC", text)
+
     def _check_hardline(self, command: str) -> SecurityDecision | None:
         """Check hardline blocklist — irreversible ops blocked even in off/yolo mode."""
         candidates = [command, self._normalize_command(command)]
@@ -128,38 +139,68 @@ class BehaviorGuard:
 
     def check_command(self, command: str, _cwd: str = ".") -> SecurityDecision:
         """Check if a shell command is safe to execute."""
+        # Normalize Unicode to defeat homoglyph bypasses
+        normalized_cmd = self._normalize_unicode(command)
+
         # Hardline check FIRST — always runs regardless of defense_mode
-        hardline = self._check_hardline(command)
+        hardline = self._check_hardline(normalized_cmd)
         if hardline:
             return hardline
 
         if self.config.defense_mode == DefenseMode.OFF:
             return SecurityDecision(SecurityDecisionType.ALLOW)
 
-        # Check high-risk patterns on raw command
-        for pattern in self._command_patterns:
-            if pattern.search(command):
-                return SecurityDecision(
-                    SecurityDecisionType.BLOCK,
-                    f"High-risk command pattern detected: {pattern.pattern}",
-                )
+        # ── Structured parser check (primary) ──
+        # Grammar-aware analysis is run FIRST.  If the parser understands the
+        # command AND a rule blocks it, we return immediately.  Otherwise we
+        # still fall through to the encoding/regex checks for defense-in-depth.
+        _parser_blocked = False
+        _parser_blocked_reason = ""
+        try:
+            from js.security.parser import parse as parse_command
+            from js.security.rules import evaluate as evaluate_rules
 
-        for pattern in self._protected_pattern:
-            if pattern.search(command):
-                return SecurityDecision(
-                    SecurityDecisionType.BLOCK,
-                    f"Protected command pattern detected: {pattern.pattern}",
-                )
+            ast = parse_command(normalized_cmd)
+            if ast is not None:
+                verdict = evaluate_rules(ast)
+                if verdict.blocked:
+                    return SecurityDecision(
+                        SecurityDecisionType.BLOCK,
+                        f"Security rule '{verdict.rule_name}': {verdict.reason}",
+                    )
+                _parser_understood = True
+            else:
+                _parser_understood = False
+        except Exception:
+            logger.debug("Parser-based command check failed", exc_info=True)
+            _parser_understood = False
 
+        # ── Regex patterns (fallback when parser cannot understand command) ──
+        if not _parser_understood:
+            for pattern in self._command_patterns:
+                if pattern.search(normalized_cmd):
+                    return SecurityDecision(
+                        SecurityDecisionType.BLOCK,
+                        f"High-risk command pattern detected: {pattern.pattern}",
+                    )
+
+            for pattern in self._protected_pattern:
+                if pattern.search(normalized_cmd):
+                    return SecurityDecision(
+                        SecurityDecisionType.BLOCK,
+                        f"Protected command pattern detected: {pattern.pattern}",
+                    )
+
+        # ── Encoding checks (always run — defense-in-depth) ──
         # Check for encoded payloads
         if self.config.encoding_guard:
-            enc_decision = self._check_encoding(command)
+            enc_decision = self._check_encoding(normalized_cmd)
             if enc_decision.decision == SecurityDecisionType.BLOCK:
                 return enc_decision
 
         # Decode and re-check: attackers may encode dangerous commands
-        decoded = self._decode_command(command)
-        if decoded != command:
+        decoded = self._decode_command(normalized_cmd)
+        if decoded != normalized_cmd:
             # Re-check hardline on decoded content
             hardline_decoded = self._check_hardline(decoded)
             if hardline_decoded:
@@ -185,6 +226,9 @@ class BehaviorGuard:
         operation: str,  # read, write, delete, list
     ) -> SecurityDecision:
         """Check if a path operation is allowed."""
+        # Normalize Unicode to defeat homoglyph bypasses in path names
+        path = self._normalize_unicode(path)
+
         if self.config.defense_mode == DefenseMode.OFF:
             return SecurityDecision(SecurityDecisionType.ALLOW)
 
@@ -290,7 +334,7 @@ class BehaviorGuard:
         name_key = f"{run_id}:{tool_name}"
         name_count = self._tool_name_counters.get(name_key, 0) + 1
         self._tool_name_counters[name_key] = name_count
-        _name_loop_threshold = 4  # block after 4 calls to the same tool name
+        _name_loop_threshold = self.config.tool_name_loop_threshold
         if name_count > _name_loop_threshold:
             return SecurityDecision(
                 SecurityDecisionType.BLOCK,
@@ -316,7 +360,23 @@ class BehaviorGuard:
             "you are now",
             "dan mode",
             "developer mode",
+            # Chinese injection markers
+            "忽略之前的指令",
+            "忽略所有先前的",
+            "新的指令",
+            "系统提示词",
+            "你现在是",
+            "开发者模式",
+            # Encoding-based bypass patterns
+            "base64decode",
+            "b64decode",
+            "__import__",
+            "getattr(__builtins__",
+            "exec(",
+            "eval(",
         ]
+        # NFKC-normalize to defeat homoglyph/Unicode injection attacks
+        result = self._normalize_unicode(result)
         result_lower = result.lower()
         for marker in injection_markers:
             if marker in result_lower:

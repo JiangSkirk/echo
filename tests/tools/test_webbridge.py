@@ -123,10 +123,12 @@ class TestWebBridgeHandlersOnline:
         assert result.metadata["tabId"] == 42
 
     async def test_navigate_failure(self, webbridge: WebBridgeTool) -> None:
+        # Use a public host that passes the SSRF guard so the patched _call's
+        # failure response is what surfaces (not a URL-blocked error).
         with patch.object(webbridge, "_call", new_callable=AsyncMock, return_value={
             "success": False, "error": "Navigation failed",
         }):
-            result = await webbridge.navigate("http://bad-url.example")
+            result = await webbridge.navigate("https://example.com")
         assert result.success is False
         assert "Navigation failed" in result.error
 

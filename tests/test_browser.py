@@ -20,7 +20,7 @@ class TestBrowserTool:
     async def test_private_url_blocked(self, browser: BrowserTool) -> None:
         result = await browser.fetch("http://127.0.0.1:8080/admin")
         assert not result.success
-        assert "Private" in result.error
+        assert "blocked" in result.error.lower()
 
     @pytest.mark.asyncio
     async def test_invalid_url_blocked(self, browser: BrowserTool) -> None:

@@ -339,6 +339,20 @@ async def check_dream(base: Path) -> None:
     report = await memory.dream(llm_summarizer=lambda _text: "梦境摘要：长期记忆整理正常。")
     logs = memory.get_dream_logs(limit=10)
     dreams_path = settings.state_dir / "memory" / "dreams.md"
+
+    # Verify structured block fields on promoted memories
+    semantic_mems = memory.get_all_semantic(limit=100)
+    for mem in semantic_mems:
+        if not mem.get("memory_path"):
+            raise SmokeError(f"梦境提升的记忆缺少 memory_path: {mem.get('key')}")
+        if not mem.get("entity_type"):
+            raise SmokeError(f"梦境提升的记忆缺少 entity_type: {mem.get('key')}")
+
+    # Verify block API works
+    blocks = memory.get_blocks()
+    if not isinstance(blocks, list):
+        raise SmokeError("get_blocks() 未返回列表。")
+
     memory.close()
     phases = [phase["phase"] for phase in report.get("phases", [])]
     if phases != ["light", "rem", "deep"]:

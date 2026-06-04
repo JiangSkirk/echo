@@ -2,19 +2,32 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from js.config import JSSettings, SecurityConfig
 from js.web.routers.plugins import router as plugins_router
 
 
-def _make_app() -> FastAPI:
+def _make_client() -> TestClient:
+    """Create a TestClient with an admin API key for plugin endpoints."""
     app = FastAPI()
     app.include_router(plugins_router)
-    patch("js.web.server._settings", None).start()
-    return app
+    _settings = JSSettings(
+        workspace=Path("/tmp/js_test"),
+        state_dir=Path("/tmp/js_test"),
+        security=SecurityConfig(api_key_required=False),
+    )
+    patch("js.web.server._settings", _settings).start()
+
+    from js.web.auth import AuthManager
+    auth_mgr = AuthManager(_settings.state_dir)
+    admin_key = auth_mgr.create_key("test-admin", role="admin")
+
+    return TestClient(app, headers={"X-API-Key": admin_key})
 
 
 def _make_plugin_manager() -> MagicMock:
@@ -35,8 +48,7 @@ def test_list_plugins_success() -> None:
     agent = MagicMock()
     agent.plugins = _make_plugin_manager()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.plugins.get_agent", return_value=agent):
         resp = client.get("/api/plugins/")
 
@@ -50,8 +62,7 @@ def test_list_plugins_not_initialized() -> None:
     agent = MagicMock()
     agent.plugins = None
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.plugins.get_agent", return_value=agent):
         resp = client.get("/api/plugins/")
 
@@ -64,8 +75,7 @@ def test_enable_plugin_success() -> None:
     agent = MagicMock()
     agent.plugins = _make_plugin_manager()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.plugins.get_agent", return_value=agent):
         resp = client.post("/api/plugins/example-dashboard/enable")
 
@@ -82,8 +92,7 @@ def test_enable_plugin_failure() -> None:
     pm.enable.return_value = False
     agent.plugins = pm
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.plugins.get_agent", return_value=agent):
         resp = client.post("/api/plugins/example-dashboard/enable")
 
@@ -94,8 +103,7 @@ def test_enable_plugin_no_pm() -> None:
     agent = MagicMock()
     agent.plugins = None
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.plugins.get_agent", return_value=agent):
         resp = client.post("/api/plugins/example-dashboard/enable")
 
@@ -106,8 +114,7 @@ def test_disable_plugin_success() -> None:
     agent = MagicMock()
     agent.plugins = _make_plugin_manager()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.plugins.get_agent", return_value=agent):
         resp = client.post("/api/plugins/example-dashboard/disable")
 
@@ -124,8 +131,7 @@ def test_disable_plugin_failure() -> None:
     pm.disable.return_value = False
     agent.plugins = pm
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.plugins.get_agent", return_value=agent):
         resp = client.post("/api/plugins/example-dashboard/disable")
 
@@ -136,8 +142,7 @@ def test_disable_plugin_no_pm() -> None:
     agent = MagicMock()
     agent.plugins = None
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.plugins.get_agent", return_value=agent):
         resp = client.post("/api/plugins/example-dashboard/disable")
 

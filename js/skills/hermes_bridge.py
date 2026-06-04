@@ -80,25 +80,23 @@ def _load_hub_lock() -> dict[str, Any]:
 def _resolve_trust_level(skill_name: str, lock_data: dict[str, Any]) -> TrustLevel:
     """Determine trust level for a Hermes skill.
 
-    Logic:
-      - If skill is tracked in .hub/lock.json with 'builtin' source → BUILTIN
-      - If tracked with 'trusted' source or from trusted repos → TRUSTED
-      - Otherwise → TRUSTED (user already installed it, we defer to Hermes's own guard)
+    The hub lock file (~/.hermes/skills/.hub/lock.json) is an unsigned JSON
+    file — it carries no cryptographic proof of authorship.  We therefore cap
+    the maximum trust derivable from it at TRUSTED.  Skills not explicitly
+    vetted by the lock file default to COMMUNITY.
     """
     entries = lock_data.get("skills", {})
     entry = entries.get(skill_name)
     if entry:
         source = entry.get("source", "").lower()
-        if source == "builtin" or entry.get("builtin"):
-            return TrustLevel.BUILTIN
-        if source == "trusted":
+        # Lock file is unsigned — never grant BUILTIN from it.  Cap at TRUSTED.
+        if source in ("builtin", "trusted"):
             return TrustLevel.TRUSTED
-        # Hub-installed skills that passed Hermes guard are treated as trusted
-        # by default since the user explicitly installed them.
-        return TrustLevel.TRUSTED
+        # Unknown source — requires the skill to pass a security scan
+        return TrustLevel.COMMUNITY
 
-    # Not in lock file = bundled or user-created → still trusted (user has it)
-    return TrustLevel.TRUSTED
+    # Not in lock file at all — unknown provenance
+    return TrustLevel.COMMUNITY
 
 
 def _infer_skill_type(spec: SkillSpec) -> SkillType:
@@ -500,12 +498,27 @@ def _try_hermes_guard_scan(skill_path: Path) -> ScanResult | None:
         if not hermes_tools.exists():
             return None
 
-        # Use subprocess to avoid import side-effects
+        # Validate skill_path is within the Hermes skills directory
+        skills_dir = _get_hermes_home() / "skills"
+        try:
+            skill_path.resolve().relative_to(skills_dir.resolve())
+        except ValueError:
+            logger.warning(
+                "Skill path %s is outside Hermes skills directory %s — "
+                "skipping Hermes guard scan",
+                skill_path, skills_dir,
+            )
+            return None
+
+        # Use subprocess to avoid import side-effects.
+        # Pass skill_path as a CLI argument instead of embedding it in the
+        # script string to prevent injection via the file path.
         script = (
             "import sys\n"
             f"sys.path.insert(0, {str(hermes_tools)!r})\n"
             "from skills_guard import scan_skill\n"
-            f"result = scan_skill({str(skill_path)!r}, source='community')\n"
+            "skill_path = sys.argv[1]\n"
+            "result = scan_skill(skill_path, source='community')\n"
             "print('VERDICT:', result.verdict)\n"
             "flags = []\n"
             "for f in result.findings:\n"
@@ -514,7 +527,7 @@ def _try_hermes_guard_scan(skill_path: Path) -> ScanResult | None:
         )
         import subprocess
         proc = subprocess.run(
-            [sys.executable, "-c", script],
+            [sys.executable, "-c", script, str(skill_path)],
             capture_output=True,
             text=True,
             timeout=30,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shlex
 import sys
 from collections.abc import Awaitable, Callable
@@ -155,6 +156,8 @@ async def _execute_code(
                 cwd=str(spec.path),
                 env=env,
                 timeout=spec.timeout_seconds,
+                network_allowed=False,
+                fs_restricted=True,
             )
             return {
                 "success": result.returncode == 0,
@@ -354,9 +357,15 @@ async def _execute_workflow(
                 })
                 continue
 
-        # Substitute args into step input (safely quote shell values)
-        for k, v in args.items():
-            step_input = step_input.replace(f"{{{k}}}", shlex.quote(str(v)))
+        # Substitute args into step input (safely quote shell values).
+        # Use single-pass regex to prevent substring-collision attacks where
+        # key A's value contains key B's name, causing a second-pass replacement
+        # inside an already-quoted value.
+        step_input = re.sub(
+            r"\{(\w+)\}",
+            lambda m: shlex.quote(str(args[m.group(1)])) if m.group(1) in args else m.group(0),
+            step_input,
+        )
 
         step_result: dict[str, Any] = {"step": i, "type": step_type}
 
@@ -374,37 +383,56 @@ async def _execute_workflow(
                 any_failed = True
         elif step_type == "shell":
             try:
-                # Use shell=True equivalent via sh -c so pipes, redirects, etc. work
-                proc = await asyncio.create_subprocess_exec(
-                    "sh", "-c", step_input,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=str(workspace),
-                )
-                try:
-                    stdout, stderr = await asyncio.wait_for(
-                        proc.communicate(),
+                if sandbox:
+                    # Use the sandbox for shell steps when available.
+                    # This provides filesystem isolation, network blocking,
+                    # memory limits, and timeout enforcement.
+                    result_obj = await sandbox.execute(
+                        ["sh", "-c", step_input],
+                        cwd=str(workspace),
                         timeout=spec.timeout_seconds,
                     )
                     step_result.update({
-                        "status": "success" if proc.returncode == 0 else "error",
-                        "output": stdout.decode("utf-8", errors="replace"),
-                        "error": stderr.decode("utf-8", errors="replace") if stderr else None,
-                        "returncode": proc.returncode,
+                        "status": "success" if result_obj.returncode == 0 and not result_obj.killed else "error",
+                        "output": result_obj.stdout,
+                        "error": result_obj.stderr if result_obj.stderr else None,
+                        "returncode": result_obj.returncode,
                     })
-                    if proc.returncode != 0:
+                    if result_obj.returncode != 0 or result_obj.killed:
                         any_failed = True
-                except TimeoutError:
+                else:
+                    # Legacy direct execution (no sandbox available).
+                    # Use shell=True equivalent via sh -c so pipes, redirects, etc. work
+                    proc = await asyncio.create_subprocess_exec(
+                        "sh", "-c", step_input,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        cwd=str(workspace),
+                    )
                     try:
-                        proc.kill()
-                        await proc.wait()
-                    except ProcessLookupError:
-                        pass
-                    step_result.update({
-                        "status": "error",
-                        "error": f"Step timed out after {spec.timeout_seconds}s",
-                    })
-                    any_failed = True
+                        stdout, stderr = await asyncio.wait_for(
+                            proc.communicate(),
+                            timeout=spec.timeout_seconds,
+                        )
+                        step_result.update({
+                            "status": "success" if proc.returncode == 0 else "error",
+                            "output": stdout.decode("utf-8", errors="replace"),
+                            "error": stderr.decode("utf-8", errors="replace") if stderr else None,
+                            "returncode": proc.returncode,
+                        })
+                        if proc.returncode != 0:
+                            any_failed = True
+                    except TimeoutError:
+                        try:
+                            proc.kill()
+                            await proc.wait()
+                        except ProcessLookupError:
+                            pass
+                        step_result.update({
+                            "status": "error",
+                            "error": f"Step timed out after {spec.timeout_seconds}s",
+                        })
+                        any_failed = True
             except asyncio.CancelledError:
                 step_result.update({"status": "cancelled"})
                 any_failed = True

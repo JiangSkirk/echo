@@ -30,7 +30,7 @@ class ModelProviderConfig(BaseModel):
 
     name: str = Field(description="Provider identifier")
     base_url: str = Field(description="API base URL")
-    api_key: str | None = Field(default=None, description="API key (prefer env var)")
+    api_key: str | None = Field(default=None, description="API key (prefer env var)", repr=False)
     api_key_env: str | None = Field(
         default=None, description="Environment variable name for API key"
     )
@@ -43,6 +43,14 @@ class ModelProviderConfig(BaseModel):
     transport_type: str = Field(
         default="chat_completions",
         description="Transport protocol: chat_completions, anthropic, bedrock",
+    )
+    auth_adapter: str | None = Field(
+        default=None,
+        description="Auth adapter: bearer (default) or query_param",
+    )
+    query_param_name: str | None = Field(
+        default=None,
+        description="Query parameter name for auth_adapter=query_param",
     )
     models: list[ModelConfig] = Field(default_factory=list)
 
@@ -108,12 +116,32 @@ class SecurityConfig(BaseModel):
     allow_workspace_delete: bool = False
     audit_retention_days: int = Field(default=90, ge=1)
     max_loop_iterations: int = Field(default=10, ge=1)
+    # Hard cap on total messages per run to prevent entropy death spirals
+    # (OpenClaw trap defense: 7,069 msg / 170k token per heartbeat).
+    max_messages_hard_limit: int = Field(default=200, ge=10)
+    # Block after N calls to the same tool name regardless of args
+    # (catches weak FC models that spam the same tool name).
+    tool_name_loop_threshold: int = Field(default=4, ge=1)
     encoding_guard: bool = True
     script_provenance: bool = True
     tool_result_scan: bool = True
 
-    # API authentication
-    api_key_required: bool = Field(default=False, description="Require X-API-Key for all web API endpoints")
+    # API authentication — defaults to True for production security.
+    # Set JS_API_KEY_REQUIRED=false env var to disable for local test/dev.
+    api_key_required: bool = Field(
+        default_factory=lambda: os.environ.get("JS_API_KEY_REQUIRED", "true").lower() != "false",
+        description="Require X-API-Key for all web API endpoints",
+    )
+
+    # Model discovery defaults to loopback-only (LM Studio / Ollama on
+    # 127.0.0.1).  Reaching private-network model servers (e.g. a LAN GPU
+    # box) is an SSRF-capable action, so it must be opted in explicitly.
+    # Link-local / metadata / reserved ranges are ALWAYS rejected regardless
+    # of this flag.
+    allow_private_model_providers: bool = Field(
+        default_factory=lambda: os.environ.get("JS_ALLOW_PRIVATE_MODEL_PROVIDERS", "false").lower() == "true",
+        description="Allow model discovery to reach private-network (RFC1918) hosts",
+    )
 
     @field_validator("protected_paths")
     @classmethod
@@ -127,6 +155,15 @@ class MemoryConfig(BaseModel):
     enabled: bool = True
     max_memory_chars: int = Field(default=2000, ge=0)
     compression_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    # Hierarchical memory library: auto-extraction + proposal gating.
+    auto_extract: bool = True
+    extract_confirm_paths: list[str] = Field(
+        default_factory=lambda: ["/user/identity", "/people/family", "/user/body"],
+        description="Block path prefixes whose auto-extracted memories require user confirmation",
+    )
+    auto_apply_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
+    context_recency_weight: float = Field(default=0.15, ge=0.0, le=1.0)
+    context_recency_half_life_days: float = Field(default=30.0, gt=0.0)
 
 
 class DisplayConfig(BaseModel):
@@ -176,6 +213,7 @@ class JSSettings(BaseSettings):
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     search_configured: bool = False
     first_run_completed: bool = False
+    desktop_control_enabled: bool = False
 
     @model_validator(mode="after")
     def ensure_directories(self) -> JSSettings:
@@ -419,6 +457,11 @@ class JSSettings(BaseSettings):
                 new_data = existing
             except Exception:
                 pass  # If read fails, fall back to full overwrite
+
+        # Defensive: strip any lingering api_key values from providers before writing
+        for provider in new_data.get("providers", []):
+            if isinstance(provider, dict):
+                provider.pop("api_key", None)
 
         with open(target, "w") as f:
             yaml.safe_dump(new_data, f, default_flow_style=False, sort_keys=False)

@@ -66,7 +66,13 @@ class TestDreamSchedulerAutoTrigger:
 
         # Evolution should have been triggered
         assert len(evolution_calls) >= 1, "Evolution cycle was not triggered"
-        assert evolution_calls[0] == [
+        # Buffer entries now also carry owner/session provenance for the
+        # organizer; assert on the conversational content specifically.
+        captured = [
+            {"user": t["user"], "assistant": t["assistant"]}
+            for t in evolution_calls[0]
+        ]
+        assert captured == [
             {"user": "hello", "assistant": "hi"},
             {"user": "world", "assistant": "earth"},
         ]
@@ -123,6 +129,23 @@ class TestDreamSchedulerAutoTrigger:
 
         # Buffer should be cleared after evolution
         assert len(sched._conversation_buffer) == 0
+
+    def test_snapshot_buffer_is_readonly_copy(self) -> None:
+        """snapshot_buffer returns the recent turns without consuming them."""
+        class FakeAgent:
+            async def _run_evolution_cycle(
+                self, conversation_buffer: list[dict[str, str]]
+            ) -> dict:
+                return {"ok": True}
+
+        sched = DreamScheduler(FakeAgent())
+        sched.notify_activity("hi", "yo", owner_key_hash="U1", session_id="s1")
+        snap = sched.snapshot_buffer()
+        assert snap[0]["user"] == "hi"
+        assert snap[0]["owner_key_hash"] == "U1"
+        # Mutating the snapshot must not touch the live buffer.
+        snap.clear()
+        assert len(sched._conversation_buffer) == 1
 
     @pytest.mark.asyncio
     async def test_force_consolidation_bypasses_idle_wait(self) -> None:

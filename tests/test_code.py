@@ -21,6 +21,8 @@ class TestCodeTool:
         result = await code_tool.execute("print(2 + 2)")
         if not result.success and "unshare failed" in result.error:
             pytest.skip("Linux unshare is unavailable in this runner")
+        if not result.success and "sandbox-exec" in result.error:
+            pytest.skip("macOS sandbox-exec is unavailable in this runner")
         assert result.success
         assert "4" in result.output
 

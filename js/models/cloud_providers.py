@@ -432,22 +432,19 @@ def list_presets() -> list[dict[str, Any]]:
 def build_provider_config(preset: CloudProviderPreset, api_key: str) -> ModelProviderConfig:
     """Build a ModelProviderConfig from a preset + API key.
 
-    Handles auth adapters (e.g. Gemini query-param) by baking the key into
-    the base_url so the OpenAI client passes it on every request.
+    Keeps the API key in the dedicated api_key field (never in base_url).
+    The OpenAI-compatible client uses auth_adapter/query_param_name to
+    inject the key at request time via default_query.
     """
-    base_url = preset.base_url
-    if preset.auth_adapter == "query_param" and api_key:
-        sep = "&" if "?" in base_url else "?"
-        base_url = f"{base_url}{sep}{preset.query_param_name}={api_key}"
-        # Clear api_key so the OpenAI client doesn't also send a Bearer token
-        api_key = ""
     return ModelProviderConfig(
         name=preset.id,
-        base_url=base_url,
+        base_url=preset.base_url,
         api_key=api_key,
         timeout=120.0,
         max_retries=3,
         default_model=preset.models[0].id if preset.models else "",
+        auth_adapter=preset.auth_adapter,
+        query_param_name=preset.query_param_name,
         models=[
             model.model_copy(update={"provider": preset.id})
             for model in preset.models

@@ -17,8 +17,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from js.config import JSSettings
-from js.memory.store import MemoryStore
+from js.config import JSSettings  # noqa: E402
+from js.memory.store import MemoryStore  # noqa: E402
 
 
 def load_markdown_files(directory: Path) -> list[dict[str, str]]:
@@ -111,7 +111,7 @@ def main() -> int:
 
     print(f"\n✅ Ingested {len(docs)} documents, {total_chunks} chunks into semantic memory.")
     print(f"   Database: {settings.state_dir / 'memory_enhanced.db'}")
-    print(f"\nNext steps:")
+    print("\nNext steps:")
     print("  1. Start the web UI: python -m js.web.server")
     print("  2. Ask: 'What is the fabric of HL-2026-TShirt?'")
     print("  3. Check Memory tab to see sources and edit facts.")

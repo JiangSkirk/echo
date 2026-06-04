@@ -15,12 +15,15 @@ expect = playwright_sync.expect
 SYSTEM_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 USE_SYSTEM_CHROME = Path(SYSTEM_CHROME).exists()
 
-pytestmark = pytest.mark.skipif(
-    not (Path.home() / "Library" / "Caches" / "ms-playwright").exists()
-    and not (Path.home() / ".cache" / "ms-playwright").exists()
-    and not USE_SYSTEM_CHROME,
-    reason="No Playwright browsers or system Chrome available",
-)
+pytestmark = [
+    pytest.mark.playwright,
+    pytest.mark.skipif(
+        not (Path.home() / "Library" / "Caches" / "ms-playwright").exists()
+        and not (Path.home() / ".cache" / "ms-playwright").exists()
+        and not USE_SYSTEM_CHROME,
+        reason="No Playwright browsers or system Chrome available",
+    ),
+]
 
 
 @pytest.fixture(scope="session")

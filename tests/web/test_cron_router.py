@@ -2,20 +2,33 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from js.config import JSSettings, SecurityConfig
 from js.cron.engine import ScheduledJob
 from js.web.routers.cron import router as cron_router
 
 
-def _make_app() -> FastAPI:
+def _make_client() -> TestClient:
+    """Create a TestClient with an admin API key for cron endpoints."""
     app = FastAPI()
     app.include_router(cron_router)
-    patch("js.web.server._settings", None).start()
-    return app
+    _settings = JSSettings(
+        workspace=Path("/tmp/js_test"),
+        state_dir=Path("/tmp/js_test"),
+        security=SecurityConfig(api_key_required=False),
+    )
+    patch("js.web.server._settings", _settings).start()
+
+    from js.web.auth import AuthManager
+    auth_mgr = AuthManager(_settings.state_dir)
+    admin_key = auth_mgr.create_key("test-admin", role="admin")
+
+    return TestClient(app, headers={"X-API-Key": admin_key})
 
 
 def _make_job() -> ScheduledJob:
@@ -50,8 +63,7 @@ def test_list_jobs_no_daemon() -> None:
     agent = MagicMock()
     agent._daemon = None
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.get("/api/cron/jobs")
 
@@ -64,8 +76,7 @@ def test_list_jobs_with_daemon() -> None:
     agent = MagicMock()
     agent._daemon = _make_daemon()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.get("/api/cron/jobs")
 
@@ -79,8 +90,7 @@ def test_get_job_success() -> None:
     agent = MagicMock()
     agent._daemon = _make_daemon()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.get("/api/cron/jobs/job_1")
 
@@ -94,8 +104,7 @@ def test_get_job_not_found() -> None:
     daemon.get_job.return_value = None
     agent._daemon = daemon
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.get("/api/cron/jobs/missing")
 
@@ -106,8 +115,7 @@ def test_get_job_no_daemon() -> None:
     agent = MagicMock()
     agent._daemon = None
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.get("/api/cron/jobs/job_1")
 
@@ -118,8 +126,7 @@ def test_create_job_no_daemon() -> None:
     agent = MagicMock()
     agent._daemon = None
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.post("/api/cron/jobs", json={"name": "Job", "cron_expr": "* * * * *"})
 
@@ -130,8 +137,7 @@ def test_create_job_raw() -> None:
     agent = MagicMock()
     agent._daemon = _make_daemon()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.post(
             "/api/cron/jobs",
@@ -149,8 +155,7 @@ def test_create_job_natural_language() -> None:
     agent = MagicMock()
     agent._daemon = _make_daemon()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.post(
             "/api/cron/jobs",
@@ -165,8 +170,7 @@ def test_create_job_invalid_cron() -> None:
     agent = MagicMock()
     agent._daemon = _make_daemon()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.post(
             "/api/cron/jobs",
@@ -180,8 +184,7 @@ def test_create_job_missing_schedule() -> None:
     agent = MagicMock()
     agent._daemon = _make_daemon()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.post("/api/cron/jobs", json={"name": "No Schedule"})
 
@@ -192,8 +195,7 @@ def test_create_job_with_template() -> None:
     agent = MagicMock()
     agent._daemon = _make_daemon()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.post(
             "/api/cron/jobs",
@@ -210,8 +212,7 @@ def test_create_job_unknown_template() -> None:
     agent = MagicMock()
     agent._daemon = _make_daemon()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.post("/api/cron/jobs", json={"template_id": "nonexistent"})
 
@@ -222,8 +223,7 @@ def test_update_job_success() -> None:
     agent = MagicMock()
     agent._daemon = _make_daemon()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.put(
             "/api/cron/jobs/job_1",
@@ -239,8 +239,7 @@ def test_update_job_invalid_cron() -> None:
     agent = MagicMock()
     agent._daemon = _make_daemon()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.put(
             "/api/cron/jobs/job_1",
@@ -256,8 +255,7 @@ def test_update_job_not_found() -> None:
     daemon.get_job.return_value = None
     agent._daemon = daemon
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.put("/api/cron/jobs/missing", json={"name": "x"})
 
@@ -268,8 +266,7 @@ def test_delete_job_success() -> None:
     agent = MagicMock()
     agent._daemon = _make_daemon()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.delete("/api/cron/jobs/job_1")
 
@@ -283,8 +280,7 @@ def test_delete_job_not_found() -> None:
     daemon.remove_job.return_value = False
     agent._daemon = daemon
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.delete("/api/cron/jobs/missing")
 
@@ -306,8 +302,7 @@ def test_run_job_now_success() -> None:
     daemon.cron.run_job_now = AsyncMock(return_value=result)
     agent._daemon = daemon
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.post("/api/cron/jobs/job_1/run")
 
@@ -323,8 +318,7 @@ def test_run_job_not_found() -> None:
     daemon.cron.run_job_now = AsyncMock(side_effect=ValueError("not found"))
     agent._daemon = daemon
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.post("/api/cron/jobs/missing/run")
 
@@ -335,8 +329,7 @@ def test_history_no_daemon() -> None:
     agent = MagicMock()
     agent._daemon = None
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.get("/api/cron/history")
 
@@ -348,8 +341,7 @@ def test_history_with_daemon() -> None:
     agent = MagicMock()
     agent._daemon = _make_daemon()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.get("/api/cron/history?limit=10")
 
@@ -361,8 +353,7 @@ def test_stats_no_daemon() -> None:
     agent = MagicMock()
     agent._daemon = None
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.get("/api/cron/stats")
 
@@ -374,8 +365,7 @@ def test_stats_with_daemon() -> None:
     agent = MagicMock()
     agent._daemon = _make_daemon()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.cron.get_agent", return_value=agent):
         resp = client.get("/api/cron/stats")
 
@@ -386,8 +376,7 @@ def test_stats_with_daemon() -> None:
 
 
 def test_templates() -> None:
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     resp = client.get("/api/cron/templates")
 
     assert resp.status_code == 200
@@ -397,8 +386,7 @@ def test_templates() -> None:
 
 
 def test_templates_filter_category() -> None:
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     resp = client.get("/api/cron/templates?category=maintenance")
 
     assert resp.status_code == 200
@@ -408,8 +396,7 @@ def test_templates_filter_category() -> None:
 
 
 def test_parse_natural_matched() -> None:
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     resp = client.post("/api/cron/parse", json={"text": "每天早上8点"})
 
     assert resp.status_code == 200
@@ -419,8 +406,7 @@ def test_parse_natural_matched() -> None:
 
 
 def test_parse_natural_empty() -> None:
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     resp = client.post("/api/cron/parse", json={"text": ""})
 
     assert resp.status_code == 200
@@ -429,8 +415,7 @@ def test_parse_natural_empty() -> None:
 
 
 def test_parse_natural_no_match() -> None:
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     resp = client.post("/api/cron/parse", json={"text": "asdfghjkl12345"})
 
     assert resp.status_code == 200

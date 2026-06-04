@@ -49,7 +49,7 @@ class TestMemoryFeedback:
 
 
 class TestMemoryConflictDetection:
-    """Test conflict detection when storing similar memories."""
+    """Test automatic conflict resolution (zero user intervention)."""
 
     @pytest.fixture
     def store(self, tmp_path: Path) -> EnhancedMemoryStore:
@@ -63,14 +63,27 @@ class TestMemoryConflictDetection:
         result2 = store.store_semantic("user_age", "30", category="preference")
         assert result2["conflicts"] == []
 
-    def test_conflict_for_similar_key_different_value(self, store: EnhancedMemoryStore) -> None:
-        """Similar key with different value in same category triggers conflict."""
+    def test_similar_key_different_value_auto_resolved(self, store: EnhancedMemoryStore) -> None:
+        """Overlapping keys with different values are auto-resolved silently."""
+        store.store_semantic("coffee user likes", "yes", category="preference", source="agent")
+        result = store.store_semantic("user likes coffee", "no", category="preference", source="agent")
+        # Conflicts were detected and resolved automatically
+        assert len(result["conflicts"]) >= 1
+        # No conflict markers remain because system resolved them silently
+        conflicting = store.get_conflicting_memories()
+        assert len(conflicting) == 0
+        # Both memories coexist because neither clearly wins
+        memories = store.get_all_semantic(limit=10)
+        assert len(memories) == 2
+
+    def test_same_key_upsert_no_conflict(self, store: EnhancedMemoryStore) -> None:
+        """Same key with different value is an upsert, not a conflict."""
         store.store_semantic("favorite color", "blue", category="preference")
         result = store.store_semantic("favorite color", "red", category="preference")
-        assert len(result["conflicts"]) >= 1
-
-        conflicting = store.get_conflicting_memories()
-        assert len(conflicting) >= 1
+        assert result["conflicts"] == []
+        memories = store.get_all_semantic(limit=10)
+        assert len(memories) == 1
+        assert memories[0]["value"] == "red"
 
     def test_no_conflict_for_same_value(self, store: EnhancedMemoryStore) -> None:
         """Same key and value should not conflict (it's an update)."""

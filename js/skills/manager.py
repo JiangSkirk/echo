@@ -494,16 +494,52 @@ class SkillManager:
     # Installation
     # ------------------------------------------------------------------
 
-    async def install(self, source: str, skill_id: str | None = None) -> SkillSpec:
+    # Allowed git host domains for skill installation.
+    _SKILL_SOURCE_ALLOWLIST: frozenset[str] = frozenset({
+        "github.com",
+        "gitlab.com",
+        "bitbucket.org",
+        "gitee.com",
+        "codeberg.org",
+    })
+
+    def _validate_skill_source(self, source: str) -> None:
+        """Validate that a skill source URL is from an allowed domain.
+
+        Raises ValueError for disallowed sources.
+        """
+        if source.startswith("http") or source.startswith("git@"):
+            from urllib.parse import urlparse
+            parsed = urlparse(source.replace("git@", "https://"))
+            hostname = parsed.hostname or ""
+            if hostname not in self._SKILL_SOURCE_ALLOWLIST:
+                raise ValueError(
+                    f"Skill source domain not allowed: {hostname}. "
+                    f"Allowed: {', '.join(sorted(self._SKILL_SOURCE_ALLOWLIST))}"
+                )
+        elif not Path(source).exists():
+            raise ValueError(f"Unknown skill source: {source}")
+
+    async def install(self, source: str, skill_id: str | None = None, expected_hash: str | None = None) -> SkillSpec:
         """Install a skill from git repo or local path.
 
         New skills enter quarantine until explicitly trusted.
+        If expected_hash is provided, the skill contents are verified against it.
         """
+        self._validate_skill_source(source)
+
         target_id = skill_id or Path(source).name
         # Sanitize target_id to prevent path traversal
         target_id = Path(target_id).name
         if not target_id or target_id in (".", ".."):
             raise ValueError(f"Invalid skill ID: {skill_id or Path(source).name}")
+        # Validate ID format (same rules as plugins)
+        import re
+        if not re.match(r"^[a-z0-9_-]+$", target_id) or len(target_id) > 64:
+            raise ValueError(
+                f"Invalid skill ID: {target_id!r}. "
+                f"Allowed: lowercase letters, digits, hyphens, underscores, max 64 chars."
+            )
         target_dir = self.skills_dir / target_id
         # Ensure target_dir is inside skills_dir
         try:
@@ -524,12 +560,20 @@ class SkillManager:
                 raise RuntimeError(f"git clone failed: {stderr.decode()}")
         elif Path(source).exists():
             if Path(source).is_dir():
-                await asyncio.to_thread(shutil.copytree, source, target_dir)
+                # copytree with symlink rejection
+                def _safe_copytree(src: str, dst: str) -> None:
+                    shutil.copytree(src, dst, symlinks=False)
+                await asyncio.to_thread(_safe_copytree, str(source), str(target_dir))
             else:
                 target_dir.mkdir(parents=True, exist_ok=True)
                 await asyncio.to_thread(shutil.copy2, source, target_dir)
         else:
             raise ValueError(f"Unknown skill source: {source}")
+
+        # Reject any symlinks that may have been created
+        for item in target_dir.rglob("*"):
+            if item.is_symlink():
+                raise RuntimeError(f"Skill contains symlinks: {item.relative_to(target_dir)}")
 
         # Parse and scan
         manifest = target_dir / self.SKILL_MANIFEST
@@ -548,6 +592,15 @@ entry: main.py
 
         spec = parse_skill_manifest(manifest)
         spec.path = target_dir
+
+        # Hash verification
+        if expected_hash:
+            actual_hash = spec.compute_hash()
+            if actual_hash.lower() != expected_hash.lower():
+                await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
+                raise ValueError(
+                    f"Skill hash mismatch for {spec.id}: expected {expected_hash}, got {actual_hash}"
+                )
 
         # --- OpenClaw / Hermes type inference ---
         # If the manifest did not explicitly declare a type, infer from directory contents.
@@ -591,7 +644,17 @@ entry: main.py
                 stripped = line.strip()
                 if not stripped or stripped.startswith("#"):
                     continue
-                if stripped.startswith("git+") or stripped.startswith("-e ") or stripped.startswith(".") or "//" in stripped:
+                if (
+                    stripped.startswith("git+")
+                    or stripped.startswith("-e ")
+                    or stripped.startswith(".")
+                    or stripped.startswith("-")
+                    or stripped.startswith("file:")
+                    or stripped.startswith("http:")
+                    or stripped.startswith("https:")
+                    or "//" in stripped
+                    or ";" in stripped
+                ):
                     raise ValueError(
                         f"Blocked unsafe requirement in {spec.id}: {stripped[:80]}"
                     )

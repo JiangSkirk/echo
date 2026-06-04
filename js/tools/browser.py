@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import ipaddress
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 
 from js import __version__
 from js.config import ToolLimits
 from js.security.guard import BehaviorGuard
+from js.security.net_guard import OutboundURLError, resolve_and_validate
 from js.tools.registry import ToolParam, ToolResult, ToolSpec
 
 
@@ -48,22 +47,13 @@ class BrowserTool:
     async def fetch(self, url: str, max_chars: int | None = None) -> ToolResult:
         max_chars = max_chars if max_chars is not None else self.limits.file_read_max_chars
 
-        # Basic URL validation
-        if not url.startswith(("http://", "https://")):
-            return ToolResult(success=False, error="URL must start with http:// or https://")
-
-        parsed = urlparse(url)
-        hostname = parsed.hostname or ""
-
-        # Block private/internal IPs using ipaddress module (covers IPv4, IPv6, octal, hex, decimal)
+        # Resolve the host and reject any internal/metadata destination.
+        # This catches numeric-host (127.1, 2130706433), wildcard-DNS
+        # (*.nip.io) and DNS-rebinding bypasses that a literal-only check misses.
         try:
-            addr = ipaddress.ip_address(hostname)
-            if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_multicast or addr.is_unspecified:
-                return ToolResult(success=False, error="Private/internal URLs are blocked for security")
-        except ValueError:
-            # Not an IP address — check localhost-like hostnames
-            if hostname.lower() in ("localhost", "0.0.0.0", "::", "::1"):
-                return ToolResult(success=False, error="Private/internal URLs are blocked for security")
+            resolve_and_validate(url, allow_loopback=False, allow_private=False)
+        except OutboundURLError as exc:
+            return ToolResult(success=False, error=f"URL blocked: {exc}")
 
         try:
             client = self._get_client()

@@ -31,6 +31,7 @@ class DefenseResult:
     blocked: bool
     reason: str = ""
     observe_only: bool = False
+    relevant: bool = True  # False when strategy does not apply to this tool type
 
 
 DefenseStrategy = Callable[[DefenseContext], DefenseResult]
@@ -54,10 +55,18 @@ class StrategyRegistry:
         logger.info(f"Registered defense strategy: {name}")
 
     def evaluate(self, ctx: DefenseContext) -> DefenseResult:
-        """Evaluate all strategies in order. First block wins."""
+        """Evaluate all strategies in order. First block wins.
+
+        Fail-closed: if no relevant strategy evaluates the operation and
+        none blocks, the operation is denied by default.
+        """
+        any_relevant = False
         for name, strategy, _order in self._strategies:
             try:
                 result = strategy(ctx)
+                if not result.relevant:
+                    continue
+                any_relevant = True
                 if result.blocked:
                     logger.warning(
                         f"Strategy '{name}' blocked {ctx.tool_name}: {result.reason}"
@@ -68,11 +77,21 @@ class StrategyRegistry:
                         f"Strategy '{name}' warned on {ctx.tool_name}: {result.reason}"
                     )
             except Exception as e:
-                # Fail-open: strategy crash doesn't block the system
+                # Fail-closed: strategy crash blocks the operation
                 logger.error(f"Strategy '{name}' crashed: {e}")
-                continue
+                return DefenseResult(
+                    blocked=True,
+                    reason=f"Strategy '{name}' crashed: {e}",
+                )
 
-        return DefenseResult(blocked=False)
+        if any_relevant:
+            return DefenseResult(blocked=False)
+
+        # Fail-closed: no relevant strategy evaluated this operation
+        return DefenseResult(
+            blocked=True,
+            reason="No relevant strategy evaluated this operation",
+        )
 
     def list_strategies(self) -> list[str]:
         return [name for name, _strategy, _order in self._strategies]
@@ -85,7 +104,7 @@ def command_block_strategy(ctx: DefenseContext) -> DefenseResult:
     import re
 
     if ctx.tool_name != "shell":
-        return DefenseResult(blocked=False)
+        return DefenseResult(blocked=False, relevant=False)
 
     raw = ctx.arguments.get("command", "")
     command = " ".join(raw) if isinstance(raw, list) else str(raw)
@@ -125,16 +144,27 @@ def command_block_strategy(ctx: DefenseContext) -> DefenseResult:
 def path_protection_strategy(ctx: DefenseContext) -> DefenseResult:
     """Protect sensitive paths from file operations."""
     if ctx.tool_name not in ("file_read", "file_write", "file_delete"):
-        return DefenseResult(blocked=False)
+        return DefenseResult(blocked=False, relevant=False)
 
     raw = ctx.arguments.get("path", "")
     if raw is None:
         return DefenseResult(blocked=False)
     path = str(raw)
     protected = ctx.config.protected_paths or ["/etc", "/usr", "/bin", "/sys", "/dev", "/proc"]
+    # Resolve the path to catch bypasses like //etc, /./etc, /home/../etc
+    from pathlib import Path as _Path
+    try:
+        resolved = _Path(path).expanduser().resolve()
+    except (OSError, ValueError):
+        resolved = _Path(path)
     mode = _get_defense_mode(ctx)
     for p in protected:
-        if path.startswith(p):
+        protected_resolved = _Path(p).resolve()
+        try:
+            resolved.relative_to(protected_resolved)
+        except ValueError:
+            continue  # Path is not under this protected root
+        else:
             return DefenseResult(
                 blocked=mode == DefenseMode.ENFORCE,
                 reason=f"Protected path: {p}",
@@ -143,9 +173,29 @@ def path_protection_strategy(ctx: DefenseContext) -> DefenseResult:
     return DefenseResult(blocked=False)
 
 
-def loop_guard_strategy(_ctx: DefenseContext) -> DefenseResult:
-    """Warn on potentially looping tool calls."""
-    # Simplified: actual implementation would track per-run counters
+def loop_guard_strategy(ctx: DefenseContext) -> DefenseResult:
+    """Warn on potentially looping tool calls.
+
+    Applies to all tool types — uses the same per-run counters as
+    BehaviorGuard.check_loop, accessed via the strategy context.
+    The actual loop detection is performed by guard.check_loop()
+    during tool execution; this strategy provides an additional
+    defense-in-depth layer for tools that bypass the guard path.
+    """
+
+    # Only relevant for tool calls that could repeat
+    if ctx.tool_name in ("web_navigate", "web_snapshot", "web_click", "web_fill", "shell"):
+        user_cmd = str(ctx.arguments.get("command", ctx.arguments.get("url", "")))
+        # Quick heuristic: if the same command/URL appears in user_input
+        # and this is a high-turn session, flag it
+        if user_cmd and len(user_cmd) > 3 and user_cmd in ctx.user_input:
+            mode = _get_defense_mode(ctx)
+            return DefenseResult(
+                blocked=mode == DefenseMode.ENFORCE,
+                reason=f"Potential repeated call to {ctx.tool_name} with same input",
+                observe_only=mode == DefenseMode.OBSERVE,
+            )
+
     return DefenseResult(blocked=False)
 
 

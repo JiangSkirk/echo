@@ -336,6 +336,7 @@ class TestSkillWebAPI:
         mock_agent.settings.state_dir = tmp_path / "state"
         mock_agent.settings.max_turns = 10
         mock_agent.settings.security.defense_mode = DefenseMode.ENFORCE
+        mock_agent.settings.security.api_key_required = False
         mock_agent.registry.get_stats.return_value = {}
         mock_agent.secrets.get_stats.return_value = {"stored_secrets": 0, "detected_leaks": 0}
 
@@ -375,8 +376,15 @@ class TestSkillWebAPI:
         mock_agent.skills = mock_skills
 
         server._agent = mock_agent
+        server._settings = mock_agent.settings
         app = create_app()
-        return TestClient(app)
+
+        # Create an admin API key so admin-only endpoints (install/trust) work
+        from js.web.auth import AuthManager
+        auth_mgr = AuthManager(mock_agent.settings.state_dir)
+        admin_key = auth_mgr.create_key("test-admin", role="admin")
+
+        return TestClient(app, headers={"X-API-Key": admin_key})
 
     def test_list_skills_api(self, client: TestClient) -> None:
         resp = client.get("/api/skills")

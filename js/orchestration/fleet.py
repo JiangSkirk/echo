@@ -124,6 +124,8 @@ class AgentFleet:
     # Public API — one method
     # ------------------------------------------------------------------ #
 
+    _MAX_SUBTASKS = 20
+
     async def collaborate(
         self,
         main_task: str,
@@ -148,6 +150,15 @@ class AgentFleet:
         """
         sid = session_id or str(uuid.uuid4())
         group_id = str(uuid.uuid4())
+
+        # Enforce subtask count limit to prevent resource exhaustion
+        if subtasks and len(subtasks) > self._MAX_SUBTASKS:
+            logger.warning(
+                "Truncating %d subtasks to %d (max)",
+                len(subtasks), self._MAX_SUBTASKS,
+            )
+            subtasks = subtasks[: self._MAX_SUBTASKS]
+
         logger.info(f"Fleet collaborate mode={mode}: {main_task[:60]}")
         await self._emit({"type": "collaborate_progress", "session_id": sid, "stage": "decomposing", "message": f"[{mode}] 正在分析任务并拆分子任务..."})
 
@@ -632,14 +643,18 @@ class AgentFleet:
     def _role_settings(self, agent_id: str) -> JSSettings:
         from copy import deepcopy
 
-        from js.config import DefenseMode
 
         settings = deepcopy(self.settings)
         settings.state_dir = self._fleet_dir / agent_id
         settings.state_dir.mkdir(parents=True, exist_ok=True)
         settings.workspace = settings.workspace / "fleet" / agent_id
         settings.workspace.mkdir(parents=True, exist_ok=True)
-        settings.security.defense_mode = DefenseMode.OBSERVE
+        # Inherit parent's defense mode but enforce a minimum floor of OBSERVE.
+        # If the parent is OFF (completely unguarded), fleet children must
+        # still have at least monitoring-level protection.
+        from js.config import DefenseMode as _DefenseMode
+        if settings.security.defense_mode in (_DefenseMode.OFF, _DefenseMode.OBSERVE):
+            settings.security.defense_mode = _DefenseMode.ENFORCE
         settings.max_turns = 60
         return settings
 
@@ -917,7 +932,23 @@ class AgentFleet:
             "created_at": time.time(),
         }
         path = self._history_dir / f"{session_id}.json"
+        # Sanitize secrets before persisting to disk
+        try:
+            from js.security.secrets import SecretManager
+            _sm = SecretManager(self._fleet_dir.parent)
+            record["final"] = _sm.detect_and_redact(record["final"], f"fleet:final:{session_id}")
+            if record.get("review"):
+                record["review"] = _sm.detect_and_redact(str(record["review"]), f"fleet:review:{session_id}")
+        except Exception:
+            pass
         await asyncio.to_thread(path.write_text, _json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Rotate: keep only the most recent 200 history files
+        try:
+            files = sorted(self._history_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+            for old in files[200:]:
+                old.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     def list_history(self, limit: int = 50) -> list[dict[str, Any]]:
         """List recent collaboration sessions, newest first."""
@@ -981,6 +1012,46 @@ class AgentFleet:
     def get_agent_config(self) -> dict[str, str]:
         """Return current role-to-model mapping."""
         return dict(self.agent_config)
+
+    def reap_idle_agents(self, idle_timeout: float, max_idle: int) -> int:
+        """Close and remove idle agents that exceed the timeout or count limits.
+
+        Returns the number of agents that were reaped.
+        """
+        now = time.time()
+        # Collect idle agents sorted by last-active time (oldest first)
+        idle = sorted(
+            [a for a in self.agents.values()
+             if a.status == "idle" and now - a.last_active_at > idle_timeout],
+            key=lambda a: a.last_active_at,
+        )
+        # Determine how many to reap to stay within max_idle
+        to_reap = max(0, len(idle) - max_idle)
+        reaped = 0
+        for a in idle[:to_reap]:
+            try:
+                agent_obj = getattr(a, "agent", None)
+                if agent_obj is not None and hasattr(agent_obj, "close"):
+                    close_result = agent_obj.close()
+                    if asyncio.iscoroutine(close_result):
+                        # Best-effort sync close in a sync context — create a
+                        # one-shot event loop if needed, or skip.
+                        try:
+                            import asyncio as _asyncio
+                            _loop = _asyncio.get_event_loop()
+                            if _loop.is_running():
+                                _asyncio.ensure_future(close_result)
+                            else:
+                                _loop.run_until_complete(close_result)
+                        except RuntimeError:
+                            pass
+                self.agents.pop(a.id, None)
+                reaped += 1
+            except Exception:
+                logger.warning("Failed to reap agent %s", a.id, exc_info=True)
+        if reaped:
+            logger.info("Reaped %d idle agents (%d remain)", reaped, len(self.agents))
+        return reaped
 
     async def close_all(self) -> None:
         """Close all agents (called on shutdown)."""

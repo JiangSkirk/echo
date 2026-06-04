@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from js.config import JSSettings, SecurityConfig
 from js.web.routers.chat import router as chat_router
 
 
 def _make_app() -> FastAPI:
     app = FastAPI()
     app.include_router(chat_router)
-    patch("js.web.server._settings", None).start()
+    # Provide a valid settings object with auth disabled so tests don't need API keys
+    _settings = JSSettings(
+        workspace=Path("/tmp/js_test"),
+        state_dir=Path("/tmp/js_test"),
+        security=SecurityConfig(api_key_required=False),
+    )
+    patch("js.web.server._settings", _settings).start()
     patch("js.web.deps._stats_store", None).start()
     return app
 
@@ -57,7 +65,7 @@ def test_chat_error() -> None:
         resp = client.post("/api/chat", json={"message": "hello"})
 
     assert resp.status_code == 500
-    assert "boom" in resp.json()["detail"]
+    assert "error" in resp.json()["detail"].lower()  # User-friendly message, no raw exception
 
 
 def test_chat_empty_message() -> None:

@@ -9,6 +9,7 @@ import json
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from js.events.models import AgentEvent
 from js.utils.log import get_logger
@@ -17,7 +18,10 @@ logger = get_logger("js.events")
 
 
 class EventStore:
-    """Write-only event store with daily log rotation."""
+    """Write-only event store with daily log rotation.
+
+    Events are encrypted at rest using the same Fernet key as SecretManager.
+    """
 
     def __init__(self, base_dir: Path | str, retention_days: int = 90) -> None:
         self.base_dir = Path(base_dir)
@@ -25,17 +29,26 @@ class EventStore:
         self._retention_days = retention_days
         self._lock = threading.Lock()
 
+    @property
+    def _secrets(self) -> Any:
+        if not hasattr(self, "_secrets_inst"):
+            from js.security.secrets import SecretManager
+            self._secrets_inst = SecretManager(self.base_dir.parent)
+        return self._secrets_inst
+
     def _get_file(self) -> Path:
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         return self.base_dir / f"events_{today}.jsonl"
 
     def emit(self, event: AgentEvent) -> None:
-        """Append an event to the current log file."""
+        """Append an encrypted event to the current log file."""
         with self._lock:
             try:
                 path = self._get_file()
+                raw = json.dumps(event.to_dict(), ensure_ascii=False, default=str)
+                encrypted = self._secrets.encrypt_blob(raw.encode("utf-8")).decode("ascii")
                 with open(path, "a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(event.to_dict(), ensure_ascii=False, default=str) + "\n")
+                    fh.write(encrypted + "\n")
             except Exception:
                 logger.warning("Failed to write event", exc_info=True)
 
@@ -60,9 +73,15 @@ class EventStore:
                         if not line:
                             continue
                         try:
-                            data = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
+                            # Decrypt the encrypted JSONL line
+                            decrypted = self._secrets.decrypt_blob(line.encode("ascii"))
+                            data = json.loads(decrypted.decode("utf-8"))
+                        except (json.JSONDecodeError, Exception):
+                            # Fallback: legacy unencrypted lines
+                            try:
+                                data = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
                         if session_id and data.get("session_id") != session_id:
                             continue
                         if run_id and data.get("run_id") != run_id:

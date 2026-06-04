@@ -24,6 +24,7 @@ def client() -> TestClient:
     mock_agent.settings.state_dir = Path("/tmp")
     mock_agent.settings.max_turns = 10
     mock_agent.settings.default_model = "test/model"
+    mock_agent.settings.security.api_key_required = False
     mock_agent.registry.get_stats.return_value = {}
     mock_agent.secrets.get_stats.return_value = {"stored_secrets": 0, "detected_leaks": 0}
     mock_agent.metacognition = MagicMock()
@@ -46,6 +47,7 @@ def client() -> TestClient:
     )
 
     web_server._agent = mock_agent
+    web_server._settings = mock_agent.settings
     set_globals(mock_agent, mock_agent.settings)
     app = create_app()
     return TestClient(app)
@@ -205,4 +207,4 @@ class TestIndexHtml:
     def test_app_js_loaded_as_module(self, client: TestClient) -> None:
         res = client.get("/")
         assert res.status_code == 200
-        assert '<script type="module" src="/static/app.js?v=2"></script>' in res.text
+        assert '<script type="module" src="/static/app.js?v=4"></script>' in res.text

@@ -2,19 +2,32 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from js.config import JSSettings, SecurityConfig
 from js.web.routers.fleet import router as fleet_router
 
 
-def _make_app() -> FastAPI:
+def _make_client() -> TestClient:
+    """Create a TestClient with an admin API key for fleet endpoints."""
     app = FastAPI()
     app.include_router(fleet_router)
-    patch("js.web.server._settings", None).start()
-    return app
+    _settings = JSSettings(
+        workspace=Path("/tmp/js_test"),
+        state_dir=Path("/tmp/js_test"),
+        security=SecurityConfig(api_key_required=False),
+    )
+    patch("js.web.server._settings", _settings).start()
+
+    from js.web.auth import AuthManager
+    auth_mgr = AuthManager(_settings.state_dir)
+    admin_key = auth_mgr.create_key("test-admin", role="admin")
+
+    return TestClient(app, headers={"X-API-Key": admin_key})
 
 
 def _make_fleet() -> MagicMock:
@@ -27,8 +40,7 @@ def _make_fleet() -> MagicMock:
 def test_fleet_status() -> None:
     fleet = _make_fleet()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.fleet.get_fleet", return_value=fleet):
         resp = client.get("/api/fleet/status")
 
@@ -39,8 +51,7 @@ def test_fleet_status() -> None:
 def test_fleet_collaborate_success() -> None:
     fleet = _make_fleet()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.fleet.get_fleet", return_value=fleet):
         resp = client.post(
             "/api/fleet/collaborate",
@@ -65,8 +76,7 @@ def test_fleet_collaborate_success() -> None:
 def test_fleet_collaborate_no_subtasks() -> None:
     fleet = _make_fleet()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.fleet.get_fleet", return_value=fleet):
         resp = client.post(
             "/api/fleet/collaborate",
@@ -86,8 +96,7 @@ def test_fleet_collaborate_failure() -> None:
     fleet = _make_fleet()
     fleet.collaborate = AsyncMock(side_effect=RuntimeError("collaboration error"))
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.fleet.get_fleet", return_value=fleet):
         resp = client.post("/api/fleet/collaborate", json={"task": "x"})
 
@@ -97,8 +106,7 @@ def test_fleet_collaborate_failure() -> None:
 def test_fleet_collaborate_missing_task() -> None:
     fleet = _make_fleet()
 
-    app = _make_app()
-    client = TestClient(app)
+    client = _make_client()
     with patch("js.web.routers.fleet.get_fleet", return_value=fleet):
         resp = client.post("/api/fleet/collaborate", json={})
 

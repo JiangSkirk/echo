@@ -36,3 +36,28 @@ class TestMemoryStore:
         store.store("key", "updated")
         result = store.retrieve("key")
         assert result == "updated"
+
+    def test_search_prefix_match_via_fts(self, store: MemoryStore) -> None:
+        store.store("alpha", "deployment pipeline")
+        # FTS5 prefix match: "deploy" should find "deployment".
+        results = store.search("deploy")
+        assert any(r.key == "alpha" for r in results)
+
+    def test_search_substring_falls_back_to_like(self, store: MemoryStore) -> None:
+        store.store("alpha", "kubernetes")
+        # "bern" is mid-word — the tokenizer can't prefix-match it, so the LIKE
+        # fallback must still find it (no recall regression).
+        results = store.search("bern")
+        assert any(r.key == "alpha" for r in results)
+
+    def test_search_after_update_reflects_new_value(self, store: MemoryStore) -> None:
+        store.store("k", "alpha original")
+        store.store("k", "beta replacement")
+        assert not store.search("alpha")  # stale FTS row must be gone
+        assert any(r.key == "k" for r in store.search("replacement"))
+
+    def test_search_special_characters_do_not_crash(self, store: MemoryStore) -> None:
+        store.store("alpha", "a:b (c) AND d-e \"quoted\"")
+        # FTS operator characters in the query must not raise.
+        for q in ('a:b', 'AND', '"quoted"', 'd-e', '(c)'):
+            assert isinstance(store.search(q), list)

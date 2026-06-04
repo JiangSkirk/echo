@@ -224,13 +224,24 @@ class ResourceGovernor:
             pass
 
         if mem_pct >= self._emergency_percent:
-            logger.critical(
-                "EMERGENCY: system memory %.1f%%. Process RSS: %.1fMB. "
-                "Initiating emergency shutdown.",
-                mem_pct,
-                snapshot.process_rss_mb,
-            )
-            asyncio.create_task(self._emergency_shutdown())
+            # Only trigger emergency shutdown when the titan-agent process
+            # itself is consuming significant memory (>500MB RSS).  If the
+            # process is small, the pressure is coming from OTHER processes
+            # and self-terminating would not help.
+            if snapshot.process_rss_mb > 500:
+                logger.critical(
+                    "EMERGENCY: system memory %.1f%%. Process RSS: %.1fMB. "
+                    "Initiating emergency shutdown.",
+                    mem_pct,
+                    snapshot.process_rss_mb,
+                )
+                asyncio.create_task(self._emergency_shutdown())
+            else:
+                logger.warning(
+                    "System memory at emergency level (%.1f%%) but process RSS "
+                    "is only %.1fMB — external memory pressure, not shutting down.",
+                    mem_pct, snapshot.process_rss_mb,
+                )
         elif mem_pct >= self._critical_percent:
             logger.error(
                 "CRITICAL: system memory %.1f%%. Pausing new requests and "
@@ -251,6 +262,14 @@ class ResourceGovernor:
                 mem_pct,
                 snapshot.system_memory_available_mb,
             )
+        else:
+            # Auto-resume when memory drops below warning threshold
+            if self._paused:
+                logger.info(
+                    "Memory pressure relieved (%.1f%%), resuming new requests.",
+                    mem_pct,
+                )
+                self._paused = False
 
         if snapshot.disk_free_state_dir_gb < 5.0 or snapshot.disk_free_root_gb < 5.0:
             logger.warning(
@@ -268,7 +287,7 @@ class ResourceGovernor:
         if fleet is None:
             return
         try:
-            reaped = await fleet.reap_idle_agents(
+            reaped = fleet.reap_idle_agents(
                 idle_timeout=self._idle_timeout_seconds,
                 max_idle=self._max_idle_agents,
             )

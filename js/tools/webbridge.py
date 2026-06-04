@@ -8,54 +8,121 @@ with full JavaScript execution and user login sessions.
 from __future__ import annotations
 
 import asyncio
-import ipaddress
+import os
+import secrets
+from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 
+from js.security.net_guard import OutboundURLError, resolve_and_validate
 from js.tools.registry import ToolParam, ToolResult, ToolSpec
+from js.utils.log import get_logger
+
+logger = get_logger("js.tools.webbridge")
 
 _DAEMON_URL = "http://127.0.0.1:10086/command"
 _DEFAULT_TIMEOUT = 30.0
+
+# Environment variable that lets the daemon and the agent share an explicit
+# token.  When unset, a random per-install token is generated and persisted.
+_TOKEN_ENV = "JS_WEBRIDGE_TOKEN"
+_TOKEN_FILENAME = "webbridge_token"
+
+
+def _load_or_create_token(state_dir: Path | None) -> str:
+    """Resolve the WebBridge daemon auth token.
+
+    Precedence:
+      1. ``JS_WEBRIDGE_TOKEN`` environment variable (explicit alignment).
+      2. A random token persisted at ``<state_dir>/webbridge_token`` (0600).
+      3. An ephemeral random token if no persistence location is available.
+
+    There is deliberately NO fallback to a fixed/shared default token — a
+    hardcoded secret is no secret at all.
+    """
+    env_token = os.environ.get(_TOKEN_ENV, "").strip()
+    if env_token:
+        return env_token
+
+    if state_dir is None:
+        return secrets.token_urlsafe(32)
+
+    token_path = Path(state_dir) / _TOKEN_FILENAME
+    try:
+        if token_path.exists():
+            existing = token_path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+    except OSError:
+        logger.warning("Failed to read WebBridge token file", exc_info=True)
+
+    token = secrets.token_urlsafe(32)
+    try:
+        Path(state_dir).mkdir(parents=True, exist_ok=True)
+        # O_CREAT with mode 0600 so the secret is never world/group-readable.
+        fd = os.open(str(token_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, token.encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.chmod(token_path, 0o600)
+    except OSError:
+        logger.warning("Failed to persist WebBridge token; using ephemeral token", exc_info=True)
+    return token
 
 
 def _check_url_safe(url: str) -> tuple[bool, str]:
     """Block private/internal URLs to prevent SSRF.
 
-    Returns (is_safe, reason_if_blocked).
+    Returns (is_safe, reason_if_blocked).  Resolves the host so numeric-IP,
+    wildcard-DNS and rebinding bypasses are caught, not just literal IPs.
     """
-    if not url.startswith(("http://", "https://")):
-        return False, "URL must start with http:// or https://"
-
-    parsed = urlparse(url)
-    hostname = parsed.hostname or ""
-
     try:
-        addr = ipaddress.ip_address(hostname)
-        if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_multicast or addr.is_unspecified:
-            return False, "Private/internal URLs are blocked for security"
-    except ValueError:
-        if hostname.lower() in ("localhost", "0.0.0.0", "::", "::1"):
-            return False, "Private/internal URLs are blocked for security"
-
+        resolve_and_validate(url, allow_loopback=False, allow_private=False)
+    except OutboundURLError as exc:
+        return False, str(exc)
     return True, ""
 
 
 class WebBridgeTool:
     """Wrapper around Kimi WebBridge daemon API."""
 
-    def __init__(self) -> None:
+    def __init__(self, state_dir: Path | None = None) -> None:
         self._client: httpx.AsyncClient | None = None
         self._available: bool | None = None  # Lazy health check
+        self._token = _load_or_create_token(state_dir)
+        # Set when the daemon rejects our token — WebBridge is then disabled
+        # until the operator aligns the tokens.
+        self._token_mismatch = False
+
+    _TOKEN_HELP = (
+        "WebBridge daemon rejected the auth token. The agent now generates a "
+        f"random token; align the daemon by setting the {_TOKEN_ENV} environment "
+        "variable (or the daemon's token file) to the same value on both sides."
+    )
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=httpx.Timeout(_DEFAULT_TIMEOUT))
         return self._client
 
+    @staticmethod
+    def _is_auth_rejection(resp: httpx.Response) -> bool:
+        """Heuristically detect a token/auth rejection from the daemon."""
+        if resp.status_code in (401, 403):
+            return True
+        try:
+            body = resp.json()
+        except Exception:
+            return False
+        if body.get("ok") is False:
+            err = str(body.get("error", "")).lower()
+            return any(kw in err for kw in ("token", "auth", "unauthor", "forbidden"))
+        return False
+
     async def health_check(self) -> bool:
-        """Check whether the WebBridge daemon is reachable.
+        """Check whether the WebBridge daemon is reachable AND token-aligned.
 
         Uses a lightweight POST to /command (list_tabs) because the daemon
         does not expose a dedicated /_health endpoint.
@@ -66,24 +133,36 @@ class WebBridgeTool:
             client = self._get_client()
             resp = await client.post(
                 _DAEMON_URL,
-                json={"action": "list_tabs", "args": {}, "session": "__health__"},
+                json={"action": "list_tabs", "args": {}, "session": "__health__", "token": self._token},
                 timeout=5.0,
             )
-            self._available = resp.status_code == 200 and resp.json().get("ok") is True
+            if self._is_auth_rejection(resp):
+                self._token_mismatch = True
+                self._available = False
+                logger.warning(self._TOKEN_HELP)
+            else:
+                self._available = resp.status_code == 200 and resp.json().get("ok") is True
         except Exception:
             self._available = False
         return self._available
 
     async def _call(self, action: str, args: dict[str, Any], session: str = "js-agent") -> dict[str, Any]:
         """Send a command to the WebBridge daemon with retry."""
+        if self._token_mismatch:
+            raise RuntimeError(self._TOKEN_HELP)
         client = self._get_client()
         last_error: Exception | None = None
         for attempt in range(3):
             try:
                 resp = await client.post(
                     _DAEMON_URL,
-                    json={"action": action, "args": args, "session": session},
+                    json={"action": action, "args": args, "session": session, "token": self._token},
                 )
+                if self._is_auth_rejection(resp):
+                    self._token_mismatch = True
+                    self._available = False
+                    logger.warning(self._TOKEN_HELP)
+                    raise RuntimeError(self._TOKEN_HELP)
                 resp.raise_for_status()
                 raw: dict[str, Any] = resp.json()
                 result: dict[str, Any] = raw.get("data", {})
@@ -138,24 +217,26 @@ class WebBridgeTool:
                 name="web_click",
                 description=(
                     "Click an element on the page. Use @e references from web_snapshot, "
-                    "or a CSS selector."
+                    "or a CSS selector. DANGEROUS: interacts with the real browser."
                 ),
                 parameters=[
                     ToolParam("selector", "string", "Element selector (@e ref or CSS selector)"),
                     ToolParam("session", "string", "Browser session name", required=False),
                 ],
+                dangerous=True,
             ),
             ToolSpec(
                 name="web_fill",
                 description=(
                     "Fill an input field or textarea with text. Works on <input>, <textarea>, "
-                    "and contenteditable elements."
+                    "and contenteditable elements. DANGEROUS: interacts with the real browser."
                 ),
                 parameters=[
                     ToolParam("selector", "string", "Element selector (@e ref or CSS selector)"),
                     ToolParam("value", "string", "Text to fill"),
                     ToolParam("session", "string", "Browser session name", required=False),
                 ],
+                dangerous=True,
             ),
             ToolSpec(
                 name="web_screenshot",
@@ -173,12 +254,14 @@ class WebBridgeTool:
                 name="web_evaluate",
                 description=(
                     "Execute JavaScript code in the browser context. Supports async/await. "
-                    "Return value is serialized as JSON."
+                    "Return value is serialized as JSON. DANGEROUS: runs arbitrary JS in the "
+                    "user's real browser with active login sessions. Requires explicit approval."
                 ),
                 parameters=[
                     ToolParam("code", "string", "JavaScript code to execute"),
                     ToolParam("session", "string", "Browser session name", required=False),
                 ],
+                dangerous=True,
             ),
             ToolSpec(
                 name="web_find_tab",
@@ -337,7 +420,67 @@ class WebBridgeTool:
         except Exception as e:
             return ToolResult(success=False, error=f"Screenshot error: {e}")
 
+    # Dangerous JS patterns that could exfiltrate data or execute arbitrary code
+    _JS_DANGEROUS_PATTERNS = [
+        (r"\beval\s*\(", "eval() execution"),
+        (r"\bnew\s+Function\s*\(", "Function() constructor"),
+        (r"\bsetTimeout\s*\(\s*['\"`][^'\"`]*['\"`]", "setTimeout with string"),
+        (r"\bsetInterval\s*\(\s*['\"`][^'\"`]*['\"`]", "setInterval with string"),
+        (r"\bdocument\.cookie\b", "document.cookie access"),
+        (r"\blocalStorage\b", "localStorage access"),
+        (r"\bsessionStorage\b", "sessionStorage access"),
+        (r"\bfetch\s*\(", "fetch() network call"),
+        (r"\bXMLHttpRequest\b", "XMLHttpRequest network call"),
+        (r"\bWebSocket\b", "WebSocket network call"),
+        (r"\bimportScripts\s*\(", "importScripts() import"),
+        (r"\bnavigator\.sendBeacon\b", "sendBeacon data exfiltration"),
+        # Bracket-notation bypasses: window["fetch"], this["eval"], etc.
+        (r'''\[['"\`](?:eval|fetch|Function|XMLHttpRequest|WebSocket|importScripts|sendBeacon)['"\`]\]''',
+         "bracket-notation dangerous API access"),
+        # Constructor chain attacks: []["constructor"]["constructor"]
+        (r'''\[['"\`]constructor['"\`]\]''',
+         "constructor property access — potential sandbox escape"),
+        # String concatenation obfuscation of dangerous names
+        (r'''['"\`][ef][ev][at][lc][ch]['"\`]\s*\+''', "string concat obfuscation of 'eval'/'fetch'"),
+        # Indirect eval via property access: window.eval, this.eval, globalThis.eval
+        (r"\b(?:window|this|globalThis|self|top|parent)\.eval\b", "indirect eval access"),
+        # Indirect fetch via property access
+        (r"\b(?:window|this|globalThis|self|top|parent)\.fetch\b", "indirect fetch access"),
+        # Hex / unicode escape sequences often used to hide eval/fetch
+        (r"\\x[0-9a-fA-F]{2}", "hex escape obfuscation"),
+        (r"\\u[0-9a-fA-F]{4}", "unicode escape obfuscation"),
+        # Template literal obfuscation: `${`ev`+`al`}` or similar
+        (r"\$\{\s*['\"`][^'\"`]{1,6}['\"`]\s*\+", "template literal obfuscation"),
+        # Spread into Function constructor: Function(...["e","v","a","l"])
+        (r"Function\s*\(\s*\.\.\.", "Function constructor with spread"),
+        # fromCharCode obfuscation: String.fromCharCode(101,118,97,108)
+        (r"fromCharCode\s*\(", "fromCharCode obfuscation"),
+        # Dynamic script injection
+        (r"document\.(createElement|head|body)\b.*\bscript\b", "dynamic script injection"),
+        # location manipulation for data exfiltration
+        (r"\blocation\.(href|assign|replace)\b", "location manipulation"),
+        # Form submission exfiltration
+        (r"document\.(createElement|body).*\bform\b.*\.submit\b", "form submission exfiltration"),
+    ]
+
+    def _scan_js_code(self, code: str) -> str | None:
+        """Static analysis for dangerous JS patterns."""
+        import re
+        for pattern, description in self._JS_DANGEROUS_PATTERNS:
+            if re.search(pattern, code, re.IGNORECASE):
+                return f"Blocked dangerous JS pattern: {description}"
+        # Additional check: atob() for base64 decode of obfuscated code
+        if re.search(r'\batob\s*\(', code, re.IGNORECASE):
+            return "Blocked atob() — base64 decode may hide malicious code"
+        # Additional check: btoa() could be used to encode exfiltrated data
+        if re.search(r'\bbtoa\s*\(', code, re.IGNORECASE):
+            return "Blocked btoa() — base64 encode may hide exfiltrated data"
+        return None
+
     async def evaluate(self, code: str, session: str = "js-agent") -> ToolResult:
+        scan = self._scan_js_code(code)
+        if scan:
+            return ToolResult(success=False, error=f"JS security scan failed: {scan}")
         try:
             data = await self._call("evaluate", {"code": code}, session=session)
             result_type = data.get("type", "unknown")

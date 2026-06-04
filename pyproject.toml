@@ -42,6 +42,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+desktop = [
+    "pyobjc-framework-Quartz>=11.0; sys_platform == 'darwin'",
+]
 monitor = [
     "prometheus-client>=0.21",
     "opentelemetry-api>=1.29",
@@ -94,4 +97,9 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+addopts = "-m 'not playwright'"
+markers = [
+    "playwright: Browser automation tests (run separately)",
+]

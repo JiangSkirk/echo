@@ -226,9 +226,9 @@ async def run_task(
     settings = JSSettings(workspace=workspace, state_dir=state_dir, max_turns=task.max_turns)
     agent = JSAgent(settings)
 
-    # Auto-approve all tool calls in benchmark mode
-    from js.security.approvals import ApprovalMode
-    agent.approvals.default_mode = ApprovalMode.AUTO_APPROVE
+    # Auto-approve all tool calls in benchmark mode (construct with AUTO_APPROVE)
+    from js.security.approvals import ApprovalMode, ApprovalQueue
+    agent.approvals = ApprovalQueue(default_mode=ApprovalMode.AUTO_APPROVE)
 
     # Setup pre-existing files if defined
     for sf in getattr(task, "setup_files", []):

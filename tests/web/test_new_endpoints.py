@@ -70,7 +70,13 @@ def client(tmp_path: Path) -> TestClient:
     web_server._settings = mock_agent.settings
     web_server._active_model = ""
     app = create_app()
-    return TestClient(app)
+
+    # Create an admin API key so admin-only endpoints work in tests
+    from js.web.auth import AuthManager
+    auth_mgr = AuthManager(mock_agent.settings.state_dir)
+    admin_key = auth_mgr.create_key("test-admin", role="admin")
+
+    return TestClient(app, headers={"X-API-Key": admin_key})
 
 
 class TestSetupWizard:
@@ -189,3 +195,54 @@ class TestMemorySemantic:
     def test_update_semantic_memory_missing_value(self, client: TestClient) -> None:
         resp = client.put("/api/memory/semantic/1", json={"category": "insight"})
         assert resp.status_code == 400
+
+
+class TestMemoryInbox:
+    def test_organize_empty_buffer(self, client: TestClient) -> None:
+        agent = web_server._agent
+        agent._dream_scheduler.snapshot_buffer.return_value = []
+        resp = client.post("/api/memory/organize")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+        assert data["turns"] == 0
+
+    def test_organize_runs_extraction_over_buffer(self, client: TestClient) -> None:
+        agent = web_server._agent
+        agent._dream_scheduler.snapshot_buffer.return_value = [
+            {"user": "我老婆叫小红", "assistant": "好的",
+             "owner_key_hash": None, "session_id": "s1"},
+        ]
+        agent._extract_memories = AsyncMock(return_value={
+            "ok": True, "skipped": False, "proposed": 1,
+            "auto_applied": 0, "pending": 1, "error": None,
+        })
+        resp = client.post("/api/memory/organize")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["turns"] == 1
+        assert data["pending"] == 1
+        agent._extract_memories.assert_awaited_once()
+
+    def test_approve_forwards_overrides(self, client: TestClient) -> None:
+        agent = web_server._agent
+        agent.memory.approve_proposal.return_value = {
+            "success": True, "memory_id": 7, "status": "approved",
+        }
+        resp = client.post(
+            "/api/memory/proposals/3/approve",
+            json={"value": "小芳", "memory_path": "/people/family"},
+        )
+        assert resp.status_code == 200
+        _, kwargs = agent.memory.approve_proposal.call_args
+        assert kwargs["overrides"] == {"value": "小芳", "memory_path": "/people/family"}
+
+    def test_approve_without_body_has_no_overrides(self, client: TestClient) -> None:
+        agent = web_server._agent
+        agent.memory.approve_proposal.return_value = {
+            "success": True, "memory_id": 7, "status": "approved",
+        }
+        resp = client.post("/api/memory/proposals/3/approve")
+        assert resp.status_code == 200
+        _, kwargs = agent.memory.approve_proposal.call_args
+        assert kwargs["overrides"] is None

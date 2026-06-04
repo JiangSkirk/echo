@@ -1,4 +1,5 @@
 """Cron scheduling engine with cron-expression support and SQLite persistence."""
+# noqa: N806 (intentional UPPER_CASE constants in local scope)
 
 from __future__ import annotations
 
@@ -220,9 +221,10 @@ class CronExpression:
         dt = datetime.fromtimestamp(after) + timedelta(minutes=1)
         dt = dt.replace(second=0, microsecond=0)
 
-        # Search up to 4 years ahead
-        limit = dt + timedelta(days=366 * 4)
-        while dt < limit:
+        # Hard cap: max 100k iterations (~70 days of minute-by-minute scan).
+        # Beyond this, the cron expression is effectively impossible.
+        _max_iterations = 100_000
+        for _ in range(_max_iterations):
             if self._matches(dt):
                 return dt.timestamp()
             dt += timedelta(minutes=1)
@@ -244,6 +246,11 @@ class CronEngine:
 
     TICK_INTERVAL = 30.0  # Check every 30 seconds
 
+    # Resource governance constants
+    _MAX_JOBS = 100
+    _MAX_CONCURRENT_JOBS = 4
+    _JOB_TIMEOUT_SECONDS = 300.0
+
     def __init__(self, state_dir: Path) -> None:
         self.state_dir = state_dir
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -253,6 +260,9 @@ class CronEngine:
         self._callbacks: dict[str, Callable[[ScheduledJob], Awaitable[Any]]] = {}
         self._history: list[JobResult] = []
         self._max_history = 100
+        self._job_semaphore = asyncio.Semaphore(self._MAX_CONCURRENT_JOBS)
+        # Track currently-executing job IDs to prevent re-entrant execution
+        self._executing_job_ids: set[str] = set()
 
     def register_callback(
         self, task_type: str, callback: Callable[[ScheduledJob], Awaitable[Any]]
@@ -263,6 +273,11 @@ class CronEngine:
 
     def add_job(self, job: ScheduledJob) -> None:
         """Add a job to the engine."""
+        if len(self._jobs) >= self._MAX_JOBS:
+            raise ValueError(
+                f"Maximum job count ({self._MAX_JOBS}) reached. "
+                "Remove unused jobs before adding new ones."
+            )
         if not job.id:
             job.id = f"job_{uuid.uuid4().hex[:12]}"
         # Pre-calculate next run
@@ -332,6 +347,10 @@ class CronEngine:
             if job.next_run_at is None:
                 continue
             if now >= job.next_run_at:
+                # Re-entrancy guard: skip if this job is already executing
+                if job.id in self._executing_job_ids:
+                    logger.debug("Job '%s' is already executing — skipping tick", job.name)
+                    continue
                 # Execute the job
                 asyncio.create_task(self._execute_job(job))
                 # Recalculate next run
@@ -343,6 +362,16 @@ class CronEngine:
 
     async def _execute_job(self, job: ScheduledJob) -> None:
         """Execute a single job and record result."""
+        # Concurrency guard: at most _MAX_CONCURRENT_JOBS run simultaneously
+        async with self._job_semaphore:
+            self._executing_job_ids.add(job.id)
+            try:
+                await self._do_execute_job(job)
+            finally:
+                self._executing_job_ids.discard(job.id)
+
+    async def _do_execute_job(self, job: ScheduledJob) -> None:
+        """Internal: execute a single job with timeout enforcement."""
         job.status = JobStatus.RUNNING
         job.last_run_at = time.time()
         job.run_count += 1
@@ -354,7 +383,7 @@ class CronEngine:
         try:
             if callback is None:
                 raise RuntimeError(f"No callback registered for task_type='{job.task_type}'")
-            await callback(job)
+            await asyncio.wait_for(callback(job), timeout=self._JOB_TIMEOUT_SECONDS)
             duration = (time.perf_counter() - start) * 1000
             result = JobResult(
                 job_id=job.id,
@@ -364,6 +393,18 @@ class CronEngine:
             )
             job.status = JobStatus.COMPLETED
             logger.info(f"Job '{job.name}' completed in {duration:.0f}ms")
+        except TimeoutError:
+            duration = (time.perf_counter() - start) * 1000
+            result = JobResult(
+                job_id=job.id,
+                run_at=job.last_run_at,
+                duration_ms=duration,
+                success=False,
+                error=f"Job timed out after {self._JOB_TIMEOUT_SECONDS}s",
+            )
+            job.fail_count += 1
+            job.status = JobStatus.FAILED
+            logger.error("Job '%s' timed out after %.0fs", job.name, self._JOB_TIMEOUT_SECONDS)
         except Exception as e:
             duration = (time.perf_counter() - start) * 1000
             result = JobResult(

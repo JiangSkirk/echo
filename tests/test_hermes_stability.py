@@ -61,7 +61,7 @@ class TestRuntimeSecurityCheck:
         spec = SkillSpec(id="hermes:tampered", name="tampered", path=skill_dir, type=SkillType.PROMPT)
         spec.content_hash = "old_hash_1234"
         ok, warnings = runtime_security_check(spec)
-        assert ok is True  # Still allows execution but warns
+        assert ok is False  # Integrity failure now blocks execution
         assert any("changed" in w for w in warnings)
 
     def test_quarantine_detection(self, tmp_path: Path):
@@ -88,7 +88,7 @@ class TestRuntimeSecurityCheck:
         )
         spec.content_hash = spec.compute_hash()
         ok, warnings = runtime_security_check(spec)
-        assert ok is True  # Warning but not blocked
+        assert ok is False  # Sensitive-path access now blocks execution
         assert any("sensitive" in w.lower() for w in warnings)
 
     def test_no_warnings_for_safe_script(self, tmp_path: Path):
@@ -238,9 +238,9 @@ print(json.dumps({
             type=SkillType.CODE, entry="main.py",
         )
         spec.content_hash = spec.compute_hash()
-        # Runtime check should detect sensitive path but still allow (TRUSTED)
+        # Runtime check now blocks execution for sensitive-path references
         result = asyncio.run(execute_skill(spec, {}, tmp_path / "workspace"))
-        assert result["success"] is True
+        assert result["success"] is False
 
 
 class TestHermesNamespace:
@@ -263,8 +263,8 @@ class TestHermesNamespace:
         spec.content_hash = spec.compute_hash()
         # Native skill should not trigger Hermes quarantine check
         ok, warnings = runtime_security_check(spec)
-        assert ok is True
-        # But should still flag sensitive paths
+        assert ok is False  # Sensitive-path access blocks even for native skills
+        # Flag should still be present
         assert any("sensitive" in w.lower() for w in warnings)
 
 

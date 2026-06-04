@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+
+# Allowed characters for plugin/skill IDs: lowercase alphanumeric, hyphen, underscore
+_ID_PATTERN = re.compile(r"^[a-z0-9_-]+$")
+_MAX_ID_LEN = 64
 
 
 class PluginStatus(StrEnum):
@@ -37,9 +42,19 @@ class PluginManifest:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PluginManifest:
+        raw_id = data.get("id", "")
+        if not raw_id:
+            raise ValueError("Plugin manifest missing required field: id")
+        if len(raw_id) > _MAX_ID_LEN:
+            raise ValueError(f"Plugin id too long: {len(raw_id)} > {_MAX_ID_LEN}")
+        if not _ID_PATTERN.match(raw_id):
+            raise ValueError(
+                f"Plugin id contains invalid characters: {raw_id!r}. "
+                f"Allowed: lowercase letters, digits, hyphens, underscores."
+            )
         return cls(
-            id=data.get("id", ""),
-            name=data.get("name", data.get("id", "")),
+            id=raw_id,
+            name=data.get("name", raw_id),
             version=data.get("version", "0.1.0"),
             description=data.get("description", ""),
             author=data.get("author", ""),

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from js.config import ModelProviderConfig
 from js.security.secrets import SecretManager
@@ -99,16 +100,49 @@ class ProviderManager:
             return True
         return False
 
+    def update_api_key(self, name: str, api_key: str) -> bool:
+        """Update the API key for an existing dynamic provider."""
+        for p in self._providers:
+            if p.name == name:
+                p.api_key = api_key
+                self._save()
+                return True
+        return False
+
     @staticmethod
     async def discover_models(
-        base_url: str, api_key: str | None = None
+        base_url: str, api_key: str | None = None, *, allow_private: bool = False
     ) -> dict[str, Any]:
         """Query an OpenAI-compatible endpoint for available models.
 
         Returns {"models": [...]} on success or {"error": "..."} on failure.
         Each model dict includes id, name, and context_window when available.
+
+        SSRF policy: loopback is allowed ONLY when the literal hostname is
+        ``localhost`` / ``127.0.0.1`` / ``::1`` — a domain that merely *resolves*
+        to loopback (e.g. ``127.0.0.1.nip.io``, ``127.1``, ``2130706433``) is
+        treated as remote and rejected by default, defeating DNS rebinding.
+        Private-network (RFC1918) hosts require ``allow_private=True`` (driven by
+        ``security.allow_private_model_providers``).  Link-local / metadata /
+        reserved / multicast destinations are ALWAYS rejected.
         """
         import httpx
+
+        from js.security.net_guard import OutboundURLError, resolve_and_validate
+
+        # Only explicit local literals get the loopback exemption; everything
+        # else (including loopback-resolving domains) must clear the remote
+        # policy, where loopback is forbidden.
+        hostname = (urlparse(base_url).hostname or "").lower()
+        is_local_literal = hostname in ("localhost", "127.0.0.1", "::1")
+        try:
+            resolve_and_validate(
+                base_url,
+                allow_loopback=is_local_literal,
+                allow_private=allow_private,
+            )
+        except OutboundURLError as exc:
+            return {"error": f"目标地址被安全策略拒绝: {exc}"}
 
         headers: dict[str, str] = {}
         if api_key:

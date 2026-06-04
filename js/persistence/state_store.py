@@ -17,6 +17,14 @@ class StateStore:
         self._local = threading.local()
         self._ensure_db()
 
+    @property
+    def _secrets(self) -> Any:
+        """Lazy-loaded SecretManager for checkpoint encryption."""
+        if not hasattr(self, "_secrets_inst"):
+            from js.security.secrets import SecretManager
+            self._secrets_inst = SecretManager(self.db_path.parent)
+        return self._secrets_inst
+
     def _conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn") or self._local.conn is None:
             conn: sqlite3.Connection = sqlite3.connect(str(self.db_path), check_same_thread=False)
@@ -104,8 +112,12 @@ class StateStore:
                     session_id,
                     run_id,
                     turn_count,
-                    json.dumps(messages, ensure_ascii=False),
-                    json.dumps(tool_results, ensure_ascii=False),
+                    self._secrets.encrypt_blob(
+                        json.dumps(messages, ensure_ascii=False).encode("utf-8")
+                    ),
+                    self._secrets.encrypt_blob(
+                        json.dumps(tool_results, ensure_ascii=False).encode("utf-8")
+                    ),
                     json.dumps(total_tokens),
                     cost_estimate,
                     status,
@@ -124,12 +136,17 @@ class StateStore:
             ).fetchone()
         if row is None:
             return None
+        _dec = self._secrets.decrypt_blob
+        _msgs_raw = _dec(row["messages"]) if row["messages"] else b"[]"
+        _tools_raw = _dec(row["tool_results"]) if row["tool_results"] else b"[]"
+        _msgs_str = _msgs_raw.decode("utf-8") if isinstance(_msgs_raw, bytes) else _msgs_raw
+        _tools_str = _tools_raw.decode("utf-8") if isinstance(_tools_raw, bytes) else _tools_raw
         return {
             "session_id": row["session_id"],
             "run_id": row["run_id"],
             "turn_count": row["turn_count"],
-            "messages": json.loads(row["messages"] or "[]"),
-            "tool_results": json.loads(row["tool_results"] or "[]"),
+            "messages": json.loads(_msgs_str or "[]"),
+            "tool_results": json.loads(_tools_str or "[]"),
             "total_tokens": json.loads(row["total_tokens"] or "{}"),
             "cost_estimate": row["cost_estimate"],
             "status": row["status"],
