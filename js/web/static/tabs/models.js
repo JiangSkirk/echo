@@ -295,6 +295,41 @@ export async function deleteProvider(name) {
   }
 }
 
+export function updateProviderKey(name) {
+  document.getElementById('provider-key-target-name').textContent = name;
+  document.getElementById('provider-key-input').value = '';
+  document.getElementById('provider-key-error').classList.add('hidden');
+  document.getElementById('provider-key-modal').classList.remove('hidden');
+}
+
+export function hideProviderKeyModal() {
+  document.getElementById('provider-key-modal').classList.add('hidden');
+}
+
+export async function submitProviderKeyUpdate() {
+  const name = document.getElementById('provider-key-target-name').textContent;
+  const key = document.getElementById('provider-key-input').value.trim();
+  const errEl = document.getElementById('provider-key-error');
+  errEl.classList.add('hidden');
+  try {
+    const res = await fetch('/api/providers/' + encodeURIComponent(name), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: key || null }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || 'HTTP ' + res.status);
+    }
+    hideProviderKeyModal();
+    showToast('API Key 已更新');
+    loadModels();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+  }
+}
+
 export async function switchModel(modelId) {
   if (!modelId) return;
   const model = state.availableModels.find(m => m.id === modelId);
@@ -303,6 +338,11 @@ export async function switchModel(modelId) {
     showToast(`Provider '${presetId}' 尚未配置，请先添加 API Key`, 'warning');
     switchTab('models');
     return;
+  }
+  const select = document.getElementById('current-model');
+  if (select) {
+    select.disabled = true;
+    select.classList.add('opacity-50', 'cursor-wait');
   }
   try {
     const res = await fetch('/api/models/switch', {
@@ -321,9 +361,15 @@ export async function switchModel(modelId) {
     } else {
       showToast('已切换到模型: ' + (model?.name || modelId));
     }
-    loadModels();
+    // Do not reload the full model list immediately; the dropdown already
+    // reflects the new selection. loadModels() is expensive and causes UI lag.
   } catch (e) {
     showToast('切换模型失败: ' + e.message, 'error');
+  } finally {
+    if (select) {
+      select.disabled = false;
+      select.classList.remove('opacity-50', 'cursor-wait');
+    }
   }
 }
 
@@ -351,6 +397,22 @@ export async function loadModels() {
             provider: p.name,
             healthy: p.healthy,
             hasKey: p.has_key,
+            isPreset: false,
+            ...m
+          });
+        });
+      });
+    }
+    if (data.presets) {
+      data.presets.forEach(preset => {
+        preset.models.forEach(m => {
+          state.availableModels.push({
+            id: `${preset.id}/${m.id}`,
+            name: `${preset.name}/${m.name || m.id}`,
+            provider: preset.id,
+            healthy: false,
+            hasKey: false,
+            isPreset: true,
             ...m
           });
         });
@@ -359,9 +421,11 @@ export async function loadModels() {
 
     if (select) {
       const currentVal = select.value;
+      // Dropdown only shows configured providers, not unconfigured presets
+      const usableModels = state.availableModels.filter(m => !m.isPreset);
       select.innerHTML = '<option value="">默认模型</option>' +
-        state.availableModels.map(m => {
-          const icon = m.isPreset ? '⚪' : (m.healthy ? '🟢' : (m.hasKey ? '🔴' : '🟡'));
+        usableModels.map(m => {
+          const icon = m.healthy ? '🟢' : (m.hasKey ? '🔴' : '🟡');
           return `<option value="${escapeHtml(m.id)}">${icon} ${escapeHtml(m.name)}</option>`;
         }).join('');
       select.value = state.selectedModel || '';
@@ -393,7 +457,8 @@ export async function loadModels() {
         <h3 class="font-bold text-lg">${escapeHtml(p.name)}</h3>
         <div class="flex items-center gap-2">
           <span class="text-xs px-2 py-1 rounded ${statusColor}">${statusLabel}</span>
-          ${p.user_configured ? `<button onclick='deleteProvider(${JSON.stringify(p.name)})' class="text-xs bg-red-900/50 hover:bg-red-900 text-red-400 px-2 py-1 rounded transition" title="删除"><i class="fas fa-trash"></i></button>` : ''}
+          <button onclick='updateProviderKey(${JSON.stringify(p.name)})' class="text-xs bg-blue-900/50 hover:bg-blue-900 text-blue-400 px-2 py-1 rounded transition" title="设置 API Key"><i class="fas fa-key"></i></button>
+          <button onclick='deleteProvider(${JSON.stringify(p.name)})' class="text-xs bg-red-900/50 hover:bg-red-900 text-red-400 px-2 py-1 rounded transition" title="删除"><i class="fas fa-trash"></i></button>
         </div>
       </div>
       <p class="text-sm text-gray-400 mb-3">${escapeHtml(p.base_url)} ${p.health_error ? `<span class="text-red-400 text-xs ml-2">${escapeHtml(p.health_error)}</span>` : ''}</p>

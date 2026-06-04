@@ -1,0 +1,236 @@
+"""Tests for the enhanced setup wizard: diagnostics, model testing, reset."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from fastapi.testclient import TestClient
+
+from js.web.server import create_app
+
+
+@pytest.fixture
+def client(tmp_path: Path) -> TestClient:
+    """Build a TestClient with mocked agent and isolated settings."""
+    from js.config import JSSettings, SecurityConfig
+    from js.web import server as web_server
+    from js.web.deps import set_globals
+
+    settings = JSSettings(
+        workspace=tmp_path / "workspace",
+        state_dir=tmp_path / "state",
+        first_run_completed=False,
+        security=SecurityConfig(api_key_required=False),
+    )
+    settings.security.api_key_required = False  # Allow unauthenticated access in tests
+
+    mock_agent = MagicMock()
+    mock_agent.settings = settings
+    mock_agent.registry.get_stats.return_value = {}
+    mock_agent.secrets.get_stats.return_value = {"stored_secrets": 0, "detected_leaks": 0}
+    mock_agent.metacognition = MagicMock()
+    mock_agent.learner = MagicMock()
+    mock_agent.optimizer = MagicMock()
+    mock_agent._run_evolution_cycle = AsyncMock(return_value={"ok": True})
+    mock_agent.skills = MagicMock()
+    mock_agent.memory = MagicMock()
+    mock_agent.memory.get_context_string.return_value = ""
+    mock_agent.memory.get_episodes.return_value = []
+    mock_agent.memory.get_dream_logs.return_value = []
+    mock_agent.memory.get_all_semantic.return_value = []
+    mock_agent.memory.get_all_working.return_value = []
+    mock_agent.memory.list_memory_files.return_value = []
+    mock_agent.memory.get_sessions.return_value = []
+    mock_agent.memory.cleanup_empty_sessions.return_value = 0
+    mock_agent.memory.embedder.health.return_value = MagicMock(
+        provider="test", active=True, fallback_provider=None, failure_count=0
+    )
+
+    # Model router mock
+    mock_router = MagicMock()
+    mock_agent.router = mock_router
+
+    web_server._agent = mock_agent
+    web_server._settings = settings
+    set_globals(mock_agent, settings)
+    app = create_app()
+    return TestClient(app)
+
+
+class TestSetupFirstStart:
+    """Tests for /api/setup/first-start diagnostics endpoint."""
+
+    def test_returns_first_run_status(self, client: TestClient) -> None:
+        res = client.get("/api/setup/first-start")
+        assert res.status_code == 200
+        data = res.json()
+        assert "first_run_completed" in data
+        assert data["first_run_completed"] is False
+
+    def test_returns_diagnostics(self, client: TestClient) -> None:
+        res = client.get("/api/setup/first-start")
+        assert res.status_code == 200
+        data = res.json()
+        assert "diagnostics" in data
+        diag = data["diagnostics"]
+        assert "python_version" in diag
+        assert "local_providers_detected" in diag
+        assert isinstance(diag["local_providers_detected"], list)
+        assert "has_configured_models" in diag
+        assert isinstance(diag["has_configured_models"], bool)
+
+
+class TestSetupComplete:
+    """Tests for /api/setup/complete endpoint."""
+
+    def test_marks_first_run_completed(self, client: TestClient) -> None:
+        # Before
+        res = client.get("/api/setup/first-start")
+        assert res.json()["first_run_completed"] is False
+
+        # Complete
+        res = client.post("/api/setup/complete")
+        assert res.status_code == 200
+        assert res.json()["success"] is True
+
+        # After
+        res = client.get("/api/setup/first-start")
+        assert res.json()["first_run_completed"] is True
+
+
+class TestSetupReset:
+    """Tests for /api/setup/reset endpoint."""
+
+    def test_resets_first_run_flag(self, client: TestClient) -> None:
+        # Complete first
+        client.post("/api/setup/complete")
+        res = client.get("/api/setup/first-start")
+        assert res.json()["first_run_completed"] is True
+
+        # Reset
+        res = client.post("/api/setup/reset")
+        assert res.status_code == 200
+        assert res.json()["success"] is True
+
+        # Verify reset
+        res = client.get("/api/setup/first-start")
+        assert res.json()["first_run_completed"] is False
+
+
+class TestSetupTestModel:
+    """Tests for /api/setup/test-model endpoint."""
+
+    def test_requires_model_id(self, client: TestClient) -> None:
+        res = client.post("/api/setup/test-model", json={})
+        assert res.status_code == 400
+        assert "model_id" in res.text.lower() or "required" in res.text.lower()
+
+    def _get_router(self, client: TestClient):
+        """Get the mock router from the deps module."""
+        from js.web import deps
+        agent = deps.get_agent()
+        return agent.router
+
+    def test_model_not_found(self, client: TestClient) -> None:
+        from js.models.router import RoutingDecision
+
+        router = self._get_router(client)
+        router.select_model = AsyncMock(
+            return_value=RoutingDecision(
+                provider=None, model="", provider_name="", reason=""
+            )
+        )
+        res = client.post("/api/setup/test-model", json={"model_id": "nonexistent"})
+        assert res.status_code == 404
+
+    def test_model_test_success(self, client: TestClient) -> None:
+        from js.models.providers import ChatResponse
+        from js.models.router import RoutingDecision
+
+        mock_provider = MagicMock()
+        mock_provider.chat = AsyncMock(
+            return_value=ChatResponse(
+                content="OK",
+                tool_calls=[],
+                model="test-model",
+                usage={},
+                finish_reason="stop",
+            )
+        )
+        # Mark as local so API key check is skipped
+        mock_provider._is_local = True
+
+        router = self._get_router(client)
+        router.select_model = AsyncMock(
+            return_value=RoutingDecision(
+                provider=mock_provider,
+                model="test-model",
+                provider_name="test",
+                reason="test",
+            )
+        )
+        mock_cfg = MagicMock()
+        mock_cfg.context_window = 131072
+        router.get_model_config = MagicMock(return_value=mock_cfg)
+
+        res = client.post("/api/setup/test-model", json={"model_id": "test/model"})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["ok"] is True
+        assert data["latency_ms"] >= 0
+        assert data["error"] is None
+        assert data["context_window"] == 131072
+        assert data["provider"] == "test"
+        assert "response_preview" in data
+
+    def test_model_test_failure(self, client: TestClient) -> None:
+        from js.models.router import RoutingDecision
+
+        mock_provider = MagicMock()
+        mock_provider.chat = AsyncMock(side_effect=RuntimeError("Connection refused"))
+
+        router = self._get_router(client)
+        router.select_model = AsyncMock(
+            return_value=RoutingDecision(
+                provider=mock_provider,
+                model="bad-model",
+                provider_name="bad",
+                reason="test",
+            )
+        )
+        router.get_model_config = MagicMock(return_value=None)
+
+        res = client.post("/api/setup/test-model", json={"model_id": "bad/model"})
+        assert res.status_code == 200  # Returns failure info, not error
+        data = res.json()
+        assert data["ok"] is False
+        assert "无法连接到模型服务" in data["error"]
+        assert data["latency_ms"] >= 0
+
+    def test_model_test_timeout(self, client: TestClient) -> None:
+        import asyncio
+
+        from js.models.router import RoutingDecision
+
+        mock_provider = MagicMock()
+        mock_provider.chat = AsyncMock(side_effect=asyncio.TimeoutError)
+        mock_provider._is_local = True
+
+        router = self._get_router(client)
+        router.select_model = AsyncMock(
+            return_value=RoutingDecision(
+                provider=mock_provider,
+                model="slow-model",
+                provider_name="slow",
+                reason="test",
+            )
+        )
+        router.get_model_config = MagicMock(return_value=None)
+
+        res = client.post("/api/setup/test-model", json={"model_id": "slow/model"})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["ok"] is False
+        assert "超时" in data["error"]

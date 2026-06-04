@@ -18,4 +18,7 @@ export const state = {
   // Model/provider state
   discoveredModels: [],
   cloudPresets: [],
+  wizardCloudPresets: [],
+  // Auth
+  apiKey: localStorage.getItem('js-api-key') || '',
 };

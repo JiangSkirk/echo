@@ -10,15 +10,24 @@ import {
   setCurrentModel, toggleAddProvider, discoverModels, loadCloudPresets,
   onCloudPresetChange, testCloudProvider, addCloudProvider,
   saveProvider, deleteProvider, switchModel, loadModels,
+  updateProviderKey, hideProviderKeyModal, submitProviderKeyUpdate,
 } from './tabs/models.js';
 import { loadFiles } from './tabs/files.js';
 import { loadStatus } from './tabs/status.js';
 import { loadAudit } from './tabs/audit.js';
+import { loadTasks, pauseTask, resumeTask, deleteTask, startTasksPolling } from './tabs/tasks.js';
+import { loadScenarios, startScenario, fillScenarioPrompt } from './tabs/scenarios.js';
 import { loadAgents } from './tabs/agents.js';
 import {
   loadMemory, renderSemanticMemoryItem, editSemanticMemory, saveSemanticMemory,
   deleteSemanticMemory, recoverEmbedder, searchSemantic, showAddSemanticModal,
   submitSemanticMemory, openMemoryFileEditor, closeMemoryFileEditor, saveMemoryFile,
+  showMemoryAudit, loadBlockTree, loadBlockMemories, verifyMemory, toggleSearchScope,
+  toggleBlockExpand, openBlockDelete, openBlockMove, openBlockMerge,
+  onBlockTargetChange, submitBlockModal, closeBlockModal,
+  loadProposals, approveProposal, rejectProposal, approveAllProposals,
+  organizeNow, openProposalEdit, closeProposalEdit, saveProposalEdit,
+  confirmModalYes, closeConfirmModal,
 } from './tabs/memory.js';
 import {
   refreshCronJobs, renderCronJobs, runCronJob, toggleCronJob, deleteCronJob,
@@ -28,6 +37,52 @@ import {
 
 let wizardStep = state.wizardStep;
 let wizardSelectedModel = state.wizardSelectedModel;
+
+// ═══════════════════════════════════════════════════════════════
+//  Global fetch wrapper — injects X-API-Key for all API calls
+// ═══════════════════════════════════════════════════════════════
+const _origFetch = window.fetch;
+window.fetch = async function(url, options = {}) {
+  if (typeof url === 'string' && url.startsWith('/api/')) {
+    options = structuredClone ? structuredClone(options) : JSON.parse(JSON.stringify(options));
+    options.headers = options.headers || {};
+    if (!options.headers['X-API-Key'] && state.apiKey) {
+      options.headers['X-API-Key'] = state.apiKey;
+    }
+  }
+  return _origFetch(url, options);
+};
+
+function saveApiKey(key) {
+  state.apiKey = key.trim();
+  localStorage.setItem('js-api-key', state.apiKey);
+  // Mirror to cookie so WebSocket can authenticate without
+  // leaking the key in the URL (browser history, server logs, referrers).
+  if (state.apiKey) {
+    document.cookie = 'x-api-key=' + encodeURIComponent(state.apiKey) + '; path=/; SameSite=Strict';
+  } else {
+    document.cookie = 'x-api-key=; path=/; SameSite=Strict; expires=Thu, 01 Jan 1970 00:00:00 GMT';
+  }
+  const input = document.getElementById('api-key-input');
+  if (input) input.value = state.apiKey;
+  showToast(state.apiKey ? 'API Key 已保存' : 'API Key 已清除');
+}
+
+function restoreApiKey() {
+  // Prefer localStorage, fall back to cookie (e.g. after hard refresh)
+  if (!state.apiKey) {
+    const m = document.cookie.match(/(?:^|; )x-api-key=([^;]*)/);
+    if (m) {
+      try {
+        state.apiKey = decodeURIComponent(m[1]);
+      } catch (e) {
+        state.apiKey = m[1];
+      }
+    }
+  }
+  const input = document.getElementById('api-key-input');
+  if (input && state.apiKey) input.value = state.apiKey;
+}
 
 async function checkFirstStart() {
   // Skip if already completed locally
@@ -46,6 +101,17 @@ async function checkFirstStart() {
   }
 }
 
+async function resetWizard() {
+  localStorage.removeItem('js-wizard-completed');
+  try {
+    await fetch('/api/setup/reset', { method: 'POST' });
+    showWizard();
+    showToast('设置向导已重置');
+  } catch (e) {
+    showToast('重置失败: ' + e.message, 'error');
+  }
+}
+
 function showWizard() {
   wizardStep = 1;
   wizardSelectedModel = '';
@@ -60,18 +126,31 @@ function hideWizard() {
 }
 
 function wizardNext() {
-  if (wizardStep === 1) {
-    document.getElementById('wizard-step-1').classList.add('hidden');
-    document.getElementById('wizard-step-2').classList.remove('hidden');
-    loadWizardModels();
-    wizardStep = 2;
-  } else if (wizardStep === 2) {
-    if (!wizardSelectedModel) return;
-    document.getElementById('wizard-step-2').classList.add('hidden');
-    document.getElementById('wizard-step-3').classList.remove('hidden');
-    const model = availableModels.find(m => m.id === wizardSelectedModel);
-    document.getElementById('wizard-selected-model').textContent = model ? (model.name || model.id) : wizardSelectedModel;
-    wizardStep = 3;
+  console.log('wizardNext called, step=', wizardStep, 'selected=', wizardSelectedModel);
+  try {
+    const step1 = document.getElementById('wizard-step-1');
+    const step2 = document.getElementById('wizard-step-2');
+    const step3 = document.getElementById('wizard-step-3');
+
+    if (step1 && !step1.classList.contains('hidden')) {
+      step1.classList.add('hidden');
+      step2.classList.remove('hidden');
+      loadWizardModels();
+      wizardStep = 2;
+    } else if (step2 && !step2.classList.contains('hidden')) {
+      if (!wizardSelectedModel) {
+        showToast('请先选择一个模型', 'warning');
+        return;
+      }
+      step2.classList.add('hidden');
+      step3.classList.remove('hidden');
+      const model = state.availableModels.find(m => m.id === wizardSelectedModel);
+      document.getElementById('wizard-selected-model').textContent = model ? (model.name || model.id) : wizardSelectedModel;
+      wizardStep = 3;
+    }
+  } catch (e) {
+    console.error('wizardNext error:', e);
+    showToast('向导出错: ' + e.message, 'error');
   }
 }
 
@@ -88,7 +167,15 @@ async function wizardComplete() {
     if (wizardSelectedModel) {
       await switchModel(wizardSelectedModel);
     }
-    await fetch('/api/setup/complete', { method: 'POST' });
+    const res = await fetch('/api/setup/complete', { method: 'POST' });
+    try {
+      const data = await res.json();
+      // If the server minted an admin key on completion (and we don't already
+      // have one), persist it so the now-closed bootstrap window stays usable.
+      if (data && data.admin_key && !state.apiKey) {
+        saveApiKey(data.admin_key);
+      }
+    } catch (_) {}
     localStorage.setItem('js-wizard-completed', 'true');
     hideWizard();
     showToast('设置完成，欢迎使用！');
@@ -105,19 +192,23 @@ async function loadWizardModels() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     const flatModels = [];
+    let hasHealthyConfigured = false;
     // Configured providers
     if (data.providers) {
       data.providers.forEach(p => {
         const statusIcon = p.healthy ? '🟢' : (p.has_key ? '🔴' : '🟡');
+        if (p.healthy) hasHealthyConfigured = true;
         p.models.forEach(m => {
           flatModels.push({
             id: `${p.name}/${m.id}`,
+            rawId: m.id,
             name: `${p.name}/${m.name || m.id}`,
             provider: p.name,
             contextWindow: m.context_window,
             statusIcon,
             healthy: p.healthy,
             hasKey: p.has_key,
+            isPreset: false,
           });
         });
       });
@@ -128,6 +219,7 @@ async function loadWizardModels() {
         preset.models.forEach(m => {
           flatModels.push({
             id: `${preset.id}/${m.id}`,
+            rawId: m.id,
             name: `${preset.id}/${m.name || m.id}`,
             provider: preset.id,
             contextWindow: m.context_window,
@@ -140,23 +232,208 @@ async function loadWizardModels() {
       });
     }
     if (flatModels.length === 0) {
-      container.innerHTML = '<div class="text-gray-400 text-sm">未配置模型，请跳过此步骤并在设置中添加 Provider。</div>';
+      container.innerHTML = renderWizardNoModels();
       document.getElementById('wizard-next-2').disabled = false;
+      loadWizardCloudPresets();
       return;
     }
     container.innerHTML = flatModels.map(m => `
-      <label class="flex items-center gap-3 bg-gray-800 rounded-lg px-3 py-2 cursor-pointer hover:bg-gray-700 transition border border-transparent ${wizardSelectedModel === m.id ? 'border-blue-500' : ''}">
-        <input type="radio" name="wizard-model" value="${escapeHtml(m.id)}" ${wizardSelectedModel === m.id ? 'checked' : ''} onchange="wizardSelectModel('${escapeHtml(m.id)}')" class="accent-blue-500">
-        <div class="flex-1">
-          <div class="text-sm font-medium">${m.statusIcon} ${escapeHtml(m.name)}</div>
-          <div class="text-xs text-gray-500">Provider: ${escapeHtml(m.provider)} · 上下文: ${m.contextWindow || '--'} tokens ${m.isPreset ? '· 未配置' : ''}</div>
-        </div>
-      </label>
+      <div class="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-2 border border-transparent ${wizardSelectedModel === m.id ? 'border-blue-500' : ''}" data-model-id="${escapeHtml(m.id)}">
+        <label class="flex items-center gap-3 flex-1 cursor-pointer hover:bg-gray-700 transition rounded px-1 py-1">
+          <input type="radio" name="wizard-model" value="${escapeHtml(m.id)}" ${wizardSelectedModel === m.id ? 'checked' : ''} onchange="wizardSelectModel('${escapeHtml(m.id)}')" class="accent-blue-500">
+          <div class="flex-1 min-w-0">
+            <div class="text-sm font-medium">${m.statusIcon} ${escapeHtml(m.name)}</div>
+            <div class="text-xs text-gray-500">Provider: ${escapeHtml(m.provider)} · 上下文: ${m.contextWindow || '--'} tokens ${m.isPreset ? '· 未配置' : ''}</div>
+          </div>
+        </label>
+        ${!m.isPreset ? `<button onclick="testWizardModel('${escapeHtml(m.id)}', this)" class="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded transition whitespace-nowrap" title="测试连接">
+          <i class="fas fa-bolt"></i> 测试
+        </button>` : ''}
+        <span id="test-result-${escapeHtml(m.id.replace(/[^a-zA-Z0-9]/g, '-'))}" class="text-xs hidden whitespace-nowrap"></span>
+      </div>
     `).join('');
     document.getElementById('wizard-next-2').disabled = !wizardSelectedModel;
+    loadWizardCloudPresets();
   } catch (e) {
     container.innerHTML = '<div class="text-red-400 text-sm">加载模型失败: ' + escapeHtml(e.message) + '</div>';
     document.getElementById('wizard-next-2').disabled = false;
+  }
+}
+
+async function loadWizardCloudPresets() {
+  const select = document.getElementById('wizard-cloud-select');
+  if (!select) return;
+  try {
+    const res = await fetch('/api/providers/cloud-presets');
+    if (!res.ok) return;
+    const data = await res.json();
+    state.wizardCloudPresets = data.presets || [];
+    select.innerHTML = '<option value="">选择云模型...</option>' +
+      state.wizardCloudPresets.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
+  } catch (e) {
+    select.innerHTML = '<option value="">加载失败</option>';
+  }
+}
+
+function onWizardCloudChange() {
+  const select = document.getElementById('wizard-cloud-select');
+  const details = document.getElementById('wizard-cloud-details');
+  const descEl = document.getElementById('wizard-cloud-desc');
+  const errEl = document.getElementById('wizard-cloud-error');
+  const sucEl = document.getElementById('wizard-cloud-success');
+  errEl.classList.add('hidden');
+  sucEl.classList.add('hidden');
+
+  const presetId = select.value;
+  if (!presetId) { details.classList.add('hidden'); return; }
+  const presets = state.wizardCloudPresets || [];
+  const preset = presets.find(p => p.id === presetId);
+  if (!preset) { details.classList.add('hidden'); return; }
+
+  const models = (preset.models || []).map(m => m.name || m.id).join(', ');
+  descEl.textContent = (preset.description || '') + (models ? ' · 模型: ' + models : '');
+  details.classList.remove('hidden');
+}
+
+async function testWizardCloud() {
+  const select = document.getElementById('wizard-cloud-select');
+  const keyInput = document.getElementById('wizard-cloud-key');
+  const errEl = document.getElementById('wizard-cloud-error');
+  const sucEl = document.getElementById('wizard-cloud-success');
+  const btn = document.getElementById('wizard-btn-test-cloud');
+
+  const presetId = select.value;
+  const apiKey = keyInput.value.trim();
+  if (!presetId) { errEl.textContent = '请选择云模型'; errEl.classList.remove('hidden'); return; }
+  if (!apiKey) { errEl.textContent = '请输入 API Key'; errEl.classList.remove('hidden'); return; }
+
+  errEl.classList.add('hidden');
+  sucEl.classList.add('hidden');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>测试中...';
+
+  try {
+    const res = await fetch('/api/providers/test-cloud', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preset_id: presetId, api_key: apiKey })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || '连接失败: HTTP ' + res.status);
+    }
+    const data = await res.json();
+    sucEl.textContent = '✅ 连接成功！发现 ' + (data.models?.length || 0) + ' 个模型';
+    sucEl.classList.remove('hidden');
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-bolt mr-1"></i>测试连接';
+  }
+}
+
+async function addWizardCloud() {
+  const select = document.getElementById('wizard-cloud-select');
+  const keyInput = document.getElementById('wizard-cloud-key');
+  const errEl = document.getElementById('wizard-cloud-error');
+  const btn = document.getElementById('wizard-btn-add-cloud');
+
+  const presetId = select.value;
+  const apiKey = keyInput.value.trim();
+  if (!presetId) { errEl.textContent = '请选择云模型'; errEl.classList.remove('hidden'); return; }
+  if (!apiKey) { errEl.textContent = '请输入 API Key'; errEl.classList.remove('hidden'); return; }
+
+  errEl.classList.add('hidden');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>添加中...';
+
+  try {
+    const res = await fetch('/api/providers/add-cloud', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preset_id: presetId, api_key: apiKey })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || '添加失败: HTTP ' + res.status);
+    }
+    const data = await res.json();
+    showToast('云模型已添加: ' + (data.provider_name || presetId));
+    // Refresh model list
+    await loadWizardModels();
+    // Auto-select first model of this provider if none selected
+    if (!wizardSelectedModel && data.models?.length > 0) {
+      const firstModelId = data.provider_name + '/' + data.models[0].id;
+      wizardSelectModel(firstModelId);
+    }
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-plus mr-1"></i>添加并使用';
+  }
+}
+
+function renderWizardNoModels() {
+  return `
+    <div class="text-gray-400 text-sm mb-4">未配置模型，您可以选择以下方式添加：</div>
+    ${renderWizardCloudHint()}
+    <div class="mt-4 text-center">
+      <button onclick="hideWizard(); switchTab('models');" class="text-sm text-blue-400 hover:text-blue-300 underline">前往模型设置手动添加</button>
+    </div>
+  `;
+}
+
+function renderWizardCloudHint() {
+  return `
+    <div class="bg-blue-900/30 border border-blue-700/50 rounded-lg p-3 mt-2">
+      <div class="text-sm font-medium text-blue-300 mb-2"><i class="fas fa-cloud mr-1"></i> 没有本地模型？快速添加云模型：</div>
+      <div class="flex flex-wrap gap-2">
+        <button onclick="hideWizard(); switchTab('models'); setTimeout(() => document.getElementById('cloud-preset-select').value='deepseek', 100);" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-1 rounded border border-gray-700 transition">DeepSeek</button>
+        <button onclick="hideWizard(); switchTab('models'); setTimeout(() => document.getElementById('cloud-preset-select').value='openai', 100);" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-1 rounded border border-gray-700 transition">OpenAI</button>
+        <button onclick="hideWizard(); switchTab('models'); setTimeout(() => document.getElementById('cloud-preset-select').value='kimi-cn', 100);" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-1 rounded border border-gray-700 transition">Kimi</button>
+      </div>
+    </div>
+  `;
+}
+
+async function testWizardModel(modelId, btnEl) {
+  const resultId = 'test-result-' + modelId.replace(/[^a-zA-Z0-9]/g, '-');
+  const resultEl = document.getElementById(resultId);
+  if (!resultEl) return;
+
+  btnEl.disabled = true;
+  btnEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+  resultEl.classList.remove('hidden');
+  resultEl.textContent = '测试中...';
+  resultEl.className = 'text-xs text-gray-400 whitespace-nowrap';
+
+  try {
+    const res = await fetch('/api/setup/test-model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_id: modelId }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if (data.ok) {
+      resultEl.innerHTML = `<span class="text-green-400">🟢 可用 (${data.latency_ms}ms)</span>`;
+      // Auto-select this model after successful test
+      wizardSelectModel(modelId);
+      const safeId = modelId.replace(/"/g, '\\"');
+      const radio = document.querySelector('input[name="wizard-model"][value="' + safeId + '"]');
+      if (radio) radio.checked = true;
+    } else {
+      resultEl.innerHTML = `<span class="text-red-400">🔴 ${escapeHtml(data.error || '连接失败')}</span>`;
+    }
+  } catch (e) {
+    resultEl.innerHTML = `<span class="text-red-400">🔴 ${escapeHtml(e.message)}</span>`;
+  } finally {
+    btnEl.disabled = false;
+    btnEl.innerHTML = '<i class="fas fa-bolt"></i> 测试';
   }
 }
 
@@ -174,6 +451,7 @@ state.pendingAttachments = []; // { id, path, name, type, size, previewUrl? }
 
 function connectWS() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  // Cookie is sent automatically by the browser — no query param needed.
   state.ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
   state.ws.onopen = () => {
     document.getElementById('conn-status').innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span> <span class="text-green-400">已连接</span>';
@@ -992,6 +1270,8 @@ function switchTab(tab) {
   if (tab === 'agents') loadAgents();
   if (tab === 'evolution') loadEvolution();
   if (tab === 'models') { loadModels(); loadCloudPresets().catch(e => console.error('[switchTab] loadCloudPresets failed:', e)); }
+  if (tab === 'tasks') loadTasks();
+  if (tab === 'scenarios') loadScenarios();
   if (tab === 'search') loadSearch();
   if (tab === 'stats') loadStats();
 }
@@ -1017,6 +1297,7 @@ function getRoleMeta(role) { return ROLE_META[role] || ROLE_META.worker; }
 function connectFleetWS() {
   if (state.fleetWS && state.fleetWS.readyState === WebSocket.OPEN) return;
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  // Cookie is sent automatically by the browser — no query param needed.
   state.fleetWS = new WebSocket(`${protocol}//${window.location.host}/ws/fleet`);
 
   state.fleetWS.onopen = () => {
@@ -1637,16 +1918,28 @@ const _windowFuncs = {
   addFleetRoleCard, removeFleetRoleCard, renameFleetRole, saveFleetModelConfig,
   loadAgents, populateFleetRoleSelect, refreshFleetSubtaskRoles,
   showAddSemanticModal, submitSemanticMemory, searchSemantic, editSemanticMemory,
-  deleteSemanticMemory, saveSemanticMemory, recoverEmbedder,
+  deleteSemanticMemory, saveSemanticMemory, recoverEmbedder, showMemoryAudit,
   openMemoryFileEditor, closeMemoryFileEditor, saveMemoryFile,
+  loadBlockTree, loadBlockMemories, verifyMemory, toggleSearchScope,
+  toggleBlockExpand, openBlockDelete, openBlockMove, openBlockMerge,
+  onBlockTargetChange, submitBlockModal, closeBlockModal,
+  loadProposals, approveProposal, rejectProposal, approveAllProposals,
+  organizeNow, openProposalEdit, closeProposalEdit, saveProposalEdit,
+  confirmModalYes, closeConfirmModal,
   showSkillDetail, closeSkillModal, uninstallSkill, updateTrust,
   showWizard, hideWizard, wizardNext, wizardPrev, wizardComplete, wizardSelectModel,
-  loadWizardModels, checkFirstStart,
+  loadWizardModels, checkFirstStart, resetWizard, testWizardModel,
+  renderWizardNoModels, renderWizardCloudHint,
+  loadWizardCloudPresets, onWizardCloudChange, testWizardCloud, addWizardCloud,
   showCronCreateModal, hideCronCreateModal, submitCronJob, refreshCronJobs,
   runCronJob, deleteCronJob, toggleCronJob, parseCronNatural, onCronTemplateChange,
   loadCronTemplates, renderCronJobs, triggerFileSelect, handleFileSelect,
   loadSessions, switchSession, deleteSession, setCurrentModel,
   loadCloudPresets, loadAudit, loadStatus, loadModels,
+  loadTasks, pauseTask, resumeTask, deleteTask,
+  loadScenarios, startScenario, fillScenarioPrompt,
+  saveApiKey,
+  updateProviderKey, hideProviderKeyModal, submitProviderKeyUpdate,
 };
 Object.entries(_windowFuncs).forEach(([k, v]) => { if (typeof v === 'function') window[k] = v; });
 
@@ -1660,9 +1953,22 @@ window.switchTab = function(tab) {
 };
 
 // ---- Bootstrap: initialize on page load ----
+restoreApiKey();
+// First run: adopt the server-injected bootstrap admin key so a fresh install
+// is usable immediately without manual key entry. Only when we have none yet.
+if (!state.apiKey && typeof window.__BOOTSTRAP_API_KEY__ === 'string' && window.__BOOTSTRAP_API_KEY__) {
+  state.apiKey = window.__BOOTSTRAP_API_KEY__;
+  localStorage.setItem('js-api-key', state.apiKey);
+  document.cookie = 'x-api-key=' + encodeURIComponent(state.apiKey) + '; path=/; SameSite=Strict';
+  const keyInput = document.getElementById('api-key-input');
+  if (keyInput) keyInput.value = state.apiKey;
+}
 connectWS();
 initDragDrop();
 checkFirstStart();
+// Load model list eagerly so the top-bar dropdown is usable immediately
+// without requiring the user to visit the Models tab first.
+loadModels();
 
 // Bind Enter key on chat input
 const chatInput = document.getElementById('chat-input');

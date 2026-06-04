@@ -253,11 +253,17 @@
     <button onclick="switchTab('audit')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-audit">
       <i class="fas fa-shield-alt w-5"></i> 审计
     </button>
+    <button onclick="switchTab('tasks')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-tasks">
+      <i class="fas fa-tasks w-5"></i> 任务中心
+    </button>
     <button onclick="switchTab('skills')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-skills">
       <i class="fas fa-magic w-5"></i> Skills
     </button>
     <button onclick="switchTab('agents')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-agents">
       <i class="fas fa-network-wired w-5"></i> 多Agent
+    </button>
+    <button onclick="switchTab('scenarios')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-scenarios">
+      <i class="fas fa-th-large w-5"></i> 场景模板
     </button>
     <button onclick="switchTab('evolution')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-evolution">
       <i class="fas fa-dna w-5"></i> 进化
@@ -279,8 +285,17 @@
     </button>
   </nav>
   <div class="p-4 border-t border-gray-800 text-xs text-gray-500">
-    <div id="conn-status" class="flex items-center gap-2">
+    <div id="conn-status" class="flex items-center gap-2 mb-2">
       <span class="w-2 h-2 rounded-full bg-green-500"></span> 已连接
+    </div>
+    <div class="flex items-center gap-2">
+      <input id="api-key-input" type="password" placeholder="API Key" value=""
+        class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-blue-500"
+        onchange="saveApiKey(this.value)">
+      <button onclick="saveApiKey(document.getElementById('api-key-input').value)"
+        class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs hover:bg-gray-700" title="保存">
+        <i class="fas fa-save"></i>
+      </button>
     </div>
   </div>
 </aside>
@@ -330,11 +345,36 @@
           <span class="text-blue-400 font-medium">步骤 2 / 3</span>
           <span>选择默认模型</span>
         </div>
-        <h2 class="text-xl font-bold mb-2">选择模型</h2>
-        <p class="text-gray-400 text-sm mb-4">请选择一个要使用的 AI 模型作为默认助手。</p>
+        <h2 class="text-xl font-bold mb-2">选择并测试模型</h2>
+        <p class="text-gray-400 text-sm mb-4">选择模型后点击<span class="text-blue-400">测试</span>按钮验证连接，确保模型可用。</p>
         <div id="wizard-model-list" class="space-y-2 max-h-64 overflow-y-auto mb-4">
           <div class="text-gray-400 text-sm"><i class="fas fa-spinner fa-spin mr-2"></i>加载模型列表...</div>
         </div>
+
+        <!-- Cloud Model Quick Add (inside wizard) -->
+        <div id="wizard-cloud-add" class="bg-gray-800/50 border border-gray-700 rounded-lg p-3 mb-4">
+          <div class="text-sm font-medium text-gray-300 mb-2"><i class="fas fa-cloud mr-1"></i>添加云模型</div>
+          <div class="space-y-2">
+            <select id="wizard-cloud-select" onchange="onWizardCloudChange()" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none focus:border-blue-500">
+              <option value="">选择云模型...</option>
+            </select>
+            <div id="wizard-cloud-details" class="hidden">
+              <div class="text-xs text-gray-500 mb-1" id="wizard-cloud-desc"></div>
+              <input id="wizard-cloud-key" type="password" placeholder="输入 API Key" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none focus:border-blue-500">
+              <div id="wizard-cloud-error" class="hidden text-xs text-red-400 mt-1"></div>
+              <div id="wizard-cloud-success" class="hidden text-xs text-green-400 mt-1"></div>
+              <div class="flex gap-2 mt-2">
+                <button onclick="testWizardCloud()" id="wizard-btn-test-cloud" class="flex-1 bg-gray-700 hover:bg-gray-600 text-white text-xs py-2 rounded-lg transition">
+                  <i class="fas fa-bolt mr-1"></i>测试连接
+                </button>
+                <button onclick="addWizardCloud()" id="wizard-btn-add-cloud" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-xs py-2 rounded-lg transition">
+                  <i class="fas fa-plus mr-1"></i>添加并使用
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div class="flex gap-3">
           <button onclick="wizardPrev()" class="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-2 rounded-xl transition">
             <i class="fas fa-arrow-left mr-1"></i> 上一步
@@ -477,63 +517,103 @@
 
   <!-- Memory Tab -->
   <div id="tab-memory" class="tab-content flex-1 hidden p-4 overflow-y-auto">
-    <div class="max-w-4xl mx-auto space-y-4">
+    <div class="max-w-6xl mx-auto">
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-xl font-bold">记忆内容</h2>
-        <button onclick="loadMemory()" class="text-sm bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-lg transition flex items-center gap-1">
-          <i class="fas fa-sync-alt text-xs"></i> 刷新
-        </button>
-        <span id="memory-embedder-status" class="text-xs px-2 py-1 rounded bg-gray-800 text-gray-400 hidden"></span>
-        <button id="memory-embedder-recover" onclick="recoverEmbedder()" class="text-xs bg-blue-900/40 hover:bg-blue-800/60 text-blue-400 px-2 py-1 rounded hidden transition">
-          <i class="fas fa-undo mr-1"></i>恢复嵌入器
-        </button>
-      </div>
-
-      <!-- Active Context -->
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <h3 class="font-bold mb-2 text-blue-400"><i class="fas fa-brain mr-2"></i>当前上下文</h3>
-        <pre id="memory-context" class="text-sm font-mono whitespace-pre-wrap text-gray-300 min-h-[3rem]"></pre>
-      </div>
-
-      <!-- Working Memory -->
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <h3 class="font-bold mb-2 text-cyan-400"><i class="fas fa-bolt mr-2"></i>工作记忆 (Working)</h3>
-        <div id="memory-working" class="space-y-2"></div>
-      </div>
-
-      <!-- Semantic Memory -->
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <div class="flex items-center justify-between mb-2">
-          <h3 class="font-bold text-pink-400"><i class="fas fa-database mr-2"></i>长期知识 (Semantic)</h3>
-          <button onclick="showAddSemanticModal()" class="text-xs bg-pink-900/40 hover:bg-pink-900/60 text-pink-300 px-2 py-1 rounded transition">
-            <i class="fas fa-plus mr-1"></i>添加
+        <div class="flex items-center gap-2">
+          <button onclick="loadMemory()" class="text-sm bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-lg transition flex items-center gap-1">
+            <i class="fas fa-sync-alt text-xs"></i> 刷新
+          </button>
+          <span id="memory-embedder-status" class="text-xs px-2 py-1 rounded bg-gray-800 text-gray-400 hidden"></span>
+          <button id="memory-embedder-recover" onclick="recoverEmbedder()" class="text-xs bg-blue-900/40 hover:bg-blue-800/60 text-blue-400 px-2 py-1 rounded hidden transition">
+            <i class="fas fa-undo mr-1"></i>恢复嵌入器
           </button>
         </div>
-        <div class="flex gap-2 mb-3">
-          <input id="semantic-search" type="text" placeholder="搜索知识..." class="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-pink-500">
-          <button onclick="searchSemantic()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg text-sm transition">
-            <i class="fas fa-search"></i>
-          </button>
+      </div>
+
+      <div class="flex gap-4">
+        <!-- Left: Block Navigation Tree -->
+        <div class="w-52 shrink-0">
+          <div class="bg-gray-900 border border-gray-800 rounded-xl p-3 sticky top-0">
+            <h3 class="font-bold text-sm mb-2 text-gray-300"><i class="fas fa-folder-tree mr-1"></i>记忆区块</h3>
+            <div id="memory-block-tree" class="text-sm space-y-1">
+              <div class="text-gray-500 text-xs">加载中...</div>
+            </div>
+          </div>
         </div>
-        <div id="memory-semantic" class="space-y-2"></div>
-      </div>
 
-      <!-- Episodes -->
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <h3 class="font-bold mb-2 text-green-400"><i class="fas fa-film mr-2"></i>情景记忆 (Episodes)</h3>
-        <div id="memory-episodes" class="space-y-2"></div>
-      </div>
+        <!-- Right: Memory Content -->
+        <div class="flex-1 space-y-4 min-w-0">
+          <!-- Active Context -->
+          <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <h3 class="font-bold mb-2 text-blue-400"><i class="fas fa-brain mr-2"></i>当前上下文</h3>
+            <pre id="memory-context" class="text-sm font-mono whitespace-pre-wrap text-gray-300 min-h-[3rem]"></pre>
+          </div>
 
-      <!-- Dream Logs -->
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <h3 class="font-bold mb-2 text-purple-400"><i class="fas fa-moon mr-2"></i>梦境日志 (Dreams)</h3>
-        <div id="memory-dreams" class="space-y-2"></div>
-      </div>
+          <!-- Memory inbox: proposed changes awaiting confirmation -->
+          <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+              <h3 class="font-bold text-yellow-400">
+                <i class="fas fa-inbox mr-2"></i>记忆收件箱
+                <span id="memory-proposals-count" class="text-xs text-gray-500 ml-1"></span>
+              </h3>
+              <div class="flex items-center gap-2">
+                <button id="memory-organize-btn" onclick="organizeNow()" class="text-xs bg-blue-900/40 hover:bg-blue-900/60 text-blue-300 px-2 py-1 rounded transition" title="从最近对话中整理记忆">
+                  <i class="fas fa-wand-magic-sparkles mr-1"></i>立即整理
+                </button>
+                <button id="memory-approve-all-btn" onclick="approveAllProposals()" class="text-xs bg-green-900/40 hover:bg-green-900/60 text-green-300 px-2 py-1 rounded transition hidden" title="确认全部">
+                  <i class="fas fa-check-double mr-1"></i>全部确认
+                </button>
+              </div>
+            </div>
+            <div id="memory-organize-status" class="text-xs text-gray-500 mb-2">点击「立即整理」可从最近的对话中提取要记住的信息。</div>
+            <div id="memory-proposals" class="space-y-2"></div>
+          </div>
 
-      <!-- Memory Files -->
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <h3 class="font-bold mb-2 text-yellow-400"><i class="fas fa-file-alt mr-2"></i>记忆文件</h3>
-        <div id="memory-files" class="grid grid-cols-1 md:grid-cols-3 gap-3"></div>
+          <!-- Working Memory -->
+          <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <h3 class="font-bold mb-2 text-cyan-400"><i class="fas fa-bolt mr-2"></i>工作记忆 (Working)</h3>
+            <div id="memory-working" class="space-y-2"></div>
+          </div>
+
+          <!-- Semantic Memory -->
+          <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <div class="flex items-center justify-between mb-2">
+              <h3 class="font-bold text-pink-400"><i class="fas fa-database mr-2"></i>长期知识 (Semantic)</h3>
+              <button onclick="showAddSemanticModal()" class="text-xs bg-pink-900/40 hover:bg-pink-900/60 text-pink-300 px-2 py-1 rounded transition">
+                <i class="fas fa-plus mr-1"></i>添加
+              </button>
+            </div>
+            <div class="flex gap-2 mb-3">
+              <input id="semantic-search" type="text" placeholder="搜索知识..." class="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-pink-500">
+              <button id="semantic-search-scope" onclick="toggleSearchScope()" class="bg-gray-800 border border-gray-700 px-2 py-1.5 rounded-lg text-xs text-gray-400 transition" title="切换搜索范围">
+                全部
+              </button>
+              <button onclick="searchSemantic()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg text-sm transition">
+                <i class="fas fa-search"></i>
+              </button>
+            </div>
+            <div id="memory-semantic" class="space-y-2"></div>
+          </div>
+
+          <!-- Episodes -->
+          <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <h3 class="font-bold mb-2 text-green-400"><i class="fas fa-film mr-2"></i>情景记忆 (Episodes)</h3>
+            <div id="memory-episodes" class="space-y-2"></div>
+          </div>
+
+          <!-- Dream Logs -->
+          <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <h3 class="font-bold mb-2 text-purple-400"><i class="fas fa-moon mr-2"></i>梦境日志 (Dreams)</h3>
+            <div id="memory-dreams" class="space-y-2"></div>
+          </div>
+
+          <!-- Memory Files -->
+          <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            <h3 class="font-bold mb-2 text-yellow-400"><i class="fas fa-file-alt mr-2"></i>记忆文件</h3>
+            <div id="memory-files" class="grid grid-cols-1 md:grid-cols-3 gap-3"></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -543,6 +623,18 @@
     <div class="max-w-4xl mx-auto">
       <h2 class="text-xl font-bold mb-4">审计日志</h2>
       <div id="audit-content" class="space-y-2"></div>
+    </div>
+  </div>
+
+  <div id="tab-tasks" class="tab-content flex-1 hidden p-4 overflow-y-auto">
+    <div class="max-w-4xl mx-auto">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xl font-bold">任务中心</h2>
+        <button onclick="loadTasks()" class="text-sm bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-lg transition flex items-center gap-1">
+          <i class="fas fa-sync-alt text-xs"></i> 刷新
+        </button>
+      </div>
+      <div id="tasks-list" class="space-y-3"></div>
     </div>
   </div>
 
@@ -585,6 +677,18 @@
   </div>
 
   <!-- Agents Tab — Unified Role & Runtime Config -->
+  <div id="tab-scenarios" class="tab-content flex-1 hidden h-full p-4 overflow-y-auto">
+    <div class="max-w-4xl mx-auto space-y-6">
+      <div class="flex items-center justify-between">
+        <h2 class="text-xl font-bold flex items-center gap-2">
+          <i class="fas fa-th-large text-blue-400"></i> 场景模板
+        </h2>
+      </div>
+      <p class="text-sm text-gray-400">选择一个预配置场景，一键启动多 Agent 协作。</p>
+      <div id="scenarios-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+    </div>
+  </div>
+
   <div id="tab-agents" class="tab-content flex-1 hidden h-full p-4 overflow-y-auto">
     <div class="max-w-4xl mx-auto space-y-6">
       <!-- Header -->
@@ -642,7 +746,12 @@
   <!-- Models Tab -->
   <div id="tab-models" class="tab-content flex-1 hidden p-4 overflow-y-auto">
     <div class="max-w-4xl mx-auto">
-      <h2 class="text-xl font-bold mb-4">模型管理</h2>
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-xl font-bold">模型管理</h2>
+        <button onclick="resetWizard()" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded-lg transition border border-gray-700">
+          <i class="fas fa-magic mr-1"></i>重新运行向导
+        </button>
+      </div>
 
       <!-- Active Model Card -->
       <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-4">
@@ -761,6 +870,24 @@
   <div id="tab-status" class="tab-content flex-1 hidden p-4 overflow-y-auto">
     <div class="max-w-4xl mx-auto">
       <h2 class="text-xl font-bold mb-4">系统状态</h2>
+
+      <!-- Desktop Control Card -->
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-4">
+        <div class="flex items-center gap-3 mb-2">
+          <div class="w-10 h-10 rounded-lg bg-purple-900/30 flex items-center justify-center">
+            <i class="fas fa-desktop text-purple-400"></i>
+          </div>
+          <div>
+            <div class="font-medium">桌面控制</div>
+            <div class="text-xs text-gray-500">macOS 鼠标键盘截图控制</div>
+          </div>
+        </div>
+        <!-- Wizard renders here -->
+        <div id="desktop-wizard-container" class="text-xs text-gray-500">
+          <i class="fas fa-spinner fa-spin mr-1"></i>检测中...
+        </div>
+      </div></div>
+
       <pre id="status-content" class="bg-gray-900 border border-gray-800 rounded-xl p-4 text-sm font-mono"></pre>
     </div>
   </div>
@@ -912,6 +1039,86 @@
   </div>
 </div>
 
+  <!-- Proposal edit (edit-before-confirm) modal -->
+  <div id="proposal-edit-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+    <div class="bg-gray-900 border border-gray-700 rounded-xl max-w-lg w-full p-5 shadow-2xl">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-lg font-bold text-yellow-400"><i class="fas fa-pen mr-2"></i>编辑后确认</h3>
+        <button onclick="closeProposalEdit()" class="text-gray-400 hover:text-white" aria-label="关闭"><i class="fas fa-times"></i></button>
+      </div>
+      <label class="block text-xs text-gray-400 mb-1">要记住的内容</label>
+      <textarea id="proposal-edit-value" rows="3" class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 resize-none focus:outline-none focus:border-yellow-500 mb-3"></textarea>
+      <div class="flex flex-wrap gap-2 mb-4">
+        <div class="flex-1 min-w-[8rem]">
+          <label class="block text-xs text-gray-400 mb-1">分类</label>
+          <select id="proposal-edit-cat" class="w-full bg-gray-950 border border-gray-800 rounded-lg px-2 py-1.5 text-sm text-gray-200">
+            <option value="fact">事实</option>
+            <option value="preference">偏好</option>
+            <option value="insight">洞察</option>
+          </select>
+        </div>
+        <div class="flex-1 min-w-[8rem]">
+          <label class="block text-xs text-gray-400 mb-1">类型</label>
+          <select id="proposal-edit-etype" class="w-full bg-gray-950 border border-gray-800 rounded-lg px-2 py-1.5 text-sm text-gray-200">
+            <option value="">自动推断</option>
+            <option value="identity">身份</option>
+            <option value="personality">性格</option>
+            <option value="body">身体</option>
+            <option value="family">家人</option>
+            <option value="friend">朋友</option>
+            <option value="company">公司</option>
+            <option value="project">项目</option>
+            <option value="colleague">同事</option>
+            <option value="plan">计划</option>
+            <option value="preference">偏好</option>
+            <option value="device">设备</option>
+            <option value="event">事件</option>
+            <option value="location">地点</option>
+            <option value="general">通用</option>
+          </select>
+        </div>
+      </div>
+      <label class="block text-xs text-gray-400 mb-1">归属区块路径（可选）</label>
+      <input id="proposal-edit-path" type="text" placeholder="如 /people/family" class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 mb-4">
+      <div class="flex justify-end gap-2">
+        <button onclick="closeProposalEdit()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm">取消</button>
+        <button onclick="saveProposalEdit()" class="bg-green-700 hover:bg-green-600 px-4 py-2 rounded-lg text-sm"><i class="fas fa-check mr-1"></i>保存并确认</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Block move / merge modal -->
+  <div id="block-op-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+    <div class="bg-gray-900 border border-gray-700 rounded-xl max-w-lg w-full p-5 shadow-2xl">
+      <div class="flex items-center justify-between mb-1">
+        <h3 id="block-modal-title" class="text-lg font-bold text-pink-400"></h3>
+        <button onclick="closeBlockModal()" class="text-gray-400 hover:text-white" aria-label="关闭"><i class="fas fa-times"></i></button>
+      </div>
+      <p id="block-modal-hint" class="text-xs text-gray-500 mb-3"></p>
+      <label class="block text-xs text-gray-400 mb-1">源区块路径</label>
+      <input id="block-modal-src" type="text" placeholder="如 /people/family" class="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 mb-3">
+      <label class="block text-xs text-gray-400 mb-1">目标区块</label>
+      <select id="block-modal-target" onchange="onBlockTargetChange()" class="w-full bg-gray-950 border border-gray-800 rounded-lg px-2 py-2 text-sm text-gray-200 mb-2"></select>
+      <input id="block-modal-custom" type="text" placeholder="自定义新路径，如 /people/relatives" class="hidden w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-200 mb-2">
+      <div class="flex justify-end gap-2 mt-3">
+        <button onclick="closeBlockModal()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm">取消</button>
+        <button onclick="submitBlockModal()" class="bg-pink-700 hover:bg-pink-600 px-4 py-2 rounded-lg text-sm">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generic confirm modal (block delete / approve all) -->
+  <div id="memory-confirm-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+    <div class="bg-gray-900 border border-gray-700 rounded-xl max-w-md w-full p-5 shadow-2xl">
+      <h3 id="memory-confirm-title" class="text-lg font-bold mb-2"></h3>
+      <p id="memory-confirm-message" class="text-sm text-gray-300 mb-5"></p>
+      <div class="flex justify-end gap-2">
+        <button onclick="closeConfirmModal()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm">取消</button>
+        <button id="memory-confirm-yes" onclick="confirmModalYes()" class="bg-red-700 hover:bg-red-600 px-4 py-2 rounded-lg text-sm">确定</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Hidden file input -->
   <input type="file" id="file-input" multiple class="hidden" onchange="handleFileSelect(this.files)">
 
@@ -924,6 +1131,23 @@
     </div>
   </div>
 
-  <script type="module" src="/static/app.js?v=2"></script>
+  <!-- Provider API Key Update Modal -->
+  <div id="provider-key-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+    <div class="bg-gray-900 border border-gray-700 rounded-xl max-w-md w-full p-6 shadow-2xl">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-bold">设置 API Key</h3>
+        <button onclick="hideProviderKeyModal()" class="text-gray-400 hover:text-white"><i class="fas fa-times"></i></button>
+      </div>
+      <p class="text-sm text-gray-400 mb-3">Provider: <span id="provider-key-target-name" class="text-blue-400 font-medium"></span></p>
+      <input id="provider-key-input" type="password" placeholder="输入 API Key，留空表示清除" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 mb-4">
+      <div id="provider-key-error" class="text-xs text-red-400 hidden mb-3"></div>
+      <div class="flex justify-end gap-2">
+        <button onclick="hideProviderKeyModal()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm">取消</button>
+        <button onclick="submitProviderKeyUpdate()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/static/app.js?v=4"></script>
 </body>
 </html>
