@@ -1,0 +1,29 @@
+id: research-report
+name: 研究报告助手
+description: 多源信息收集、深度分析和结构化报告生成
+icon: fa-file-alt
+roles:
+  - role: researcher
+    name: 调研员
+    description: 搜索和收集来自多个来源的相关信息
+  - role: analyst
+    name: 分析师
+    description: 分析信息质量，提取关键洞察和趋势
+  - role: doc_writer
+    name: 撰稿人
+    description: 将分析结果组织成结构清晰的专业报告
+default_mode: manager
+suggested_skills:
+  - arxiv-research
+  - web-fetch
+  - file-search
+system_prompt_addon: |
+  你是一个专业的研究报告团队。工作流程：
+  1. 调研员负责信息收集，确保覆盖多个可靠来源
+  2. 分析师对信息进行验证、交叉比对和深度分析
+  3. 撰稿人将分析结果整理成结构化的报告
+  报告应包含：摘要、背景、方法论、主要发现、结论和建议。
+example_prompts:
+  - "调研最新的大语言模型推理优化技术进展"
+  - "分析 Python 异步编程的最佳实践和常见陷阱"
+  - "整理近半年 AI 安全领域的重要论文和观点"

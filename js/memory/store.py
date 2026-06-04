@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -13,6 +14,24 @@ from js.utils.db import db_connection
 from js.utils.log import get_logger
 
 logger = get_logger("js.memory")
+
+# Word tokens for building safe FTS5 MATCH queries. ``\w+`` is Unicode-aware
+# (covers CJK), and tokens carry no FTS operator characters so they are safe to
+# embed in a MATCH expression without further quoting.
+_FTS_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _build_fts_match(query: str) -> str | None:
+    """Turn a free-text query into a safe FTS5 prefix-match expression.
+
+    Returns ``None`` when the query has no usable word tokens (caller should
+    fall back to LIKE).  Each token is prefix-matched (``token*``) and combined
+    with implicit AND.
+    """
+    tokens = _FTS_WORD_RE.findall(query)
+    if not tokens:
+        return None
+    return " ".join(f"{t}*" for t in tokens)
 
 
 @dataclass
@@ -85,24 +104,22 @@ This isn't just metadata. It's the start of figuring out who you are.
         user_path = memory_dir / "user.md"
         if not user_path.exists():
             user_path.write_text(
-                """# USER.md - About Your Human
-
-_Learn about the person you're helping. Update this as you go._
-
-- **Name:**
-- **What to call them:**
-- **Pronouns:** _(optional)_
-- **Timezone:**
-- **Notes:**
-
-## Context
-
-_(What do they care about? What projects are they working on? What annoys them? What makes them laugh? Build this over time.)_
-
----
-
-The more you know, the better you can help. But remember — you're learning about a person, not building a dossier. Respect the difference.
-""",
+                (
+                    "# USER.md - About Your Human\n\n"
+                    "_Learn about the person you're helping. Update this as you go._\n\n"
+                    "- **Name:**\n"
+                    "- **What to call them:**\n"
+                    "- **Pronouns:** _(optional)_\n"
+                    "- **Timezone:**\n"
+                    "- **Notes:**\n\n"
+                    "## Context\n\n"
+                    "_(What do they care about? What projects are they working on? "
+                    "What annoys them? What makes them laugh? Build this over time.)_\n\n"
+                    "---\n\n"
+                    "The more you know, the better you can help. But remember — "
+                    "you're learning about a person, not building a dossier. "
+                    "Respect the difference.\n"
+                ),
                 encoding="utf-8",
             )
 
@@ -140,6 +157,25 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_mem_importance ON memories(importance)
             """)
+            # Full-text index over memory values for fast content search.
+            # Standalone FTS5 table kept in sync manually by store() — memories
+            # has a TEXT primary key and a single write path (no deletes), so
+            # triggers are unnecessary.  Falls back to LIKE if FTS5 is missing.
+            self._fts_enabled = False
+            try:
+                conn.execute(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts "
+                    "USING fts5(key UNINDEXED, value, tokenize='unicode61')"
+                )
+                # Backfill rows that predate the FTS index (or a prior build).
+                conn.execute(
+                    "INSERT INTO memories_fts(key, value) "
+                    "SELECT key, value FROM memories "
+                    "WHERE key NOT IN (SELECT key FROM memories_fts)"
+                )
+                self._fts_enabled = True
+            except sqlite3.OperationalError:
+                logger.warning("FTS5 unavailable; memory search falls back to LIKE")
             conn.commit()
 
     def store(
@@ -164,7 +200,9 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         with db_connection(self.db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO memories (key, value, category, importance, created_at, access_count, last_accessed)
+                INSERT INTO memories (
+                    key, value, category, importance, created_at, access_count, last_accessed
+                )
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(key) DO UPDATE SET
                     value=excluded.value,
@@ -175,6 +213,12 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
                 """,
                 (key, value, category, entry.importance, now, 0, now),
             )
+            # Keep the full-text index in sync (upsert == delete + insert).
+            if getattr(self, "_fts_enabled", False):
+                conn.execute("DELETE FROM memories_fts WHERE key = ?", (key,))
+                conn.execute(
+                    "INSERT INTO memories_fts(key, value) VALUES (?, ?)", (key, value)
+                )
             conn.commit()
 
     def retrieve(self, key: str) -> str | None:
@@ -188,7 +232,8 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         if row:
             with db_connection(self.db_path) as conn:
                 conn.execute(
-                    "UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE key = ?",
+                    "UPDATE memories SET access_count = access_count + 1,"
+                    " last_accessed = ? WHERE key = ?",
                     (time.time(), key),
                 )
                 conn.commit()
@@ -197,32 +242,69 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         return None
 
     def search(self, query: str, category: str | None = None, limit: int = 10) -> list[MemoryEntry]:
-        """Search memories by content match."""
-        # Escape SQL LIKE wildcards to prevent unexpected full-table scans
-        safe_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        pattern = f"%{safe_query}%"
+        """Search memories by content match.
+
+        Uses the FTS5 full-text index for speed; falls back to a LIKE scan when
+        FTS5 is unavailable or yields no hits (preserving substring-match recall
+        for queries the tokenizer can't satisfy, e.g. mid-word fragments).
+        """
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            if category:
-                rows = conn.execute(
-                    """
-                    SELECT * FROM memories
-                    WHERE value LIKE ? ESCAPE '\\' AND category = ?
-                    ORDER BY importance DESC, last_accessed DESC
-                    LIMIT ?
-                    """,
-                    (pattern, category, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """
-                    SELECT * FROM memories
-                    WHERE value LIKE ? ESCAPE '\\'
-                    ORDER BY importance DESC, last_accessed DESC
-                    LIMIT ?
-                    """,
-                    (pattern, limit),
-                ).fetchall()
+            rows: list[sqlite3.Row] = []
+
+            # Fast path: FTS5 MATCH.
+            match_expr = _build_fts_match(query) if getattr(self, "_fts_enabled", False) else None
+            if match_expr:
+                try:
+                    if category:
+                        rows = conn.execute(
+                            """
+                            SELECT m.* FROM memories m
+                            JOIN memories_fts f ON f.key = m.key
+                            WHERE memories_fts MATCH ? AND m.category = ?
+                            ORDER BY m.importance DESC, m.last_accessed DESC
+                            LIMIT ?
+                            """,
+                            (match_expr, category, limit),
+                        ).fetchall()
+                    else:
+                        rows = conn.execute(
+                            """
+                            SELECT m.* FROM memories m
+                            JOIN memories_fts f ON f.key = m.key
+                            WHERE memories_fts MATCH ?
+                            ORDER BY m.importance DESC, m.last_accessed DESC
+                            LIMIT ?
+                            """,
+                            (match_expr, limit),
+                        ).fetchall()
+                except sqlite3.OperationalError:
+                    rows = []  # malformed MATCH → fall through to LIKE
+
+            # Fallback path: LIKE substring scan (also used when FTS misses).
+            if not rows:
+                safe_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                pattern = f"%{safe_query}%"
+                if category:
+                    rows = conn.execute(
+                        """
+                        SELECT * FROM memories
+                        WHERE value LIKE ? ESCAPE '\\' AND category = ?
+                        ORDER BY importance DESC, last_accessed DESC
+                        LIMIT ?
+                        """,
+                        (pattern, category, limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """
+                        SELECT * FROM memories
+                        WHERE value LIKE ? ESCAPE '\\'
+                        ORDER BY importance DESC, last_accessed DESC
+                        LIMIT ?
+                        """,
+                        (pattern, limit),
+                    ).fetchall()
 
         return [
             MemoryEntry(
@@ -237,12 +319,16 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
             for r in rows
         ]
 
-    def get_context_string(self, max_chars: int = 4000, query: str = "", session_id: str = "") -> str:
+    def get_context_string(
+        self, max_chars: int = 4000, query: str = "", session_id: str = "",
+        owner_key_hash: str | None = None,
+    ) -> str:
         """Get rich context from all memory layers for injection into prompts."""
         # Use enhanced multi-layer memory if available
         if hasattr(self, "enhanced"):
             return self.enhanced.get_context_string(
-                query=query, session_id=session_id, max_chars=max_chars
+                query=query, session_id=session_id, max_chars=max_chars,
+                owner_key_hash=owner_key_hash,
             )
 
         # Fallback to legacy flat memory
@@ -267,13 +353,23 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
 
         return "\n".join(parts) or "No memories stored yet."
 
-    def store_working(self, session_id: str, key: str, value: str, category: str = "general", importance: int = 5) -> None:
+    def store_working(
+        self, session_id: str, key: str, value: str,
+        category: str = "general", importance: int = 5,
+    ) -> None:
         """Store a working memory entry for the current session."""
         self.enhanced.store_working(session_id, key, value, category, importance)
 
-    def store_episode(self, session_id: str, summary: str, topics: list[str], tokens_used: int = 0, turn_count: int = 0, importance: int = 5) -> None:
+    def store_episode(
+        self, session_id: str, summary: str, topics: list[str],
+        tokens_used: int = 0, turn_count: int = 0, importance: int = 5,
+        owner_key_hash: str | None = None,
+    ) -> None:
         """Store an episodic memory (session summary)."""
-        self.enhanced.store_episode(session_id, summary, topics, tokens_used, turn_count, importance)
+        self.enhanced.store_episode(
+            session_id, summary, topics, tokens_used, turn_count, importance,
+            owner_key_hash=owner_key_hash,
+        )
 
     async def dream(self, llm_summarizer: Any | None = None) -> dict[str, Any]:
         """Run memory consolidation (dreaming cycle)."""
@@ -293,10 +389,10 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
             return self.enhanced.get_episodes(limit)
         return []
 
-    def get_sessions(self, limit: int = 30) -> list[dict[str, Any]]:
+    def get_sessions(self, limit: int = 30, owner_key_hash: str | None = None) -> list[dict[str, Any]]:
         """List recent conversation sessions."""
         if hasattr(self, "enhanced"):
-            return self.enhanced.list_sessions(limit)
+            return self.enhanced.list_sessions(limit, owner_key_hash=owner_key_hash)
         return []
 
     def cleanup_empty_sessions(self) -> int:
@@ -310,16 +406,16 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         if hasattr(self, "enhanced"):
             self.enhanced.store_messages(session_id, messages)
 
-    def get_session_messages(self, session_id: str) -> list[dict[str, Any]]:
+    def get_session_messages(self, session_id: str, owner_key_hash: str | None = None) -> list[dict[str, Any]]:
         """Get all messages for a session."""
         if hasattr(self, "enhanced"):
-            return self.enhanced.get_session_messages(session_id)
+            return self.enhanced.get_session_messages(session_id, owner_key_hash=owner_key_hash)
         return []
 
-    def delete_session(self, session_id: str) -> bool:
+    def delete_session(self, session_id: str, owner_key_hash: str | None = None) -> bool:
         """Delete a session and all its data."""
         if hasattr(self, "enhanced"):
-            return self.enhanced.delete_session(session_id)
+            return self.enhanced.delete_session(session_id, owner_key_hash=owner_key_hash)
         return False
 
     def get_working(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
@@ -334,35 +430,147 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
             return self.enhanced.get_all_working(limit)
         return []
 
-    def get_all_semantic(self, limit: int = 50) -> list[dict[str, Any]]:
+    def get_all_semantic(
+        self, limit: int = 50, owner_key_hash: str | None = None
+    ) -> list[dict[str, Any]]:
         """Get all semantic memories ordered by recency."""
         if hasattr(self, "enhanced"):
-            return self.enhanced.get_all_semantic(limit)
+            return self.enhanced.get_all_semantic(limit, owner_key_hash=owner_key_hash)
         return []
 
-    def store_semantic(self, key: str, value: str, category: str = "fact", confidence: float = 0.5, source: str = "") -> dict[str, Any]:
+    def store_semantic(
+        self, key: str, value: str, category: str = "fact", confidence: float = 0.5,
+        source: str = "", memory_path: str | None = None, entity_type: str | None = None,
+        entity_name: str | None = None, parent_id: int | None = None,
+        relation_type: str | None = None, owner_key_hash: str | None = None,
+        session_id: str = "", evidence: str = "",
+    ) -> dict[str, Any]:
         """Store a semantic memory."""
         if hasattr(self, "enhanced"):
-            return self.enhanced.store_semantic(key, value, category, confidence, source)
+            return self.enhanced.store_semantic(
+                key, value, category, confidence, source,
+                memory_path, entity_type, entity_name, parent_id, relation_type,
+                owner_key_hash=owner_key_hash, session_id=session_id, evidence=evidence,
+            )
         return {"conflicts": [], "evicted": 0}
 
-    def delete_semantic(self, memory_id: int) -> bool:
+    def delete_semantic(
+        self, memory_id: int, source: str = "", owner_key_hash: str | None = None
+    ) -> bool:
         """Delete a semantic memory by id."""
         if hasattr(self, "enhanced"):
-            return self.enhanced.delete_semantic(memory_id)
+            return self.enhanced.delete_semantic(
+                memory_id, source=source, owner_key_hash=owner_key_hash
+            )
         return False
 
-    def update_semantic(self, memory_id: int, value: str, category: str | None = None) -> bool:
+    def update_semantic(
+        self, memory_id: int, value: str, category: str | None = None,
+        source: str = "", memory_path: str | None = None,
+        entity_type: str | None = None, entity_name: str | None = None,
+        parent_id: int | None = None, relation_type: str | None = None,
+        owner_key_hash: str | None = None,
+    ) -> bool:
         """Update a semantic memory by id."""
         if hasattr(self, "enhanced"):
-            return self.enhanced.update_semantic(memory_id, value, category)
+            return self.enhanced.update_semantic(
+                memory_id, value, category, source,
+                memory_path, entity_type, entity_name, parent_id, relation_type,
+                owner_key_hash=owner_key_hash,
+            )
         return False
 
-    def search_semantic(self, query: str, category: str | None = None, limit: int = 10) -> list[Any]:
+    def search_semantic(
+        self, query: str, category: str | None = None, limit: int = 10,
+        path_prefix: str | None = None, block_priority: bool = True,
+        owner_key_hash: str | None = None,
+    ) -> list[Any]:
         """Search semantic memories."""
         if hasattr(self, "enhanced"):
-            return self.enhanced.search_semantic(query, category, limit)
+            return self.enhanced.search_semantic(
+                query, category, limit, path_prefix, block_priority,
+                owner_key_hash=owner_key_hash,
+            )
         return []
+
+    def get_blocks(
+        self, path_prefix: str | None = None, owner_key_hash: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Get hierarchical block statistics."""
+        if hasattr(self, "enhanced"):
+            return self.enhanced.get_blocks(path_prefix, owner_key_hash=owner_key_hash)
+        return []
+
+    def get_by_block(
+        self, path_prefix: str, limit: int = 50, owner_key_hash: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Get memories under a path prefix."""
+        if hasattr(self, "enhanced"):
+            return self.enhanced.get_by_block(path_prefix, limit, owner_key_hash=owner_key_hash)
+        return []
+
+    def verify_semantic(
+        self, memory_id: int, source: str = "user", owner_key_hash: str | None = None
+    ) -> bool:
+        """Mark a semantic memory as verified."""
+        if hasattr(self, "enhanced"):
+            return self.enhanced.verify_semantic(
+                memory_id, source, owner_key_hash=owner_key_hash
+            )
+        return False
+
+    # ── Proposed changes (staging queue) ──
+
+    def propose_change(self, **kwargs: Any) -> dict[str, Any]:
+        """Stage a proposed memory change (auto-applied or pending)."""
+        if hasattr(self, "enhanced"):
+            return self.enhanced.propose_change(**kwargs)
+        return {"proposal_id": None, "status": "disabled", "memory_id": None}
+
+    def list_proposals(
+        self, status: str = "pending", owner_key_hash: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """List staged proposals (owner-scoped)."""
+        if hasattr(self, "enhanced"):
+            return self.enhanced.list_proposals(status, owner_key_hash, limit)
+        return []
+
+    def approve_proposal(
+        self,
+        proposal_id: int,
+        owner_key_hash: str | None = None,
+        overrides: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Apply a pending proposal (optionally editing it first via overrides)."""
+        if hasattr(self, "enhanced"):
+            return self.enhanced.approve_proposal(
+                proposal_id, owner_key_hash=owner_key_hash, overrides=overrides
+            )
+        return {"success": False, "error": "disabled"}
+
+    def reject_proposal(
+        self, proposal_id: int, owner_key_hash: str | None = None
+    ) -> dict[str, Any]:
+        """Reject a pending proposal."""
+        if hasattr(self, "enhanced"):
+            return self.enhanced.reject_proposal(proposal_id, owner_key_hash=owner_key_hash)
+        return {"success": False, "error": "disabled"}
+
+    def move_block(
+        self, src_prefix: str, dst_prefix: str, owner_key_hash: str | None = None
+    ) -> int:
+        """Re-path memories from one block to another (owner-scoped)."""
+        if hasattr(self, "enhanced"):
+            return self.enhanced.move_block(src_prefix, dst_prefix, owner_key_hash=owner_key_hash)
+        return 0
+
+    def merge_blocks(
+        self, src_prefix: str, dst_prefix: str, owner_key_hash: str | None = None
+    ) -> int:
+        """Merge one block into another (owner-scoped)."""
+        if hasattr(self, "enhanced"):
+            return self.enhanced.merge_blocks(src_prefix, dst_prefix, owner_key_hash=owner_key_hash)
+        return 0
 
     # ------------------------------------------------------------------
     # Memory Files (IDENTITY.md, USER.md, DREAMS.md)
@@ -397,6 +605,25 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         if not path.exists():
             return ""
         return path.read_text(encoding="utf-8")
+
+    def get_audit_log(
+        self,
+        memory_id: int | None = None,
+        table_name: str = "semantic",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Retrieve audit log for memory changes."""
+        if hasattr(self, "enhanced"):
+            return self.enhanced.get_audit_log(memory_id, table_name, limit)
+        return []
+
+    def get_conflicting_memories(
+        self, limit: int = 50, owner_key_hash: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Retrieve all memories marked as conflicting."""
+        if hasattr(self, "enhanced"):
+            return self.enhanced.get_conflicting_memories(limit, owner_key_hash=owner_key_hash)
+        return []
 
     def write_memory_file(self, name: str, content: str) -> None:
         """Write content to a memory file."""

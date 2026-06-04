@@ -26,12 +26,22 @@ class DreamScheduler:
         self._max_deferral = 120.0
         self._check_interval = 15.0
         self._task: asyncio.Task[Any] | None = None
-        self._conversation_buffer: list[dict[str, str]] = []
+        self._conversation_buffer: list[dict[str, Any]] = []
         self._max_buffer = 5
         self.logger = get_logger("js.memory.scheduler")
 
-    def notify_activity(self, user_input: str, assistant_output: str) -> None:
-        """Call after each user interaction to mark pending and record conversation."""
+    def notify_activity(
+        self,
+        user_input: str,
+        assistant_output: str,
+        owner_key_hash: str | None = None,
+        session_id: str = "",
+    ) -> None:
+        """Call after each user interaction to mark pending and record conversation.
+
+        ``owner_key_hash``/``session_id`` are carried through so the background
+        evolution cycle can attribute extracted memories to the right user.
+        """
         self._last_activity = time.time()
         if not self._pending:
             self._pending = True
@@ -39,9 +49,20 @@ class DreamScheduler:
         self._conversation_buffer.append({
             "user": user_input[:500],
             "assistant": assistant_output[:500],
+            "owner_key_hash": owner_key_hash,
+            "session_id": session_id,
         })
         if len(self._conversation_buffer) > self._max_buffer:
             self._conversation_buffer.pop(0)
+
+    def snapshot_buffer(self) -> list[dict[str, Any]]:
+        """Return a read-only copy of the recent conversation buffer.
+
+        Manual triggers ("organize now" / evolution run) use this so they
+        process the same recent turns the idle cycle would, *without*
+        consuming the buffer — the background cycle still gets its turn.
+        """
+        return list(self._conversation_buffer)
 
     def start(self) -> None:
         """Start the background scheduling loop."""

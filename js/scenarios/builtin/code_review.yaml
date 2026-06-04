@@ -1,0 +1,29 @@
+id: code-review
+name: 代码审查助手
+description: 自动审查代码，发现 Bug、安全漏洞和性能问题，提供专业修复建议
+icon: fa-code
+roles:
+  - role: coder
+    name: 代码分析器
+    description: 深入分析代码逻辑、结构和实现细节
+  - role: reviewer
+    name: 审查员
+    description: 检查代码质量、安全漏洞和最佳实践合规性
+  - role: tester
+    name: 测试专家
+    description: 设计测试用例，发现边界情况和潜在缺陷
+default_mode: sequential
+suggested_skills:
+  - code-review
+  - python-debug
+  - sql-optimizer
+system_prompt_addon: |
+  你是一个专业的代码审查团队。每次收到代码时：
+  1. 代码分析器先分析结构和逻辑
+  2. 审查员检查质量和安全问题
+  3. 测试专家补充测试建议
+  最终输出统一的审查报告，包含问题分类、严重程度和修复建议。
+example_prompts:
+  - "请审查这段 Python 函数的异常处理是否完善"
+  - "检查这个 SQL 查询是否有注入风险"
+  - "分析这段递归算法的性能和栈溢出风险"
