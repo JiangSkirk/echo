@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from js.orchestration.fleet import AgentFleet
 from js.utils.log import get_logger
-from js.web.auth import require_auth_dep
+from js.web.auth import require_admin, require_auth_dep
 from js.web.deps import _agent_config, get_settings
 
 logger = get_logger("js.web")
@@ -38,7 +38,7 @@ def get_fleet() -> AgentFleet:
 @router.post("/collaborate")
 async def fleet_collaborate(
     payload: dict[str, Any],
-    auth: dict[str, Any] = Depends(require_auth_dep),
+    auth: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     """Execute a task with an auto-formed agent team.
 
@@ -114,7 +114,7 @@ async def fleet_session_detail(
 @router.delete("/sessions/{session_id}")
 async def fleet_session_delete(
     session_id: str,
-    auth: dict[str, Any] = Depends(require_auth_dep),
+    auth: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     """Delete a collaboration session."""
     try:
@@ -134,7 +134,7 @@ async def fleet_session_delete(
 async def fleet_session_continue(
     session_id: str,
     payload: dict[str, Any],
-    auth: dict[str, Any] = Depends(require_auth_dep),
+    auth: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     """Continue a previous collaboration session with a follow-up task."""
     follow_up = payload.get("follow_up", "").strip()

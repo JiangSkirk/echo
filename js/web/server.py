@@ -42,12 +42,17 @@ from js.config import JSSettings, ModelConfig, ModelProviderConfig
 from js.models.provider_manager import ProviderManager
 from js.models.providers import OpenAICompatibleProvider
 from js.utils.log import get_logger
-from js.web.auth import require_auth_dep
+from js.web import model_refresh
+from js.web.auth import require_admin, require_auth_dep
 from js.web.deps import _agent_config, set_active_model, set_globals
 
 # Imported routers (extracted from this file)
-from js.web.routers import cron, fleet, system
+from js.web.routers import chat as chat_router
+from js.web.routers import cron, desktop, fleet, metrics, setup, system
+from js.web.routers import memory as memory_router
 from js.web.routers import plugins as plugins_router
+from js.web.routers import scenarios as scenarios_router
+from js.web.routers import tasks as tasks_router
 from js.web.stats_store import TokenStatsStore
 
 logger = get_logger("js.web")
@@ -61,6 +66,29 @@ _settings: JSSettings | None = None
 _stats_store: TokenStatsStore | None = None
 _active_model: str = ""
 _startup_time: float = 0.0
+# Plaintext of an admin key minted this session for first-run bootstrap.
+# Set only when auth is required and no admin key existed at startup; used to
+# auto-authenticate the local browser so the fresh install lands usable.
+_bootstrap_admin_key: str | None = None
+
+
+def _load_active_model() -> str:
+    """Load the last selected model from disk."""
+    path = Path.home() / ".js" / "state" / "active_model.txt"
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    return ""
+
+
+def _save_active_model(model_id: str) -> None:
+    """Persist the selected model so it survives server restarts."""
+    path = Path.home() / ".js" / "state" / "active_model.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(model_id, encoding="utf-8")
+
+
+# Restore on module load
+_active_model = _load_active_model()
 
 # In-flight request tracking for graceful shutdown
 _active_requests: int = 0
@@ -123,9 +151,36 @@ def _record_usage(state: Any, explicit_model: str | None = None) -> None:
     )
 
 
+def _provision_bootstrap_admin_key(settings: JSSettings) -> str | None:
+    """Ensure an admin key exists when auth is required; return new plaintext.
+
+    Prevents the "first_run_completed=true but no admin key → site-wide 401"
+    lockdown by self-healing on every startup: if auth is required and no admin
+    key exists, one is minted, written to a 0600 file, and logged so a headless
+    operator can recover it.  Returns ``None`` when nothing was minted.
+    """
+    if not settings.security.api_key_required:
+        return None
+    from js.web.auth import AuthManager
+
+    key = AuthManager(settings.state_dir).ensure_bootstrap_admin_key()
+    if not key:
+        return None
+    key_file = settings.state_dir / "bootstrap_admin_key.txt"
+    try:
+        key_file.write_text(key + "\n", encoding="utf-8")
+        os.chmod(key_file, 0o600)
+    except OSError:
+        logger.warning("Could not persist bootstrap admin key file", exc_info=True)
+    logger.warning(
+        "Bootstrap admin key created for first run: %s (saved to %s)", key, key_file
+    )
+    return key
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
-    global _agent, _settings, _stats_store
+    global _agent, _settings, _stats_store, _bootstrap_admin_key
     _settings = JSSettings.from_file()
     # Allow tests/CI to override state_dir without editing config files
     if state_dir_env := os.getenv("JS_STATE_DIR"):
@@ -143,6 +198,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     _stats_store = TokenStatsStore(_settings.state_dir)
     # Sync shared deps so routers can access agent and stats store
     set_globals(_agent, _settings, _stats_store)
+    # Guarantee a usable admin key exists so a fresh install lands usable and
+    # we never get stuck in a keyless, fully-401-locked state.
+    _bootstrap_admin_key = _provision_bootstrap_admin_key(_settings)
+    # Sync the persisted active model to the router so background tasks
+    # (evolution, dreaming) use the user's chosen model.
+    if _active_model and _agent and _agent.router:
+        _agent.router.preferred_model = _active_model
     # Also sync system router globals for endpoints that reference them directly
     system._agent = _agent
     system._settings = _settings
@@ -262,17 +324,65 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
 
 def create_app() -> FastAPI:
     app = FastAPI(title="JS Agent Web UI", lifespan=lifespan)
+
+    # CORS: allow localhost origins so browser preflight (OPTIONS) works
+    # when custom headers (e.g. X-API-Key) are sent with PATCH/DELETE.
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost",
+            "http://localhost:8000",
+            "http://127.0.0.1",
+            "http://127.0.0.1:8000",
+        ],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        allow_headers=["Content-Type", "X-API-Key", "Authorization"],
+    )
+
+    # Global exception handler: AuthRequiredError must always map to 401,
+    # never leak as a 500.
+    from js.exceptions import AuthRequiredError
+
+    @app.exception_handler(AuthRequiredError)
+    async def _auth_required_handler(request: Request, exc: AuthRequiredError) -> JSONResponse:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": str(exc)},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     if _MONITORING_AVAILABLE:
         FastAPIInstrumentor.instrument_app(app)
         app.mount("/metrics", make_asgi_app())
 
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
+    # Force-clear cache for static JS files (dev-mode: always load fresh)
+    @app.middleware("http")
+    async def no_cache_static(request: Request, call_next: Any) -> Any:
+        response = await call_next(request)
+        if request.url.path.startswith("/static") and request.url.path.endswith(".js"):
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
     # Include extracted routers
+    app.include_router(chat_router.router)
     app.include_router(cron.router)
     app.include_router(plugins_router.router)
     app.include_router(fleet.router)
     app.include_router(system.router)
+    app.include_router(setup.router)
+    app.include_router(memory_router.router)
+    app.include_router(tasks_router.router)
+    app.include_router(scenarios_router.router)
+    app.include_router(desktop.router)
+    app.include_router(metrics.router)
+    # Fresh model-refresh throttle per app (matches the old per-create_app state).
+    model_refresh.reset_throttle()
 
     # Wire up the diag endpoint's route list helper
     system._get_app_routes = lambda: [
@@ -282,8 +392,14 @@ def create_app() -> FastAPI:
     ]
 
     @app.get("/", response_class=HTMLResponse)
-    async def root() -> str:
-        return _load_index_html()
+    async def root(request: Request) -> str:
+        html = _load_index_html()
+        # Inject the freshly-minted bootstrap admin key for the local browser so
+        # the first run is usable without manual key entry.  Loopback-only so a
+        # misconfigured 0.0.0.0 bind never leaks the key over the network.
+        if _bootstrap_admin_key and _is_loopback(request):
+            html = _inject_bootstrap_key(html, _bootstrap_admin_key)
+        return html
 
     @app.get("/api/status")
     async def status(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
@@ -298,72 +414,17 @@ def create_app() -> FastAPI:
             "degraded_reason": agent.degraded_reason,
             "tool_stats": agent.registry.get_stats(),
             "secret_stats": agent.secrets.get_stats(),
-        }
-
-    @app.get("/api/metrics/providers")
-    async def provider_metrics(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-        """Return per-provider SLO metrics: health, latency percentiles, circuit state."""
-        agent = get_agent()
-        health = await agent.router.health_check()
-
-        # Pull Prometheus samples for provider metrics
-        from prometheus_client import REGISTRY
-        def _latency_stats(model: str, provider: str) -> dict[str, float]:
-            """Read P50/P95/P99 from histogram buckets (approximate)."""
-            stats = {"count": 0.0, "sum": 0.0, "p50": 0.0, "p95": 0.0, "p99": 0.0}
-            try:
-                for family in REGISTRY.collect():
-                    if family.name == "model_latency_seconds":
-                        for sample in family.samples:
-                            if sample.labels.get("model") == model and sample.labels.get("provider") == provider:
-                                if sample.name.endswith("_count"):
-                                    stats["count"] = sample.value
-                                elif sample.name.endswith("_sum"):
-                                    stats["sum"] = sample.value
-                                elif sample.name.endswith("_bucket"):
-                                    # Find buckets for p50/p95/p99 approximations
-                                    le = sample.labels.get("le", "")
-                                    if le not in ("+Inf", ""):
-                                        try:
-                                            bound = float(le)
-                                            if bound <= 0.5 and sample.value > 0:
-                                                stats["p50"] = bound
-                                            if bound <= 2.0 and sample.value > 0:
-                                                stats["p95"] = bound
-                                            if bound <= 5.0 and sample.value > 0:
-                                                stats["p99"] = bound
-                                        except ValueError:
-                                            logger.warning('Operation failed', exc_info=True)
-            except Exception:
-                logger.warning('Operation failed', exc_info=True)
-            return stats
-
-        providers: list[dict[str, Any]] = []
-        for p in agent.settings.providers:
-            for m in p.models:
-                lat = _latency_stats(m.id, p.name)
-                providers.append({
-                    "name": p.name,
-                    "model": m.id,
-                    "healthy": health.get(p.name, False),
-                    "latency_p50_ms": round(lat["p50"] * 1000, 1) if lat["p50"] else None,
-                    "latency_p95_ms": round(lat["p95"] * 1000, 1) if lat["p95"] else None,
-                    "latency_p99_ms": round(lat["p99"] * 1000, 1) if lat["p99"] else None,
-                    "request_count": int(lat["count"]),
-                })
-
-        overall_healthy = any(p["healthy"] for p in providers)
-        return {
-            "overall_healthy": overall_healthy,
-            "degraded": agent.degraded,
-            "providers": providers,
+            "desktop_control_enabled": agent.settings.desktop_control_enabled,
         }
 
     @app.post("/api/cancel/{session_id}")
     async def cancel_session(session_id: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         """Request cancellation of an active agent run for *session_id*."""
         agent = get_agent()
-        ok = agent.request_cancel(session_id)
+        try:
+            ok = agent.request_cancel(session_id, owner_key_hash=auth.get("key_hash"))
+        except PermissionError as e:
+            raise HTTPException(403, str(e)) from e
         if not ok:
             raise HTTPException(404, f"No active run for session {session_id}")
         return {"session_id": session_id, "cancelled": True}
@@ -411,131 +472,7 @@ def create_app() -> FastAPI:
             },
         }
 
-    @app.get("/api/memory")
-    async def memory(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-        agent = get_agent()
-        return {"context": agent.memory.get_context_string(max_chars=4000)}
-
-    @app.get("/api/memory/enhanced")
-    async def memory_enhanced(session_id: str | None = None, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-        agent = get_agent()
-        result: dict[str, Any] = {
-            "context": agent.memory.get_context_string(max_chars=4000),
-            "episodes": [
-                {
-                    "id": e.id,
-                    "session_id": e.session_id,
-                    "summary": e.summary,
-                    "topics": e.topics,
-                    "tokens_used": e.tokens_used,
-                    "turn_count": e.turn_count,
-                    "created_at": e.created_at,
-                    "importance": e.importance,
-                }
-                for e in agent.memory.get_episodes(limit=20)
-            ],
-            "dream_logs": agent.memory.get_dream_logs(limit=10),
-            "semantic_memories": agent.memory.get_all_semantic(limit=20),
-            "working_memories": agent.memory.get_all_working(limit=20),
-            "memory_files": agent.memory.list_memory_files(),
-        }
-        if session_id:
-            result["session_working"] = agent.memory.get_working(session_id, limit=20)
-        return result
-
-    @app.get("/api/memory/files")
-    async def memory_file_list(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-        agent = get_agent()
-        return {"files": agent.memory.list_memory_files()}
-
-    @app.get("/api/memory/files/{name}")
-    async def memory_file_get(name: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-        agent = get_agent()
-        try:
-            content = agent.memory.read_memory_file(name)
-        except ValueError as e:
-            raise HTTPException(400, str(e)) from e
-        return {"name": name, "content": content}
-
-    @app.put("/api/memory/files/{name}")
-    async def memory_file_put(name: str, body: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-        agent = get_agent()
-        try:
-            await asyncio.to_thread(agent.memory.write_memory_file, name, body.get("content", ""))
-        except ValueError as e:
-            raise HTTPException(400, str(e)) from e
-        return {"name": name, "saved": True}
-
-    @app.post("/api/memory/semantic")
-    async def memory_semantic_post(body: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-        agent = get_agent()
-        key = (body.get("key") or "").strip()
-        value = (body.get("value") or "").strip()
-        category = (body.get("category") or "fact").strip()
-        if not key or not value:
-            raise HTTPException(400, "key and value are required")
-        result = await asyncio.to_thread(
-            agent.memory.store_semantic,
-            key=key,
-            value=value,
-            category=category,
-            confidence=0.9,
-            source="manual",
-        )
-        return {"success": True, "key": key, **result}
-
-    @app.delete("/api/memory/semantic/{memory_id}")
-    async def memory_semantic_delete(memory_id: int, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-        agent = get_agent()
-        ok = await asyncio.to_thread(agent.memory.delete_semantic, memory_id)
-        if not ok:
-            raise HTTPException(404, "memory not found")
-        return {"success": True}
-
-    @app.put("/api/memory/semantic/{memory_id}")
-    async def memory_semantic_put(memory_id: int, body: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-        agent = get_agent()
-        value = (body.get("value") or "").strip()
-        category = body.get("category")
-        if not value:
-            raise HTTPException(400, "value is required")
-        ok = await asyncio.to_thread(
-            agent.memory.update_semantic,
-            memory_id,
-            value,
-            category=category,
-        )
-        if not ok:
-            raise HTTPException(404, "memory not found")
-        return {"success": True}
-
-    @app.get("/api/setup/first-start")
-    async def setup_first_start(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-        if _settings is None:
-            return {"first_run_completed": False}
-        return {"first_run_completed": _settings.first_run_completed}
-
-    @app.post("/api/setup/complete")
-    async def setup_complete(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-        if _settings is None:
-            raise HTTPException(503, "Settings not initialized")
-        _settings.first_run_completed = True
-        try:
-            # Use field-restricted save so we don't clobber providers/models/paths
-            await asyncio.to_thread(_settings.save, None, ["first_run_completed"])
-        except PermissionError:
-            # Fallback: save to state_dir/config.yaml when home dir is not writable
-            try:
-                fallback = _settings.state_dir / "config.yaml"
-                await asyncio.to_thread(_settings.save, fallback, ["first_run_completed"])
-            except OSError as e:
-                raise HTTPException(
-                    500,
-                    f"Unable to save settings: home directory and state directory are both read-only. {e}",
-                ) from e
-        except OSError as e:
-            raise HTTPException(500, f"Unable to save settings: {e}") from e
-        return {"success": True}
+    # NOTE: /api/memory/* and /api/setup/* endpoints moved to dedicated routers
 
     @app.get("/api/audit")
     async def audit(limit: int = 50, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
@@ -573,48 +510,70 @@ def create_app() -> FastAPI:
     @app.get("/api/sessions")
     async def list_sessions(limit: int = 30, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
-        sessions = agent.memory.get_sessions(limit=limit)
+        sessions = agent.memory.get_sessions(
+            limit=limit, owner_key_hash=auth.get("key_hash")
+        )
         return {"sessions": sessions}
 
     @app.get("/api/sessions/{session_id}/messages")
     async def session_messages(session_id: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
-        messages = agent.memory.get_session_messages(session_id)
+        try:
+            messages = agent.memory.get_session_messages(
+                session_id, owner_key_hash=auth.get("key_hash")
+            )
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail="Session access denied") from e
         return {"session_id": session_id, "messages": messages}
 
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
-        agent.memory.delete_session(session_id)
+        try:
+            agent.memory.delete_session(session_id, owner_key_hash=auth.get("key_hash"))
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail="Session deletion denied") from e
         return {"success": True, "session_id": session_id}
 
     @app.get("/api/models")
     async def models(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
-        await _refresh_local_provider_models(agent)
-        await _refresh_cloud_provider_models(agent)
+        # Trigger refreshes in the background so the list response is not
+        # blocked by slow outbound HTTP calls to local/cloud providers.
+        model_refresh.maybe_refresh_models_async(agent)
 
-        # Health check all providers (async, may take time)
+        # Health check all providers in parallel to avoid sequential latency
         health: dict[str, bool] = {}
         health_errors: dict[str, str] = {}
-        for p in agent.settings.providers:
+
+        async def _check_one(p: ModelProviderConfig) -> tuple[str, bool, str | None]:
             try:
                 provider = agent.router._providers.get(p.name)
                 if provider:
                     healthy = await provider.health_check()
-                    health[p.name] = healthy
+                    return p.name, healthy, None
                 else:
-                    health[p.name] = False
-                    health_errors[p.name] = "Provider not registered in router"
+                    return p.name, False, "Provider not registered in router"
             except Exception as e:
-                health[p.name] = False
-                health_errors[p.name] = str(e)
+                return p.name, False, str(e)
+
+        results = await asyncio.gather(
+            *[_check_one(p) for p in agent.settings.providers],
+            return_exceptions=True,
+        )
+        for r in results:
+            if isinstance(r, Exception):
+                continue
+            name, healthy, err = r  # type: ignore[misc]
+            health[name] = healthy
+            if err:
+                health_errors[name] = err
 
         # Determine which providers are user-configured (from provider_manager)
         dyn_names = {p.name for p in agent.provider_manager.get_all()}
 
         # Build provider list with embedded health status
-        providers_out = []
+        providers_out: list[dict[str, Any]] = []
         for p in agent.settings.providers:
             has_key = bool(p.api_key)
             providers_out.append({
@@ -636,6 +595,13 @@ def create_app() -> FastAPI:
                     for m in p.models
                 ],
             })
+
+        # Hide providers that are empty, unhealthy, have no key, and were
+        # not explicitly configured by the user (usually stale auto-detects).
+        providers_out = [
+            p for p in providers_out
+            if not (len(p["models"]) == 0 and not p["healthy"] and not p["has_key"] and not p["user_configured"])
+        ]
 
         # Include cloud presets that are NOT yet configured
         # so users can see what's available
@@ -666,160 +632,8 @@ def create_app() -> FastAPI:
             "active_model": _active_model,
         }
 
-    _last_model_refresh: float = 0.0
-    _last_cloud_refresh: float = 0.0
-
-    async def _refresh_cloud_provider_models(agent: JSAgent) -> None:
-        """Refresh model lists for cloud providers via their /v1/models API.
-
-        Throttled to at most once every 60 seconds.
-        """
-        import time
-
-        nonlocal _last_cloud_refresh
-        now = time.time()
-        if now - _last_cloud_refresh < 60.0:
-            return
-        _last_cloud_refresh = now
-
-        import httpx
-
-        for provider_cfg in agent.settings.providers:
-            base_url = getattr(provider_cfg, "base_url", "")
-            api_key = getattr(provider_cfg, "api_key", "")
-            if not isinstance(base_url, str) or not api_key:
-                continue
-            parsed = urlparse(base_url)
-            hostname = parsed.hostname or ""
-            if hostname in ("127.0.0.1", "localhost", "0.0.0.0", "::1"):
-                continue
-
-            try:
-                async with httpx.AsyncClient(timeout=15.0, trust_env=False) as client:
-                    resp = await client.get(
-                        f"{base_url.rstrip('/')}/models",
-                        headers={"Authorization": f"Bearer {api_key}"},
-                    )
-                    if resp.status_code != 200:
-                        continue
-                    data = resp.json()
-                    raw_models = data.get("data", [])
-                    if not raw_models:
-                        continue
-
-                    refreshed = []
-                    for m in raw_models:
-                        model_id = m.get("id", "")
-                        if not model_id:
-                            continue
-                        # Try to get context from API response or infer from name
-                        api_ctx = m.get("context_length") or m.get("max_context_length")
-                        if api_ctx is None:
-                            from js.models.discovery import LocalModelDiscovery
-                            context_window = LocalModelDiscovery._infer_context_window(model_id)
-                        else:
-                            context_window = int(api_ctx)
-                        refreshed.append({
-                            "model": ModelConfig(
-                                id=model_id,
-                                name=m.get("name", model_id.split("/")[-1]),
-                                provider=provider_cfg.name,
-                                context_window=context_window,
-                                max_tokens=min(context_window // 4, 8192),
-                            ),
-                            "api_ctx": api_ctx,
-                        })
-
-                    if refreshed:
-                        # Merge with existing models: preserve cost/pricing from hardcoded presets
-                        existing = {m.id: m for m in provider_cfg.models}
-                        merged = []
-                        for item in refreshed:
-                            m = item["model"]
-                            api_ctx = item["api_ctx"]
-                            old = existing.get(m.id)
-                            if old:
-                                # If the API explicitly returned a context window, trust it;
-                                # otherwise keep the preset value (more accurate for providers
-                                # like DeepSeek that don't expose context lengths in their API).
-                                final_ctx = int(api_ctx) if api_ctx is not None else old.context_window
-                                merged.append(ModelConfig(
-                                    id=m.id,
-                                    name=m.name or old.name,
-                                    provider=m.provider,
-                                    context_window=final_ctx,
-                                    max_tokens=m.max_tokens or old.max_tokens,
-                                    supports_vision=old.supports_vision,
-                                    supports_tools=old.supports_tools,
-                                    cost_input=old.cost_input,
-                                    cost_output=old.cost_output,
-                                ))
-                            else:
-                                merged.append(m)
-                        provider_cfg.models = merged
-            except Exception as e:
-                logger.debug(f"Cloud model refresh failed for {provider_cfg.name}: {e}")
-
-    async def _refresh_local_provider_models(agent: JSAgent) -> None:
-        """Refresh models for local providers so LM Studio model changes show up.
-
-        Throttled to at most one discovery call every 15 seconds to avoid
-        hammering the local server on every dashboard poll.
-        """
-        import time
-
-        nonlocal _last_model_refresh
-        now = time.time()
-        if now - _last_model_refresh < 15.0:
-            return
-        _last_model_refresh = now
-
-        for provider_cfg in agent.settings.providers:
-            name = getattr(provider_cfg, "name", "")
-            base_url = getattr(provider_cfg, "base_url", "")
-            if not isinstance(base_url, str):
-                continue
-            parsed = urlparse(base_url)
-            hostname = parsed.hostname or ""
-            if hostname not in ("127.0.0.1", "localhost", "0.0.0.0", "::1"):
-                continue
-            result = await ProviderManager.discover_models(
-                base_url,
-                getattr(provider_cfg, "api_key", None),
-            )
-            discovered = result.get("models", [])
-            if not discovered:
-                continue
-            refreshed_models = [
-                ModelConfig(
-                    id=str(m["id"]),
-                    name=str(m.get("name") or m["id"]),
-                    provider=name,
-                    context_window=int(m.get("context_window", 32768)),
-                    max_tokens=min(int(m.get("context_window", 32768)) // 4, 8192),
-                )
-                for m in discovered
-                if isinstance(m, dict) and m.get("id")
-            ]
-            if not refreshed_models:
-                continue
-            old_ids = [m.id for m in provider_cfg.models]
-            new_ids = [m.id for m in refreshed_models]
-            # Also refresh when context windows change
-            old_ctx = {m.id: m.context_window for m in provider_cfg.models}
-            new_ctx = {m.id: m.context_window for m in refreshed_models}
-            if old_ids == new_ids and old_ctx == new_ctx:
-                continue
-            provider_cfg.models = refreshed_models
-            provider_cfg.default_model = refreshed_models[0].id
-            agent.router.add_provider(
-                provider_cfg.name,
-                OpenAICompatibleProvider(provider_cfg),
-                refreshed_models,
-            )
-
     @app.post("/api/models/switch")
-    async def models_switch(body: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+    async def models_switch(body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
         global _active_model
         model_id = (body.get("model_id") or "").strip()
         if not model_id:
@@ -850,7 +664,11 @@ def create_app() -> FastAPI:
             raise HTTPException(400, f"Invalid model '{model_id}'")
 
         _active_model = model_id
+        _save_active_model(model_id)
         set_active_model(model_id)
+        agent = get_agent()
+        if agent and agent.router:
+            agent.router.preferred_model = model_id
 
         # Warn if the provider is not yet configured
         provider_name = model_id.split("/", 1)[0] if "/" in model_id else ""
@@ -878,20 +696,21 @@ def create_app() -> FastAPI:
     @app.post("/api/providers/discover")
     async def discover_provider(
         payload: dict[str, Any],
-        auth: dict[str, Any] = Depends(require_auth_dep),
+        auth: dict[str, Any] = Depends(require_admin),
     ) -> dict[str, Any]:
         base_url = payload.get("base_url", "").strip()
         api_key = payload.get("api_key") or None
         if not base_url:
             raise HTTPException(400, "base_url is required")
         _validate_url(base_url)
-        result = await ProviderManager.discover_models(base_url, api_key)
+        allow_private = get_agent().settings.security.allow_private_model_providers
+        result = await ProviderManager.discover_models(base_url, api_key, allow_private=allow_private)
         if "error" in result:
             raise HTTPException(502, result["error"])
         return {"base_url": base_url, "models": result["models"]}
 
     @app.post("/api/providers/connect")
-    async def connect_provider(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+    async def connect_provider(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
         name = payload.get("name", "").strip()
         base_url = payload.get("base_url", "").strip()
         api_key = payload.get("api_key", "").strip() or None
@@ -953,6 +772,47 @@ def create_app() -> FastAPI:
 
         return {"success": True, "provider": name, "models_added": len(models)}
 
+    @app.patch("/api/providers/{name}")
+    async def update_provider(
+        name: str,
+        payload: dict[str, Any],
+        auth: dict[str, Any] = Depends(require_auth_dep),
+    ) -> dict[str, Any]:
+        """Update an existing provider (e.g. add/change API key)."""
+        agent = get_agent()
+        api_key = payload.get("api_key", "").strip() or None
+
+        # Find the provider in settings
+        target = None
+        for p in agent.settings.providers:
+            if p.name == name:
+                target = p
+                break
+        if target is None:
+            raise HTTPException(404, f"Provider '{name}' not found")
+
+        # Update the config
+        target.api_key = api_key
+
+        # Update in dynamic provider_manager if present
+        agent.provider_manager.update_api_key(name, api_key or "")
+
+        # Refresh router: remove stale provider and re-add with updated config
+        agent.router.remove_provider(name)
+        agent.router.add_provider(
+            name,
+            OpenAICompatibleProvider(target),
+            list(target.models),
+        )
+
+        # Persist
+        try:
+            agent.settings.save()
+        except Exception as e:
+            logger.warning(f"Failed to save config after provider update: {e}")
+
+        return {"success": True, "provider": name}
+
     @app.delete("/api/providers/{name}")
     async def delete_provider(name: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
         agent = get_agent()
@@ -985,7 +845,7 @@ def create_app() -> FastAPI:
         return {"presets": list_presets()}
 
     @app.post("/api/providers/test-cloud")
-    async def test_cloud_provider(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+    async def test_cloud_provider(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
         """Test a cloud provider preset before adding it."""
         from js.models.cloud_providers import get_preset
         from js.models.provider_manager import ProviderManager
@@ -1015,7 +875,7 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/providers/add-cloud")
-    async def add_cloud_provider(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+    async def add_cloud_provider(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
         """One-click add a cloud provider from presets."""
         from js.models.cloud_providers import build_provider_config, get_preset
         from js.models.provider_manager import ProviderManager
@@ -1097,7 +957,7 @@ def create_app() -> FastAPI:
     @app.post("/api/providers/scan-lan")
     async def scan_lan(
         payload: dict[str, Any] | None = None,
-        auth: dict[str, Any] = Depends(require_auth_dep),
+        auth: dict[str, Any] = Depends(require_admin),
     ) -> dict[str, Any]:
         """Scan the local network for model servers."""
         from js.models.discovery import LocalModelDiscovery
@@ -1159,7 +1019,7 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/evolution/run")
-    async def evolution_run(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+    async def evolution_run(auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
         agent = get_agent()
 
         # Pre-flight readiness check
@@ -1182,8 +1042,12 @@ def create_app() -> FastAPI:
                 f"Evolution subsystems not ready: {', '.join(missing)}. Please wait for startup to complete.",
             )
 
+        # Feed the recent conversation buffer so the manual run actually
+        # updates profiles + extracts memories instead of running empty.
+        ds = getattr(agent, "_dream_scheduler", None)
+        buffer = ds.snapshot_buffer() if ds is not None and hasattr(ds, "snapshot_buffer") else []
         try:
-            report = await agent._run_evolution_cycle([])
+            report = await agent._run_evolution_cycle(buffer)
             return {
                 "success": True,
                 "message": "Evolution cycle completed",
@@ -1202,7 +1066,7 @@ def create_app() -> FastAPI:
             raise HTTPException(500, f"Evolution cycle failed: {e}") from e
 
     @app.post("/api/evolution/reflect")
-    async def evolution_reflect(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+    async def evolution_reflect(auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
         """Trigger an immediate metacognition reflection."""
         agent = get_agent()
         if agent.metacognition is None:
@@ -1220,7 +1084,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/agents/config")
-    async def get_agent_config(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+    async def get_agent_config(auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
         agent = get_agent()
         # Build available models list for the UI
         available_models: list[dict[str, Any]] = []
@@ -1240,7 +1104,7 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/agents/config")
-    async def set_agent_config(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+    async def set_agent_config(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
         global _agent_config
         new_config = payload.get("config", {})
         agent = get_agent()
@@ -1322,99 +1186,7 @@ def create_app() -> FastAPI:
             "per_skill": per_skill,
         }
 
-    @app.get("/api/memory/metrics")
-    async def memory_metrics(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-        """Return memory subsystem metrics for observability dashboard."""
-        agent = get_agent()
-        embedder_health = agent.memory.embedder.health()
-
-        # Pull Prometheus metric samples (best-effort)
-        from prometheus_client import REGISTRY
-        def _sample(name: str, label_filters: dict[str, str] | None = None) -> float:
-            total = 0.0
-            try:
-                for family in REGISTRY.collect():
-                    if family.name == name:
-                        for sample in family.samples:
-                            if label_filters is None or all(sample.labels.get(k) == v for k, v in label_filters.items()):
-                                total += sample.value
-            except Exception:
-                logger.warning('Operation failed', exc_info=True)
-            return total
-
-        return {
-            "embedder": {
-                "provider": embedder_health.provider,
-                "active": embedder_health.active,
-                "fallback_provider": embedder_health.fallback_provider,
-                "failure_count": embedder_health.failure_count,
-            },
-            "prometheus": {
-                "memory_store_latency_seconds_count": _sample("memory_store_latency_seconds_count"),
-                "memory_store_latency_seconds_sum": _sample("memory_store_latency_seconds_sum"),
-                "memory_retrieve_latency_seconds_count": _sample("memory_retrieve_latency_seconds_count"),
-                "memory_retrieve_latency_seconds_sum": _sample("memory_retrieve_latency_seconds_sum"),
-                "memory_search_fallback_total": _sample("memory_search_fallback_total"),
-            },
-            "counts": {
-                "episodes": len(agent.memory.get_episodes(limit=1000)),
-                "semantic_memories": len(agent.memory.get_all_semantic(limit=1000)),
-                "working_memories": len(agent.memory.get_all_working(limit=1000)),
-                "dream_logs": len(agent.memory.get_dream_logs(limit=1000)),
-            },
-        }
-
-    @app.post("/api/memory/embedder/recover")
-    async def memory_embedder_recover(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-        """Manually trigger embedder recovery probe.
-
-        First tries to re-instantiate a fresh embedder (catches cases where
-        the provider became available after agent startup or the HTTP client
-        is in a bad state).  If that fails, falls back to probing the
-        existing embedder via force_recover().
-        """
-        agent = get_agent()
-        # Attempt 1: rebuild from scratch — this handles provider configs
-        # that changed after startup (e.g. LM Studio loaded an embedding
-        # model) or a stale httpx client.
-        try:
-            new_embedder = await asyncio.to_thread(agent._setup_embedder)
-            # If we got a KeywordEmbedder back, no provider supports embeddings.
-            from js.memory.embeddings import KeywordEmbedder
-            if not isinstance(new_embedder, KeywordEmbedder):
-                # Fresh HybridEmbedder created — swap it in.
-                agent.memory.replace_embedder(new_embedder)
-                health = new_embedder.health()
-                return {
-                    "success": True,
-                    "provider": health.provider,
-                    "active": health.active,
-                    "fallback_provider": health.fallback_provider,
-                    "failure_count": health.failure_count,
-                    "recovered": True,
-                    "method": "rebuild",
-                }
-        except Exception:
-            logger.warning('Operation failed', exc_info=True)
-
-        # Attempt 2: probe the existing embedder.
-        embedder = agent.memory.embedder
-        if hasattr(embedder, "force_recover"):
-            ok = embedder.force_recover()
-            health = embedder.health()
-            return {
-                "success": ok,
-                "provider": health.provider,
-                "active": health.active,
-                "fallback_provider": health.fallback_provider,
-                "failure_count": health.failure_count,
-                "recovered": ok,
-                "method": "probe",
-            }
-        return {
-            "success": False,
-            "reason": "Current embedder does not support runtime recovery",
-        }
+    # NOTE: /api/memory/* endpoints moved to js/web/routers/memory.py
 
     # Hermes-specific endpoints MUST be defined BEFORE /api/skills/{skill_id}
     # to avoid "hermes" being captured as a skill_id path parameter.
@@ -1454,7 +1226,7 @@ def create_app() -> FastAPI:
         return detail
 
     @app.post("/api/skills/install")
-    async def skill_install(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+    async def skill_install(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
         agent = get_agent()
         source = payload.get("source", "")
         skill_id = payload.get("skill_id")
@@ -1473,14 +1245,14 @@ def create_app() -> FastAPI:
             raise HTTPException(500, f"Failed to install skill: {e}") from e
 
     @app.delete("/api/skills/{skill_id}")
-    async def skill_uninstall(skill_id: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+    async def skill_uninstall(skill_id: str, auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
         agent = get_agent()
         if await agent.skills.uninstall(skill_id):
             return {"success": True}
         raise HTTPException(404, "Skill not found or is built-in")
 
     @app.post("/api/skills/{skill_id}/trust")
-    async def skill_trust(skill_id: str, payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+    async def skill_trust(skill_id: str, payload: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
         from js.skills.spec import TrustLevel
 
         agent = get_agent()
@@ -1515,7 +1287,7 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/api/skills/discover/install")
-    async def skill_discover_install(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+    async def skill_discover_install(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
         """Install a skill from the ClawHub marketplace."""
         from js.skills.clawhub import ClawHubClient
 
@@ -1661,55 +1433,51 @@ def create_app() -> FastAPI:
 
         return result
 
-    @app.post("/api/chat")
-    async def chat(
-        payload: dict[str, Any],
-        auth: dict[str, Any] = Depends(require_auth_dep),
-    ) -> dict[str, Any]:
-        agent = get_agent()
-        message = payload.get("message", "")
-        session_id = payload.get("session_id")
-        model = payload.get("model")
-        attachments = payload.get("attachments", [])
-
-        try:
-            state = await agent.run(message, session_id=session_id, model=model, attachments=attachments)
-        except Exception as e:
-            logger.error(f"Chat error: {e}", exc_info=True)
-            raise HTTPException(500, f"Agent run failed: {e}") from e
-
-        assistant_msg = ""
-        for msg in reversed(state.messages):
-            if msg.role == "assistant" and isinstance(msg.content, str) and msg.content:
-                assistant_msg = msg.content
-                break
-
-        # Record token usage
-        _record_usage(state, explicit_model=model)
-
-        return {
-            "response": assistant_msg,
-            "session_id": state.session_id,
-            "turns": state.turn_count,
-            "tokens": state.total_tokens,
-            "status": state.status,
-        }
-
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
-        # Authenticate WebSocket connection via X-API-Key header
+        # Authenticate WebSocket connection via X-API-Key header + Origin check.
+        # Bootstrap anonymous access is REMOVED — all connections require a
+        # valid key (or auth-optional mode with Origin whitelist).
         from js.exceptions import AuthRequiredError
-        from js.web.auth import AuthManager
-        api_key = websocket.headers.get("x-api-key", "")
-        settings = get_agent().settings
+        from js.web.auth import AuthManager, check_origin
+
+        # Origin check first — reject cross-origin WebSocket upgrades
+        try:
+            check_origin(websocket)
+        except HTTPException as exc:
+            await websocket.close(code=1008, reason=exc.detail)
+            return
+
+        # Browser WebSocket cannot send custom headers, so fall back to
+        # query parameter and cookie.
+        # Cookie-first auth for WebSocket to avoid leaking the key to
+        # browser history, server logs, and referrer headers.
+        api_key = (
+            websocket.cookies.get("x-api-key", "")
+            or websocket.headers.get("x-api-key", "")
+            or websocket.query_params.get("x-api-key", "")
+        )
+        agent = get_agent()
+        settings = agent.settings
+        ws_owner_hash: str | None = None
+
         if settings.security.api_key_required:
             auth_mgr = AuthManager(settings.state_dir)
-            if auth_mgr.has_admin():
+            try:
+                auth_ctx = auth_mgr.verify(api_key)
+                ws_owner_hash = auth_ctx.get("key_hash")
+            except AuthRequiredError as e:
+                await websocket.close(code=1008, reason=str(e))
+                return
+        else:
+            # Auth optional: verify if key provided, otherwise anonymous
+            if api_key:
                 try:
-                    auth_mgr.verify(api_key)
-                except AuthRequiredError as e:
-                    await websocket.close(code=1008, reason=str(e))
-                    return
+                    auth_ctx = AuthManager(settings.state_dir).verify(api_key)
+                    ws_owner_hash = auth_ctx.get("key_hash")
+                except AuthRequiredError:
+                    pass  # Invalid key → anonymous
+
         await websocket.accept()
         agent = get_agent()
         session_id: str | None = None
@@ -1768,13 +1536,19 @@ def create_app() -> FastAPI:
                         except Exception:
                             pass
 
-                    state = await agent.run(
-                        user_msg,
-                        session_id=session_id,
-                        model=model,
-                        attachments=attachments,
-                        progress_callback=_progress,
-                    )
+                    # Propagate session owner to agent layer for memory isolation
+                    from js.web.auth import _session_owner_hash
+                    token = _session_owner_hash.set(ws_owner_hash)
+                    try:
+                        state = await agent.run(
+                            user_msg,
+                            session_id=session_id,
+                            model=model,
+                            attachments=attachments,
+                            progress_callback=_progress,
+                        )
+                    finally:
+                        _session_owner_hash.reset(token)
                     session_id = state.session_id
 
                     # Record token usage
@@ -1830,13 +1604,18 @@ def create_app() -> FastAPI:
                         streamed = True
                         await websocket.send_json({"type": "token", "content": token})
 
-                    state = await agent.run(
-                        user_msg,
-                        session_id=session_id,
-                        model=model,
-                        attachments=attachments,
-                        stream_callback=_send_token,
-                    )
+                    from js.web.auth import _session_owner_hash
+                    owner_token = _session_owner_hash.set(ws_owner_hash)
+                    try:
+                        state = await agent.run(
+                            user_msg,
+                            session_id=session_id,
+                            model=model,
+                            attachments=attachments,
+                            stream_callback=_send_token,
+                        )
+                    finally:
+                        _session_owner_hash.reset(owner_token)
                     session_id = state.session_id
 
                     if state.status == "error":
@@ -1921,19 +1700,50 @@ def create_app() -> FastAPI:
     async def fleet_websocket_endpoint(websocket: WebSocket) -> None:
         """Real-time fleet dashboard WebSocket."""
         from js.exceptions import AuthRequiredError
-        from js.web.auth import AuthManager
+        from js.web.auth import _ADMIN_ROLE, AuthManager, check_origin
         from js.web.routers.fleet import get_fleet
 
-        api_key = websocket.headers.get("x-api-key", "")
+        # Origin check first — reject cross-origin WebSocket upgrades
+        try:
+            check_origin(websocket)
+        except HTTPException as exc:
+            await websocket.close(code=1008, reason=exc.detail)
+            return
+
+        # Browser WebSocket cannot send custom headers, so fall back to
+        # query parameter and cookie.
+        # Cookie-first auth for WebSocket to avoid leaking the key to
+        # browser history, server logs, and referrer headers.
+        api_key = (
+            websocket.cookies.get("x-api-key", "")
+            or websocket.headers.get("x-api-key", "")
+            or websocket.query_params.get("x-api-key", "")
+        )
         settings = get_agent().settings
         if settings.security.api_key_required:
             auth_mgr = AuthManager(settings.state_dir)
-            if auth_mgr.has_admin():
+            try:
+                auth_ctx = auth_mgr.verify(api_key)
+            except AuthRequiredError as e:
+                await websocket.close(code=1008, reason=str(e))
+                return
+            if auth_ctx.get("role") != _ADMIN_ROLE:
+                await websocket.close(code=1008, reason="Admin role required")
+                return
+        else:
+            # Auth optional: still require admin role for fleet
+            if api_key:
                 try:
-                    auth_mgr.verify(api_key)
+                    auth_ctx = AuthManager(settings.state_dir).verify(api_key)
                 except AuthRequiredError as e:
                     await websocket.close(code=1008, reason=str(e))
                     return
+                if auth_ctx.get("role") != _ADMIN_ROLE:
+                    await websocket.close(code=1008, reason="Admin role required")
+                    return
+            else:
+                await websocket.close(code=1008, reason="API key required for fleet access")
+                return
         await websocket.accept()
 
         fleet = get_fleet()
@@ -2197,3 +2007,19 @@ def _load_index_html() -> str:
     if path.exists():
         return path.read_text(encoding='utf-8')
     return '<h1>Template not found</h1>'
+
+
+def _is_loopback(request: Request) -> bool:
+    """True when the request originates from the local machine."""
+    client = request.client
+    if client is None:
+        return False
+    return client.host in ("127.0.0.1", "::1", "localhost")
+
+
+def _inject_bootstrap_key(html: str, key: str) -> str:
+    """Embed the bootstrap admin key so the local browser auto-authenticates."""
+    snippet = f"<script>window.__BOOTSTRAP_API_KEY__={json.dumps(key)};</script>"
+    if "</head>" in html:
+        return html.replace("</head>", snippet + "</head>", 1)
+    return snippet + html

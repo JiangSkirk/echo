@@ -10,14 +10,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI
 
 from js import __version__
 from js.agent import JSAgent
 from js.config import JSSettings
 from js.utils.log import get_logger
 from js.web.auth import require_auth_dep
-from js.web.deps import get_agent, get_settings, set_globals
+from js.web.deps import get_agent, set_globals
 from js.web.stats_store import TokenStatsStore
 
 logger = get_logger("js.web")
@@ -182,16 +182,11 @@ async def provider_metrics(auth: dict[str, Any] = Depends(require_auth_dep)) -> 
     }
 
 
-@router.post("/api/cancel/{session_id}")
-async def cancel_session(
-    session_id: str, auth: dict[str, Any] = Depends(require_auth_dep)
-) -> dict[str, Any]:
-    """Request cancellation of an active agent run for *session_id*."""
-    agent = get_agent()
-    ok = agent.request_cancel(session_id)
-    if not ok:
-        raise HTTPException(404, f"No active run for session {session_id}")
-    return {"session_id": session_id, "cancelled": True}
+# NOTE: /api/cancel/{session_id} is intentionally NOT defined here.
+# The canonical handler lives in server.py and enforces owner_key_hash
+# isolation (raises 403 if a caller tries to cancel another user's run).
+# A second route here shadowed that handler (router routes register before
+# the in-app routes), silently dropping the owner check.
 
 
 @router.get("/api/diag")
@@ -377,29 +372,4 @@ async def dashboard(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[st
     }
 
 
-@router.get("/api/setup/first-start")
-async def setup_first_start(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-    settings = get_settings()
-    return {"first_run_completed": settings.first_run_completed}
-
-
-@router.post("/api/setup/complete")
-async def setup_complete(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-    settings = get_settings()
-    settings.first_run_completed = True
-    try:
-        # Use field-restricted save so we don't clobber providers/models/paths
-        await asyncio.to_thread(settings.save, None, ["first_run_completed"])
-    except PermissionError:
-        # Fallback: save to state_dir/config.yaml when home dir is not writable
-        try:
-            fallback = settings.state_dir / "config.yaml"
-            await asyncio.to_thread(settings.save, fallback, ["first_run_completed"])
-        except OSError as e:
-            raise HTTPException(
-                500,
-                f"Unable to save settings: home directory and state directory are both read-only. {e}",
-            ) from e
-    except OSError as e:
-        raise HTTPException(500, f"Unable to save settings: {e}") from e
-    return {"success": True}
+# NOTE: /api/setup/* endpoints have been moved to js/web/routers/setup.py

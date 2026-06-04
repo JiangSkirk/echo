@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from js.web.auth import require_auth_dep
+from js.web.auth import require_admin, require_auth_dep
 from js.web.deps import get_agent
 
 router = APIRouter(prefix="/api/cron", tags=["cron"])
@@ -41,7 +41,7 @@ async def cron_get_job(
 
 @router.post("/jobs")
 async def cron_create_job(
-    payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)
+    payload: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)
 ) -> dict[str, Any]:
     """Create a new scheduled job."""
     from js.cron.engine import CronExpression, ScheduledJob
@@ -99,7 +99,7 @@ async def cron_create_job(
 
 @router.put("/jobs/{job_id}")
 async def cron_update_job(
-    job_id: str, payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)
+    job_id: str, payload: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)
 ) -> dict[str, Any]:
     """Update an existing job."""
     from js.cron.engine import CronExpression
@@ -142,7 +142,7 @@ async def cron_update_job(
 
 @router.delete("/jobs/{job_id}")
 async def cron_delete_job(
-    job_id: str, auth: dict[str, Any] = Depends(require_auth_dep)
+    job_id: str, auth: dict[str, Any] = Depends(require_admin)
 ) -> dict[str, Any]:
     """Delete a scheduled job."""
     agent = get_agent()
@@ -156,7 +156,7 @@ async def cron_delete_job(
 
 @router.post("/jobs/{job_id}/run")
 async def cron_run_job_now(
-    job_id: str, auth: dict[str, Any] = Depends(require_auth_dep)
+    job_id: str, auth: dict[str, Any] = Depends(require_admin)
 ) -> dict[str, Any]:
     """Manually trigger a job immediately."""
     agent = get_agent()

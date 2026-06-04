@@ -2,7 +2,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from js.web.auth import require_auth_dep
+from js.web.auth import require_admin, require_auth_dep
 from js.web.deps import get_agent
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"])
@@ -19,7 +19,7 @@ async def list_plugins(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict
 
 
 @router.post("/{plugin_id}/enable")
-async def enable_plugin(plugin_id: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+async def enable_plugin(plugin_id: str, auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     agent = get_agent()
     pm = getattr(agent, "plugins", None)
     if not pm:
@@ -30,7 +30,7 @@ async def enable_plugin(plugin_id: str, auth: dict[str, Any] = Depends(require_a
 
 
 @router.post("/{plugin_id}/disable")
-async def disable_plugin(plugin_id: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+async def disable_plugin(plugin_id: str, auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     agent = get_agent()
     pm = getattr(agent, "plugins", None)
     if not pm:
@@ -41,11 +41,11 @@ async def disable_plugin(plugin_id: str, auth: dict[str, Any] = Depends(require_
 
 
 @router.post("/install")
-async def install_plugin(body: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+async def install_plugin(body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     """Install a plugin from a remote URL.
 
-    Body: {"url": "https://example.com/plugin.zip"}
-    Supports .zip and .tar.gz archives.
+    Body: {"url": "https://example.com/plugin.zip", "sha256": "optional-hash"}
+    Supports .zip and .tar.gz archives. HTTPS only.
     """
     agent = get_agent()
     pm = getattr(agent, "plugins", None)
@@ -54,14 +54,15 @@ async def install_plugin(body: dict[str, Any], auth: dict[str, Any] = Depends(re
     url = (body.get("url") or "").strip()
     if not url:
         raise HTTPException(400, "url is required")
-    result = pm.install_from_url(url)
+    expected_hash = (body.get("sha256") or "").strip() or None
+    result = pm.install_from_url(url, expected_hash=expected_hash)
     if not result.get("success"):
         raise HTTPException(400, result.get("message", "Install failed"))
     return dict(result)
 
 
 @router.delete("/{plugin_id}")
-async def uninstall_plugin(plugin_id: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+async def uninstall_plugin(plugin_id: str, auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
     """Uninstall a plugin and remove its files."""
     agent = get_agent()
     pm = getattr(agent, "plugins", None)

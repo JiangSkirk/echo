@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import Depends
-
 if TYPE_CHECKING:
     from js.agent import JSAgent
     from js.config import JSSettings
@@ -69,9 +67,6 @@ async def require_auth_dep() -> dict[str, object]:
     return await require_auth()
 
 
-async def require_admin_dep(
-    auth: dict[str, object] = Depends(require_auth_dep),
-) -> dict[str, object]:
-    from js.web.auth import require_admin
-
-    return await require_admin(auth)
+# NOTE: admin gating is provided by js.web.auth.require_admin (which also runs
+# the Origin/CSRF check on state-changing methods).  Routers depend on it
+# directly; no wrapper is needed here.
