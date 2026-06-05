@@ -159,6 +159,97 @@ class TestRootInjection:
         assert "KEY-XYZ" not in r.text
 
 
+def _status_mock_agent(settings: JSSettings, *, degraded: bool = False) -> MagicMock:
+    """A minimal agent stand-in that satisfies the /api/status endpoint."""
+    agent = MagicMock()
+    agent.settings = settings
+    agent._check_degraded = AsyncMock(return_value=None)
+    agent.degraded = degraded
+    agent.degraded_reason = "All providers unhealthy" if degraded else ""
+    agent.registry.get_stats.return_value = {}
+    agent.secrets.get_stats.return_value = {}
+    return agent
+
+
+def _wire_globals(settings: JSSettings, agent: MagicMock) -> None:
+    from js.web.deps import set_globals
+
+    set_globals(agent, settings)
+    web_server._agent = agent
+    web_server._settings = settings
+
+
+class TestProcessSmoke:
+    """End-to-end: a fresh install must land *usable*, not 401-locked."""
+
+    def test_fresh_install_authenticates_and_reaches_status(
+        self, tmp_path: Path
+    ) -> None:
+        # Genuinely fresh: auth required, no admin key, no models configured.
+        s = _settings(tmp_path, api_key_required=True)
+        s.providers = []
+        key = _provision_bootstrap_admin_key(s)
+        assert key  # startup minted a working credential
+
+        _wire_globals(s, _status_mock_agent(s, degraded=True))
+        client = TestClient(create_app())
+
+        # Without a key the site stays enforced (no silent auth bypass).
+        assert client.get("/api/status").status_code == 401
+        # With the minted bootstrap key the employee is in — no lockdown.
+        resp = client.get("/api/status", headers={"X-API-Key": key})
+        assert resp.status_code == 200
+        assert "overall_status" in resp.json()
+
+
+class TestFirstStartWizard:
+    """The wizard is shown iff first-run is not yet completed."""
+
+    def test_first_start_reports_setup_needed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        s = _settings(tmp_path, api_key_required=False, first_run=False)
+        s.providers = []
+        _wire_globals(s, _status_mock_agent(s))
+
+        # Avoid real local-provider network probing (keeps the test fast/stable).
+        from js.web.routers import setup as setup_router
+
+        fake_discovery = MagicMock()
+        fake_discovery.discover_all = AsyncMock(return_value=[])
+        fake_discovery.close = AsyncMock(return_value=None)
+        monkeypatch.setattr(
+            setup_router, "LocalModelDiscovery", lambda *a, **k: fake_discovery
+        )
+
+        client = TestClient(create_app())
+        resp = client.get("/api/setup/first-start")
+        assert resp.status_code == 200
+        data = resp.json()
+        # Frontend shows the wizard exactly when this is False.
+        assert data["first_run_completed"] is False
+        assert data["diagnostics"]["has_configured_models"] is False
+
+
+class TestStatusChineseDegradation:
+    """When no model is configured, status speaks plain Chinese to the user."""
+
+    def test_status_reports_no_provider_in_chinese(self, tmp_path: Path) -> None:
+        s = _settings(tmp_path, api_key_required=False)
+        s.providers = []
+        _wire_globals(s, _status_mock_agent(s, degraded=True))
+
+        client = TestClient(create_app())
+        resp = client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["overall_status"] == "no_provider"
+        assert "模型" in data["overall_status_text"]
+        assert data["suggestion"]  # actionable Chinese guidance
+        # The English diagnostic field is still present for developers.
+        assert data["degraded_reason"] == "All providers unhealthy"
+
+
 class TestSetupCompleteProvisioning:
     def test_setup_complete_returns_admin_key_in_bootstrap(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

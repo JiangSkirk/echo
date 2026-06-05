@@ -1,11 +1,34 @@
-import { showLoading, showError, showToast } from '../utils/dom.js';
+import { showLoading, showError, showToast, escapeHtml } from '../utils/dom.js';
+
+// Fixed Tailwind classes per health state (no string interpolation, so the
+// CDN build always ships these utilities).
+const _HEALTH_STYLES = {
+  ok:          { box: 'bg-green-900/20 border-green-900/40',  text: 'text-green-400',  icon: 'check-circle' },
+  degraded:    { box: 'bg-yellow-900/20 border-yellow-900/40', text: 'text-yellow-400', icon: 'exclamation-triangle' },
+  no_provider: { box: 'bg-red-900/20 border-red-900/40',      text: 'text-red-400',    icon: 'times-circle' },
+};
 
 export async function loadStatus() {
   showLoading('status-content', '加载系统状态...');
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
-    document.getElementById('status-content').textContent = JSON.stringify(data, null, 2);
+    const style = _HEALTH_STYLES[data.overall_status] || {
+      box: 'bg-gray-800 border-gray-700', text: 'text-gray-300', icon: 'info-circle',
+    };
+    let html = `<div class="mb-3 p-3 rounded border ${style.box}">
+      <div class="${style.text} font-medium">
+        <i class="fas fa-${style.icon} mr-1.5"></i>${escapeHtml(data.overall_status_text || '状态未知')}
+      </div>`;
+    if (data.suggestion) {
+      html += `<div class="text-xs text-gray-400 mt-1">${escapeHtml(data.suggestion)}</div>`;
+    }
+    html += `</div>
+      <details class="text-xs">
+        <summary class="cursor-pointer text-gray-500 hover:text-gray-300">技术详情</summary>
+        <pre class="mt-2 whitespace-pre-wrap break-all text-gray-400">${escapeHtml(JSON.stringify(data, null, 2))}</pre>
+      </details>`;
+    document.getElementById('status-content').innerHTML = html;
     await loadDesktopWizard();
   } catch (e) {
     showError('status-content', '加载失败: ' + e.message);

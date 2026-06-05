@@ -45,6 +45,7 @@ from js.utils.log import get_logger
 from js.web import model_refresh
 from js.web.auth import require_admin, require_auth_dep
 from js.web.deps import _agent_config, set_active_model, set_globals
+from js.web.messages import humanize_error
 
 # Imported routers (extracted from this file)
 from js.web.routers import chat as chat_router
@@ -72,23 +73,28 @@ _startup_time: float = 0.0
 _bootstrap_admin_key: str | None = None
 
 
-def _load_active_model() -> str:
-    """Load the last selected model from disk."""
-    path = Path.home() / ".js" / "state" / "active_model.txt"
+def _load_active_model(state_dir: Path) -> str:
+    """Load the last selected model from the configured state dir."""
+    path = state_dir / "active_model.txt"
     if path.exists():
         return path.read_text(encoding="utf-8").strip()
     return ""
 
 
-def _save_active_model(model_id: str) -> None:
-    """Persist the selected model so it survives server restarts."""
-    path = Path.home() / ".js" / "state" / "active_model.txt"
+def _save_active_model(state_dir: Path, model_id: str) -> None:
+    """Persist the selected model so it survives server restarts.
+
+    Keyed off ``settings.state_dir`` (not a hardcoded ``~/.js/state``) so that
+    non-default installs work and tests can never pollute the real user file.
+    """
+    path = state_dir / "active_model.txt"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(model_id, encoding="utf-8")
 
 
-# Restore on module load
-_active_model = _load_active_model()
+# Loaded during lifespan startup once settings.state_dir is known (and only
+# after the model has been validated against the configured providers).
+_active_model = ""
 
 # In-flight request tracking for graceful shutdown
 _active_requests: int = 0
@@ -180,7 +186,7 @@ def _provision_bootstrap_admin_key(settings: JSSettings) -> str | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
-    global _agent, _settings, _stats_store, _bootstrap_admin_key
+    global _agent, _settings, _stats_store, _bootstrap_admin_key, _active_model
     _settings = JSSettings.from_file()
     # Allow tests/CI to override state_dir without editing config files
     if state_dir_env := os.getenv("JS_STATE_DIR"):
@@ -201,10 +207,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     # Guarantee a usable admin key exists so a fresh install lands usable and
     # we never get stuck in a keyless, fully-401-locked state.
     _bootstrap_admin_key = _provision_bootstrap_admin_key(_settings)
-    # Sync the persisted active model to the router so background tasks
-    # (evolution, dreaming) use the user's chosen model.
-    if _active_model and _agent and _agent.router:
-        _agent.router.preferred_model = _active_model
+    # Restore the persisted active model from the configured state dir, but
+    # only adopt it if it still maps to a real configured provider/model.
+    # This self-heals stale values (e.g. a leftover/test-polluted entry) that
+    # would otherwise pin router.preferred_model to a non-existent model and
+    # make every "default" run fall back to the wrong model.
+    persisted_model = _load_active_model(_settings.state_dir)
+    if persisted_model and _agent and _agent.router:
+        if _agent.router.get_model_config(persisted_model) is not None:
+            _active_model = persisted_model
+            _agent.router.preferred_model = persisted_model
+        else:
+            logger.warning(
+                "Ignoring stale persisted active model %r (no matching configured "
+                "provider/model); falling back to auto-select",
+                persisted_model,
+            )
+            _active_model = ""
     # Also sync system router globals for endpoints that reference them directly
     system._agent = _agent
     system._settings = _settings
@@ -664,11 +683,14 @@ def create_app() -> FastAPI:
             raise HTTPException(400, f"Invalid model '{model_id}'")
 
         _active_model = model_id
-        _save_active_model(model_id)
+        _save_active_model(agent.settings.state_dir, model_id)
         set_active_model(model_id)
         agent = get_agent()
         if agent and agent.router:
             agent.router.preferred_model = model_id
+            # Drop cached routing decisions so the new choice takes effect
+            # immediately (consistent with register/unregister_provider).
+            agent.router._routing_cache.clear()
 
         # Warn if the provider is not yet configured
         provider_name = model_id.split("/", 1)[0] if "/" in model_id else ""
@@ -1558,7 +1580,7 @@ def create_app() -> FastAPI:
                         await websocket.send_json(
                             {
                                 "type": "error",
-                                "content": state.error_message or "Agent run failed",
+                                "content": humanize_error(state.error_message),
                                 "session_id": session_id,
                                 "turns": state.turn_count,
                                 "tokens": state.total_tokens,
@@ -1621,7 +1643,7 @@ def create_app() -> FastAPI:
                     if state.status == "error":
                         await websocket.send_json({
                             "type": "error",
-                            "content": state.error_message or "Agent run failed",
+                            "content": humanize_error(state.error_message),
                             "session_id": session_id,
                             "turns": state.turn_count,
                             "tokens": state.total_tokens,

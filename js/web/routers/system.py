@@ -18,6 +18,7 @@ from js.config import JSSettings
 from js.utils.log import get_logger
 from js.web.auth import require_auth_dep
 from js.web.deps import get_agent, set_globals
+from js.web.messages import health_summary
 from js.web.stats_store import TokenStatsStore
 
 logger = get_logger("js.web")
@@ -109,6 +110,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
 async def status(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
     agent = get_agent()
     await agent._check_degraded()
+    # Presentation-layer Chinese health verdict for factory-floor users.
+    # `degraded_reason` (English) is preserved below for developers/diagnostics.
+    providers_configured = any(
+        getattr(p, "models", None) for p in agent.settings.providers
+    )
+    summary = health_summary(
+        degraded=agent.degraded, providers_configured=providers_configured
+    )
     return {
         "workspace": str(agent.settings.workspace),
         "state_dir": str(agent.settings.state_dir),
@@ -118,6 +127,7 @@ async def status(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, 
         "degraded_reason": agent.degraded_reason,
         "tool_stats": agent.registry.get_stats(),
         "secret_stats": agent.secrets.get_stats(),
+        **summary,
     }
 
 

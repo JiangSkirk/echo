@@ -65,7 +65,10 @@ def test_chat_error() -> None:
         resp = client.post("/api/chat", json={"message": "hello"})
 
     assert resp.status_code == 500
-    assert "error" in resp.json()["detail"].lower()  # User-friendly message, no raw exception
+    detail = resp.json()["detail"]
+    # User-friendly Chinese message — never leaks the raw exception text.
+    assert "boom" not in detail
+    assert "出错" in detail
 
 
 def test_chat_empty_message() -> None:

@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from js.utils.log import get_logger
 from js.web.auth import require_auth_dep
 from js.web.deps import get_agent, get_stats_store
+from js.web.messages import humanize_error
 
 logger = get_logger("js.web")
 
@@ -72,13 +73,9 @@ async def chat(
                 raise
             except Exception as e:
                 logger.error(f"Chat error: {e}", exc_info=True)
-                # Return a user-friendly message — never leak raw Python exceptions.
-                # The full traceback is logged server-side for debugging.
-                raise HTTPException(
-                    500,
-                    "The agent encountered an error processing your request. "
-                    "Please try again or check the server logs for details.",
-                ) from e
+                # Return a user-friendly Chinese message — never leak raw Python
+                # exceptions. The full traceback is logged server-side for debugging.
+                raise HTTPException(500, humanize_error(str(e))) from e
 
     assistant_msg = ""
     for msg in reversed(state.messages):
