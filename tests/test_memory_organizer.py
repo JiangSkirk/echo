@@ -141,6 +141,34 @@ class TestExtraction:
         committed = [m for m in family_block if m["key"] == "老婆姓名"]
         assert committed and committed[0]["value"] == "小芳"
 
+    @pytest.mark.asyncio
+    async def test_reject_pending_discards_and_marks_rejected(self, memory: MemoryStore) -> None:
+        await _run(memory, _payload(_FACTS), owner_key_hash="U1")
+        fam = next(p for p in memory.list_proposals(owner_key_hash="U1")
+                   if p["key"] == "老婆姓名")
+        res = memory.reject_proposal(fam["id"], owner_key_hash="U1")
+        assert res["success"] is True
+        assert res["status"] == "rejected"
+        # Rejected → never committed to the library.
+        family_block = memory.get_by_block("/people/family", owner_key_hash="U1")
+        assert not [m for m in family_block if m["key"] == "老婆姓名"]
+        # Gone from the pending queue, now retrievable under the 'rejected' filter.
+        assert "老婆姓名" not in {p["key"] for p in memory.list_proposals(owner_key_hash="U1")}
+        assert "老婆姓名" in {
+            p["key"] for p in memory.list_proposals(status="rejected", owner_key_hash="U1")
+        }
+
+    @pytest.mark.asyncio
+    async def test_reject_is_owner_scoped(self, memory: MemoryStore) -> None:
+        await _run(memory, _payload(_FACTS), owner_key_hash="U1")
+        fam = next(p for p in memory.list_proposals(owner_key_hash="U1")
+                   if p["key"] == "老婆姓名")
+        # A different owner must not be able to reject U1's proposal.
+        res = memory.reject_proposal(fam["id"], owner_key_hash="U2")
+        assert res["success"] is False
+        # Still pending for the rightful owner — untouched.
+        assert "老婆姓名" in {p["key"] for p in memory.list_proposals(owner_key_hash="U1")}
+
 
 class TestRobustness:
     @pytest.mark.asyncio

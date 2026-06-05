@@ -1546,7 +1546,12 @@ class EnhancedMemoryStore:
                 params.append(relation_type)
 
             params.append(memory_id)
-            sql = f"UPDATE semantic_memories SET {', '.join(fields)} WHERE id = ?"
+            params.extend(owner_params)
+            # Owner guard on the UPDATE itself (not just the pre-check SELECT) so
+            # the write can never touch another owner's row even under a race —
+            # consistent with delete_semantic. With owner_key_hash=None the guard
+            # is empty, preserving the original behaviour.
+            sql = f"UPDATE semantic_memories SET {', '.join(fields)} WHERE id = ?{guard}"
             cur = conn.execute(sql, params)
             conn.commit()
             updated = cur.rowcount > 0
