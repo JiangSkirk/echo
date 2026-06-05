@@ -232,6 +232,8 @@
     <h1 class="font-bold text-lg">JS Agent</h1>
   </div>
   <nav class="flex-1 p-2 space-y-1 overflow-y-auto">
+    <!-- 常用：普通用户日常主线 -->
+    <div class="px-3 pt-1 pb-1 text-[10px] font-semibold text-gray-600 tracking-wider">常用</div>
     <div>
       <button onclick="toggleSessionList()" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2 text-blue-400 bg-gray-800/50" id="nav-chat">
         <i class="fas fa-comments w-5"></i> 对话
@@ -241,24 +243,18 @@
         <!-- Sessions loaded dynamically -->
       </div>
     </div>
-    <button onclick="switchTab('dashboard')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-dashboard">
-      <i class="fas fa-gauge-high w-5"></i> 仪表盘
+    <button onclick="switchTab('memory')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-memory">
+      <i class="fas fa-brain w-5"></i> 记忆
     </button>
     <button onclick="switchTab('files')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-files">
       <i class="fas fa-folder w-5"></i> 文件
     </button>
-    <button onclick="switchTab('memory')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-memory">
-      <i class="fas fa-brain w-5"></i> 记忆
+    <button onclick="switchTab('models')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-models">
+      <i class="fas fa-microchip w-5"></i> 模型
     </button>
-    <button onclick="switchTab('audit')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-audit">
-      <i class="fas fa-shield-alt w-5"></i> 审计
-    </button>
-    <button onclick="switchTab('tasks')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-tasks">
-      <i class="fas fa-tasks w-5"></i> 任务中心
-    </button>
-    <button onclick="switchTab('skills')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-skills">
-      <i class="fas fa-magic w-5"></i> Skills
-    </button>
+
+    <!-- 进阶：多 Agent / 自动化能力 -->
+    <div class="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-600 tracking-wider">进阶</div>
     <button onclick="switchTab('agents')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-agents">
       <i class="fas fa-network-wired w-5"></i> 多Agent
     </button>
@@ -268,11 +264,23 @@
     <button onclick="switchTab('evolution')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-evolution">
       <i class="fas fa-dna w-5"></i> 进化
     </button>
-    <button onclick="switchTab('models')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-models">
-      <i class="fas fa-microchip w-5"></i> 模型
+    <button onclick="switchTab('skills')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-skills">
+      <i class="fas fa-magic w-5"></i> Skills
     </button>
     <button onclick="switchTab('search')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-search">
       <i class="fas fa-search w-5"></i> 搜索
+    </button>
+
+    <!-- 系统：运维 / 监控 / 安全 -->
+    <div class="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-600 tracking-wider">系统</div>
+    <button onclick="switchTab('dashboard')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-dashboard">
+      <i class="fas fa-gauge-high w-5"></i> 仪表盘
+    </button>
+    <button onclick="switchTab('tasks')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-tasks">
+      <i class="fas fa-tasks w-5"></i> 任务中心
+    </button>
+    <button onclick="switchTab('audit')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-audit">
+      <i class="fas fa-shield-alt w-5"></i> 审计
     </button>
     <button onclick="switchTab('stats')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-stats">
       <i class="fas fa-coins w-5"></i> 用量统计

@@ -82,6 +82,31 @@ const ENTITY_LABELS = {
   general: '通用',
 };
 
+const CATEGORY_LABELS = {
+  fact: '事实',
+  preference: '偏好',
+  insight: '洞察',
+};
+
+// Build <option> markup from ENTITY_LABELS / CATEGORY_LABELS so the edit and
+// add dropdowns never drift out of sync with the taxonomy again (the newer
+// friend/personality/body/plan/chat types used to be missing here).  Pass
+// `selected` to pre-select the current value; set `includeAuto` for a leading
+// "自动推断" option in the add form.
+function entityOptionsHtml(selected = '', includeAuto = false) {
+  let html = includeAuto ? '<option value="">自动推断</option>' : '';
+  for (const [val, label] of Object.entries(ENTITY_LABELS)) {
+    html += `<option value="${val}"${val === selected ? ' selected' : ''}>${label}</option>`;
+  }
+  return html;
+}
+
+function categoryOptionsHtml(selected = 'fact') {
+  return Object.entries(CATEGORY_LABELS)
+    .map(([val, label]) => `<option value="${val}"${val === selected ? ' selected' : ''}>${label}</option>`)
+    .join('');
+}
+
 export async function loadMemory() {
   // Set loading states for all sections
   showLoading('memory-context', '加载记忆中...');
@@ -474,7 +499,7 @@ export function renderSemanticMemoryItem(s) {
   const entityLabel = ENTITY_LABELS[etype] || etype;
   const isVerified = (s.last_verified_at || 0) > 0;
   return `
-    <div class="bg-gray-800 rounded-lg px-3 py-2" data-memory-id="${s.id}">
+    <div class="bg-gray-800 rounded-lg px-3 py-2" data-memory-id="${s.id}" data-category="${escapeHtml(s.category || 'fact')}" data-entity-type="${escapeHtml(etype)}" data-memory-path="${escapeHtml(s.memory_path || '')}" data-entity-name="${escapeHtml(s.entity_name || '')}">
       <div class="flex items-center justify-between flex-wrap gap-1">
         <div class="flex items-center gap-2 flex-wrap">
           <span class="text-xs font-mono text-pink-400">${escapeHtml(s.key || 'unknown')}</span>
@@ -511,30 +536,25 @@ export function editSemanticMemory(id) {
   if (!card) return;
   const valueEl = card.querySelector('.memory-value');
   const currentValue = valueEl.textContent;
-  const currentCategory = card.querySelector('[class*="rounded"].text-blue-400, [class*="rounded"].text-pink-400, [class*="rounded"].text-purple-400, [class*="rounded"].text-gray-400')?.textContent || 'fact';
+  // Read the real values off the card's data-* attributes so the edit form is
+  // pre-filled correctly.  Previously the entity_type select had no selection,
+  // so saving silently reset entity_type to "general" and lost the path/name.
+  const currentCategory = card.dataset.category || 'fact';
+  const currentEtype = card.dataset.entityType || 'general';
+  const currentPath = card.dataset.memoryPath || '';
+  const currentEname = card.dataset.entityName || '';
 
   valueEl.innerHTML = `
     <textarea id="sem-edit-${id}" rows="3" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-gray-300 resize-none focus:outline-none focus:border-pink-500">${escapeHtml(currentValue)}</textarea>
     <div class="flex flex-wrap items-center gap-2 mt-2">
       <select id="sem-cat-${id}" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
-        <option value="fact" ${currentCategory === 'fact' ? 'selected' : ''}>事实</option>
-        <option value="preference" ${currentCategory === 'preference' ? 'selected' : ''}>偏好</option>
-        <option value="insight" ${currentCategory === 'insight' ? 'selected' : ''}>洞察</option>
+        ${categoryOptionsHtml(currentCategory)}
       </select>
       <select id="sem-etype-${id}" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
-        <option value="general">通用</option>
-        <option value="family">家人</option>
-        <option value="colleague">同事</option>
-        <option value="project">项目</option>
-        <option value="company">公司</option>
-        <option value="preference">偏好</option>
-        <option value="device">设备</option>
-        <option value="identity">身份</option>
-        <option value="event">事件</option>
-        <option value="location">地点</option>
+        ${entityOptionsHtml(currentEtype)}
       </select>
-      <input id="sem-path-${id}" type="text" placeholder="路径" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 w-32">
-      <input id="sem-ename-${id}" type="text" placeholder="实体名" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 w-24">
+      <input id="sem-path-${id}" type="text" value="${escapeHtml(currentPath)}" placeholder="路径" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 w-32">
+      <input id="sem-ename-${id}" type="text" value="${escapeHtml(currentEname)}" placeholder="实体名" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 w-24">
       <button onclick="saveSemanticMemory(${id})" class="bg-pink-900/40 hover:bg-pink-900/60 text-pink-300 px-3 py-1 rounded text-xs">保存</button>
       <button onclick="loadMemory()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-xs">取消</button>
     </div>
@@ -607,8 +627,11 @@ export async function saveSemanticMemory(id) {
   }
 }
 
-export async function deleteSemanticMemory(id) {
-  if (!confirm('确定删除这条知识吗？此操作不可恢复。')) return;
+export function deleteSemanticMemory(id) {
+  openConfirm('删除知识', '确定删除这条知识吗？此操作不可恢复。', () => doDeleteSemanticMemory(id));
+}
+
+async function doDeleteSemanticMemory(id) {
   try {
     const res = await fetch(`/api/memory/semantic/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -888,22 +911,10 @@ export function showAddSemanticModal() {
     <div class="flex gap-2 flex-wrap">
       <input id="semantic-add-key" type="text" placeholder="键 (如: user_name)" class="flex-1 min-w-[8rem] bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm">
       <select id="semantic-add-cat" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-gray-300">
-        <option value="fact">事实</option>
-        <option value="preference">偏好</option>
-        <option value="insight">洞察</option>
+        ${categoryOptionsHtml('fact')}
       </select>
       <select id="semantic-add-etype" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-gray-300">
-        <option value="">自动推断</option>
-        <option value="family">家人</option>
-        <option value="colleague">同事</option>
-        <option value="project">项目</option>
-        <option value="company">公司</option>
-        <option value="preference">偏好</option>
-        <option value="device">设备</option>
-        <option value="identity">身份</option>
-        <option value="event">事件</option>
-        <option value="location">地点</option>
-        <option value="general">通用</option>
+        ${entityOptionsHtml('', true)}
       </select>
     </div>
     <input id="semantic-add-path" type="text" placeholder="路径 (可选, 如 /user/preferences)" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm">
@@ -977,8 +988,9 @@ export async function saveMemoryFile(name) {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     closeMemoryFileEditor();
     loadMemory();
+    showToast('记忆文件已保存');
   } catch (e) {
-    alert('保存失败: ' + e.message);
+    showToast('保存失败: ' + e.message, 'error');
   }
 }
 
