@@ -36,11 +36,13 @@ async def setup_first_start(auth: dict[str, Any] = Depends(require_setup_auth)) 
     try:
         discovered = await discovery.discover_all()
         for d in discovered:
-            diagnostics["local_providers_detected"].append({
-                "type": d.provider_type,
-                "url": d.base_url,
-                "models": len(d.models),
-            })
+            diagnostics["local_providers_detected"].append(
+                {
+                    "type": d.provider_type,
+                    "url": d.base_url,
+                    "models": len(d.models),
+                }
+            )
     except Exception as e:
         logger.debug(f"Local discovery failed during first-start check: {e}")
     finally:
@@ -75,10 +77,10 @@ async def setup_complete(auth: dict[str, Any] = Depends(require_setup_auth)) -> 
         except OSError as e:
             raise HTTPException(
                 500,
-                f"Unable to save settings: home directory and state directory are both read-only. {e}",
+                f"无法保存配置：用户主目录和状态目录均不可写。{e}",
             ) from e
     except OSError as e:
-        raise HTTPException(500, f"Unable to save settings: {e}") from e
+        raise HTTPException(500, f"无法保存配置：{e}") from e
     result: dict[str, Any] = {"success": True}
     if admin_key:
         # Returned once so the browser can persist it (the bootstrap window is
@@ -106,14 +108,13 @@ async def setup_reset(auth: dict[str, Any] = Depends(require_setup_auth)) -> dic
     if auth_mgr.has_admin() and auth.get("role") != "admin":
         raise HTTPException(
             403,
-            "Admin role required to reset setup state.",
+            "需要管理员权限才能重置初始化状态。",
         )
 
     if auth_mgr.has_admin():
         raise HTTPException(
             409,
-            "Cannot reset first-run when admin keys exist. "
-            "Revoke all admin keys first, then retry.",
+            "已存在管理员密钥时无法重置首次运行状态。请先吊销所有管理员密钥再重试。",
         )
     settings.first_run_completed = False
     try:
@@ -123,21 +124,23 @@ async def setup_reset(auth: dict[str, Any] = Depends(require_setup_auth)) -> dic
             fallback = settings.state_dir / "config.yaml"
             await asyncio.to_thread(settings.save, fallback, ["first_run_completed"])
         except OSError as e:
-            raise HTTPException(500, f"Unable to save settings: {e}") from e
+            raise HTTPException(500, f"无法保存配置：{e}") from e
     except OSError as e:
-        raise HTTPException(500, f"Unable to save settings: {e}") from e
+        raise HTTPException(500, f"无法保存配置：{e}") from e
     return {"success": True}
 
 
 @router.post("/api/setup/test-model")
-async def test_model(body: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+async def test_model(
+    body: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)
+) -> dict[str, Any]:
     """Test whether a specific model is reachable and responsive.
 
     Sends a minimal completion request and measures latency.
     """
     model_id = (body.get("model_id") or "").strip()
     if not model_id:
-        raise HTTPException(400, "model_id is required")
+        raise HTTPException(400, "缺少必填参数 model_id")
 
     agent = get_agent()
     router = agent.router
@@ -145,7 +148,7 @@ async def test_model(body: dict[str, Any], auth: dict[str, Any] = Depends(requir
     # Resolve model → provider
     decision = await router.select_model(preferred=model_id)
     if not decision or not decision.provider:
-        raise HTTPException(404, f"Model '{model_id}' not found")
+        raise HTTPException(404, f"未找到模型 '{model_id}'")
 
     # Grab context window from config
     cfg = router.get_model_config(model_id)
@@ -200,7 +203,9 @@ async def test_model(body: dict[str, Any], auth: dict[str, Any] = Depends(requir
             "context_window": context_window,
             "provider": decision.provider_name,
             "actual_model": decision.model,
-            "response_preview": content[:100] or getattr(response, "reasoning_content", "")[:100] or "",
+            "response_preview": content[:100]
+            or getattr(response, "reasoning_content", "")[:100]
+            or "",
         }
     except TimeoutError:
         return {
