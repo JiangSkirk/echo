@@ -25,8 +25,10 @@ state is never touched.
    - `GET /api/status` **with** `X-API-Key: <bootstrap key>` → 200
    - `GET /api/models` with key → 200
    - `GET /api/setup/first-start` with key → 200
-6. **Teardown**: kill the server PID **and its python child** (`uv run` forks a
-   child — kill both or uvicorn orphans), then confirm none remain:
+6. **Teardown**: terminate the server PID **and its python child** (`uv run` forks
+   a child — kill both or uvicorn orphans). The server has graceful drain, so a
+   plain `kill` (SIGTERM) may not exit within the timeout: send SIGTERM, wait
+   ~1s, then SIGKILL (`kill -9`) any survivor as a fallback. Confirm none remain:
    `pgrep -fl "js .*open|uvicorn"`.
 
 ## Notes
