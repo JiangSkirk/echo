@@ -72,17 +72,20 @@ def _load_or_create_token(state_dir: Path | None) -> str:
     return token
 
 
-def _check_url_safe(url: str) -> tuple[bool, str]:
+def _resolve_url_safe(url: str) -> tuple[bool, str, list[str]]:
     """Block private/internal URLs to prevent SSRF.
 
-    Returns (is_safe, reason_if_blocked).  Resolves the host so numeric-IP,
-    wildcard-DNS and rebinding bypasses are caught, not just literal IPs.
+    Returns (is_safe, reason_if_blocked, validated_ips).  Resolves the host so
+    numeric-IP, wildcard-DNS and rebinding bypasses are caught, not just literal
+    IPs.  The validated IP list is returned so callers can pin connections or
+    pass the IPs to downstream services (e.g. the WebBridge daemon) to prevent
+    DNS rebinding between validation and the actual request.
     """
     try:
-        resolve_and_validate(url, allow_loopback=False, allow_private=False)
+        validated_ips = resolve_and_validate(url, allow_loopback=False, allow_private=False)
     except OutboundURLError as exc:
-        return False, str(exc)
-    return True, ""
+        return False, str(exc), []
+    return True, "", validated_ips
 
 
 class WebBridgeTool:
@@ -304,11 +307,17 @@ class WebBridgeTool:
     # ------------------------------------------------------------------
 
     async def navigate(self, url: str, new_tab: bool = True, session: str = "js-agent") -> ToolResult:
-        safe, reason = _check_url_safe(url)
+        safe, reason, validated_ips = _resolve_url_safe(url)
         if not safe:
             return ToolResult(success=False, error=f"URL blocked: {reason}")
         try:
-            data = await self._call("navigate", {"url": url, "newTab": new_tab}, session=session)
+            # Pass validated IPs to the daemon so it can pin the connection
+            # and avoid DNS rebinding between our check and the actual request.
+            data = await self._call(
+                "navigate",
+                {"url": url, "newTab": new_tab, "validated_ips": validated_ips},
+                session=session,
+            )
             if not data.get("success"):
                 return ToolResult(success=False, error=data.get("error", "Navigation failed"))
             return ToolResult(
@@ -493,11 +502,15 @@ class WebBridgeTool:
             return ToolResult(success=False, error=f"Evaluate error: {e}")
 
     async def find_tab(self, url: str, active: bool = False, session: str = "js-agent") -> ToolResult:
-        is_safe, reason = _check_url_safe(url)
+        is_safe, reason, validated_ips = _resolve_url_safe(url)
         if not is_safe:
             return ToolResult(success=False, error=reason)
         try:
-            data = await self._call("find_tab", {"url": url, "active": active}, session=session)
+            data = await self._call(
+                "find_tab",
+                {"url": url, "active": active, "validated_ips": validated_ips},
+                session=session,
+            )
             if not data.get("success"):
                 return ToolResult(success=False, error=data.get("error", "No matching tab found"))
             return ToolResult(

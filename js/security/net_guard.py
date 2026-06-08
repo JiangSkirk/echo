@@ -25,14 +25,20 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import typing
 from collections.abc import Callable
 from typing import Protocol
 from urllib.parse import urlparse
+
+import httpcore
+import httpx
 
 __all__ = [
     "OutboundURLError",
     "resolve_and_validate",
     "is_blocked_ip",
+    "PinnedIPBackend",
+    "PinnedTransport",
 ]
 
 # Hostnames that must never be reachable even when loopback/private is allowed.
@@ -168,3 +174,121 @@ def resolve_and_validate(
         validated.append(ip_str)
 
     return validated
+
+
+# ── DNS-rebinding defense: pin connections to validated IPs ──
+
+class PinnedIPBackend(httpcore.AsyncNetworkBackend):
+    """Network backend that forces TCP connections to a pre-validated IP.
+
+    When :func:`resolve_and_validate` returns a list of safe IPs, this backend
+    ensures the *actual* TCP connection uses one of those IPs instead of
+    re-resolving the hostname.  This closes the DNS-rebinding window where an
+    attacker domain first resolves to a public IP (passing validation) and
+    then rebinds to ``127.0.0.1`` or ``169.254.169.254`` before the HTTP
+    request is made.
+
+    The original hostname is preserved in the URL, so TLS SNI and the HTTP
+    ``Host`` header remain correct — only the underlying TCP destination is
+    pinned.
+    """
+
+    def __init__(
+        self,
+        pinned_ip: str,
+        backend: httpcore.AsyncNetworkBackend | None = None,
+    ) -> None:
+        self.pinned_ip = pinned_ip
+        self._backend = backend or httpcore.AsyncNetworkBackend()
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: typing.Iterable[typing.Any] | None = None,
+    ) -> httpcore.AsyncNetworkStream:
+        # Ignore the hostname and connect directly to the validated IP.
+        # The original hostname is still used for TLS SNI and Host header
+        # because the URL passed to httpx retains it.
+        return await self._backend.connect_tcp(
+            self.pinned_ip, port, timeout, local_address, socket_options
+        )
+
+    async def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: typing.Iterable[typing.Any] | None = None,
+    ) -> httpcore.AsyncNetworkStream:
+        return await self._backend.connect_unix_socket(path, timeout, socket_options)
+
+    async def sleep(self, seconds: float) -> None:
+        return await self._backend.sleep(seconds)
+
+
+def create_pinned_transport(
+    validated_ips: list[str],
+    **pool_kwargs: typing.Any,
+) -> httpcore.AsyncConnectionPool:
+    """Create an :class:`httpcore.AsyncConnectionPool` pinned to *validated_ips*.
+
+    The first IP in the list is used for the connection.  Callers should pass
+    the returned pool as ``transport=`` to :class:`httpx.AsyncClient`.
+    """
+    if not validated_ips:
+        raise OutboundURLError("no validated IPs to pin to")
+    backend = PinnedIPBackend(validated_ips[0])
+    return httpcore.AsyncConnectionPool(network_backend=backend, **pool_kwargs)
+
+
+class PinnedTransport(httpx.AsyncHTTPTransport):
+    """AsyncHTTPTransport that pins TCP connections to a pre-validated IP.
+
+    Inherits from :class:`httpx.AsyncHTTPTransport` so mypy recognises it as a
+    valid ``AsyncBaseTransport``.  The parent ``__init__`` is called first to
+    create a default pool, then the pool is replaced with one that uses our
+    :class:`PinnedIPBackend` so the TCP destination is pinned while the URL's
+    original hostname is preserved for TLS SNI and the HTTP ``Host`` header.
+    """
+
+    def __init__(
+        self,
+        pinned_ip: str,
+        **kwargs: typing.Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        # Replace the pool created by the parent with one that pins to the
+        # validated IP.  We do not aclose the old pool here (__init__ is sync);
+        # it will be garbage-collected and any idle connections reaped.
+        self._pool = httpcore.AsyncConnectionPool(
+            ssl_context=getattr(self._pool, "_ssl_context", None),
+            max_connections=getattr(self._pool, "_max_connections", None),
+            max_keepalive_connections=getattr(
+                self._pool, "_max_keepalive_connections", None
+            ),
+            keepalive_expiry=getattr(self._pool, "_keepalive_expiry", None),
+            http1=getattr(self._pool, "_http1", True),
+            http2=getattr(self._pool, "_http2", False),
+            local_address=getattr(self._pool, "_local_address", None),
+            retries=getattr(self._pool, "_retries", 0),
+            socket_options=getattr(self._pool, "_socket_options", None),
+            network_backend=PinnedIPBackend(pinned_ip),
+        )
+
+
+def create_pinned_client(
+    validated_ips: list[str],
+    **client_kwargs: typing.Any,
+) -> httpx.AsyncClient:
+    """Create an :class:`httpx.AsyncClient` whose connections are pinned to
+    the first validated IP.
+
+    This is a convenience helper for the common case where a caller needs a
+    one-off client with pinned transport.  For long-lived clients, use
+    :class:`PinnedTransport` directly.
+    """
+    if not validated_ips:
+        raise OutboundURLError("no validated IPs to pin to")
+    return httpx.AsyncClient(transport=PinnedTransport(validated_ips[0]), **client_kwargs)

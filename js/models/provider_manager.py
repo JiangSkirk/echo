@@ -128,7 +128,7 @@ class ProviderManager:
         """
         import httpx
 
-        from js.security.net_guard import OutboundURLError, resolve_and_validate
+        from js.security.net_guard import OutboundURLError, PinnedTransport, resolve_and_validate
 
         # Only explicit local literals get the loopback exemption; everything
         # else (including loopback-resolving domains) must clear the remote
@@ -136,7 +136,7 @@ class ProviderManager:
         hostname = (urlparse(base_url).hostname or "").lower()
         is_local_literal = hostname in ("localhost", "127.0.0.1", "::1")
         try:
-            resolve_and_validate(
+            validated_ips = resolve_and_validate(
                 base_url,
                 allow_loopback=is_local_literal,
                 allow_private=allow_private,
@@ -164,7 +164,16 @@ class ProviderManager:
                 pass
 
         try:
-            async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
+            from js.security.net_guard import PinnedTransport
+
+            async with httpx.AsyncClient(
+                transport=PinnedTransport(
+                    validated_ips[0],
+                    verify=True,
+                ),
+                timeout=30.0,
+                trust_env=False,
+            ) as client:
                 resp = await client.get(
                     f"{base_url.rstrip('/')}/models", headers=headers
                 )

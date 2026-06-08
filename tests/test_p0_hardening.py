@@ -66,13 +66,13 @@ class TestWebBridgeToken:
         assert tool._token != "js-agent-webbridge-v1"
 
     def test_check_url_safe_blocks_private(self) -> None:
-        from js.tools.webbridge import _check_url_safe
-        safe, reason = _check_url_safe("http://127.0.0.1:8080/admin")
+        from js.tools.webbridge import _resolve_url_safe
+        safe, reason, _ = _resolve_url_safe("http://127.0.0.1:8080/admin")
         assert not safe
 
     def test_check_url_safe_allows_public(self) -> None:
-        from js.tools.webbridge import _check_url_safe
-        safe, _ = _check_url_safe("https://example.com")
+        from js.tools.webbridge import _resolve_url_safe
+        safe, _, _ = _resolve_url_safe("https://example.com")
         assert safe
 
 
