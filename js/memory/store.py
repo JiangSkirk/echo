@@ -383,10 +383,10 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
             return self.enhanced.get_dream_logs(limit)
         return []
 
-    def get_episodes(self, limit: int = 20) -> list[Any]:
+    def get_episodes(self, limit: int = 20, owner_key_hash: str | None = None) -> list[Any]:
         """Get recent episodic memories."""
         if hasattr(self, "enhanced"):
-            return self.enhanced.get_episodes(limit)
+            return self.enhanced.get_episodes(limit, owner_key_hash=owner_key_hash)
         return []
 
     def get_sessions(self, limit: int = 30, owner_key_hash: str | None = None) -> list[dict[str, Any]]:

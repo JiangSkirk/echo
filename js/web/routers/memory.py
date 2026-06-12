@@ -25,7 +25,7 @@ async def memory(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, 
 @router.get("/api/memory/enhanced")
 async def memory_enhanced(
     session_id: str | None = None,
-    auth: dict[str, Any] = Depends(require_auth_dep),
+    auth: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     agent = get_agent()
     owner = memory_owner(auth)
@@ -42,7 +42,7 @@ async def memory_enhanced(
                 "created_at": e.created_at,
                 "importance": e.importance,
             }
-            for e in agent.memory.get_episodes(limit=20)
+            for e in agent.memory.get_episodes(limit=20, owner_key_hash=owner)
         ],
         "dream_logs": agent.memory.get_dream_logs(limit=10),
         "semantic_memories": agent.memory.get_all_semantic(limit=20, owner_key_hash=owner),

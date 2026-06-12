@@ -805,16 +805,18 @@ class EnhancedMemoryStore:
         except Exception:
             logger.warning('Operation failed', exc_info=True)
 
-    def get_episodes(self, limit: int = 20) -> list[Episode]:
+    def get_episodes(self, limit: int = 20, owner_key_hash: str | None = None) -> list[Episode]:
+        owner_clause, owner_params = self._owner_filter(owner_key_hash)
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                """
+                f"""
                 SELECT * FROM episodes
+                {("WHERE " + owner_clause) if owner_clause else ""}
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (*owner_params, limit),
             ).fetchall()
         return [
             Episode(
