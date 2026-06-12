@@ -37,3 +37,9 @@ jobs:
 
       - name: Check package build
         run: pip install build && python -m build
+
+      - name: Audit dependencies with pip-audit
+        run: |
+          pip install pip-audit
+          pip-audit --desc --format=json -o audit-report.json || true
+          pip-audit --desc --format=summary || true

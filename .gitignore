@@ -65,3 +65,5 @@ logs/
 
 # Security scan reports (machine-generated, not for repo)
 js_agent_*.md
+# Manual validation script (one-off, not for repo)
+manual_validation_security.py
