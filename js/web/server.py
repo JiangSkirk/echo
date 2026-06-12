@@ -346,15 +346,25 @@ def create_app() -> FastAPI:
 
     # CORS: allow localhost origins so browser preflight (OPTIONS) works
     # when custom headers (e.g. X-API-Key) are sent with PATCH/DELETE.
+    # Derive allowed origins from the configured bind host/port so the
+    # server works on any port without hard-coding :8000.
     from fastapi.middleware.cors import CORSMiddleware
+    _bind_host = getattr(_settings, "bind_host", "127.0.0.1") if _settings else "127.0.0.1"
+    _bind_port = getattr(_settings, "bind_port", 8000) if _settings else 8000
+    _cors_origins = [
+        f"http://{_bind_host}:{_bind_port}",
+        f"http://127.0.0.1:{_bind_port}",
+        f"http://localhost:{_bind_port}",
+    ]
+    # Deduplicate and keep the bare loopback forms for convenience
+    _cors_origins = list(dict.fromkeys(_cors_origins))
+    if "http://127.0.0.1" not in _cors_origins:
+        _cors_origins.insert(0, "http://127.0.0.1")
+    if "http://localhost" not in _cors_origins:
+        _cors_origins.insert(0, "http://localhost")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost",
-            "http://localhost:8000",
-            "http://127.0.0.1",
-            "http://127.0.0.1:8000",
-        ],
+        allow_origins=_cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
         allow_headers=["Content-Type", "X-API-Key", "Authorization"],
@@ -982,9 +992,20 @@ def create_app() -> FastAPI:
         auth: dict[str, Any] = Depends(require_admin),
     ) -> dict[str, Any]:
         """Scan the local network for model servers."""
+        from ipaddress import ip_network
+
         from js.models.discovery import LocalModelDiscovery
 
         subnet = (payload or {}).get("subnet", "192.168")
+        try:
+            # Validate that the subnet prefix is a valid private CIDR prefix
+            # (e.g. "192.168", "10.0.0", "172.16").  We do NOT allow scanning
+            # public ranges to prevent SSRF / network enumeration abuse.
+            _network = ip_network(f"{subnet}.0/24", strict=False)
+            if not _network.is_private:
+                raise HTTPException(400, "Only private-network (RFC1918) subnets are allowed")
+        except ValueError as exc:
+            raise HTTPException(400, f"Invalid subnet format: {exc}") from exc
         discovery = LocalModelDiscovery(timeout=2.0)
         try:
             discovered = await discovery.scan_lan(subnet_prefix=subnet)

@@ -28,7 +28,7 @@ _session_owner_hash: contextvars.ContextVar[str | None] = contextvars.ContextVar
 
 logger = get_logger("js.web.auth")
 
-__all__ = ["AuthManager", "require_auth", "require_admin", "require_auth_dep", "require_dangerous", "check_origin"]
+__all__ = ["AuthManager", "require_auth", "require_admin", "require_auth_dep", "check_origin"]
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -353,25 +353,6 @@ async def require_auth(
 
 # Alias for backward compatibility and router imports
 require_auth_dep = require_auth
-
-
-async def require_dangerous(
-    auth_ctx: dict[str, Any] = Depends(require_auth_dep),
-    request: Request | None = None,
-) -> dict[str, Any]:
-    """Require admin role + origin check for dangerous write endpoints.
-
-    Combines require_admin with an Origin/Referer whitelist check to
-    mitigate CSRF attacks from malicious sites.
-    """
-    if auth_ctx.get("role") != _ADMIN_ROLE:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin role required",
-        )
-    if request is not None:
-        check_origin(request)
-    return auth_ctx
 
 
 async def require_admin(
