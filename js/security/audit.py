@@ -43,11 +43,13 @@ class AuditEvent:
 
 
 class AuditLogger:
-    """Tamper-evident audit logger using hash chains.
+    """Audit logger with hash-chain integrity detection.
 
     Audit log payloads are encrypted at rest using the same Fernet key
-    managed by SecretManager.  The hash chain is computed from the
-    encrypted form, so both integrity AND confidentiality are preserved.
+    managed by SecretManager.  The hash chain detects accidental tampering
+    or truncation, but it is NOT a cryptographic HMAC: an attacker with
+    database write access can recompute the chain and forge history.
+    For forensic-grade integrity, migrate to HMAC-SHA256 (see TECH_DEBT.md).
     """
 
     def __init__(self, state_dir: Path, retention_days: int = 90) -> None:
