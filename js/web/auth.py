@@ -336,10 +336,10 @@ async def require_auth(
 
     if not effective_settings.security.api_key_required:
         # Auth optional: if a key is provided, verify it for role info;
-        # otherwise return a guest context.
+        # otherwise return an admin context so local convenience mode works.
         if api_key:
             return auth_mgr.verify(api_key)
-        return {"name": "anonymous", "role": _USER_ROLE, "key_hash": _hash_key(secrets.token_urlsafe(16))}
+        return {"name": "anonymous", "role": _ADMIN_ROLE, "key_hash": _hash_key(secrets.token_urlsafe(16))}
 
     try:
         return auth_mgr.verify(api_key)

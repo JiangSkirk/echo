@@ -128,7 +128,27 @@ export async function loadMemory() {
     } catch (_) {}
 
     const res = await fetch('/api/memory/enhanced');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (!res.ok) {
+      if (res.status === 403) {
+        // Graceful degradation: fall back to basic endpoints
+        const basicRes = await fetch('/api/memory');
+        const basicData = basicRes.ok ? await basicRes.json() : {};
+        const ctxEl = document.getElementById('memory-context');
+        if (ctxEl) ctxEl.textContent = basicData.context || '暂无上下文';
+
+        ['memory-working', 'memory-semantic', 'memory-episodes', 'memory-dreams', 'memory-files'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) {
+            el.innerHTML = '<div class="text-yellow-500/80 text-sm"><i class="fas fa-lock mr-1"></i>此聚合视图需管理员权限</div>';
+          }
+        });
+
+        loadBlockTree();
+        loadProposals();
+        return;
+      }
+      throw new Error('HTTP ' + res.status);
+    }
     const data = await res.json();
 
     // Show embedder status
