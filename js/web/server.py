@@ -998,13 +998,17 @@ def create_app() -> FastAPI:
 
         subnet = (payload or {}).get("subnet", "192.168")
         try:
-            # Validate that the subnet prefix is a valid RFC1918 private CIDR prefix.
-            # Only 10.x, 172.16-31.x, and 192.168.x are accepted for LAN scanning.
-            # We construct a /24 from the prefix so ip_network validates the format,
-            # then check the network address falls strictly inside RFC1918 ranges.
-            from ipaddress import ip_network
-
-            _network = ip_network(f"{subnet}.0/24", strict=False)
+            if not isinstance(subnet, str) or not subnet or "/" in subnet:
+                raise ValueError("subnet must be a bare prefix without CIDR mask")
+            parts = subnet.split(".")
+            if len(parts) not in (2, 3):
+                raise ValueError("subnet must be 2 or 3 octets (e.g., '192.168' or '192.168.1')")
+            # 2段前缀 → 补 .0.0/24（如 192.168 → 192.168.0.0/24）
+            # 3段前缀 → 补 .0/24（如 192.168.1 → 192.168.1.0/24）
+            if len(parts) == 2:
+                _network = ip_network(f"{subnet}.0.0/24", strict=False)
+            else:
+                _network = ip_network(f"{subnet}.0/24", strict=False)
             addr = _network.network_address
             is_rfc1918 = (
                 addr in ip_network("10.0.0.0/8")
