@@ -998,12 +998,24 @@ def create_app() -> FastAPI:
 
         subnet = (payload or {}).get("subnet", "192.168")
         try:
-            # Validate that the subnet prefix is a valid private CIDR prefix
-            # (e.g. "192.168", "10.0.0", "172.16").  We do NOT allow scanning
-            # public ranges to prevent SSRF / network enumeration abuse.
+            # Validate that the subnet prefix is a valid RFC1918 private CIDR prefix.
+            # Only 10.x, 172.16-31.x, and 192.168.x are accepted for LAN scanning.
+            # We construct a /24 from the prefix so ip_network validates the format,
+            # then check the network address falls strictly inside RFC1918 ranges.
+            from ipaddress import ip_network
+
             _network = ip_network(f"{subnet}.0/24", strict=False)
-            if not _network.is_private:
-                raise HTTPException(400, "Only private-network (RFC1918) subnets are allowed")
+            addr = _network.network_address
+            is_rfc1918 = (
+                addr in ip_network("10.0.0.0/8")
+                or addr in ip_network("172.16.0.0/12")
+                or addr in ip_network("192.168.0.0/16")
+            )
+            if not is_rfc1918:
+                raise HTTPException(
+                    400,
+                    "Only RFC1918 private subnets (10.x, 172.16-31.x, 192.168.x) are allowed",
+                )
         except ValueError as exc:
             raise HTTPException(400, f"Invalid subnet format: {exc}") from exc
         discovery = LocalModelDiscovery(timeout=2.0)
