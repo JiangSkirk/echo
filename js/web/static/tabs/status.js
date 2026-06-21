@@ -1,4 +1,5 @@
 import { showLoading, showError, showToast, escapeHtml } from '../utils/dom.js';
+import { state } from '../state/store.js';
 
 // Fixed Tailwind classes per health state (no string interpolation, so the
 // CDN build always ships these utilities).
@@ -30,10 +31,78 @@ export async function loadStatus() {
       </details>`;
     document.getElementById('status-content').innerHTML = html;
     await loadDesktopWizard();
+    await loadSessionCapsule();
   } catch (e) {
     showError('status-content', '加载失败: ' + e.message);
   }
 }
+
+// ── Session Capsule ──
+
+async function loadSessionCapsule() {
+  const textEl = document.getElementById('session-capsule-text');
+  const metaEl = document.getElementById('session-capsule-meta');
+  if (!textEl || !metaEl) return;
+  const sessionId = state.sessionId;
+  if (!sessionId) {
+    textEl.textContent = '未选择会话';
+    metaEl.textContent = '';
+    return;
+  }
+  try {
+    const res = await fetch('/api/sessions/' + encodeURIComponent(sessionId) + '/capsule');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    textEl.textContent = data.capsule_text || '暂无胶囊';
+    if (data.updated_at) {
+      const d = new Date(data.updated_at * 1000);
+      metaEl.textContent = '更新于 ' + d.toLocaleString();
+    } else {
+      metaEl.textContent = '';
+    }
+  } catch (e) {
+    textEl.textContent = '加载失败: ' + e.message;
+    metaEl.textContent = '';
+  }
+}
+
+export async function refreshSessionCapsule() {
+  const sessionId = state.sessionId;
+  if (!sessionId) return showToast('未选择会话', 'error');
+  try {
+    const res = await fetch(
+      '/api/sessions/' + encodeURIComponent(sessionId) + '/capsule/refresh',
+      { method: 'POST' }
+    );
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if (data.capsule_text !== undefined) {
+      showToast('胶囊已刷新', 'success');
+    } else {
+      showToast(data.reason || '刷新失败', 'error');
+    }
+    await loadSessionCapsule();
+  } catch (e) {
+    showToast('刷新失败: ' + e.message, 'error');
+  }
+};
+
+export async function clearSessionCapsule() {
+  const sessionId = state.sessionId;
+  if (!sessionId) return showToast('未选择会话', 'error');
+  if (!confirm('确定要清空当前会话的胶囊吗？')) return;
+  try {
+    const res = await fetch(
+      '/api/sessions/' + encodeURIComponent(sessionId) + '/capsule',
+      { method: 'DELETE' }
+    );
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    showToast('胶囊已清空', 'success');
+    await loadSessionCapsule();
+  } catch (e) {
+    showToast('清空失败: ' + e.message, 'error');
+  }
+};
 
 // ── Desktop Control First-Use Wizard ──
 

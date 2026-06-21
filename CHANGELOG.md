@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.3-alpha] - 2026-06-21
 
+### Added
+
+- **Session Capsule (Lite MVP)**: per-session short context summary stored in `session_capsules`, injected as "capsule + recent 6 turns" for long sessions to reduce prompt tokens.
+  - Triggered when total run tokens exceed `memory.capsule_token_threshold` (default 1500).
+  - Owner-isolated via `owner_key_hash`; configurable via `MemoryConfig`.
+  - Minimal API (`/api/sessions/{session_id}/capsule`) and Status Tab UI.
+  - Automatic fallback to full history on any error.
+
 ### Fixed
 
 - **Benchmark regression**: Removed `/` from default `protected_paths` so normal workspace file writes are no longer incorrectly blocked by the `path_protection` defense strategy.
@@ -26,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Verified
 
-- `pytest tests/ -q --tb=short` → 1230 passed, 2 skipped, 11 deselected
+- `pytest tests/ -q --tb=short` → 1237 passed, 2 skipped, 11 deselected
 - `ruff check js/ tests/ scripts/` → All checks passed
 - `mypy js/ --no-error-summary` → zero errors
 - `python -m benchmarks.runner --mock` → Overall score 1.000 / Baseline 1.000

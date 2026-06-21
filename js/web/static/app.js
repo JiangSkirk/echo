@@ -13,7 +13,7 @@ import {
   updateProviderKey, hideProviderKeyModal, submitProviderKeyUpdate,
 } from './tabs/models.js';
 import { loadFiles } from './tabs/files.js';
-import { loadStatus } from './tabs/status.js';
+import { loadStatus, refreshSessionCapsule, clearSessionCapsule } from './tabs/status.js';
 import { loadAudit } from './tabs/audit.js';
 import { loadTasks, pauseTask, resumeTask, deleteTask, startTasksPolling } from './tabs/tasks.js';
 import { loadScenarios, startScenario, fillScenarioPrompt } from './tabs/scenarios.js';
@@ -1913,6 +1913,7 @@ const _windowFuncs = {
   showToast, escapeHtml, toggleSidebar, renderMarkdown,
   switchTab, sendMessage, toggleFleetMode, newSession, toggleSessionList,
   loadDashboard, loadFiles, loadMemory, loadSkills, loadEvolution, loadStats, loadSearch, doSearch, runEvolutionNow,
+  refreshSessionCapsule, clearSessionCapsule,
   discoverModels, saveProvider, testCloudProvider, toggleAddProvider,
   addCloudProvider, onCloudPresetChange, switchModel, deleteProvider,
   addFleetRoleCard, removeFleetRoleCard, renameFleetRole, saveFleetModelConfig,

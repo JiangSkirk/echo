@@ -96,6 +96,28 @@ class FinalizerMixin(AgentBase):
             except Exception:
                 self.logger.debug("Learning context injection failed", exc_info=True)
 
+        # Session Capsule: summarize long conversations for cheaper follow-up turns
+        if self.settings.memory.capsule_enabled:
+            try:
+                total_tokens = sum(state.total_tokens.values())
+                threshold = self.settings.memory.capsule_token_threshold
+                owner_key_hash = getattr(self, "_session_owner", None)
+                if total_tokens > threshold:
+                    capsule_text = await self._summarize_context(state.messages)
+                    if capsule_text:
+                        await asyncio.to_thread(
+                            self.memory.store_capsule,
+                            session_id,
+                            capsule_text,
+                            owner_key_hash,
+                        )
+                        self.logger.info(
+                            "Session capsule refreshed",
+                            extra={"session": session_id, "tokens": total_tokens},
+                        )
+            except Exception:
+                self.logger.warning("Failed to refresh session capsule", exc_info=True)
+
         # Reset guard counters
         try:
             self.guard.reset_loop_counters(run_id)

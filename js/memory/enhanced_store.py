@@ -305,6 +305,20 @@ class EnhancedMemoryStore:
             except Exception:
                 pass
 
+            # Session capsules: short context summary for long conversations.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS session_capsules (
+                    session_id TEXT PRIMARY KEY,
+                    capsule_text TEXT NOT NULL,
+                    owner_key_hash TEXT,
+                    updated_at REAL NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_session_capsules_owner
+                ON session_capsules(owner_key_hash)
+            """)
+
             # Semantic memory: extracted knowledge / preferences.
             # NOTE: no table-level UNIQUE(key) — uniqueness is per-owner, enforced
             # by the composite index idx_semantic_key below, so the same key can
@@ -831,6 +845,88 @@ class EnhancedMemoryStore:
             )
             for r in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Session Capsules (lightweight context summary for long sessions)
+    # ------------------------------------------------------------------
+
+    def store_capsule(
+        self,
+        session_id: str,
+        capsule_text: str,
+        owner_key_hash: str | None = None,
+    ) -> None:
+        """Store or update a short context capsule for a session."""
+        import time as _time
+
+        redacted = self._secrets.detect_and_redact(capsule_text, f"capsule:{session_id}")
+        with db_connection(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO session_capsules (session_id, capsule_text, owner_key_hash, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    capsule_text=excluded.capsule_text,
+                    owner_key_hash=COALESCE(excluded.owner_key_hash, session_capsules.owner_key_hash),
+                    updated_at=excluded.updated_at
+                """,
+                (session_id, redacted, owner_key_hash, _time.time()),
+            )
+            conn.commit()
+
+    def get_capsule(
+        self,
+        session_id: str,
+        owner_key_hash: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Retrieve a session capsule if it exists and belongs to the owner."""
+        if owner_key_hash is None:
+            owner_clause = "owner_key_hash IS NULL"
+            owner_params: list[Any] = []
+        else:
+            owner_clause = "owner_key_hash = ?"
+            owner_params = [owner_key_hash]
+        with db_connection(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                f"""
+                SELECT session_id, capsule_text, owner_key_hash, updated_at
+                FROM session_capsules
+                WHERE session_id = ? AND {owner_clause}
+                """,
+                (session_id, *owner_params),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "session_id": row["session_id"],
+            "capsule_text": row["capsule_text"],
+            "owner_key_hash": row["owner_key_hash"],
+            "updated_at": row["updated_at"],
+        }
+
+    def delete_capsule(
+        self,
+        session_id: str,
+        owner_key_hash: str | None = None,
+    ) -> bool:
+        """Delete a session capsule. Returns True if a row was removed."""
+        if owner_key_hash is None:
+            owner_clause = "owner_key_hash IS NULL"
+            owner_params: list[Any] = []
+        else:
+            owner_clause = "owner_key_hash = ?"
+            owner_params = [owner_key_hash]
+        with db_connection(self.db_path) as conn:
+            cursor = conn.execute(
+                f"""
+                DELETE FROM session_capsules
+                WHERE session_id = ? AND {owner_clause}
+                """,
+                (session_id, *owner_params),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
 
     def list_sessions(self, limit: int = 30, owner_key_hash: str | None = None) -> list[dict[str, Any]]:
         """List recent conversation sessions that have at least one message."""

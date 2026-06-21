@@ -418,6 +418,36 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
             return self.enhanced.delete_session(session_id, owner_key_hash=owner_key_hash)
         return False
 
+    def store_capsule(
+        self,
+        session_id: str,
+        capsule_text: str,
+        owner_key_hash: str | None = None,
+    ) -> None:
+        """Store or update a short context capsule for a session."""
+        if hasattr(self, "enhanced"):
+            self.enhanced.store_capsule(session_id, capsule_text, owner_key_hash=owner_key_hash)
+
+    def get_capsule(
+        self,
+        session_id: str,
+        owner_key_hash: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Get the session capsule if it exists."""
+        if hasattr(self, "enhanced"):
+            return self.enhanced.get_capsule(session_id, owner_key_hash=owner_key_hash)
+        return None
+
+    def delete_capsule(
+        self,
+        session_id: str,
+        owner_key_hash: str | None = None,
+    ) -> bool:
+        """Delete a session capsule."""
+        if hasattr(self, "enhanced"):
+            return self.enhanced.delete_capsule(session_id, owner_key_hash=owner_key_hash)
+        return False
+
     def get_working(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
         """Get working memories for a session."""
         if hasattr(self, "enhanced"):

@@ -163,6 +163,22 @@ class MemoryConfig(BaseModel):
     auto_apply_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
     context_recency_weight: float = Field(default=0.15, ge=0.0, le=1.0)
     context_recency_half_life_days: float = Field(default=30.0, gt=0.0)
+    # Session Capsule: lightweight context summary for long conversations
+    capsule_enabled: bool = Field(
+        default=True,
+        description="Enable session capsule generation for long conversations",
+    )
+    capsule_token_threshold: int = Field(
+        default=1500,
+        ge=0,
+        description="Estimated token threshold to trigger capsule generation",
+    )
+    capsule_recent_turns: int = Field(
+        default=6,
+        ge=1,
+        le=20,
+        description="Number of recent user/assistant turns to keep verbatim when capsule is used",
+    )
 
 
 class DisplayConfig(BaseModel):

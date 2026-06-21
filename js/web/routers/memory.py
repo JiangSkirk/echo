@@ -489,3 +489,84 @@ async def memory_embedder_recover(
         "recovered": False,
         "method": "none",
     }
+
+
+# ------------------------------------------------------------------
+# Session Capsule
+# ------------------------------------------------------------------
+
+
+@router.get("/api/sessions/{session_id}/capsule")
+async def get_session_capsule(
+    session_id: str,
+    auth: dict[str, Any] = Depends(require_auth_dep),
+) -> dict[str, Any]:
+    """Get the session capsule for the current session (owner-isolated)."""
+    agent = get_agent()
+    owner = memory_owner(auth)
+    capsule = await asyncio.to_thread(
+        agent.memory.get_capsule,
+        session_id=session_id,
+        owner_key_hash=owner,
+    )
+    if capsule is None:
+        return {"session_id": session_id, "capsule_text": "", "updated_at": None}
+    return {
+        "session_id": capsule["session_id"],
+        "capsule_text": capsule["capsule_text"],
+        "updated_at": capsule["updated_at"],
+    }
+
+
+@router.post("/api/sessions/{session_id}/capsule/refresh")
+async def refresh_session_capsule(
+    session_id: str,
+    auth: dict[str, Any] = Depends(require_auth_dep),
+) -> dict[str, Any]:
+    """Regenerate the session capsule from current session messages."""
+    agent = get_agent()
+    owner = memory_owner(auth)
+    try:
+        messages = await asyncio.to_thread(
+            agent.memory.get_session_messages,
+            session_id=session_id,
+            owner_key_hash=owner,
+        )
+        from js.models.providers import ChatMessage
+
+        chat_messages = [
+            ChatMessage(role=m["role"], content=m["content"])
+            for m in messages
+            if m.get("role") in ("user", "assistant") and m.get("content")
+        ]
+        if not chat_messages:
+            return {"session_id": session_id, "refreshed": False, "reason": "no messages"}
+        capsule_text = await agent._summarize_context(chat_messages)
+        if not capsule_text:
+            return {"session_id": session_id, "refreshed": False, "reason": "empty summary"}
+        await asyncio.to_thread(
+            agent.memory.store_capsule,
+            session_id=session_id,
+            capsule_text=capsule_text,
+            owner_key_hash=owner,
+        )
+        return {"session_id": session_id, "refreshed": True, "capsule_text": capsule_text}
+    except Exception as e:
+        logger.warning("Failed to refresh session capsule", exc_info=True)
+        raise HTTPException(500, f"Failed to refresh capsule: {e}") from e
+
+
+@router.delete("/api/sessions/{session_id}/capsule")
+async def delete_session_capsule(
+    session_id: str,
+    auth: dict[str, Any] = Depends(require_auth_dep),
+) -> dict[str, Any]:
+    """Clear the session capsule for the current session."""
+    agent = get_agent()
+    owner = memory_owner(auth)
+    deleted = await asyncio.to_thread(
+        agent.memory.delete_capsule,
+        session_id=session_id,
+        owner_key_hash=owner,
+    )
+    return {"session_id": session_id, "deleted": deleted}

@@ -11,6 +11,16 @@ This alpha release is a quality-gate and release-hardening patch on top of v0.1.
   - Added `httpx2` to dev dependencies so Starlette's `TestClient` no longer emits a deprecation warning when using plain `httpx`.
 - **Clean release smoke output**: `MemoryOrganizer` now prints a short Chinese degrade message instead of a full Rich traceback when no model is configured.
 
+## Added
+
+- **Session Capsule (Lite MVP)**: reduces token consumption for long sessions by persisting a short per-session context summary (`session_capsules`) and injecting "capsule + recent 6 turns" instead of the full history on subsequent model calls.
+  - Triggered automatically when total run tokens exceed `capsule_token_threshold` (default 1500).
+  - Fully owner-isolated via `owner_key_hash`.
+  - Configurable via `memory.capsule_enabled`, `memory.capsule_token_threshold`, `memory.capsule_recent_turns`.
+  - Minimal API: `GET/POST/DELETE /api/sessions/{session_id}/capsule`.
+  - Minimal Status Tab UI for viewing, refreshing, and clearing the capsule.
+  - Falls back to the original full-history logic on any capsule error.
+
 ## Changed
 
 - `.gitignore` now excludes `.playwright-mcp/` runtime cache files.
@@ -19,7 +29,7 @@ This alpha release is a quality-gate and release-hardening patch on top of v0.1.
 
 ## Verified
 
-- `pytest tests/ -q --tb=short` → 1230 passed, 2 skipped, 11 deselected
+- `pytest tests/ -q --tb=short` → 1237 passed, 2 skipped, 11 deselected
 - `ruff check js/ tests/ scripts/` → All checks passed
 - `mypy js/ --no-error-summary` → zero errors
 - `python -m benchmarks.runner --mock` → Overall score 1.000 / Baseline 1.000

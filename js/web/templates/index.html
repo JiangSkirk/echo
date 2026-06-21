@@ -879,6 +879,23 @@
     <div class="max-w-4xl mx-auto">
       <h2 class="text-xl font-bold mb-4">系统状态</h2>
 
+      <!-- Session Capsule Card -->
+      <div id="session-capsule-card" class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-4">
+        <div class="flex justify-between items-center mb-2">
+          <div class="font-medium">会话胶囊</div>
+          <div class="flex gap-2">
+            <button onclick="refreshSessionCapsule()" class="text-xs bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded transition">
+              <i class="fas fa-sync-alt mr-1"></i>刷新
+            </button>
+            <button onclick="clearSessionCapsule()" class="text-xs bg-red-600 hover:bg-red-700 px-2 py-1 rounded transition">
+              <i class="fas fa-trash mr-1"></i>清空
+            </button>
+          </div>
+        </div>
+        <div id="session-capsule-text" class="text-xs text-gray-400">加载中...</div>
+        <div id="session-capsule-meta" class="text-xs text-gray-500 mt-1"></div>
+      </div>
+
       <!-- Desktop Control Card -->
       <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-4">
         <div class="flex items-center gap-3 mb-2">

@@ -263,16 +263,42 @@ class TurnExecutor:
                 if m.role in ("user", "assistant") and isinstance(m.content, str)
             )
 
+            # Session Capsule: for long sessions, keep only recent turns verbatim
+            # and inject a short capsule summary into the system message.
+            capsule_text = ""
+            if agent.settings.memory.capsule_enabled:
+                try:
+                    from js.web.auth import _session_owner_hash
+
+                    owner = _session_owner_hash.get(None)
+                    capsule = await asyncio.to_thread(
+                        agent.memory.get_capsule, self.session_id, owner
+                    )
+                    if capsule:
+                        capsule_text = capsule.get("capsule_text", "") or ""
+                        if capsule_text:
+                            recent_turns = agent.settings.memory.capsule_recent_turns
+                            recent_messages = recent_turns * 2
+                            kept = state.messages[-recent_messages:] if len(state.messages) > recent_messages else state.messages
+                            state.messages = [
+                                m for m in kept
+                                if m.role in ("user", "assistant") and isinstance(m.content, str)
+                            ]
+                            self.history_ua_count = len(state.messages)
+                except Exception:
+                    agent.logger.warning("Failed to load session capsule", exc_info=True)
+                    capsule_text = ""
+
             # Initialize conversation with rich memory context
+            system_content = agent._build_system_message(
+                query=self.user_input, session_id=self.session_id,
+                attachments=self.attachments, model=self.model,
+            )
+            if capsule_text:
+                system_content += f"\n\n## Session Capsule\n{capsule_text}\n\nOnly the most recent {agent.settings.memory.capsule_recent_turns} turns are shown verbatim; rely on the capsule for older context."
             state.messages.insert(
                 0,
-                ChatMessage(
-                    role="system",
-                    content=agent._build_system_message(
-                        query=self.user_input, session_id=self.session_id,
-                        attachments=self.attachments, model=self.model,
-                    ),
-                ),
+                ChatMessage(role="system", content=system_content),
             )
 
             # Build user message: support multimodal for vision models
