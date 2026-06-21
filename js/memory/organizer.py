@@ -96,7 +96,7 @@ class MemoryOrganizer:
         try:
             content = await self._call_llm(transcript)
         except Exception as e:  # noqa: BLE001 — background task must not crash
-            logger.warning("MemoryOrganizer LLM call failed: %s", e, exc_info=True)
+            logger.warning("记忆整理 LLM 调用失败，已降级跳过：%s", e)
             report["error"] = str(e)
             return report
 
