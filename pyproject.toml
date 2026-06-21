@@ -66,6 +66,7 @@ dev = [
     "types-PyYAML>=6.0",
     "types-psutil>=6.1",
     "types-reportlab>=4.0",
+    "httpx2>=2.4",  # Starlette TestClient prefers httpx2 over plain httpx
 ]
 [project.scripts]
 js = "js.__main__:main"

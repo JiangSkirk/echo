@@ -217,6 +217,12 @@ class TestDNSRebindingDefense:
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=None)
 
+            mock_response = MagicMock()
+            mock_response.is_redirect = False
+            mock_response.text = "hello"
+            mock_response.raise_for_status = MagicMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+
             await tool.fetch("http://example.com/test")
 
             mock_resolve.assert_called_once_with(
@@ -255,7 +261,7 @@ class TestDNSRebindingDefense:
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=None)
 
-            mock_response = AsyncMock()
+            mock_response = MagicMock()
             mock_response.status_code = 200
             mock_response.json.return_value = {"data": []}
             mock_response.raise_for_status = MagicMock()

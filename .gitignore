@@ -36,6 +36,7 @@ Thumbs.db
 .ruff_cache/
 .coverage
 htmlcov/
+.playwright-mcp/
 
 # Build
 build/

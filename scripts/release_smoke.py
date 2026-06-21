@@ -105,9 +105,12 @@ def _request_json(
     method: str = "GET",
     body: dict[str, Any] | None = None,
     timeout: float = 8.0,
+    extra_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     data = None
     headers = {"Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
     if body is not None:
         data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -222,6 +225,7 @@ def check_web_and_model(base: Path) -> None:
                     "base_url": f"http://127.0.0.1:{_free_port()}/v1",
                     "models": [{"id": model_id, "name": "Smoke Model"}],
                 },
+                extra_headers={"Origin": base_url},
             )
             if connect.get("provider") != provider_name or connect.get("models_added") != 1:
                 raise SmokeError(f"Provider 添加返回异常: {connect}")
@@ -230,6 +234,7 @@ def check_web_and_model(base: Path) -> None:
                 f"{base_url}/api/models/switch",
                 method="POST",
                 body={"model_id": f"{provider_name}/{model_id}"},
+                extra_headers={"Origin": base_url},
             )
             if not switch.get("success"):
                 raise SmokeError(f"模型切换失败: {switch}")

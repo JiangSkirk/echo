@@ -92,7 +92,6 @@ class SecurityConfig(BaseModel):
     defense_mode: DefenseMode = DefenseMode.ENFORCE
     protected_paths: list[str] = Field(
         default_factory=lambda: [
-            "/",
             "/etc",
             "/usr",
             "/bin",
