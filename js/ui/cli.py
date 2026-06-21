@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from js import __version__
 from js.agent import JSAgent
 from js.config import JSSettings
 from js.utils.log import configure_logging, get_logger
@@ -53,7 +54,7 @@ class JSCLI:
         session = self._get_session()
 
         console.print(Panel.fit(
-            "[bold cyan]JS Agent[/bold cyan] v0.1.1\n"
+            f"[bold cyan]JS Agent[/bold cyan] v{__version__}\n"
             "Type your message or [bold]/help[/bold] for commands, [bold]/quit[/bold] to exit.",
             title="Welcome",
             border_style="cyan",

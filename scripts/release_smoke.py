@@ -44,7 +44,7 @@ def _short(text: str, limit: int = 4000) -> str:
 def _write_config(base: Path) -> Path:
     config_path = base / "config.yaml"
     config = {
-        "version": "0.1.1",
+        "version": "0.1.3",
         "workspace": str(base / "workspace"),
         "state_dir": str(base / "state"),
         "log_level": "INFO",

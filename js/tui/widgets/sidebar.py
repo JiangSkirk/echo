@@ -6,6 +6,8 @@ from typing import Any
 
 from textual.widgets import Static
 
+from js import __version__
+
 
 class Sidebar(Static):
     """Navigation sidebar showing sessions and shortcuts."""
@@ -37,4 +39,4 @@ class Sidebar(Static):
         yield Static("• /clear 清空")
         yield Static("• /status 状态")
         yield Static("")
-        yield Static("[dim]v0.1.1[/dim]")
+        yield Static(f"[dim]v{__version__}[/dim]")

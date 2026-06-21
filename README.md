@@ -1,6 +1,6 @@
 # JS Agent
 
-> **⚠️ 当前版本: v0.1.2-alpha — API 可能变更，欢迎反馈！**
+> **⚠️ 当前版本: v0.1.3-alpha — API 可能变更，欢迎反馈！**
 >
 > [English README](README_en.md)
 
@@ -231,8 +231,8 @@ pip install -e ".[dev]"
 python -m build
 
 # 产物位于 dist/
-#   js_agent-0.1.1-py3-none-any.whl
-#   js_agent-0.1.1.tar.gz
+#   js_agent-0.1.3-py3-none-any.whl
+#   js_agent-0.1.3.tar.gz
 ```
 
 ## 已知限制

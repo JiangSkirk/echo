@@ -258,7 +258,7 @@ class TestSetupCompleteProvisioning:
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump({
-            "version": "0.1.1",
+            "version": "0.1.3",
             "first_run_completed": False,
             # Pin to tmp dirs so the test never touches the real ~/.js state.
             "state_dir": str(tmp_path / "state"),
