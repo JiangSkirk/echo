@@ -553,7 +553,8 @@ async def refresh_session_capsule(
         return {"session_id": session_id, "refreshed": True, "capsule_text": capsule_text}
     except Exception as e:
         logger.warning("Failed to refresh session capsule", exc_info=True)
-        raise HTTPException(500, f"Failed to refresh capsule: {e}") from e
+        status = 503 if "No models configured" in str(e) else 500
+        raise HTTPException(status, f"Failed to refresh capsule: {e}") from e
 
 
 @router.delete("/api/sessions/{session_id}/capsule")
