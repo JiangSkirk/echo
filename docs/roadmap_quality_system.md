@@ -1,13 +1,15 @@
 # JS Agent 质量体系建设路线图
 
-> 原则：不堆新功能，专注补齐体系化能力 —— 测得准、看得清、控得住、恢复快。
+> 原则：不堆新功能，专注补齐 Harness 的体系化能力 —— 测得准、看得清、控得住、恢复快。
+>
+> JS Agent 是本地个人 Agent Harness，不是聊天机器人。质量建设围绕「模型驾驭系统」的可靠性展开。
 
 ---
 
 ## Phase 1：可观测性与安全基线（2-3 天）
 
 ### 1.1 可观测性仪表盘补全
-**目标**：让系统内部状态对外可见、可度量、可告警。
+**目标**：让 Harness 内部状态对外可见、可度量、可告警。
 
 - **Skill 级 Metrics**
   - 在 `js/utils/metrics.py` 新增 `skill_latency_seconds`、`skill_success_rate_gauge`、`skill_usage_total`
@@ -26,7 +28,7 @@
   - 在现有 `index.html` 新增：Provider 健康热力图、Skill 成功率排行、Memory 检索质量趋势
 
 ### 1.2 安全策略测试体系
-**目标**：每次代码变更后，自动验证防御策略不被绕过。
+**目标**：每次代码变更后，自动验证 Harness 的防御策略不被绕过。
 
 - **Red-team 测试套件** `tests/test_redteam.py`
   - 收集常见越狱模板：DAN、Developer Mode、Ignore previous instructions、Roleplay
@@ -46,7 +48,7 @@
 ## Phase 2：Provider 健康与 Skill 权限体系（2-3 天）
 
 ### 2.1 Provider 健康检查 & 降级模式
-**目标**：单点故障不影响服务，用户可感知降级。
+**目标**：单点故障不影响 Harness 运行，用户可感知降级。
 
 - **Degraded Mode**
   - 当所有 provider 不可用时，`JSAgent` 进入 `degraded` 状态
@@ -84,7 +86,13 @@
 ## Phase 3：记忆质量与任务恢复（3-4 天）
 
 ### 3.1 记忆质量控制体系
-**目标**：记住该记的，忘该忘的，检索准、不冲突。
+**目标**：Harness 记住该记的，忘该忘的，检索准、不冲突。
+
+- **Session Capsule Lite 质量门禁**
+  - 胶囊是短期上下文摘要，不替代语义长期记忆；长期化前先建立摘要保真度评估。
+  - 记录 capsule 版本、来源消息范围、最近原文保留轮数、生成模型和 token 节省比例。
+  - 增加 owner 隔离、secrets 脱敏、无模型降级、短会话不触发、失败回退的回归测试。
+  - 对长会话做漂移检测：关键目标、决策、待办丢失时提示刷新或回退完整历史。
 
 - **相关性反馈循环**
   - `MemoryStore` 新增 `feedback(memory_id, helpful: bool)` API
@@ -105,7 +113,7 @@
   - 记录 retrieval precision/recall 到 metrics
 
 ### 3.2 真实任务 Benchmark
-**目标**：可量化地衡量 Agent 在真实任务上的表现，防止退化。
+**目标**：可量化地衡量 Harness 在真实任务上的表现，防止退化。
 
 - **Benchmark 框架** `benchmarks/`
   - `benchmarks/tasks/`：定义任务（输入、期望输出/行为、评分标准）
@@ -125,7 +133,7 @@
   - CI 中运行 benchmark，如果分数下降 > 5%，标记为失败
 
 ### 3.3 任务中断恢复能力
-**目标**：Agent 可以被随时中断，状态不丢，恢复后可继续。
+**目标**：Harness 可以被随时中断，状态不丢，恢复后可继续。
 
 - **AgentState 持久化**
   - `AgentState` 序列化到 SQLite（`state_runs` 表）：`session_id`, `run_id`, `turn_count`, `messages`, `tool_results`, `status`
@@ -168,7 +176,7 @@ Week 2
 
 - [ ] Web UI 能看到 Provider 健康热力图、Skill 成功率、Memory 检索质量
 - [ ] `pytest tests/test_redteam.py` 100% 通过
-- [ ] 拔掉主 Provider 网线，Agent 自动降级，5 秒内切换到备用 Provider
+- [ ] 拔掉主 Provider 网线，Harness 自动降级，5 秒内切换到备用 Provider
 - [ ] 恶意 Skill 无法访问网络或写出工作区外文件
 - [ ] 所有 Builtin Skill 通过回归测试
 - [ ] Memory 检索 top-3 准确率达到可接受基线（>70%）

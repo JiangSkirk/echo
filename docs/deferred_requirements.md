@@ -1,6 +1,9 @@
 # 延期需求记录（Deferred Requirements）
 
 > 目的：登记当前明确"暂不实现、仅保留需求"的功能，避免遗忘；待时机成熟再排期。
+>
+> JS Agent 是本地个人 Agent Harness，延期需求不影响 Harness 核心驾驭能力。
+>
 > 决策日期：2026-06-05
 > 决策人：用户（工厂负责人）
 > 当前优先级：**P0 装好即用 / P1 知识·SOP 问答助手**。以下各项在 P1 完成并稳定前不实现。
@@ -9,7 +12,7 @@
 
 ## 1. NiceLabel Pro 4.1 条码自动化（原路线图 P2）
 
-- **需求**：用 JS Agent 驱动 NiceLabel Pro 4.1 完成条码 / 标签的自动生成与打印，服务工厂日常贴标。
+- **需求**：用 JS Agent Harness 驱动 NiceLabel Pro 4.1 完成条码 / 标签的自动生成与打印，服务工厂日常贴标。
 - **现状**：**暂不实现**。NiceLabel Pro 仅 Windows 平台；当前开发与验收均在 macOS。
 - **依赖 / 前置**：
   - 需要 Windows 部署能力（见第 2 项）。
@@ -20,7 +23,7 @@
 
 ## 2. Windows 部署支持
 
-- **需求**：JS Agent 可在 Windows 上安装运行（面向工厂 Windows 机器 / NiceLabel 环境）。
+- **需求**：JS Agent Harness 可在 Windows 上安装运行（面向工厂 Windows 机器 / NiceLabel 环境）。
 - **现状**：**暂不实现**。当前为 macOS 开发 + fresh-install 验收。
 - **前置**：
   - Windows 版启动脚本（对应 `scripts/macos_start.sh`）。

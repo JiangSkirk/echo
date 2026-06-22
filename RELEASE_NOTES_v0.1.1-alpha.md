@@ -1,8 +1,8 @@
-# JS Agent v0.1.1-alpha
+# JS Agent v0.1.1-alpha — Harness Preview
 
-This is a macOS-first public testing release of JS Agent.
+This is a macOS-first public testing release of the JS Agent Harness.
 
-JS Agent is an AI agent framework focused on long-term memory, reliable local model access, convenient setup, skill compatibility, and practical Web UI usage. This alpha release is meant for early users who want to try the project on macOS and help validate real-world installation and model-provider workflows.
+JS Agent is not a chatbot. It is a local personal agent harness that wraps your chosen model with persistent memory, tool execution, safety guardrails, and task recovery. This alpha release is meant for early users who want to try the harness on macOS and help validate real-world installation and model-provider workflows.
 
 ## Release Positioning
 
@@ -119,4 +119,4 @@ Please report:
 - memory reliability issues
 - confusing setup steps
 
-This release is intended to validate whether JS Agent can become a convenient, reliable agent that ordinary users can install and run without heavy manual configuration.
+This release is intended to validate whether JS Agent can become a convenient, reliable harness that ordinary users can install and run without heavy manual configuration.

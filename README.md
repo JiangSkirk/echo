@@ -1,67 +1,61 @@
-# JS Agent
+# JS Agent — 本地个人 Agent Harness
 
 > **⚠️ 当前版本: v0.1.3-alpha — API 可能变更，欢迎反馈！**
 >
 > [English README](README_en.md)
 
-一个融合 OpenClaw 和 Hermes 架构精华的 AI Agent 框架，在架构现代性上领先，在生态成熟度上持续追赶。
+JS Agent 不是聊天机器人，而是一套**本地个人 Agent Harness**——围绕你选择的模型，提供记忆持久化、上下文胶囊、工具执行、安全护栏、测试反馈、模型切换和任务复盘的一整套本地驾驭系统。
 
-## 核心特性
+模型只是引擎。Harness 才是让引擎能安全、持续、可复用地完成实际工作的完整车架。
 
-### 🔒 安全优先 (Security-First)
-- **分层沙箱**: 所有命令在隔离环境中执行，支持白名单/黑名单
-- **策略模式防御** (from OpenClaw): 工具调用防御不是硬编码 if-else，是可注入、可排序的策略对象
-- **Fail-Open 语义** (from OpenClaw): 安全子系统自身崩溃时不阻断主系统（防止安全成为单点故障）
-- **秘密管理**: 自动检测和屏蔽 API keys、tokens，持久化加密存储（Fernet 密钥存储在 `~/.js/state/.secret_key`，权限 0o600；建议生产环境手动设置 `JS_MASTER_KEY` 环境变量以覆盖自动生成的密钥）
-- **行为审计**: 完整记录每个工具调用，哈希链式日志可检测意外篡改/截断（注意：无密钥哈希链可被具有数据库写权限的攻击者重新计算伪造，迁移到 HMAC-SHA256 见 TECH_DEBT.md）
+## 核心驾驭能力
+
+### 🧠 记忆与上下文胶囊
+- **三层记忆**: 工作记忆（即时）→ 情景记忆（会话历史）→ 语义记忆（长期知识），全部本地 SQLite 存储
+- **Session Capsule Lite（实验性）**: 长会话超过阈值后生成 per-session 短摘要，后续调用注入「胶囊 + 最近 6 轮」而非完整历史，用于减少 prompt token；它是短期上下文记忆，不是完整长期记忆系统
+- **梦境整合**: 夜间自动合并碎片化记忆，去重、提炼、生成关联索引
+- **完全本地**: 记忆数据存储在 `~/.js/` 下，owner 隔离，不上传云端
+
+### 🔧 工具执行与编排
+- **文件操作**: 带路径沙箱的安全文件读写，Workspace 外写入需确认
+- **Shell 执行**: 分层沙箱环境，支持白名单/黑名单策略
+- **代码执行**: 资源受限的 Python 脚本运行，超时/内存限制
+- **浏览器**: 网页抓取与内容提取
+- **Office**: Excel/PDF 生成与解析
+- **并行执行**: 独立工具可并发调用，减少等待
+
+### 🛡️ 安全护栏（Defense in Depth）
+- **策略模式防御**: 工具调用防御不是硬编码 if-else，是可注入、可排序的策略对象
+- **Fail-Open 语义**: 安全子系统自身崩溃/故障时不阻断主系统（防止安全成为单点故障）
+- **行为审计**: 完整记录每个工具调用，哈希链式日志可检测篡改/截断
 - **路径保护**: 防止误删系统文件，Workspace 外写操作需确认
+- **秘密管理**: 自动检测和屏蔽 API keys、tokens，持久化加密存储
 
-### 🛡️ 极致稳定 (Stability)
-- **进程隔离**: 子 agent 崩溃不影响主进程
-- **断路器模式** (from OpenClaw): 服务故障时快速拒绝，自动恢复探测
-- **自动恢复**: 模型调用失败自动重试，支持多 provider 降级
-- **Stale-Code 自动重启** (from Hermes): 更新检测 + 自重启
-- **Gateway 优雅排空** (from OpenClaw): SIGTERM 等待活跃任务完成
-- **状态持久化**: SQLite 存储，断点续传
-- **资源监控**: 内存/CPU 超限自动保护
+### 🔄 模型切换与韧性
+- **本地模型自动发现**: LM Studio（端口 1234）、Ollama（端口 11434）自动检测
+- **多 Provider 支持**: OpenAI / DeepSeek / DashScope / SiliconFlow 等 OpenAI-compatible 接口
+- **故障转移**: 主模型不可用时自动降级到备用 Provider
+- **断路器模式**: 服务故障时快速拒绝，自动恢复探测
+- **上下文窗口感知**: 自动推断模型上下文长度，超限前触发压缩
 
-### 🧠 上下文压缩器 (from Hermes)
-- **保护头部**: 系统提示词和初始上下文不被压缩
-- **保护尾部**: 最近 N 轮对话完整保留
-- **压缩中间**: 旧对话生成摘要，带 Handoff Framing 防止误读
-- **工具输出裁剪**: 过长的工具结果先截断再压缩
-- **多模态感知**: 图片内容按固定 token 估算
-
-### ✅ 增强审批系统 (from Hermes)
-- **分层模式**: 手动 / 自动通过 / 自动拒绝 / 定时任务拒绝
+### ✅ 审批与任务复盘
+- **分层审批**: 手动 / 自动通过 / 自动拒绝 / 定时任务拒绝
 - **异步队列**: WebSocket 会话的非阻塞审批
-- **会话回调**: 支持 UI 弹窗确认
+- **检查点恢复**: 每轮对话自动 checkpoint，中断后可从断点继续
+- **任务状态持久化**: SQLite 存储会话状态，支持「继续对话」
 
-### 🔍 本地模型自动发现
-- **LM Studio**: 自动检测端口 1234
-- **Ollama**: 自动检测端口 11434
-- **模型列表获取**: 自动拉取可用模型并推断上下文窗口
+### 🧩 Skill 系统（可扩展工作流）
+- **三种类型**: Code（可执行脚本）、Prompt（LLM 指令文档）、Workflow（轻量自动化链）
+- **安全扫描**: 安装时自动检测 eval/exec、子进程、网络、文件删除等风险模式
+- **四级信任**: builtin → trusted → community → quarantine
+- **Hermes 兼容**: 支持 Hermes 格式 skill 的直接安装与运行
 
-### 🔍 网络搜索
-- **DuckDuckGo**: 免费，无需 API Key，开箱即用
-- **Tavily**: 高质量 AI 搜索（可选）
-- **Serper**: Google 搜索（可选）
-- **自动降级**: 一个引擎失败自动切换下一个
-
-### 🚀 App 级安装体验
-- **一键配置**: `js setup` 自动检测一切
-- **非交互模式**: `js setup -y` 适合 CI/CD
-
-### 🌐 WebUI
-- **FastAPI + WebSocket**: 实时流式对话
-- **模型管理**: 查看本地模型状态和健康检查
-- **网络搜索**: 独立搜索面板
-- **文件浏览器 / 审计 / Skills / 多Agent / 进化仪表板**
-
-### 🤖 多 Agent 协作 + 🧬 自主学习 + 🧩 Skill 进化
-- **角色系统**: Coder、Reviewer、Researcher、Tester
-- **A/B 测试**: Prompt 和 Skill 自动优胜劣汰
-- **交互学习**: 从成功/失败中提取模式
+### 🌐 本地 Web 界面
+- **FastAPI + WebSocket**: 实时流式对话，无需 Next.js 重型依赖
+- **模型管理面板**: 查看本地模型状态、健康检查、一键切换
+- **记忆浏览器**: 查看、搜索、管理持久化记忆
+- **审计日志**: 完整工具调用历史，支持追溯
+- **Skill 面板**: 安装、卸载、信任调整、在线查看内容
 
 ## 快速开始
 
@@ -111,11 +105,11 @@ pytest tests -q -p no:cacheprovider
 
 ## 架构对比
 
-| 能力 | OpenClaw | Hermes | **JS** |
+| 能力 | OpenClaw | Hermes | **JS Agent** |
 |------|----------|--------|-----------|
 | 运行时 | Node.js (3700 chunks) | Python + Node UI | **Python 3.12+ 统一** |
 | 安全 | 外部插件 (ClawAegis) | Tirith + 审批 | **内置 + 策略模式 + Fail-Open** |
-| 上下文压缩 | ❌ | ✅ 最强 | ✅ **Hermes 式压缩器** |
+| 上下文压缩 | ❌ | ✅ 最强 | ✅ **Hermes 式压缩器 + 上下文胶囊** |
 | Checkpoint | ❌ | ✅ Git Shadow | ✅ **Git Shadow Repo** |
 | 配置缓存 | ❌ | ✅ Stat-based | ⚠️ 已移除 (YAGNI) |
 | 断路器 | ❌ | ❌ | ✅ **自动恢复探测** |
@@ -211,7 +205,7 @@ pytest tests/ -v
 - 路由：Provider failover (8) + Circuit breaker
 - 流水线：Auto-Fetch (20) + Benchmark (11)
 - 取消/恢复：Checkpoint/Resume (10) + Smoke (26)
-- Ruff 零错误，mypy 零错误。
+- 发布门禁：`ruff`、`mypy`、完整测试、benchmark mock、release smoke 均需通过。
 
 ```bash
 # 代码质量检查
@@ -239,6 +233,7 @@ python -m build
 
 - **WebSocket 流式**: 最终 assistant 回复支持原生 token 级流式，工具调用环节保持原子解析。
 - **LM Studio Embeddings**: 需手动在 LM Studio 中开启 Embedding 服务端点，否则自动降级为关键词匹配。
+- **Session Capsule Lite（实验性）**: 当前只提供查看、刷新、清空；失败会回退完整历史；不提供复杂编辑、跨会话长期规划或完整长期记忆保证。
 - **Auto-Fetch Pipeline (实验性)**: Gmail / Slack / Drive / Calendar / GitHub / Notion 连接器目前为 **mock / 实验性**实现，仅用于演示数据流架构。生产环境请使用文件系统连接器 (`file`) 或等待后续稳定版本。
 
 ## 生产部署

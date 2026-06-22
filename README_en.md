@@ -1,65 +1,59 @@
-# JS Agent
+# JS Agent — Local Personal Agent Harness
 
-An AI Agent framework synthesizing the best of OpenClaw and Hermes, leading in architectural modernity and actively growing its ecosystem.
+An AI agent harness, not a chatbot. JS Agent wraps your chosen model with persistent memory, context capsules, tool execution, safety guardrails, test feedback, model switching, and task recovery—so the engine can do real work safely, continuously, and reproducibly.
+
+The model is the engine. The harness is the complete frame that lets the engine work.
 
 > **Status**: v0.1.3-alpha — APIs may change. Feedback welcome!
 
-## Core Features
+## Core Harness Capabilities
 
-### 🔒 Security-First
-- **Layered Sandbox**: All commands execute in an isolated environment with whitelist/blacklist support.
-- **Strategy-Pattern Defense** (from OpenClaw): Tool-call defenses are injectable, ordered strategy objects—not hardcoded if-else chains.
-- **Fail-Open Semantics** (from OpenClaw): When the security subsystem itself crashes/fails, it does not block the main system (prevents security from becoming a single point of failure).
-- **Secret Management**: Auto-detects and redacts API keys, tokens, and passwords; stores them encrypted at rest.
-- **Behavior Audit**: Immutable hash-chained audit log of every tool call, model response, and security event.
-- **Path Protection**: Prevents accidental deletion of system files; writes outside the workspace require confirmation.
+### 🧠 Memory & Context Capsules
+- **Three-layer memory**: Working (immediate) → Episodic (session history) → Semantic (long-term knowledge), all stored locally in SQLite
+- **Session Capsule Lite (experimental)**: Long sessions above the threshold get a short per-session summary; later calls inject "capsule + recent 6 turns" instead of full history to reduce prompt tokens. This is short-term context memory, not a complete long-term memory system
+- **Dream consolidation**: Nightly automatic merging of fragmented memories, deduplication, distillation, and association indexing
+- **Fully local**: Memory data stored under `~/.js/`, owner-isolated, never uploaded to the cloud
 
-### 🛡️ Extreme Stability
-- **Process Isolation**: Sub-agent crashes do not affect the main process.
-- **Circuit Breaker** (from OpenClaw): Fast-fail on service outages with automatic recovery probes.
-- **Auto-Recovery**: Model call failures are retried automatically with multi-provider fallback.
-- **Stale-Code Auto-Restart** (from Hermes): Detects code updates and self-restarts.
-- **Graceful Drain** (from OpenClaw): SIGTERM waits for active tasks to complete.
-- **State Persistence**: SQLite-backed storage with checkpoint resume.
-- **Resource Monitoring**: Memory/CPU limits trigger automatic protection.
+### 🔧 Tool Execution & Orchestration
+- **File operations**: Safe file read/write with path sandboxing; writes outside Workspace require confirmation
+- **Shell execution**: Tiered sandbox environment with whitelist/blacklist policies
+- **Code execution**: Resource-limited Python script execution with timeout/memory limits
+- **Browser**: Web page fetching and content extraction
+- **Office**: Excel/PDF generation and parsing
+- **Parallel execution**: Independent tools can be called concurrently to reduce latency
 
-### 🧠 Context Compressor (from Hermes)
-- **Head Protection**: System prompt and initial context are never compressed.
-- **Tail Protection**: Recent N conversation turns are kept intact.
-- **Middle Compression**: Older turns are summarized with handoff framing to prevent misinterpretation.
-- **Tool Output Truncation**: Overly long tool results are truncated before compression.
-- **Multimodal Awareness**: Images are accounted for with fixed token estimates.
+### 🛡️ Safety Guardrails (Defense in Depth)
+- **Strategy-pattern defense**: Tool-call defenses are injectable, ordered strategy objects—not hardcoded if-else chains
+- **Fail-Open semantics**: When the security subsystem itself crashes/fails, it does not block the main system (prevents security from becoming a single point of failure)
+- **Behavior audit**: Immutable hash-chained audit log of every tool call; tampering/truncation detectable
+- **Path protection**: Prevents accidental deletion of system files; writes outside workspace require confirmation
+- **Secret management**: Auto-detects and redacts API keys, tokens, and passwords; stores them encrypted at rest
 
-### ✅ Enhanced Approval System (from Hermes)
-- **Tiered Modes**: Manual / Auto-approve / Auto-reject / Cron-task reject.
-- **Async Queue**: Non-blocking approval over WebSocket sessions.
-- **Session Callbacks**: UI pop-up confirmation support.
+### 🔄 Model Switching & Resilience
+- **Local model auto-discovery**: LM Studio (port 1234) and Ollama (port 11434) auto-detected
+- **Multi-provider support**: OpenAI / DeepSeek / DashScope / SiliconFlow and other OpenAI-compatible endpoints
+- **Failover**: Automatic downgrade to backup provider when the primary model is unavailable
+- **Circuit breaker**: Fast-fail on service outages with automatic recovery probes
+- **Context-window awareness**: Automatic inference of model context length; compression triggered before overflow
 
-### 🔍 Local Model Auto-Discovery
-- **LM Studio**: Auto-detects port 1234.
-- **Ollama**: Auto-detects port 11434.
-- **Model List Pulling**: Fetches available models and infers context windows automatically.
+### ✅ Approval & Task Recovery
+- **Tiered approval**: Manual / Auto-approve / Auto-reject / Cron-task reject
+- **Async queue**: Non-blocking approval over WebSocket sessions
+- **Checkpoint resume**: Automatic checkpoint after each turn; resume from breakpoint after interruption
+- **Task state persistence**: SQLite-backed session state with "continue conversation" support
 
-### 🔍 Web Search
-- **DuckDuckGo**: Free, no API key, works out of the box.
-- **Tavily**: High-quality AI search (optional).
-- **Serper**: Google search (optional).
-- **Auto-Fallback**: Switches to the next engine if one fails.
+### 🧩 Skill System (Extensible Workflows)
+- **Three types**: Code (executable scripts), Prompt (LLM instruction documents), Workflow (lightweight automation chains)
+- **Security scan**: Automatic detection of eval/exec, subprocess, network, and file-deletion risk patterns during installation
+- **Four trust levels**: builtin → trusted → community → quarantine
+- **Hermes compatible**: Direct installation and execution of Hermes-format skills
 
-### 🚀 App-Level Install Experience
-- **One-Shot Setup**: `js setup` auto-detects everything.
-- **Non-Interactive Mode**: `js setup -y` for CI/CD.
-
-### 🌐 Web UI
-- **FastAPI + WebSocket**: Real-time streaming chat.
-- **Model Management**: View local model status and health checks.
-- **Network Search**: Standalone search panel.
-- **File Browser / Audit / Skills / Multi-Agent / Evolution Dashboard**.
-
-### 🤖 Multi-Agent Collaboration + 🧬 Self-Learning + 🧩 Skill Evolution
-- **Role System**: Coder, Reviewer, Researcher, Tester.
-- **A/B Testing**: Automatic survival-of-the-fittest for prompts and skills.
-- **Interaction Learning**: Extracts patterns from successes and failures.
+### 🌐 Local Web Interface
+- **FastAPI + WebSocket**: Real-time streaming chat without heavy Next.js dependencies
+- **Model management panel**: View local model status, health checks, one-click switching
+- **Memory browser**: View, search, and manage persistent memories
+- **Audit log**: Complete tool-call history with traceability
+- **Skill panel**: Install, uninstall, adjust trust levels, and view content online
 
 ## Quick Start
 
@@ -86,7 +80,7 @@ js search "latest AI developments"
 |---|---|---|---|
 | Runtime | Node.js (3700 chunks) | Python + Node UI | **Unified Python 3.12** |
 | Security | External plugin (ClawAegis) | Tirith + approval | **Built-in + Strategy pattern + Fail-Open** |
-| Context Compression | ❌ | ✅ Best-in-class | ✅ **Hermes-style compressor** |
+| Context Compression | ❌ | ✅ Best-in-class | ✅ **Hermes-style compressor + Context capsules** |
 | Checkpoint | ❌ | ✅ Git Shadow | ✅ **Git Shadow Repo** |
 | Circuit Breaker | ❌ | ❌ | ✅ **Auto-recovery probes** |
 | Model Discovery | ❌ Manual | ❌ Manual | ✅ **Auto-detection** |
@@ -101,10 +95,19 @@ js search "latest AI developments"
 ## Testing
 
 ```bash
-pytest tests/ -v
+ruff check js/ tests/ scripts/
+mypy js/ --no-error-summary
+pytest tests/ -q --tb=short
+python -m benchmarks.runner --mock
+python scripts/release_smoke.py --all
 ```
 
-**608 tests** covering all modules. Ruff zero errors, mypy zero new errors.
+The release gate covers lint, typing, full tests, mock benchmarks, and release smoke.
+
+## Known Limits
+
+- **Session Capsule Lite is experimental**: the API/UI currently support view, refresh, and clear only. Failures fall back to full history; it does not provide complex editing, cross-session planning, or full long-term memory guarantees.
+- **Auto-Fetch Pipeline is experimental**: Gmail / Slack / Drive / Calendar / GitHub / Notion connectors are mock/experimental for architecture demos.
 
 ## Production Deployment
 

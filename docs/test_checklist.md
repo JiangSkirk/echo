@@ -19,8 +19,8 @@ Use this checklist before tagging a release. Tests should pass on all target pla
 | 1.9 | Factory Demo ingestion | `cd demos/factory && python ingest.py` → 5 docs, 5+ chunks loaded | ☐ |
 | 1.10 | Factory Demo query | "What is the fabric of HL-2026-TShirt?" → correct answer from memory | ☐ |
 | 1.11 | Checkpoint/Resume | Cancel a run → refresh page → resume from checkpoint succeeds | ☐ |
-| 1.12 | `pytest tests/ -q` | **662 passed, 0 failed** | ☐ |
-| 1.13 | `ruff check .` + `mypy js/` | **0 errors** | ☐ |
+| 1.12 | `pytest tests/ -q --tb=short` | Full suite passes | ☐ |
+| 1.13 | `ruff check js/ tests/ scripts/` + `mypy js/ --no-error-summary` | 0 errors | ☐ |
 
 ---
 

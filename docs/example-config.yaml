@@ -51,6 +51,10 @@ memory:
   enabled: true
   max_memory_chars: 8000
   auto_summarize: true
+  # Session Capsule Lite: experimental short-term context memory for long sessions.
+  capsule_enabled: true
+  capsule_token_threshold: 1500
+  capsule_recent_turns: 6
 
 display:
   streaming: true

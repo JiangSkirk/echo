@@ -7,11 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.3-alpha] - 2026-06-21
+## [0.1.3-alpha] - 2026-06-22
 
 ### Added
 
-- **Session Capsule (Lite MVP)**: per-session short context summary stored in `session_capsules`, injected as "capsule + recent 6 turns" for long sessions to reduce prompt tokens.
+- **Session Capsule (Lite MVP, experimental)**: per-session short context summary stored in `session_capsules`, injected as "capsule + recent 6 turns" for long sessions to reduce prompt tokens.
+  - Short-term context memory only; not a complete long-term memory system.
   - Triggered when total run tokens exceed `memory.capsule_token_threshold` (default 1500).
   - Owner-isolated via `owner_key_hash`; configurable via `MemoryConfig`.
   - Minimal API (`/api/sessions/{session_id}/capsule`) and Status Tab UI.
@@ -25,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Fixed an `AsyncMock` "never awaited" warning in `tests/test_net_guard_rebinding.py` by mocking HTTP responses with `MagicMock` instead of `AsyncMock`.
   - Added `httpx2` to dev dependencies so Starlette's `TestClient` no longer emits a deprecation warning when using plain `httpx`.
 - **Clean release smoke output**: `MemoryOrganizer` now prints a short Chinese degrade message instead of a full Rich traceback when no model is configured.
+- **Session owner isolation**: runtime session-history loading now enforces the current `owner_key_hash`, and capsule persistence uses the current request owner instead of shared agent state.
 
 ### Changed
 
@@ -34,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Verified
 
-- `pytest tests/ -q --tb=short` → 1237 passed, 2 skipped, 11 deselected
+- `pytest tests/ -q --tb=short` → 1239 passed, 2 skipped, 11 deselected
 - `ruff check js/ tests/ scripts/` → All checks passed
 - `mypy js/ --no-error-summary` → zero errors
 - `python -m benchmarks.runner --mock` → Overall score 1.000 / Baseline 1.000

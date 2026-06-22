@@ -1,6 +1,6 @@
 # 部署指南
 
-本文档介绍如何使用 Docker 和 Docker Compose 部署 JS Agent。
+本文档介绍如何部署 JS Agent Harness——一套围绕本地模型提供记忆、上下文胶囊、工具执行、安全护栏、模型切换和任务复盘的本地个人 Agent Harness。
 
 ---
 
@@ -103,12 +103,12 @@ env_file:
 
 ## 持久化卷说明
 
-JS Agent 使用两个数据卷来实现状态持久化：
+JS Agent Harness 使用两个数据卷来实现状态持久化：
 
 | 卷 | 容器内路径 | 用途 |
 |----|-----------|------|
 | `workspace` | `/app/workspace` | 存放 Agent 运行时生成的工作文件、代码检查点（checkpoints）等 |
-| `state` | `/app/state` | 存放应用状态数据，如会话状态、缓存等 |
+| `state` | `/app/state` | 存放应用状态数据，如会话状态、记忆、缓存等 |
 
 **重要提示**：
 

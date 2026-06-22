@@ -1,6 +1,6 @@
-# JS Agent v0.1.2-alpha
+# JS Agent v0.1.2-alpha — Harness Hardening
 
-This alpha release focuses on making JS Agent more usable as a public macOS-first testing build.
+This alpha release hardens the harness for public macOS-first testing: more stable multi-agent orchestration, improved model connection flow, expanded memory coverage, and cleaner Web UI.
 
 ## Highlights
 
@@ -21,4 +21,4 @@ cd titan-agent
 
 ## Status
 
-This is still an alpha build. It is intended for macOS public testing, real user feedback, and continued iteration.
+This is still an alpha build of the JS Agent Harness. It is intended for macOS public testing, real user feedback, and continued iteration.

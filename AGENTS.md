@@ -1,5 +1,7 @@
 # JS Agent - Developer Guide
 
+JS Agent is a local personal Agent Harness, not a chatbot. It wraps a model with memory, context capsules, tool execution, safety guardrails, test feedback, model switching, and task recovery.
+
 ## Project Structure
 
 ```
