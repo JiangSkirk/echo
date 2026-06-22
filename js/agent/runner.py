@@ -93,13 +93,17 @@ class RunnerMixin(AgentBase):
 
         messages: list[ChatMessage] = []
         # Load historical conversation context
+        from js.web.auth import _session_owner_hash
+        owner = _session_owner_hash.get(None)
         try:
             history = await asyncio.to_thread(
-                self.memory.get_session_messages, session_id
+                self.memory.get_session_messages, session_id, owner
             )
             for m in history[-50:]:
                 if m.get("role") in ("user", "assistant") and m.get("content"):
                     messages.append(ChatMessage(role=m["role"], content=m["content"]))
+        except PermissionError:
+            raise
         except Exception:
             self.logger.warning("Failed to load session history for stream", exc_info=True)
 
@@ -243,7 +247,7 @@ class TurnExecutor:
             # Fresh run: load historical conversation context
             try:
                 history = await asyncio.to_thread(
-                    agent.memory.get_session_messages, self.session_id
+                    agent.memory.get_session_messages, self.session_id, owner
                 )
                 for m in history[-50:]:  # Keep last 50 messages to fit context window
                     if m.get("role") in ("user", "assistant") and m.get("content"):
@@ -254,6 +258,9 @@ class TurnExecutor:
                                 reasoning_content=m.get("reasoning_content"),
                             )
                         )
+            except PermissionError:
+                agent._cancel_tokens.pop(self.session_id, None)
+                raise
             except Exception:
                 agent.logger.warning("Failed to load session history", exc_info=True)
 
@@ -268,9 +275,6 @@ class TurnExecutor:
             capsule_text = ""
             if agent.settings.memory.capsule_enabled:
                 try:
-                    from js.web.auth import _session_owner_hash
-
-                    owner = _session_owner_hash.get(None)
                     capsule = await asyncio.to_thread(
                         agent.memory.get_capsule, self.session_id, owner
                     )

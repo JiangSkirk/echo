@@ -23,6 +23,14 @@ class FinalizerMixin(AgentBase):
         history_ua_count: int,
     ) -> None:
         """Persist memory, audit logs, and learning data after a run completes."""
+        try:
+            from js.web.auth import _session_owner_hash
+            owner_key_hash = _session_owner_hash.get(None)
+        except Exception:
+            owner_key_hash = getattr(self, "_session_owner", None)
+        if owner_key_hash is None:
+            owner_key_hash = getattr(self, "_session_owner", None)
+
         # Extract assistant output for memory storage
         assistant_output = ""
         for msg in reversed(state.messages):
@@ -65,12 +73,12 @@ class FinalizerMixin(AgentBase):
                 tokens_used=sum(state.total_tokens.values()),
                 turn_count=state.turn_count,
                 importance=7 if state.status == "completed" else 4,
-                owner_key_hash=getattr(self, "_session_owner", None),
+                owner_key_hash=owner_key_hash,
             )
             try:
                 self._dream_scheduler.notify_activity(
                     user_input, assistant_output,
-                    owner_key_hash=getattr(self, "_session_owner", None),
+                    owner_key_hash=owner_key_hash,
                     session_id=session_id,
                 )
             except Exception as e:
@@ -101,7 +109,6 @@ class FinalizerMixin(AgentBase):
             try:
                 total_tokens = sum(state.total_tokens.values())
                 threshold = self.settings.memory.capsule_token_threshold
-                owner_key_hash = getattr(self, "_session_owner", None)
                 if total_tokens > threshold:
                     capsule_text = await self._summarize_context(state.messages)
                     if capsule_text:

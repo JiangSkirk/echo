@@ -85,6 +85,50 @@ def test_capsule_owner_isolation(tmp_store: EnhancedMemoryStore) -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_rejects_cross_owner_session_history(tmp_path: Path) -> None:
+    """A user must not be able to reuse another owner's session_id."""
+    settings = JSSettings(
+        workspace=tmp_path / "workspace",
+        state_dir=tmp_path / "state",
+        max_turns=1,
+    )
+    agent = JSAgent(settings)
+    agent.memory.store_messages(
+        "private-session",
+        [{"role": "user", "content": "owner-a private context"}],
+    )
+    agent.memory.store_episode(
+        "private-session",
+        "private summary",
+        ["private"],
+        owner_key_hash="owner-a",
+    )
+
+    provider = MockProvider([
+        ChatResponse(
+            content="should not run",
+            tool_calls=[],
+            model="mock",
+            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            finish_reason="stop",
+        ),
+    ])
+    from js.config import ModelConfig
+    agent.router.add_provider("mock", provider, [ModelConfig(id="mock", name="Mock", context_window=4096)])
+
+    from js.web.auth import _session_owner_hash
+    token = _session_owner_hash.set("owner-b")
+    try:
+        with pytest.raises(PermissionError):
+            await agent.run("hello", session_id="private-session", model="mock/mock")
+    finally:
+        _session_owner_hash.reset(token)
+        await agent.close()
+
+    assert provider.last_messages is None
+
+
+@pytest.mark.asyncio
 async def test_capsule_injection_keeps_recent_turns(tmp_path: Path) -> None:
     """When a capsule exists, only the most recent N user/assistant turns are kept verbatim."""
     state_dir = tmp_path / "state"
@@ -140,6 +184,51 @@ async def test_capsule_injection_keeps_recent_turns(tmp_path: Path) -> None:
     assert "user message 9" in contents
 
     await agent.close()
+
+
+@pytest.mark.asyncio
+async def test_capsule_refresh_uses_current_owner_context(tmp_path: Path) -> None:
+    """Capsule persistence should use the request owner, not stale agent state."""
+    settings = JSSettings(
+        workspace=tmp_path / "workspace",
+        state_dir=tmp_path / "state",
+        memory=MemoryConfig(capsule_enabled=True, capsule_token_threshold=1),
+        max_turns=1,
+    )
+    agent = JSAgent(settings)
+    agent._session_owner = "stale-owner"  # type: ignore[attr-defined]
+
+    provider = MockProvider([
+        ChatResponse(
+            content="ok",
+            tool_calls=[],
+            model="mock",
+            usage={"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+            finish_reason="stop",
+        ),
+        ChatResponse(
+            content="fresh owner capsule",
+            tool_calls=[],
+            model="mock",
+            usage={"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+            finish_reason="stop",
+        ),
+    ])
+    from js.config import ModelConfig
+    agent.router.add_provider("mock", provider, [ModelConfig(id="mock", name="Mock", context_window=4096)])
+
+    from js.web.auth import _session_owner_hash
+    token = _session_owner_hash.set("fresh-owner")
+    try:
+        await agent.run("hello", session_id="owner-session", model="mock/mock")
+    finally:
+        _session_owner_hash.reset(token)
+        await agent.close()
+
+    capsule = agent.memory.get_capsule("owner-session", owner_key_hash="fresh-owner")
+    assert capsule is not None
+    assert capsule["capsule_text"] == "fresh owner capsule"
+    assert agent.memory.get_capsule("owner-session", owner_key_hash="stale-owner") is None
 
 
 @pytest.mark.asyncio
