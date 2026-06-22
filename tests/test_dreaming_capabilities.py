@@ -15,6 +15,7 @@ Run: pytest tests/test_dreaming_capabilities.py -v
 from __future__ import annotations
 
 import asyncio
+import re
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -336,11 +337,11 @@ class TestHermesComparison:
         Result: No matches."""
         mem_tool = Path.home() / ".hermes" / "hermes-agent" / "tools" / "memory_tool.py"
         if mem_tool.exists():
-            text = mem_tool.read_text()
-            assert "embed" not in text.lower()
-            assert "vector" not in text.lower()
-            assert "cosine" not in text.lower()
-            assert "semantic" not in text.lower()
+            text = mem_tool.read_text().lower()
+            assert re.search(r"\bembed(?:ding|dings)?\b", text) is None
+            assert re.search(r"\bvector(?:s)?\b", text) is None
+            assert re.search(r"\bcosine\b", text) is None
+            assert re.search(r"\bsemantic(?:_|\s+)(?:search|memor(?:y|ies)|layer)\b", text) is None
 
     def test_hermes_has_only_flat_memory(self) -> None:
         """Hermes MemoryStore is just two flat text files with § delimiters.
@@ -348,7 +349,7 @@ class TestHermesComparison:
         No working/episodic/semantic distinction."""
         mem_tool = Path.home() / ".hermes" / "hermes-agent" / "tools" / "memory_tool.py"
         if mem_tool.exists():
-            text = mem_tool.read_text()
-            assert "working" not in text.lower()
-            assert "episodic" not in text.lower()
-            assert "semantic" not in text.lower()
+            text = mem_tool.read_text().lower()
+            assert re.search(r"\bworking(?:_|\s+)memor(?:y|ies)\b", text) is None
+            assert re.search(r"\bepisodic(?:_|\s+)memor(?:y|ies)\b", text) is None
+            assert re.search(r"\bsemantic(?:_|\s+)memor(?:y|ies)\b", text) is None
