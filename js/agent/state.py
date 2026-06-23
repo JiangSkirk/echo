@@ -69,6 +69,9 @@ class StateMixin(AgentBase):
     async def save_checkpoint(self, state: AgentState) -> None:
         """Persist agent state for resume."""
         data = state.to_dict()
+        from js.web.auth import _session_owner_hash
+
+        owner_key_hash = _session_owner_hash.get(None)
         await asyncio.to_thread(
             self.state_store.save,
             session_id=data["session_id"],
@@ -82,6 +85,7 @@ class StateMixin(AgentBase):
             error_message=data["error_message"],
             compression_stats=data["compression_stats"],
             model=data.get("model", ""),
+            owner_key_hash=owner_key_hash,
         )
 
     async def load_checkpoint(self, session_id: str) -> AgentState | None:

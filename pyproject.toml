@@ -32,11 +32,6 @@ dependencies = [
     "fastapi>=0.115",
     "python-multipart>=0.0.20",
     "uvicorn>=0.32",
-    "openpyxl>=3.1",
-    "pandas>=2.2",
-    "pypdf>=5.0",
-    "pdfplumber>=0.11",
-    "reportlab>=4.0",
 ]
 
 [project.optional-dependencies]
@@ -54,6 +49,15 @@ monitor = [
     "opentelemetry-instrumentation-fastapi>=0.50",
     "opentelemetry-instrumentation-httpx>=0.50",
 ]
+office = [
+    "openpyxl>=3.1",
+    "pandas>=2.2",
+]
+pdf = [
+    "pypdf>=5.0",
+    "pdfplumber>=0.11",
+    "reportlab>=4.0",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -67,6 +71,7 @@ dev = [
     "types-psutil>=6.1",
     "types-reportlab>=4.0",
     "httpx2>=2.4",  # Starlette TestClient prefers httpx2 over plain httpx
+    "js-agent[office,pdf]",
 ]
 [project.scripts]
 js = "js.__main__:main"

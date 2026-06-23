@@ -84,6 +84,11 @@ class ToolLimits(BaseModel):
     file_write_max_chars: int = Field(default=500_000, ge=1000)
     browser_timeout: float = Field(default=60.0, ge=1.0)
     max_concurrent_tools: int = Field(default=4, ge=1)
+    tool_output_budget_chars: int = Field(
+        default=20_000,
+        ge=1000,
+        description="Max chars returned by a single tool call before reference truncation",
+    )
 
 
 class SecurityConfig(BaseModel):
@@ -138,7 +143,9 @@ class SecurityConfig(BaseModel):
     # Link-local / metadata / reserved ranges are ALWAYS rejected regardless
     # of this flag.
     allow_private_model_providers: bool = Field(
-        default_factory=lambda: os.environ.get("JS_ALLOW_PRIVATE_MODEL_PROVIDERS", "false").lower() == "true",
+        default_factory=lambda: (
+            os.environ.get("JS_ALLOW_PRIVATE_MODEL_PROVIDERS", "false").lower() == "true"
+        ),
         description="Allow model discovery to reach private-network (RFC1918) hosts",
     )
 
@@ -303,6 +310,7 @@ class JSSettings(BaseSettings):
                     except Exception:
                         pass
                 import yaml
+
                 with open(p) as f:
                     data = yaml.safe_load(f) or {}
                 instance = cls(**data)
@@ -316,6 +324,7 @@ class JSSettings(BaseSettings):
                     except Exception:
                         pass
                 import tomllib
+
                 with open(p, "rb") as f:
                     data = tomllib.load(f)
                 instance = cls(**data)
@@ -354,6 +363,7 @@ class JSSettings(BaseSettings):
             return
         try:
             import yaml
+
             with open(hermes_path, encoding="utf-8") as f:
                 raw = yaml.safe_load(f) or {}
         except Exception:
@@ -371,8 +381,11 @@ class JSSettings(BaseSettings):
                     name=provider_name,
                     base_url=base_url,
                     default_model=default_model,
-                    models=[ModelConfig(id=default_model, name=default_model, provider=provider_name)]
-                    if default_model else [],
+                    models=[
+                        ModelConfig(id=default_model, name=default_model, provider=provider_name)
+                    ]
+                    if default_model
+                    else [],
                 )
             )
             existing_names.add(provider_name)
@@ -387,7 +400,8 @@ class JSSettings(BaseSettings):
                             base_url="",
                             default_model=fb_model,
                             models=[ModelConfig(id=fb_model, name=fb_model, provider=fb_name)]
-                            if fb_model else [],
+                            if fb_model
+                            else [],
                         )
                     )
                     existing_names.add(fb_name)

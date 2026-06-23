@@ -70,6 +70,11 @@ class MetricsCollector:
             "Total number of tool calls",
             ["tool_name"],
         )
+        self.tool_batches_total = Counter(
+            "tool_batches_total",
+            "Total number of tool call batches",
+            ["all_failed", "tool_count"],
+        )
         self.tool_errors_total = Counter(
             "tool_errors_total",
             "Total number of tool execution errors",

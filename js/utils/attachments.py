@@ -23,7 +23,9 @@ def extract_pdf_text(path: Path) -> str:
     """Best-effort PDF-to-text extraction."""
     try:
         from pypdf import PdfReader
-
+    except ImportError as _e:
+        raise ImportError("Install js-agent[pdf] to extract PDF text.") from _e
+    try:
         reader = PdfReader(str(path))
         texts: list[str] = []
         for page in reader.pages:
@@ -35,7 +37,9 @@ def extract_pdf_text(path: Path) -> str:
         logger.warning("PDF extraction failed", exc_info=True)
     try:
         import pdfplumber
-
+    except ImportError as _e:
+        raise ImportError("Install js-agent[pdf] to extract PDF text.") from _e
+    try:
         texts2: list[str] = []
         with pdfplumber.open(str(path)) as pdf:
             for pdf_page in pdf.pages:
@@ -51,7 +55,9 @@ def extract_excel_text(path: Path) -> str:
     """Best-effort Excel-to-text extraction with smart header detection."""
     try:
         import pandas as pd
-
+    except ImportError as _e:
+        raise ImportError("Install js-agent[office] to extract Excel text.") from _e
+    try:
         df = pd.read_excel(str(path), header=None, engine="openpyxl")
         if len(df) == 0:
             return "(空表格)"
@@ -76,9 +82,7 @@ def extract_excel_text(path: Path) -> str:
                 data_start = i
                 break
             str_vals = [
-                str(v)
-                for v in row
-                if pd.notna(v) and isinstance(v, str) and str(v).strip()
+                str(v) for v in row if pd.notna(v) and isinstance(v, str) and str(v).strip()
             ]
             non_null_count = sum(1 for v in row if pd.notna(v))
             total_cols = len(row)
@@ -139,12 +143,29 @@ def extract_excel_text(path: Path) -> str:
             numeric_looking = 0
             for v in non_null:
                 s = str(v).strip()
-                if s.replace(".", "", 1).replace(",", "").replace("%", "").replace("$", "").replace("-", "", 1).isdigit():
+                if (
+                    s.replace(".", "", 1)
+                    .replace(",", "")
+                    .replace("%", "")
+                    .replace("$", "")
+                    .replace("-", "", 1)
+                    .isdigit()
+                ):
                     numeric_looking += 1
             numeric_ratio = numeric_looking / len(non_null)
             if numeric_ratio > 0.5:
                 mask = first_col.apply(
-                    lambda x: pd.isna(x) or str(x).strip().replace(".", "", 1).replace(",", "").replace("%", "").replace("$", "").replace("-", "", 1).isdigit()
+                    lambda x: (
+                        pd.isna(x)
+                        or str(x)
+                        .strip()
+                        .replace(".", "", 1)
+                        .replace(",", "")
+                        .replace("%", "")
+                        .replace("$", "")
+                        .replace("-", "", 1)
+                        .isdigit()
+                    )
                 )
                 data = data[mask]
 
@@ -153,17 +174,14 @@ def extract_excel_text(path: Path) -> str:
         if len(data) == 0:
             return "(无数据行)"
 
-        empty_indices = [
-            i for i in range(len(data.columns)) if data.iloc[:, i].isna().all()
-        ]
+        empty_indices = [i for i in range(len(data.columns)) if data.iloc[:, i].isna().all()]
         if empty_indices:
             data = data.drop(data.columns[empty_indices], axis=1)
 
         sparse_indices = [
             i
             for i in range(len(data.columns))
-            if str(data.columns[i]).startswith("Col_")
-            and data.iloc[:, i].isna().mean() > 0.95
+            if str(data.columns[i]).startswith("Col_") and data.iloc[:, i].isna().mean() > 0.95
         ]
         if sparse_indices:
             data = data.drop(data.columns[sparse_indices], axis=1)
@@ -204,7 +222,9 @@ def extract_excel_text(path: Path) -> str:
 
     try:
         from openpyxl import load_workbook
-
+    except ImportError as _e:
+        raise ImportError("Install js-agent[office] to extract Excel text.") from _e
+    try:
         wb = load_workbook(str(path), data_only=True)
         ws = wb.active
         if ws is None:

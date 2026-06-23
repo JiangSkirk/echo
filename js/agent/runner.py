@@ -236,6 +236,12 @@ class TurnExecutor:
         owner = _session_owner_hash.get(None)
         agent._cancel_tokens[self.session_id] = (asyncio.Event(), state.run_id, owner)
 
+        # Track session lifecycle
+        try:
+            agent.lifecycle_store.mark_started(self.session_id, owner)
+        except Exception:
+            agent.logger.warning("Failed to mark session started", exc_info=True)
+
         try:
             get_metrics().agent_runs_total.inc()
         except Exception:
@@ -464,6 +470,12 @@ class TurnExecutor:
         agent = self.agent
         state = self.state
         while state.turn_count < agent.settings.max_turns:
+            # Heartbeat: keep session alive
+            try:
+                agent.lifecycle_store.heartbeat(self.session_id)
+            except Exception:
+                agent.logger.debug("Lifecycle heartbeat failed", exc_info=True)
+
             # Check for cancellation request (token or global shutdown)
             if self._check_cancelled():
                 break
@@ -561,12 +573,18 @@ class TurnExecutor:
             # Stream final assistant response when no tools
             decision = await agent.router.select_model(preferred=self.model)
             stream_text = ""
+
+            async def _redacted_callback(token: str) -> None:
+                safe_token = agent.secrets.detect_and_redact(token, "stream")
+                if self.stream_callback is not None:
+                    await self.stream_callback(safe_token)
+
             async for token in decision.provider.chat_stream(
                 messages=compressed_messages,
                 model=decision.model,
             ):
                 stream_text += token
-                await self.stream_callback(token)
+                await _redacted_callback(token)
 
             # Try to get accurate usage from provider; fallback to heuristic estimate
             stream_usage = getattr(decision.provider, "_last_stream_usage", None)
@@ -583,7 +601,7 @@ class TurnExecutor:
                 cached_tokens = 0
 
             return ChatResponse(
-                content=stream_text,
+                content=agent.secrets.detect_and_redact(stream_text, "stream"),
                 tool_calls=[],
                 model=decision.model,
                 usage={
@@ -779,6 +797,11 @@ class TurnExecutor:
                 )
             except Exception:
                 agent.logger.warning("Checkpoint auto-save failed", exc_info=True)
+            # Emit post-tool telemetry for this batch
+            from js.web.auth import _session_owner_hash
+
+            self._emit_tool_telemetry(state, batch_results, _session_owner_hash.get(None))
+
             # Emit tool_result events
             from js.events.models import AgentEvent
 
@@ -794,6 +817,39 @@ class TurnExecutor:
                         output_preview=tr.output or tr.error or "",
                     )
                 )
+
+    def _emit_tool_telemetry(
+        self,
+        state: AgentState,
+        batch_results: list[tuple[ChatMessage, ToolResult]],
+        owner_key_hash: str | None,
+    ) -> None:
+        """Emit audit + metrics after a tool batch completes."""
+        tool_names = [msg.name or "unknown" for msg, _ in batch_results]
+        all_failed = all(not tr.success for _, tr in batch_results) and bool(batch_results)
+        total_output_chars = sum(len(tr.output or "") for _, tr in batch_results)
+        try:
+            get_metrics().tool_batches_total.labels(
+                all_failed=str(all_failed).lower(),
+                tool_count=str(len(batch_results)),
+            ).inc()
+        except Exception:
+            self.agent.logger.warning("Suppressed error", exc_info=True)
+        self.agent.audit.log(
+            AuditEventType.TOOL_BATCH,
+            self.session_id,
+            self.run_id,
+            "agent",
+            "tool_batch",
+            {
+                "turn": state.turn_count,
+                "tool_names": tool_names,
+                "all_failed": all_failed,
+                "batch_size": len(batch_results),
+                "total_output_chars": total_output_chars,
+                "owner_key_hash": owner_key_hash or "",
+            },
+        )
 
     def _record_turn_metrics(self, turn_start: float, turn_tool_scores: list[Any]) -> None:
         """Record per-turn latency + quality score (runs in the turn's finally)."""

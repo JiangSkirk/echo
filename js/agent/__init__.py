@@ -79,11 +79,11 @@ class JSAgent(
         for dyn_cfg in self.provider_manager.get_all():
             if dyn_cfg.name in static_names:
                 self.logger.warning(
-                    f"Dynamic provider '{dyn_cfg.name}' skipped: "
-                    "name conflicts with static config"
+                    f"Dynamic provider '{dyn_cfg.name}' skipped: name conflicts with static config"
                 )
                 continue
             from js.models.providers import OpenAICompatibleProvider
+
             self.settings.providers.append(dyn_cfg)
             self.router.add_provider(
                 dyn_cfg.name,
@@ -97,6 +97,7 @@ class JSAgent(
         self._dream_scheduler = DreamScheduler(self)
         # Structured memory extraction (facts/people/plans → proposal queue).
         from js.memory.organizer import MemoryOrganizer
+
         self._organizer = MemoryOrganizer(self.memory, self.router, settings.memory)
         self._memory_bootstrapped = False
 
@@ -116,7 +117,9 @@ class JSAgent(
         self.composer = SkillComposer(settings.state_dir)
         self._clawhub: Any | None = None
         self.compression_config = CompressionConfig()
-        self.compressor = ContextCompressor(self.compression_config, summarizer=self._summarize_context)
+        self.compressor = ContextCompressor(
+            self.compression_config, summarizer=self._summarize_context
+        )
         self.compression_feedback = CompressionFeedback(settings.state_dir)
         self.metacognition = MetacognitionLoop(
             settings.state_dir,
@@ -150,19 +153,37 @@ class JSAgent(
         # The owner_key_hash prevents users from cancelling other users' sessions.
         self._cancel_tokens: dict[str, tuple[asyncio.Event, str, str | None]] = {}
         self._shutdown_requested = False
-        self._system_message_cache: TTLCache[tuple[str, str, str], str] = TTLCache(maxsize=100, ttl=60)
+        self._system_message_cache: TTLCache[tuple[str, str, str], str] = TTLCache(
+            maxsize=100, ttl=60
+        )
         self._degraded = False
         self.degraded_reason = ""
         self._current_allowed_tools: set[str] = set()
         self._consecutive_tool_failures: int = 0
+        from js.persistence.lifecycle_store import SessionLifecycleStore
         from js.persistence.state_store import StateStore
+
         self.state_store = StateStore(settings.state_dir / "checkpoints.db")
+        self.lifecycle_store = SessionLifecycleStore(settings.state_dir / "lifecycle.db")
+        from js.persistence.review_store import ReviewStore
+
+        self.review_store = ReviewStore(settings.state_dir / "review_capsules.db")
+        try:
+            recovered = self.lifecycle_store.recover_aborted_sessions()
+            if recovered:
+                self.logger.info(
+                    f"Recovered {len(recovered)} aborted sessions", extra={"sessions": recovered}
+                )
+        except Exception:
+            self.logger.warning("Session recovery failed", exc_info=True)
         from js.events.store import EventStore
+
         self.event_store = EventStore(settings.state_dir / "events")
 
         # Lane Queue: serial-by-default execution per session (OpenClaw-style)
         try:
             from js.orchestration.lane_queue import LaneExecutor
+
             self._lane_executor = LaneExecutor()
         except Exception:
             self._lane_executor = None  # type: ignore[assignment]
@@ -170,6 +191,7 @@ class JSAgent(
         # Quality scoring & self-learning闭环 (OpenHuman-style)
         try:
             from js.evolution.quality_scorer import QualityScorer
+
             self._quality_scorer = QualityScorer(settings.state_dir)
         except Exception:
             self._quality_scorer = None  # type: ignore[assignment]
@@ -215,9 +237,12 @@ class JSAgent(
             self._degraded = True
             self.degraded_reason = f"Health check failed: {type(e).__name__}"
 
-    async def _summarize_context(self, messages: list[ChatMessage], identifiers: list[str] | None = None) -> str:
+    async def _summarize_context(
+        self, messages: list[ChatMessage], identifiers: list[str] | None = None
+    ) -> str:
         """Generate an LLM-powered summary of conversation turns."""
         from js.compression.compressor import _SUMMARY_SYSTEM_PROMPT
+
         prompt_text = (
             "Summarize the following conversation turns into a concise paragraph. "
             "Preserve key facts, decisions, and tool outputs. Be dense and omit filler.\n\n"
@@ -237,6 +262,7 @@ class JSAgent(
 
     def _setup_search(self) -> Any:
         from js.search.engines import BingEngine, DuckDuckGoEngine, SearchManager, TavilyEngine
+
         manager = SearchManager()
         # Bing is more reliable in China-region networks (DDG often times out)
         manager.register(BingEngine(timeout=10.0), default=True)
@@ -251,6 +277,7 @@ class JSAgent(
         """Register the fleet collaboration tool (called from web layer)."""
         try:
             from js.tools.fleet_tools import FleetCollaborateTool
+
             fleet_tool = FleetCollaborateTool(fleet_factory)
             fleet_tool.register(self.registry)
             self.logger.info("Fleet collaboration tool registered")
@@ -261,12 +288,15 @@ class JSAgent(
         """Discover and auto-enable builtin plugins."""
         try:
             from js.plugins.manager import PluginManager
+
             self.plugins = PluginManager(self, self.settings)
             self.plugins.discover()
             for p in self.plugins.list_plugins():
                 if p.manifest.id.startswith("builtin-") or p.manifest.categories == ["demo"]:
                     self.plugins.enable(p.manifest.id)
-            self.logger.info(f"Plugin system initialized: {len(self.plugins.list_plugins())} plugins discovered")
+            self.logger.info(
+                f"Plugin system initialized: {len(self.plugins.list_plugins())} plugins discovered"
+            )
         except Exception as e:
             self.logger.warning(f"Plugin init failed: {e}")
 
@@ -318,6 +348,7 @@ class JSAgent(
         self._dream_scheduler.start()
         if self._governor is None:
             from js.runtime.governor import ResourceGovernor
+
             self._governor = ResourceGovernor(
                 self,
                 fleet_getter=self._fleet_getter,
@@ -341,6 +372,7 @@ class JSAgent(
         Returns an execution report dict for the API layer.
         """
         import time
+
         start = time.perf_counter()
         self.logger.info("Starting evolution cycle")
         report: dict[str, Any] = {
@@ -383,9 +415,7 @@ class JSAgent(
         self.logger.info(f"Evolution cycle completed in {elapsed:.2f}s")
         return report
 
-    async def _extract_memories(
-        self, conversation_buffer: list[dict[str, Any]]
-    ) -> dict[str, Any]:
+    async def _extract_memories(self, conversation_buffer: list[dict[str, Any]]) -> dict[str, Any]:
         """Run structured extraction over the buffer, grouped by owner.
 
         Each buffered turn carries its ``owner_key_hash``/``session_id`` so
@@ -398,8 +428,12 @@ class JSAgent(
             owner = turn.get("owner_key_hash")
             groups.setdefault(owner, []).append(turn)
         totals: dict[str, Any] = {
-            "ok": True, "skipped": False, "proposed": 0,
-            "auto_applied": 0, "pending": 0, "error": None,
+            "ok": True,
+            "skipped": False,
+            "proposed": 0,
+            "auto_applied": 0,
+            "pending": 0,
+            "error": None,
         }
         for owner, turns in groups.items():
             sid = ""
@@ -449,8 +483,7 @@ class JSAgent(
             return
 
         transcript = "\n\n".join(
-            f"User: {turn['user']}\nAssistant: {turn['assistant']}"
-            for turn in conversation_buffer
+            f"User: {turn['user']}\nAssistant: {turn['assistant']}" for turn in conversation_buffer
         )
 
         prompt = (
@@ -475,18 +508,15 @@ class JSAgent(
             ChatMessage(role="system", content="You are a precise archive curator."),
             ChatMessage(role="user", content=prompt),
         ]
+
         def _parse_profile_update(text: str) -> tuple[str | None, str | None]:
             """Robustly extract USER and IDENTITY sections from LLM output."""
             user_start = text.find("===USER===")
             identity_start = text.find("===IDENTITY===")
             if user_start == -1 or identity_start == -1:
                 return None, None
-            user_content = text[
-                user_start + len("===USER===") : identity_start
-            ].strip()
-            identity_content = text[
-                identity_start + len("===IDENTITY===") :
-            ].strip()
+            user_content = text[user_start + len("===USER===") : identity_start].strip()
+            identity_content = text[identity_start + len("===IDENTITY===") :].strip()
             return user_content, identity_content
 
         try:
@@ -516,9 +546,7 @@ class JSAgent(
             evolved.append(skill_id)
         return evolved
 
-    async def _run_skill_evolution_for(
-        self, skill_id: str, spec: Any | None = None
-    ) -> None:
+    async def _run_skill_evolution_for(self, skill_id: str, spec: Any | None = None) -> None:
         """Evolve a single skill in the background."""
         if not self.evolver:
             return
@@ -528,6 +556,7 @@ class JSAgent(
                 return
         self.logger.info(f"Triggering auto-evolution for skill {skill_id}")
         try:
+
             async def _llm_caller(prompt: str) -> str:
                 messages = [
                     ChatMessage(role="system", content="You are an expert code optimizer."),
@@ -542,9 +571,7 @@ class JSAgent(
                 llm_caller=_llm_caller,
             )
             if variant:
-                self.logger.info(
-                    f"Evolved skill {skill_id}: new variant {variant.id}"
-                )
+                self.logger.info(f"Evolved skill {skill_id}: new variant {variant.id}")
         except Exception as e:
             self.logger.warning(f"Evolution failed for {skill_id}: {e}")
 
@@ -591,9 +618,7 @@ class JSAgent(
                     ),
                     ChatMessage(role="user", content=content),
                 ]
-                resp = await self.router.chat(
-                    messages, temperature=0.3
-                )
+                resp = await self.router.chat(messages, temperature=0.3)
                 return resp.content or ""
 
             report = await self.memory.dream(llm_summarizer=summarizer)

@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from js.models.provider_manager import ProviderManager
     from js.models.providers import ChatMessage
     from js.models.router import ModelRouter
+    from js.persistence.lifecycle_store import SessionLifecycleStore
+    from js.persistence.review_store import ReviewStore
     from js.security.approvals import ApprovalQueue
     from js.security.audit import AuditLogger
     from js.security.guard import BehaviorGuard
@@ -132,6 +134,8 @@ Search vs Fetch: Prefer web_search for finding information; use browser_fetch on
         _current_allowed_tools: set[str]
         _consecutive_tool_failures: int
         state_store: Any
+        lifecycle_store: SessionLifecycleStore
+        review_store: ReviewStore
         event_store: Any
         _lane_executor: Any
         _quality_scorer: Any

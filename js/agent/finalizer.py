@@ -30,11 +30,54 @@ class FinalizerMixin(AgentBase):
         except Exception:
             owner_key_hash = None
 
+        # Mark session lifecycle completed
+        exit_reason = state.error_message or state.status
+        try:
+            self.lifecycle_store.mark_completed(session_id, exit_reason)
+        except Exception:
+            self.logger.warning("Failed to mark session completed", exc_info=True)
+
+        # Store deterministic Task Review Capsule (MVP, no LLM)
+        try:
+            from js.persistence.review_store import ReviewCapsule
+
+            first_user = ""
+            last_assistant = ""
+            for msg in state.messages:
+                if msg.role == "user" and isinstance(msg.content, str):
+                    first_user = msg.content
+                    break
+            for msg in reversed(state.messages):
+                if msg.role == "assistant" and isinstance(msg.content, str):
+                    last_assistant = msg.content
+                    break
+            tools_used = [
+                {"name": r.metadata.get("tool_name", "unknown"), "success": r.success}
+                for r in state.tool_results
+            ]
+            review = ReviewCapsule(
+                session_id=session_id,
+                run_id=run_id,
+                first_user_message=self.secrets.detect_and_redact(first_user, "review_user"),
+                last_assistant_message=self.secrets.detect_and_redact(
+                    last_assistant, "review_assistant"
+                ),
+                tools_used=tools_used,
+                total_tokens=sum(state.total_tokens.values()),
+                turn_count=state.turn_count,
+                status=state.status,
+                error_message=state.error_message or "",
+                owner_key_hash=owner_key_hash,
+            )
+            self.review_store.store(review)
+        except Exception:
+            self.logger.warning("Failed to store review capsule", exc_info=True)
+
         # Extract assistant output for memory storage
         assistant_output = ""
         for msg in reversed(state.messages):
             if msg.role == "assistant" and isinstance(msg.content, str) and msg.content:
-                assistant_output = msg.content
+                assistant_output = self.secrets.detect_and_redact(msg.content, "assistant_output")
                 break
 
         # Persist conversation history FIRST to avoid empty sessions
@@ -49,10 +92,17 @@ class FinalizerMixin(AgentBase):
                 for msg in ua_messages[history_ua_count:]
             ]
             if new_messages:
+                redacted_messages = [
+                    {
+                        "role": m["role"],
+                        "content": self.secrets.detect_and_redact(m["content"], "message"),
+                    }
+                    for m in new_messages
+                ]
                 await asyncio.to_thread(
                     self.memory.store_messages,
                     session_id,
-                    new_messages,
+                    redacted_messages,
                     owner_key_hash,
                 )
         except Exception as e:
@@ -60,7 +110,11 @@ class FinalizerMixin(AgentBase):
 
         # Store episodic memory second
         try:
-            summary = f"User: {user_input[:80]}... → Assistant: {assistant_output[:80]}..."
+            safe_user_input = self.secrets.detect_and_redact(user_input, "user_input")
+            summary = self.secrets.detect_and_redact(
+                f"User: {safe_user_input[:80]}... → Assistant: {assistant_output[:80]}...",
+                "episode_summary",
+            )
             topics = list(
                 {
                     word.lower()
@@ -117,6 +171,7 @@ class FinalizerMixin(AgentBase):
                 if total_tokens > threshold:
                     capsule_text = await self._summarize_context(state.messages)
                     if capsule_text:
+                        capsule_text = self.secrets.detect_and_redact(capsule_text, "capsule")
                         await asyncio.to_thread(
                             self.memory.store_capsule,
                             session_id,

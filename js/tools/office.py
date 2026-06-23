@@ -10,6 +10,9 @@ from js.config import ToolLimits
 from js.security.guard import BehaviorGuard, SecurityDecisionType
 from js.tools.registry import ToolParam, ToolResult, ToolSpec
 
+_OFFICE_EXTRA_MSG = "Install js-agent[office] to use Excel tools."
+_PDF_EXTRA_MSG = "Install js-agent[pdf] to use PDF generation tools."
+
 
 class OfficeTools:
     """Tools for Excel and PDF document operations."""
@@ -38,8 +41,12 @@ class OfficeTools:
                 description="Read data from a CSV file. Returns JSON array of rows.",
                 parameters=[
                     ToolParam("path", "string", "Path to CSV file (relative to workspace)"),
-                    ToolParam("encoding", "string", "File encoding (default: utf-8)", required=False),
-                    ToolParam("delimiter", "string", "Column delimiter (default: comma)", required=False),
+                    ToolParam(
+                        "encoding", "string", "File encoding (default: utf-8)", required=False
+                    ),
+                    ToolParam(
+                        "delimiter", "string", "Column delimiter (default: comma)", required=False
+                    ),
                 ],
                 read_only=True,
             ),
@@ -49,8 +56,12 @@ class OfficeTools:
                 parameters=[
                     ToolParam("path", "string", "Path to CSV file"),
                     ToolParam("data", "string", "JSON array of rows to write"),
-                    ToolParam("encoding", "string", "File encoding (default: utf-8)", required=False),
-                    ToolParam("delimiter", "string", "Column delimiter (default: comma)", required=False),
+                    ToolParam(
+                        "encoding", "string", "File encoding (default: utf-8)", required=False
+                    ),
+                    ToolParam(
+                        "delimiter", "string", "Column delimiter (default: comma)", required=False
+                    ),
                 ],
                 dangerous=True,
             ),
@@ -59,10 +70,14 @@ class OfficeTools:
                 description="Read data from an Excel file (.xlsx). Returns JSON array of rows.",
                 parameters=[
                     ToolParam("path", "string", "Path to Excel file (relative to workspace)"),
-                    ToolParam("sheet", "string", "Sheet name (default: first sheet)", required=False),
+                    ToolParam(
+                        "sheet", "string", "Sheet name (default: first sheet)", required=False
+                    ),
                     ToolParam("start_row", "integer", "1-based start row", required=False),
                     ToolParam("end_row", "integer", "1-based end row (inclusive)", required=False),
-                    ToolParam("start_col", "string", "Start column letter (e.g. 'A')", required=False),
+                    ToolParam(
+                        "start_col", "string", "Start column letter (e.g. 'A')", required=False
+                    ),
                     ToolParam("end_col", "string", "End column letter (e.g. 'Z')", required=False),
                 ],
                 read_only=True,
@@ -73,9 +88,21 @@ class OfficeTools:
                 parameters=[
                     ToolParam("path", "string", "Path to Excel file"),
                     ToolParam("sheet", "string", "Sheet name (default: 'Sheet1')", required=False),
-                    ToolParam("data", "string", "JSON array of rows to write (e.g. [[\"A\",\"B\"],[1,2]])"),
-                    ToolParam("start_cell", "string", "Start cell (e.g. 'A1', default: 'A1')", required=False),
-                    ToolParam("append", "boolean", "Append to existing sheet instead of overwriting", required=False),
+                    ToolParam(
+                        "data", "string", 'JSON array of rows to write (e.g. [["A","B"],[1,2]])'
+                    ),
+                    ToolParam(
+                        "start_cell",
+                        "string",
+                        "Start cell (e.g. 'A1', default: 'A1')",
+                        required=False,
+                    ),
+                    ToolParam(
+                        "append",
+                        "boolean",
+                        "Append to existing sheet instead of overwriting",
+                        required=False,
+                    ),
                 ],
                 dangerous=True,
             ),
@@ -90,9 +117,24 @@ class OfficeTools:
                     ToolParam("target_path", "string", "Target Excel file path"),
                     ToolParam("source_sheet", "string", "Source sheet name", required=False),
                     ToolParam("target_sheet", "string", "Target sheet name", required=False),
-                    ToolParam("source_range", "string", "Range like 'A1:D10' or leave empty for all data", required=False),
-                    ToolParam("target_start_cell", "string", "Target start cell, e.g. 'E1' (default: 'A1')", required=False),
-                    ToolParam("include_header", "boolean", "Include header row from source", required=False),
+                    ToolParam(
+                        "source_range",
+                        "string",
+                        "Range like 'A1:D10' or leave empty for all data",
+                        required=False,
+                    ),
+                    ToolParam(
+                        "target_start_cell",
+                        "string",
+                        "Target start cell, e.g. 'E1' (default: 'A1')",
+                        required=False,
+                    ),
+                    ToolParam(
+                        "include_header",
+                        "boolean",
+                        "Include header row from source",
+                        required=False,
+                    ),
                 ],
                 dangerous=True,
             ),
@@ -101,7 +143,9 @@ class OfficeTools:
                 description="Create a new blank Excel file with optional headers.",
                 parameters=[
                     ToolParam("path", "string", "Output file path"),
-                    ToolParam("sheet_name", "string", "Sheet name (default: 'Sheet1')", required=False),
+                    ToolParam(
+                        "sheet_name", "string", "Sheet name (default: 'Sheet1')", required=False
+                    ),
                     ToolParam("headers", "string", "JSON array of column headers", required=False),
                 ],
                 dangerous=True,
@@ -151,7 +195,10 @@ class OfficeTools:
                 metadata={"rows": len(rows), "columns": len(rows[0]) if rows else 0},
             )
         except UnicodeDecodeError:
-            return ToolResult(success=False, error=f"Encoding error: {encoding} does not match file content. Try 'gbk' or 'latin-1'.")
+            return ToolResult(
+                success=False,
+                error=f"Encoding error: {encoding} does not match file content. Try 'gbk' or 'latin-1'.",
+            )
         except Exception as e:
             return ToolResult(success=False, error=str(e))
 
@@ -217,8 +264,14 @@ class OfficeTools:
 
         wb = None
         try:
-            from openpyxl import load_workbook
-            from openpyxl.utils import column_index_from_string
+            try:
+                from openpyxl import load_workbook
+            except ImportError as _e:
+                raise ImportError(_OFFICE_EXTRA_MSG) from _e
+            try:
+                from openpyxl.utils import column_index_from_string
+            except ImportError as _e:
+                raise ImportError(_OFFICE_EXTRA_MSG) from _e
 
             if not target.exists():
                 return ToolResult(success=False, error=f"File not found: {path}")
@@ -292,8 +345,14 @@ class OfficeTools:
 
         wb = None
         try:
-            from openpyxl import Workbook, load_workbook
-            from openpyxl.utils import column_index_from_string
+            try:
+                from openpyxl import Workbook, load_workbook
+            except ImportError as _e:
+                raise ImportError(_OFFICE_EXTRA_MSG) from _e
+            try:
+                from openpyxl.utils import column_index_from_string
+            except ImportError as _e:
+                raise ImportError(_OFFICE_EXTRA_MSG) from _e
 
             sheet_name = sheet or "Sheet1"
             rows_data: list[list[Any]] = json.loads(data) if data else []
@@ -362,8 +421,14 @@ class OfficeTools:
         src_wb = None
         tgt_wb = None
         try:
-            from openpyxl import load_workbook
-            from openpyxl.utils import column_index_from_string, range_boundaries
+            try:
+                from openpyxl import load_workbook
+            except ImportError as _e:
+                raise ImportError(_OFFICE_EXTRA_MSG) from _e
+            try:
+                from openpyxl.utils import column_index_from_string, range_boundaries
+            except ImportError as _e:
+                raise ImportError(_OFFICE_EXTRA_MSG) from _e
 
             if not source.exists():
                 return ToolResult(success=False, error=f"Source not found: {source_path}")
@@ -443,7 +508,10 @@ class OfficeTools:
 
         wb = None
         try:
-            from openpyxl import Workbook
+            try:
+                from openpyxl import Workbook
+            except ImportError as _e:
+                raise ImportError(_OFFICE_EXTRA_MSG) from _e
 
             wb = Workbook()
             ws = wb.active
@@ -485,10 +553,19 @@ class OfficeTools:
             return ToolResult(success=False, error=decision.reason)
 
         try:
-            from reportlab.lib import colors
-            from reportlab.lib.pagesizes import A4, LETTER
-            from reportlab.lib.styles import getSampleStyleSheet
-            from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+            try:
+                from reportlab.lib import colors
+                from reportlab.lib.pagesizes import A4, LETTER
+                from reportlab.lib.styles import getSampleStyleSheet
+                from reportlab.platypus import (
+                    Paragraph,
+                    SimpleDocTemplate,
+                    Spacer,
+                    Table,
+                    TableStyle,
+                )
+            except ImportError as _e:
+                raise ImportError(_PDF_EXTRA_MSG) from _e
 
             rows_data: list[list[Any]] = json.loads(data) if data else []
             if not rows_data:
@@ -508,17 +585,19 @@ class OfficeTools:
             # Build table
             table = Table(rows_data)
             table.setStyle(
-                TableStyle([
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f0f0f0")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
-                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, 0), 10),
-                    ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
-                    ("BACKGROUND", (0, 1), (-1, -1), colors.white),
-                    ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                    ("FONTSIZE", (0, 1), (-1, -1), 9),
-                ])
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f0f0f0")),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, 0), 10),
+                        ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+                        ("BACKGROUND", (0, 1), (-1, -1), colors.white),
+                        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                        ("FONTSIZE", (0, 1), (-1, -1), 9),
+                    ]
+                )
             )
             elements.append(table)
             doc.build(elements)

@@ -22,6 +22,7 @@ class StateStore:
         """Lazy-loaded SecretManager for checkpoint encryption."""
         if not hasattr(self, "_secrets_inst"):
             from js.security.secrets import SecretManager
+
             self._secrets_inst = SecretManager(self.db_path.parent)
         return self._secrets_inst
 
@@ -71,6 +72,21 @@ class StateStore:
                 conn.execute("ALTER TABLE checkpoints ADD COLUMN model TEXT DEFAULT ''")
             except sqlite3.OperationalError:
                 pass  # Column already exists
+            # Migrate: add owner_key_hash column if missing
+            try:
+                conn.execute("ALTER TABLE checkpoints ADD COLUMN owner_key_hash TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+            # Backfill legacy NULL-owner rows to the local sentinel.
+            try:
+                _legacy_local_owner = "__legacy_local__"
+
+                conn.execute(
+                    "UPDATE checkpoints SET owner_key_hash = ? WHERE owner_key_hash IS NULL",
+                    (_legacy_local_owner,),
+                )
+            except Exception:
+                pass
             conn.commit()
 
     def save(
@@ -86,6 +102,7 @@ class StateStore:
         error_message: str,
         compression_stats: dict[str, Any],
         model: str = "",
+        owner_key_hash: str | None = None,
     ) -> None:
         with self._conn() as conn:
             conn.execute(
@@ -93,8 +110,8 @@ class StateStore:
                 INSERT INTO checkpoints (
                     session_id, run_id, turn_count, messages, tool_results,
                     total_tokens, cost_estimate, status, error_message,
-                    compression_stats, model, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    compression_stats, model, owner_key_hash, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(session_id) DO UPDATE SET
                     run_id=excluded.run_id,
                     turn_count=excluded.turn_count,
@@ -106,6 +123,7 @@ class StateStore:
                     error_message=excluded.error_message,
                     compression_stats=excluded.compression_stats,
                     model=excluded.model,
+                    owner_key_hash=excluded.owner_key_hash,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -124,6 +142,7 @@ class StateStore:
                     error_message,
                     json.dumps(compression_stats, ensure_ascii=False),
                     model,
+                    owner_key_hash,
                 ),
             )
             conn.commit()

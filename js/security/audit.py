@@ -18,6 +18,7 @@ from js.utils.db import db_connection
 class AuditEventType(StrEnum):
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    TOOL_BATCH = "tool_batch"
     MODEL_REQUEST = "model_request"
     MODEL_RESPONSE = "model_response"
     SECURITY_BLOCK = "security_block"
@@ -65,6 +66,7 @@ class AuditLogger:
         """Lazy-loaded SecretManager for payload encryption."""
         if not hasattr(self, "_secrets_inst"):
             from js.security.secrets import SecretManager
+
             self._secrets_inst = SecretManager(self.state_dir)
         return self._secrets_inst
 
@@ -97,9 +99,7 @@ class AuditLogger:
             """)
             conn.commit()
             # Load last hash for chain continuity
-            row = conn.execute(
-                "SELECT checksum FROM audit_log ORDER BY id DESC LIMIT 1"
-            ).fetchone()
+            row = conn.execute("SELECT checksum FROM audit_log ORDER BY id DESC LIMIT 1").fetchone()
             if row:
                 self._last_hash = row[0]
             else:
@@ -210,9 +210,7 @@ class AuditLogger:
                 run_id=row["run_id"],
                 actor=row["actor"],
                 action=row["action"],
-                details=json.loads(
-                    _dec(row["details"].encode("ascii")).decode("utf-8")
-                ),
+                details=json.loads(_dec(row["details"].encode("ascii")).decode("utf-8")),
                 checksum=row["checksum"],
             )
             for row in rows
@@ -230,9 +228,7 @@ class AuditLogger:
         """
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT * FROM audit_log ORDER BY id ASC"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM audit_log ORDER BY id ASC").fetchall()
 
         if not rows:
             return True, 0
@@ -259,14 +255,10 @@ class AuditLogger:
         """
         cutoff = time.time() - (self.retention_days * 86400)
         with db_connection(self.db_path) as conn:
-            cursor = conn.execute(
-                "DELETE FROM audit_log WHERE timestamp < ?", (cutoff,)
-            )
+            cursor = conn.execute("DELETE FROM audit_log WHERE timestamp < ?", (cutoff,))
             conn.commit()
             # Re-anchor chain: the oldest remaining record becomes the new genesis
-            row = conn.execute(
-                "SELECT checksum FROM audit_log ORDER BY id ASC LIMIT 1"
-            ).fetchone()
+            row = conn.execute("SELECT checksum FROM audit_log ORDER BY id ASC LIMIT 1").fetchone()
             if row:
                 self._last_hash = row[0]
             else:

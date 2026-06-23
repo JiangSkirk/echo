@@ -108,7 +108,12 @@ class FileTools:
                 ),
                 parameters=[
                     ToolParam("path", "string", "File or directory path"),
-                    ToolParam("offset", "integer", "Line offset to start from (files only)", required=False),
+                    ToolParam(
+                        "offset",
+                        "integer",
+                        "Line offset to start from (files only)",
+                        required=False,
+                    ),
                     ToolParam("limit", "integer", "Max lines to read (files only)", required=False),
                 ],
                 read_only=True,
@@ -122,7 +127,9 @@ class FileTools:
                 parameters=[
                     ToolParam("pattern", "string", "Text or regex pattern to search for"),
                     ToolParam("path", "string", "Directory to search in", required=False),
-                    ToolParam("file_pattern", "string", "File glob filter e.g. *.py", required=False),
+                    ToolParam(
+                        "file_pattern", "string", "File glob filter e.g. *.py", required=False
+                    ),
                     ToolParam("max_results", "integer", "Max matches to return", required=False),
                 ],
                 read_only=True,
@@ -140,6 +147,18 @@ class FileTools:
                 return ToolResult(success=False, error=f"File not found: {path}")
 
             content = target.read_text(encoding="utf-8", errors="replace")
+            budget = self.limits.tool_output_budget_chars
+            if len(content) > budget:
+                return ToolResult(
+                    success=True,
+                    output="",
+                    metadata={
+                        "too_large": True,
+                        "size": len(content),
+                        "suggestion": "Use file_read with offset and limit to paginate",
+                    },
+                )
+
             lines = content.splitlines()
 
             if offset > 0:
@@ -148,8 +167,6 @@ class FileTools:
                 lines = lines[:limit]
 
             result = "\n".join(lines)
-            if len(result) > self.limits.file_read_max_chars:
-                result = result[: self.limits.file_read_max_chars] + "\n... [truncated]"
 
             return ToolResult(
                 success=True,
@@ -176,6 +193,7 @@ class FileTools:
 
         try:
             import os as _os
+
             target.parent.mkdir(parents=True, exist_ok=True)
             mode = "a" if append else "w"
             # Atomic write: write to a temp file then atomically replace.
@@ -302,6 +320,7 @@ class FileTools:
             new_content = content.replace(search, replace, 1)
             # Atomic write: remove any symlink at temp path first
             import os as _os
+
             tmp_path = target.with_suffix(target.suffix + ".js_tmp")
             if tmp_path.is_symlink():
                 tmp_path.unlink()
@@ -376,9 +395,7 @@ class FileTools:
         except Exception as e:
             return ToolResult(success=False, error=str(e))
 
-    def _tree_lines(
-        self, root: Path, current: Path, prefix: str = ""
-    ) -> list[str]:
+    def _tree_lines(self, root: Path, current: Path, prefix: str = "") -> list[str]:
         """Recursively build directory tree lines."""
         lines: list[str] = []
         rel = current.relative_to(root)

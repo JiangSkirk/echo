@@ -203,11 +203,24 @@ class ToolRegistry:
                         result = await handler(**arguments)
                         self._call_counts[tool_name] += 1
 
+                        # Enforce tool output budget
+                        budget = self.limits.tool_output_budget_chars
+                        if result.output and len(result.output) > budget:
+                            original_len = len(result.output)
+                            result.output = (
+                                result.output[:budget]
+                                + f"\n... [output truncated: {original_len} chars; use file_read with offset/limit to paginate]"
+                            )
+                            result.metadata["truncated"] = True
+                            result.metadata["original_len"] = original_len
+
                         # Scan tool result
                         if result.output:
                             scan = self.guard.check_tool_result(result.output)
                             if scan.decision == SecurityDecisionType.WARN:
-                                result.output = f"[Security Warning: {scan.reason}]\n{result.output}"
+                                result.output = (
+                                    f"[Security Warning: {scan.reason}]\n{result.output}"
+                                )
 
                         # Cache successful results for cacheable tools
                         if result.success and self._is_cacheable(tool_name):
@@ -215,9 +228,9 @@ class ToolRegistry:
 
                         latency = time.perf_counter() - start
                         try:
-                            get_metrics().tool_latency_seconds.labels(
-                                tool_name=tool_name
-                            ).observe(latency)
+                            get_metrics().tool_latency_seconds.labels(tool_name=tool_name).observe(
+                                latency
+                            )
                         except Exception:
                             self.logger.warning("Suppressed error", exc_info=True)
                         return result
@@ -226,12 +239,10 @@ class ToolRegistry:
                     except Exception as e:
                         latency = time.perf_counter() - start
                         try:
-                            get_metrics().tool_latency_seconds.labels(
-                                tool_name=tool_name
-                            ).observe(latency)
-                            get_metrics().tool_errors_total.labels(
-                                tool_name=tool_name
-                            ).inc()
+                            get_metrics().tool_latency_seconds.labels(tool_name=tool_name).observe(
+                                latency
+                            )
+                            get_metrics().tool_errors_total.labels(tool_name=tool_name).inc()
                         except Exception:
                             self.logger.warning("Metrics error", exc_info=True)
                         return ToolResult(success=False, error=f"Tool execution failed: {e}")
@@ -253,28 +264,30 @@ class ParallelToolExecutor:
     - NEVER_PARALLEL_TOOLS (shell, file_write, etc.) never run concurrently
     """
 
-    NEVER_PARALLEL_TOOLS: frozenset[str] = frozenset({
-        "file_write",
-        "shell",
-        "python",
-        "code_execute",
-        "file_delete",
-        "file_edit",
-        "file_append",
-        "file_move",
-        # Desktop control: sequential to avoid interference
-        "desktop_click",
-        "desktop_move",
-        "desktop_scroll",
-        "desktop_drag",
-        "desktop_type",
-        "desktop_key",
-        "desktop_app",
-        "desktop_window",
-        "desktop_set_mode",
-        "desktop_emergency_stop",
-        "desktop_clear_stop",
-    })
+    NEVER_PARALLEL_TOOLS: frozenset[str] = frozenset(
+        {
+            "file_write",
+            "shell",
+            "python",
+            "code_execute",
+            "file_delete",
+            "file_edit",
+            "file_append",
+            "file_move",
+            # Desktop control: sequential to avoid interference
+            "desktop_click",
+            "desktop_move",
+            "desktop_scroll",
+            "desktop_drag",
+            "desktop_type",
+            "desktop_key",
+            "desktop_app",
+            "desktop_window",
+            "desktop_set_mode",
+            "desktop_emergency_stop",
+            "desktop_clear_stop",
+        }
+    )
 
     def __init__(self, max_parallel: int = 4) -> None:
         self.max_parallel = max_parallel
@@ -300,7 +313,18 @@ class ParallelToolExecutor:
         """Check if two tool calls target the same file path."""
         args1 = self._get_arguments(call1)
         args2 = self._get_arguments(call2)
-        for key in ("path", "file", "filename", "dest", "source", "src", "target", "to", "dir", "cwd"):
+        for key in (
+            "path",
+            "file",
+            "filename",
+            "dest",
+            "source",
+            "src",
+            "target",
+            "to",
+            "dir",
+            "cwd",
+        ):
             p1 = args1.get(key)
             p2 = args2.get(key)
             if p1 and p2 and str(p1) == str(p2):
