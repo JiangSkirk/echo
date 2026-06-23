@@ -95,13 +95,13 @@ class EnhancedMemoryStore:
     def _owner_filter(owner_key_hash: str | None) -> tuple[str, list[Any]]:
         """Build a reusable owner-scoping SQL predicate.
 
-        Returns ``(clause, params)``.  When an owner is given, reads see only
-        that owner's rows.  ``None`` (no-auth / single-user) returns no filter,
-        which is intended for admin/legacy paths and should not be used for
-        authenticated session data.
+        Returns ``(clause, params)``.  Authenticated owners see only their own
+        rows.  ``None`` maps to the local/legacy NULL partition rather than an
+        unfiltered query, so no-auth convenience mode cannot read or mutate
+        authenticated users' semantic memory rows by accident.
         """
         if owner_key_hash is None:
-            return "", []
+            return "owner_key_hash IS NULL", []
         return "owner_key_hash = ?", [owner_key_hash]
 
     @staticmethod
@@ -1335,9 +1335,18 @@ class EnhancedMemoryStore:
                     old_value TEXT,
                     new_value TEXT,
                     source TEXT DEFAULT 'unknown',
+                    owner_key_hash TEXT,
                     created_at REAL NOT NULL
                 )
             """)
+            try:
+                audit_cols = {
+                    row[1] for row in conn.execute("PRAGMA table_info(memory_audit_log)")
+                }
+                if "owner_key_hash" not in audit_cols:
+                    conn.execute("ALTER TABLE memory_audit_log ADD COLUMN owner_key_hash TEXT")
+            except Exception:
+                logger.warning("Failed to migrate memory_audit_log owner column", exc_info=True)
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_audit_memory
                 ON memory_audit_log(memory_id, table_name)
@@ -1345,6 +1354,10 @@ class EnhancedMemoryStore:
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_audit_created
                 ON memory_audit_log(created_at DESC)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_audit_owner_created
+                ON memory_audit_log(owner_key_hash, created_at DESC)
             """)
 
             # Proposed memory changes: a staging queue for auto-extracted facts
@@ -1396,20 +1409,47 @@ class EnhancedMemoryStore:
         old_value: str | None = None,
         new_value: str | None = None,
         source: str = "unknown",
+        owner_key_hash: str | None = None,
     ) -> None:
         """Write an audit log entry for a memory change."""
         with db_connection(self.db_path) as conn:
             conn.execute(
                 """
                 INSERT INTO memory_audit_log
-                    (memory_id, table_name, action, old_value, new_value, source, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (memory_id, table_name, action, old_value, new_value, source, owner_key_hash, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (memory_id, table_name, action, old_value, new_value, source, time.time()),
+                (
+                    memory_id,
+                    table_name,
+                    action,
+                    old_value,
+                    new_value,
+                    source,
+                    owner_key_hash,
+                    time.time(),
+                ),
             )
-            # Prune audit log to prevent unbounded growth (keep last 5000 entries)
+            # Prune per owner to prevent one busy owner from evicting another's
+            # audit trail while still bounding local storage.
             conn.execute(
-                "DELETE FROM memory_audit_log WHERE id NOT IN (SELECT id FROM memory_audit_log ORDER BY created_at DESC LIMIT 5000)"
+                """
+                DELETE FROM memory_audit_log
+                WHERE (
+                    (owner_key_hash = ?)
+                    OR (? IS NULL AND owner_key_hash IS NULL)
+                )
+                AND id NOT IN (
+                    SELECT id FROM memory_audit_log
+                    WHERE (
+                        (owner_key_hash = ?)
+                        OR (? IS NULL AND owner_key_hash IS NULL)
+                    )
+                    ORDER BY created_at DESC
+                    LIMIT 5000
+                )
+                """,
+                (owner_key_hash, owner_key_hash, owner_key_hash, owner_key_hash),
             )
             conn.commit()
 
@@ -1418,29 +1458,31 @@ class EnhancedMemoryStore:
         memory_id: int | None = None,
         table_name: str = "semantic",
         limit: int = 50,
+        owner_key_hash: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Retrieve audit log entries."""
+        """Retrieve audit log entries scoped to one owner partition."""
+        owner_clause, owner_params = self._owner_filter(owner_key_hash)
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             if memory_id is not None:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT * FROM memory_audit_log
-                    WHERE memory_id = ? AND table_name = ?
+                    WHERE memory_id = ? AND table_name = ? AND {owner_clause}
                     ORDER BY created_at DESC
                     LIMIT ?
                     """,
-                    (memory_id, table_name, limit),
+                    (memory_id, table_name, *owner_params, limit),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT * FROM memory_audit_log
-                    WHERE table_name = ?
+                    WHERE table_name = ? AND {owner_clause}
                     ORDER BY created_at DESC
                     LIMIT ?
                     """,
-                    (table_name, limit),
+                    (table_name, *owner_params, limit),
                 ).fetchall()
         return [dict(r) for r in rows]
 
@@ -2212,6 +2254,7 @@ class EnhancedMemoryStore:
                 old_value=existing[1],
                 new_value=value,
                 source=source or "agent",
+                owner_key_hash=owner_key_hash,
             )
         else:
             self._audit_log(
@@ -2220,6 +2263,7 @@ class EnhancedMemoryStore:
                 action="create",
                 new_value=value,
                 source=source or "agent",
+                owner_key_hash=owner_key_hash,
             )
 
         # Run eviction after insert (scoped to this owner's partition)
@@ -2412,6 +2456,7 @@ class EnhancedMemoryStore:
                         action="delete",
                         old_value=old_value,
                         source="auto_resolve",
+                        owner_key_hash=owner_key_hash,
                     )
                 else:
                     # Old is better, drop new
@@ -2436,6 +2481,7 @@ class EnhancedMemoryStore:
                     action="delete",
                     old_value=old_value,
                     source="auto_resolve",
+                    owner_key_hash=owner_key_hash,
                 )
                 continue
 
@@ -2551,6 +2597,7 @@ class EnhancedMemoryStore:
                 action="delete",
                 old_value=old_value,
                 source=source,
+                owner_key_hash=owner_key_hash,
             )
         return deleted
 
@@ -2608,7 +2655,7 @@ class EnhancedMemoryStore:
             # Owner guard on the UPDATE itself (not just the pre-check SELECT) so
             # the write can never touch another owner's row even under a race —
             # consistent with delete_semantic. With owner_key_hash=None the guard
-            # is empty, preserving the original behaviour.
+            # targets only legacy NULL-owner rows.
             sql = f"UPDATE semantic_memories SET {', '.join(fields)} WHERE id = ?{guard}"
             cur = conn.execute(sql, params)
             conn.commit()
@@ -2622,6 +2669,7 @@ class EnhancedMemoryStore:
                 old_value=f"value={old_value}, category={old_category}",
                 new_value=f"value={value}, category={category or old_category}",
                 source=source,
+                owner_key_hash=owner_key_hash,
             )
         return updated
 
@@ -2937,6 +2985,7 @@ class EnhancedMemoryStore:
                 table_name="semantic",
                 action="verify",
                 source=source,
+                owner_key_hash=owner_key_hash,
             )
         return updated
 
@@ -3273,6 +3322,7 @@ class EnhancedMemoryStore:
                 old_value=src,
                 new_value=dst,
                 source="user",
+                owner_key_hash=owner_key_hash,
             )
         return moved
 

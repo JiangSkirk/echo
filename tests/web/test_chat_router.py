@@ -42,7 +42,7 @@ def test_chat_success() -> None:
     agent.run = AsyncMock(return_value=mock_state)
 
     app = _make_app()
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://localhost", headers={"Origin": "http://localhost"})
     with patch("js.web.routers.chat.get_agent", return_value=agent):
         resp = client.post("/api/chat", json={"message": "hello", "session_id": "sess-1"})
 
@@ -60,7 +60,7 @@ def test_chat_error() -> None:
     agent.run = AsyncMock(side_effect=RuntimeError("boom"))
 
     app = _make_app()
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://localhost", headers={"Origin": "http://localhost"})
     with patch("js.web.routers.chat.get_agent", return_value=agent):
         resp = client.post("/api/chat", json={"message": "hello"})
 
@@ -84,7 +84,7 @@ def test_chat_empty_message() -> None:
     agent.run = AsyncMock(return_value=mock_state)
 
     app = _make_app()
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://localhost", headers={"Origin": "http://localhost"})
     with patch("js.web.routers.chat.get_agent", return_value=agent):
         resp = client.post("/api/chat", json={"message": ""})
 

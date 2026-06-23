@@ -312,10 +312,10 @@ def memory_owner(auth_ctx: dict[str, Any] | None) -> str | None:
     """Owner key for per-user memory scoping.
 
     Anonymous / no-auth (single-user) requests map to ``None`` so the user
-    consistently sees the shared pool — never a fresh random ``key_hash`` per
-    request (which would make them unable to recall their own memories).
-    Bootstrap admin also has no key_hash, so it too falls back to the shared
-    pool.
+    consistently sees the local legacy partition — never a fresh random
+    ``key_hash`` per request (which would make them unable to recall their own
+    memories). Bootstrap admin also has no key_hash, so it too falls back to
+    the local legacy partition.
     """
     if not auth_ctx or auth_ctx.get("name") in ("anonymous", "bootstrap"):
         return None
@@ -350,7 +350,14 @@ async def require_auth(
         # Auth optional: if a key is provided, verify it for role info;
         # otherwise return an admin context so local convenience mode works.
         if api_key:
-            return auth_mgr.verify(api_key)
+            try:
+                return auth_mgr.verify(api_key)
+            except AuthRequiredError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=str(exc),
+                    headers={"WWW-Authenticate": "Bearer"},
+                ) from exc
         return {
             "name": "anonymous",
             "role": _ADMIN_ROLE,

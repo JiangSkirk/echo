@@ -56,7 +56,7 @@ async def pause_task(
     tm = getattr(agent, "task_manager", None)
     if not tm:
         raise HTTPException(503, "Task manager not initialized")
-    ok = tm.pause(task_id)
+    ok = tm.pause(task_id, owner_key_hash=auth.get("key_hash"))
     if not ok:
         raise HTTPException(404, "Task not found")
     return {"success": True, "status": "paused"}
@@ -72,7 +72,7 @@ async def resume_task(
     tm = getattr(agent, "task_manager", None)
     if not tm:
         raise HTTPException(503, "Task manager not initialized")
-    ok = tm.resume(task_id)
+    ok = tm.resume(task_id, owner_key_hash=auth.get("key_hash"))
     if not ok:
         raise HTTPException(404, "Task not found")
     return {"success": True, "status": "running"}
@@ -88,7 +88,7 @@ async def delete_task(
     tm = getattr(agent, "task_manager", None)
     if not tm:
         raise HTTPException(503, "Task manager not initialized")
-    ok = tm.delete(task_id)
+    ok = tm.delete(task_id, owner_key_hash=auth.get("key_hash"))
     if not ok:
         raise HTTPException(404, "Task not found")
     return {"success": True}

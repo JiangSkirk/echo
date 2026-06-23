@@ -111,6 +111,8 @@ The release gate covers lint, typing, full tests, mock benchmarks, and release s
 
 ## Production Deployment
 
+> Note: binding to `0.0.0.0` exposes the service beyond localhost. Production, LAN, or public deployments must require an API key; never expose no-auth mode outside the local machine.
+
 ```bash
 # Web UI
 js web --host 0.0.0.0 --port 8000

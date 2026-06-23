@@ -137,6 +137,28 @@ class TestFileSearchSkill:
         assert any("Access denied" in r and "escapes workspace" in r for r in out["results"])
 
     @pytest.mark.asyncio
+    async def test_file_search_content_skips_symlink_file_escape(
+        self, file_search_spec, tmp_path: Path
+    ) -> None:
+        """Content search must not follow symlink files outside the workspace."""
+        outside = tmp_path.parent / "outside_search_file"
+        outside.mkdir(parents=True, exist_ok=True)
+        (outside / "secret.txt").write_text("outside-secret")
+        (tmp_path / "visible.txt").write_text("inside-ok")
+
+        (tmp_path / "linked-secret.txt").symlink_to(outside / "secret.txt")
+
+        result = await execute_skill(
+            spec=file_search_spec,
+            args={"content": "outside-secret", "path": ".", "max_results": 10},
+            workspace=tmp_path,
+        )
+        assert result["success"] is True
+        out = json.loads(result["output"])
+        assert out["count"] == 1
+        assert "No files found" in out["results"][0]
+
+    @pytest.mark.asyncio
     async def test_file_search_can_search_subdirectory(
         self, file_search_spec, tmp_path: Path
     ) -> None:

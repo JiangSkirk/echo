@@ -39,7 +39,8 @@ class TestSemanticIsolation:
         store.store_semantic("favorite", "tea", source="user", owner_key_hash=A)
         store.store_semantic("favorite", "coffee", source="user", owner_key_hash=B)
         # Two distinct rows, not an overwrite.
-        assert len(store.get_all_semantic(limit=100, owner_key_hash=None)) == 2
+        assert len(store.get_all_semantic(limit=100, owner_key_hash=A)) == 1
+        assert len(store.get_all_semantic(limit=100, owner_key_hash=B)) == 1
 
     def test_legacy_null_owner_visible_to_all(self, store: EnhancedMemoryStore) -> None:
         store.store_semantic("shared", "公共知识", source="import")  # owner None
@@ -112,6 +113,56 @@ class TestSemanticIsolation:
         assert store.verify_semantic(row["id"], owner_key_hash=B) is False
         assert store.verify_semantic(row["id"], owner_key_hash=A) is True
 
+    def test_no_auth_cannot_modify_authenticated_owner_rows(
+        self, store: EnhancedMemoryStore
+    ) -> None:
+        store.store_semantic("k", "alice", source="user", owner_key_hash=A)
+        row = store.get_all_semantic(owner_key_hash=A)[0]
+
+        assert store.update_semantic(row["id"], "hacked", owner_key_hash=None) is False
+        assert store.delete_semantic(row["id"], owner_key_hash=None) is False
+        assert store.verify_semantic(row["id"], owner_key_hash=None) is False
+
+        a_rows = store.get_all_semantic(owner_key_hash=A)
+        assert len(a_rows) == 1
+        assert a_rows[0]["value"] == "alice"
+
+    def test_audit_log_is_owner_scoped(self, store: EnhancedMemoryStore) -> None:
+        a_id = store.store_semantic("audit", "alice-old", source="user", owner_key_hash=A)[
+            "memory_id"
+        ]
+        b_id = store.store_semantic("audit", "bob-old", source="user", owner_key_hash=B)[
+            "memory_id"
+        ]
+        legacy_id = store.store_semantic("audit-legacy", "legacy-old", source="import")[
+            "memory_id"
+        ]
+
+        assert store.update_semantic(a_id, "alice-new", owner_key_hash=A) is True
+        assert store.update_semantic(b_id, "bob-new", owner_key_hash=B) is True
+        assert store.update_semantic(legacy_id, "legacy-new", owner_key_hash=None) is True
+
+        a_entries = store.get_audit_log(table_name="semantic", limit=20, owner_key_hash=A)
+        b_entries = store.get_audit_log(table_name="semantic", limit=20, owner_key_hash=B)
+        legacy_entries = store.get_audit_log(
+            table_name="semantic", limit=20, owner_key_hash=None
+        )
+
+        a_text = "\n".join(str(e.get("old_value")) + str(e.get("new_value")) for e in a_entries)
+        b_text = "\n".join(str(e.get("old_value")) + str(e.get("new_value")) for e in b_entries)
+        legacy_text = "\n".join(
+            str(e.get("old_value")) + str(e.get("new_value")) for e in legacy_entries
+        )
+
+        assert "alice-old" in a_text and "alice-new" in a_text
+        assert "bob-old" not in a_text and "legacy-old" not in a_text
+
+        assert "bob-old" in b_text and "bob-new" in b_text
+        assert "alice-old" not in b_text and "legacy-old" not in b_text
+
+        assert "legacy-old" in legacy_text and "legacy-new" in legacy_text
+        assert "alice-old" not in legacy_text and "bob-old" not in legacy_text
+
     def test_context_string_excludes_other_owner(self, store: EnhancedMemoryStore) -> None:
         store.store_semantic(
             "秘密", "Alice的银行卡尾号1234", category="fact", source="user", owner_key_hash=A
@@ -169,6 +220,5 @@ class TestDeepSleepIsolation:
         assert "promote_a" not in b_keys
         assert "promote_legacy" not in b_keys
 
-        # No-auth / admin queries are unfiltered, but the promoted legacy row
-        # must at least be visible among them.
-        assert "promote_legacy" in legacy_keys
+        # No-auth / local anonymous queries see only the legacy partition.
+        assert legacy_keys == {"promote_legacy"}

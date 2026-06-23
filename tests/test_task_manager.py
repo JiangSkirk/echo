@@ -60,6 +60,23 @@ class TestTaskManagerLifecycle:
         task = manager.get(task_id)
         assert task["status"] == "running"
 
+    def test_pause_resume_delete_are_owner_scoped(self, manager: TaskManager) -> None:
+        task_id = manager.register(name="Owner Task", type="chat", owner_key_hash="owner-a")
+
+        assert manager.pause(task_id, owner_key_hash="owner-b") is False
+        assert manager.get(task_id, owner_key_hash="owner-a")["status"] == "running"
+
+        assert manager.pause(task_id, owner_key_hash="owner-a") is True
+        assert manager.get(task_id, owner_key_hash="owner-a")["status"] == "paused"
+
+        assert manager.resume(task_id, owner_key_hash="owner-b") is False
+        assert manager.get(task_id, owner_key_hash="owner-a")["status"] == "paused"
+
+        assert manager.resume(task_id, owner_key_hash="owner-a") is True
+        assert manager.delete(task_id, owner_key_hash="owner-b") is False
+        assert manager.get(task_id, owner_key_hash="owner-a") is not None
+        assert manager.delete(task_id, owner_key_hash="owner-a") is True
+
     def test_delete_task(self, manager: TaskManager) -> None:
         task_id = manager.register(name="Delete Task", type="chat")
         ok = manager.delete(task_id)

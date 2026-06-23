@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from js.utils.log import get_logger
-from js.web.auth import require_auth_dep
+from js.web.auth import require_user_write
 from js.web.deps import get_agent, get_stats_store
 from js.web.messages import humanize_error
 
@@ -41,7 +41,7 @@ async def _get_session_lock(session_id: str | None) -> asyncio.Lock:
 @router.post("/api/chat")
 async def chat(
     payload: dict[str, Any],
-    auth: dict[str, Any] = Depends(require_auth_dep),
+    auth: dict[str, Any] = Depends(require_user_write),
 ) -> dict[str, Any]:
     # Size limit
     payload_size = len(json.dumps(payload).encode("utf-8"))

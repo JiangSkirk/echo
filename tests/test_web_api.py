@@ -78,8 +78,17 @@ def client(tmp_path: Path) -> TestClient:
     mock_memory.get_all_working.return_value = []
     mock_memory.list_memory_files.return_value = []
     mock_memory.get_sessions.return_value = []
+    mock_memory.get_audit_log.return_value = []
     mock_memory.cleanup_empty_sessions.return_value = 0
     mock_agent.memory = mock_memory
+
+    mock_task_manager = MagicMock()
+    mock_task_manager.list.return_value = []
+    mock_task_manager.get.return_value = {"id": "task-1", "status": "running"}
+    mock_task_manager.pause.return_value = True
+    mock_task_manager.resume.return_value = True
+    mock_task_manager.delete.return_value = True
+    mock_agent.task_manager = mock_task_manager
 
     web_server._agent = mock_agent
     web_server._settings = mock_agent.settings
@@ -130,6 +139,13 @@ class TestUserCannotModifyGlobalState:
 class TestOriginRejection:
     def test_malicious_origin_rejected_for_state_methods(self, client: TestClient) -> None:
         endpoints = [
+            ("post", "/api/chat", {"json": {"message": "hi"}}),
+            ("post", "/api/cancel/sess-1", {}),
+            ("post", "/api/upload", {}),
+            ("delete", "/api/uploads/test.txt", {}),
+            ("post", "/api/tasks/task-1/pause", {}),
+            ("post", "/api/tasks/task-1/resume", {}),
+            ("delete", "/api/tasks/task-1", {}),
             (
                 "post",
                 "/api/providers/connect",
@@ -148,6 +164,37 @@ class TestOriginRejection:
             assert resp.status_code == 403, (
                 f"{method.upper()} {path} did not reject malicious Origin"
             )
+
+
+class TestOptionalAuth:
+    def test_bad_optional_api_key_returns_401(self, client: TestClient) -> None:
+        bad_client = TestClient(client.app, headers={"X-API-Key": "bad-key"})
+        resp = bad_client.get("/api/status")
+        assert resp.status_code == 401
+
+
+class TestOwnerPropagation:
+    def test_memory_audit_passes_owner(self, client: TestClient) -> None:
+        resp = client.get("/api/memory/audit")
+        assert resp.status_code == 200
+        kwargs = web_server._agent.memory.get_audit_log.call_args.kwargs
+        assert kwargs["owner_key_hash"] is not None
+
+    def test_task_state_methods_pass_owner(self, client: TestClient) -> None:
+        resp = client.post("/api/tasks/task-1/pause")
+        assert resp.status_code == 200
+        pause_kwargs = web_server._agent.task_manager.pause.call_args.kwargs
+        assert pause_kwargs["owner_key_hash"] is not None
+
+        resp = client.post("/api/tasks/task-1/resume")
+        assert resp.status_code == 200
+        resume_kwargs = web_server._agent.task_manager.resume.call_args.kwargs
+        assert resume_kwargs["owner_key_hash"] is not None
+
+        resp = client.delete("/api/tasks/task-1")
+        assert resp.status_code == 200
+        delete_kwargs = web_server._agent.task_manager.delete.call_args.kwargs
+        assert delete_kwargs["owner_key_hash"] is not None
 
 
 class TestDiagEndpoint:

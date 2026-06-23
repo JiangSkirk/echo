@@ -27,11 +27,11 @@ This alpha release hardens the local personal Agent Harness around the model: me
 
 - `.gitignore` now excludes `.playwright-mcp/` runtime cache files.
 - `uv.lock` synchronized with the new `httpx2` dev dependency.
-- Version bumped to `0.1.3-alpha` across package metadata, CLI, TUI, and README.
+- Version metadata remains `0.1.3` for PEP 440 compliance; release tag and human-facing labels use `v0.1.3-alpha`.
 
 ## Verified
 
-- `pytest tests/ -q --tb=short` → 1239 passed, 2 skipped, 11 deselected
+- `pytest tests/ -q --tb=short` → 1276 passed, 2 skipped, 11 deselected
 - `ruff check js/ tests/ scripts/` → All checks passed
 - `mypy js/ --no-error-summary` → zero errors
 - `python -m benchmarks.runner --mock` → Overall score 1.000 / Baseline 1.000

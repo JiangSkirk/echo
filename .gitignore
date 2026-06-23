@@ -18,6 +18,7 @@ secrets.*
 *.pem
 *.key
 *.crt
+.claude/settings.json
 
 # IDEs
 .idea/

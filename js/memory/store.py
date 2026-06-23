@@ -715,10 +715,16 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         memory_id: int | None = None,
         table_name: str = "semantic",
         limit: int = 50,
+        owner_key_hash: str | None = None,
     ) -> list[dict[str, Any]]:
         """Retrieve audit log for memory changes."""
         if hasattr(self, "enhanced"):
-            return self.enhanced.get_audit_log(memory_id, table_name, limit)
+            return self.enhanced.get_audit_log(
+                memory_id=memory_id,
+                table_name=table_name,
+                limit=limit,
+                owner_key_hash=owner_key_hash,
+            )
         return []
 
     def get_conflicting_memories(

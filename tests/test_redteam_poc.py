@@ -273,5 +273,9 @@ class TestChatRateLimiting:
     def test_1mb_payload_rejected(self, client: TestClient) -> None:
         """A 1 MB payload must return 413, not crash the server."""
         huge_message = "x" * (1024 * 1024)
-        resp = client.post("/api/chat", json={"message": huge_message})
+        resp = client.post(
+            "/api/chat",
+            headers={"Host": "localhost", "Origin": "http://localhost"},
+            json={"message": huge_message},
+        )
         assert resp.status_code == 413, f"Expected 413 for oversized payload, got {resp.status_code}"

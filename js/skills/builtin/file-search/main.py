@@ -59,14 +59,18 @@ def _search_by_name(root: Path, pattern: str, max_depth: int = 5) -> list[str]:
     """Search for files matching pattern (fnmatch-style) under root."""
     results: list[str] = []
     for dirpath, _dirnames, filenames in os.walk(root):
+        _dirnames[:] = [d for d in _dirnames if not (Path(dirpath) / d).is_symlink()]
         # Respect max_depth
         depth = len(Path(dirpath).relative_to(root).parts)
         if depth > max_depth:
             del _dirnames[:]  # Don't descend further
             continue
         for filename in filenames:
+            filepath = Path(dirpath) / filename
+            if filepath.is_symlink():
+                continue
             if fnmatch.fnmatch(filename, pattern):
-                results.append(str(Path(dirpath) / filename))
+                results.append(str(filepath))
     return results
 
 
@@ -74,11 +78,14 @@ def _search_by_content(root: Path, content: str, max_results: int) -> list[str]:
     """Search for files containing content under root."""
     results: list[str] = []
     for dirpath, _dirnames, filenames in os.walk(root):
+        _dirnames[:] = [d for d in _dirnames if not (Path(dirpath) / d).is_symlink()]
         for filename in filenames:
             if len(results) >= max_results:
                 break
             filepath = Path(dirpath) / filename
             try:
+                if filepath.is_symlink():
+                    continue
                 # Skip binary files and very large files
                 if filepath.stat().st_size > 10 * 1024 * 1024:  # 10MB
                     continue

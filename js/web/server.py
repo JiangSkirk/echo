@@ -463,7 +463,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/cancel/{session_id}")
     async def cancel_session(
-        session_id: str, auth: dict[str, Any] = Depends(require_auth_dep)
+        session_id: str, auth: dict[str, Any] = Depends(require_user_write)
     ) -> dict[str, Any]:
         """Request cancellation of an active agent run for *session_id*."""
         agent = get_agent()
@@ -1445,7 +1445,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/upload")
     async def upload_file(
-        file: UploadFile | None = None, auth: dict[str, Any] = Depends(require_auth_dep)
+        file: UploadFile | None = None, auth: dict[str, Any] = Depends(require_user_write)
     ) -> dict[str, Any]:
         """Upload a file to the workspace/uploads directory."""
         if file is None:
@@ -1516,7 +1516,7 @@ def create_app() -> FastAPI:
 
     @app.delete("/api/uploads/{filename}")
     async def delete_upload(
-        filename: str, auth: dict[str, Any] = Depends(require_auth_dep)
+        filename: str, auth: dict[str, Any] = Depends(require_user_write)
     ) -> dict[str, Any]:
         """Delete an uploaded file."""
         agent = get_agent()

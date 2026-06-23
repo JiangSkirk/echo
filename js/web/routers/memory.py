@@ -390,6 +390,7 @@ async def memory_audit(
         memory_id=memory_id,
         table_name=table,
         limit=limit,
+        owner_key_hash=memory_owner(auth),
     )
     return {"entries": entries}
 

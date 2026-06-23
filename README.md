@@ -238,6 +238,8 @@ python -m build
 
 ## 生产部署
 
+> 注意：绑定 `0.0.0.0` 会让服务暴露到 localhost 之外。生产、局域网或公网部署必须启用 API key；不要用 no-auth 配置对外监听。
+
 ```bash
 # Web UI
 js web --host 0.0.0.0 --port 8000

@@ -162,32 +162,52 @@ class TaskManager:
             conn.commit()
             return cur.rowcount > 0
 
-    def pause(self, task_id: str) -> bool:
+    def pause(self, task_id: str, owner_key_hash: str | None = None) -> bool:
         """Mark task as paused (can be resumed)."""
         now = time.time()
         with self._conn() as conn:
-            cur = conn.execute(
-                "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
-                ("paused", now, task_id),
-            )
+            if owner_key_hash:
+                cur = conn.execute(
+                    "UPDATE tasks SET status = ?, updated_at = ? "
+                    "WHERE id = ? AND (owner_key_hash = ? OR owner_key_hash IS NULL)",
+                    ("paused", now, task_id, owner_key_hash),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+                    ("paused", now, task_id),
+                )
             conn.commit()
             return cur.rowcount > 0
 
-    def resume(self, task_id: str) -> bool:
+    def resume(self, task_id: str, owner_key_hash: str | None = None) -> bool:
         """Mark task as running again."""
         now = time.time()
         with self._conn() as conn:
-            cur = conn.execute(
-                "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
-                ("running", now, task_id),
-            )
+            if owner_key_hash:
+                cur = conn.execute(
+                    "UPDATE tasks SET status = ?, updated_at = ? "
+                    "WHERE id = ? AND (owner_key_hash = ? OR owner_key_hash IS NULL)",
+                    ("running", now, task_id, owner_key_hash),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+                    ("running", now, task_id),
+                )
             conn.commit()
             return cur.rowcount > 0
 
-    def delete(self, task_id: str) -> bool:
+    def delete(self, task_id: str, owner_key_hash: str | None = None) -> bool:
         """Remove a task."""
         with self._conn() as conn:
-            cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            if owner_key_hash:
+                cur = conn.execute(
+                    "DELETE FROM tasks WHERE id = ? AND (owner_key_hash = ? OR owner_key_hash IS NULL)",
+                    (task_id, owner_key_hash),
+                )
+            else:
+                cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
             conn.commit()
             return cur.rowcount > 0
 
