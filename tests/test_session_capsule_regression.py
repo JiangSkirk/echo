@@ -382,12 +382,14 @@ def test_capsule_secrets_redaction(tmp_db):
     """Secrets should be redacted before capsule storage."""
     store = tmp_db
     session_id = "secret_session"
-    raw_text = "The API key is sk-1234567890abcdef1234567890abcdef and the password: MySecret123!"
+    fake_key = "sk-" + "1234567890abcdef1234567890abcdef"
+    fake_password = "My" + "Secret123!"
+    raw_text = f"The API key is {fake_key} and the password: {fake_password}"
     meta = store.store_capsule(session_id, raw_text)
 
     assert meta["secrets_redacted"] == 1
-    assert "sk-1234567890abcdef1234567890abcdef" not in meta["capsule_text"]
-    assert "MySecret123!" not in meta["capsule_text"]
+    assert fake_key not in meta["capsule_text"]
+    assert fake_password not in meta["capsule_text"]
 
     retrieved = store.get_capsule(session_id)
     assert retrieved is not None

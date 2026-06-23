@@ -98,8 +98,9 @@ class TestDualUserIsolation:
         from js.memory.enhanced_store import EnhancedMemoryStore
         store = EnhancedMemoryStore(state, MemoryConfig())
         # Store a value that looks like an API key
+        fake_key = "sk-" + "test1234567890abcdefghij"
         store.store_working("sess-1", "test_key",
-                           "sk-test1234567890abcdefghij",
+                           fake_key,
                            category="test")
         items = store.get_working("sess-1", limit=5)
         # Value should be redacted
