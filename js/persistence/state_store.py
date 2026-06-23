@@ -8,6 +8,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+_LEGACY_LOCAL_OWNER = "__legacy_local__"
+
 
 class StateStore:
     """Persist and retrieve AgentState checkpoints per session."""
@@ -47,7 +49,7 @@ class StateStore:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS checkpoints (
-                    session_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
                     run_id TEXT NOT NULL,
                     turn_count INTEGER DEFAULT 0,
                     messages TEXT,
@@ -57,7 +59,10 @@ class StateStore:
                     status TEXT DEFAULT 'running',
                     error_message TEXT DEFAULT '',
                     compression_stats TEXT,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    model TEXT DEFAULT '',
+                    owner_key_hash TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (session_id, owner_key_hash)
                 )
                 """
             )
@@ -79,15 +84,55 @@ class StateStore:
                 pass  # Column already exists
             # Backfill legacy NULL-owner rows to the local sentinel.
             try:
-                _legacy_local_owner = "__legacy_local__"
-
                 conn.execute(
                     "UPDATE checkpoints SET owner_key_hash = ? WHERE owner_key_hash IS NULL",
-                    (_legacy_local_owner,),
+                    (_LEGACY_LOCAL_OWNER,),
                 )
             except Exception:
                 pass
+            # Migration: if old table has only session_id as PK, recreate.
+            cols = conn.execute("PRAGMA table_info(checkpoints)").fetchall()
+            pk_cols = [c["name"] for c in cols if c["pk"]]
+            if pk_cols == ["session_id"]:
+                conn.execute("ALTER TABLE checkpoints RENAME TO checkpoints_old")
+                conn.execute(
+                    """
+                    CREATE TABLE checkpoints (
+                        session_id TEXT NOT NULL,
+                        run_id TEXT NOT NULL,
+                        turn_count INTEGER DEFAULT 0,
+                        messages TEXT,
+                        tool_results TEXT,
+                        total_tokens TEXT,
+                        cost_estimate REAL DEFAULT 0.0,
+                        status TEXT DEFAULT 'running',
+                        error_message TEXT DEFAULT '',
+                        compression_stats TEXT,
+                        model TEXT DEFAULT '',
+                        owner_key_hash TEXT NOT NULL,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (session_id, owner_key_hash)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO checkpoints
+                    (session_id, run_id, turn_count, messages, tool_results, total_tokens,
+                     cost_estimate, status, error_message, compression_stats, model, owner_key_hash, updated_at)
+                    SELECT session_id, run_id, turn_count, messages, tool_results, total_tokens,
+                           cost_estimate, status, error_message, compression_stats, model,
+                           COALESCE(owner_key_hash, ?), updated_at
+                    FROM checkpoints_old
+                    """,
+                    (_LEGACY_LOCAL_OWNER,),
+                )
+                conn.execute("DROP TABLE checkpoints_old")
+                conn.execute("CREATE INDEX idx_checkpoint_session ON checkpoints(session_id)")
             conn.commit()
+
+    def _normalize_owner(self, owner_key_hash: str | None) -> str:
+        return owner_key_hash or _LEGACY_LOCAL_OWNER
 
     def save(
         self,
@@ -104,6 +149,7 @@ class StateStore:
         model: str = "",
         owner_key_hash: str | None = None,
     ) -> None:
+        owner = self._normalize_owner(owner_key_hash)
         with self._conn() as conn:
             conn.execute(
                 """
@@ -112,7 +158,7 @@ class StateStore:
                     total_tokens, cost_estimate, status, error_message,
                     compression_stats, model, owner_key_hash, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(session_id) DO UPDATE SET
+                ON CONFLICT(session_id, owner_key_hash) DO UPDATE SET
                     run_id=excluded.run_id,
                     turn_count=excluded.turn_count,
                     messages=excluded.messages,
@@ -142,16 +188,17 @@ class StateStore:
                     error_message,
                     json.dumps(compression_stats, ensure_ascii=False),
                     model,
-                    owner_key_hash,
+                    owner,
                 ),
             )
             conn.commit()
 
-    def load(self, session_id: str) -> dict[str, Any] | None:
+    def load(self, session_id: str, owner_key_hash: str | None = None) -> dict[str, Any] | None:
+        owner = self._normalize_owner(owner_key_hash)
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT * FROM checkpoints WHERE session_id = ?",
-                (session_id,),
+                "SELECT * FROM checkpoints WHERE session_id = ? AND owner_key_hash = ?",
+                (session_id, owner),
             ).fetchone()
         if row is None:
             return None
@@ -172,21 +219,32 @@ class StateStore:
             "error_message": row["error_message"] or "",
             "compression_stats": json.loads(row["compression_stats"] or "{}"),
             "model": row["model"] or "",
+            "owner_key_hash": row["owner_key_hash"] or _LEGACY_LOCAL_OWNER,
         }
 
-    def delete(self, session_id: str) -> bool:
+    def delete(self, session_id: str, owner_key_hash: str | None = None) -> bool:
+        owner = self._normalize_owner(owner_key_hash)
         with self._conn() as conn:
             cur = conn.execute(
-                "DELETE FROM checkpoints WHERE session_id = ?",
-                (session_id,),
+                "DELETE FROM checkpoints WHERE session_id = ? AND owner_key_hash = ?",
+                (session_id, owner),
             )
             conn.commit()
             return cur.rowcount > 0
 
-    def list_sessions(self) -> list[str]:
+    def list_sessions(self, owner_key_hash: str | None = None) -> list[str]:
+        """Sessions owned by ``owner_key_hash``.
+
+        ``None`` is normalized to the legacy-local sentinel; it does NOT
+        return rows belonging to authenticated owners. Use an explicit
+        ``list_all_sessions`` helper later if admin-style global listing is
+        needed.
+        """
+        owner = self._normalize_owner(owner_key_hash)
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT session_id FROM checkpoints ORDER BY updated_at DESC"
+                "SELECT session_id FROM checkpoints WHERE owner_key_hash = ? ORDER BY updated_at DESC",
+                (owner,),
             ).fetchall()
         return [r["session_id"] for r in rows]
 

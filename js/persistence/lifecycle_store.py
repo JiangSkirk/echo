@@ -39,13 +39,14 @@ class SessionLifecycleStore:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS session_lifecycle (
-                    session_id TEXT PRIMARY KEY,
-                    owner_key_hash TEXT,
+                    session_id TEXT NOT NULL,
+                    owner_key_hash TEXT NOT NULL,
                     created_at REAL NOT NULL,
                     completed_at REAL,
                     exit_reason TEXT,
                     status TEXT NOT NULL DEFAULT 'running',
-                    last_heartbeat_at REAL NOT NULL
+                    last_heartbeat_at REAL NOT NULL,
+                    PRIMARY KEY (session_id, owner_key_hash)
                 )
                 """
             )
@@ -69,11 +70,49 @@ class SessionLifecycleStore:
                 )
             except Exception:
                 pass
+            # Migration: if old table has only session_id as PK, recreate.
+            cols = conn.execute("PRAGMA table_info(session_lifecycle)").fetchall()
+            pk_cols = [c["name"] for c in cols if c["pk"]]
+            if pk_cols == ["session_id"]:
+                conn.execute("ALTER TABLE session_lifecycle RENAME TO session_lifecycle_old")
+                conn.execute(
+                    """
+                    CREATE TABLE session_lifecycle (
+                        session_id TEXT NOT NULL,
+                        owner_key_hash TEXT NOT NULL,
+                        created_at REAL NOT NULL,
+                        completed_at REAL,
+                        exit_reason TEXT,
+                        status TEXT NOT NULL DEFAULT 'running',
+                        last_heartbeat_at REAL NOT NULL,
+                        PRIMARY KEY (session_id, owner_key_hash)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO session_lifecycle
+                    (session_id, owner_key_hash, created_at, completed_at, exit_reason, status, last_heartbeat_at)
+                    SELECT session_id, COALESCE(owner_key_hash, ?), created_at, completed_at, exit_reason, status, last_heartbeat_at
+                    FROM session_lifecycle_old
+                    """,
+                    (_LEGACY_LOCAL_OWNER,),
+                )
+                conn.execute("DROP TABLE session_lifecycle_old")
+                conn.execute(
+                    "CREATE INDEX idx_lifecycle_status_owner ON session_lifecycle(status, owner_key_hash)"
+                )
+                conn.execute(
+                    "CREATE INDEX idx_lifecycle_heartbeat ON session_lifecycle(last_heartbeat_at)"
+                )
             conn.commit()
+
+    def _normalize_owner(self, owner_key_hash: str | None) -> str:
+        return owner_key_hash or _LEGACY_LOCAL_OWNER
 
     def mark_started(self, session_id: str, owner_key_hash: str | None = None) -> None:
         now = time.time()
-        owner = owner_key_hash or _LEGACY_LOCAL_OWNER
+        owner = self._normalize_owner(owner_key_hash)
         with self._conn() as conn:
             conn.execute(
                 """
@@ -81,8 +120,7 @@ class SessionLifecycleStore:
                 (session_id, owner_key_hash, created_at, completed_at, exit_reason,
                  status, last_heartbeat_at)
                 VALUES (?, ?, ?, NULL, NULL, 'running', ?)
-                ON CONFLICT(session_id) DO UPDATE SET
-                    owner_key_hash=excluded.owner_key_hash,
+                ON CONFLICT(session_id, owner_key_hash) DO UPDATE SET
                     created_at=excluded.created_at,
                     completed_at=NULL,
                     exit_reason=NULL,
@@ -93,8 +131,11 @@ class SessionLifecycleStore:
             )
             conn.commit()
 
-    def mark_completed(self, session_id: str, exit_reason: str | None = None) -> None:
+    def mark_completed(
+        self, session_id: str, exit_reason: str | None = None, owner_key_hash: str | None = None
+    ) -> None:
         now = time.time()
+        owner = self._normalize_owner(owner_key_hash)
         with self._conn() as conn:
             conn.execute(
                 """
@@ -103,14 +144,15 @@ class SessionLifecycleStore:
                     completed_at=?,
                     exit_reason=?,
                     last_heartbeat_at=?
-                WHERE session_id=?
+                WHERE session_id=? AND owner_key_hash=?
                 """,
-                (now, exit_reason or "", now, session_id),
+                (now, exit_reason or "", now, session_id, owner),
             )
             conn.commit()
 
-    def mark_aborted(self, session_id: str, reason: str) -> None:
+    def mark_aborted(self, session_id: str, reason: str, owner_key_hash: str | None = None) -> None:
         now = time.time()
+        owner = self._normalize_owner(owner_key_hash)
         with self._conn() as conn:
             conn.execute(
                 """
@@ -119,38 +161,38 @@ class SessionLifecycleStore:
                     completed_at=?,
                     exit_reason=?,
                     last_heartbeat_at=?
-                WHERE session_id=?
+                WHERE session_id=? AND owner_key_hash=?
                 """,
-                (now, reason, now, session_id),
+                (now, reason, now, session_id, owner),
             )
             conn.commit()
 
-    def heartbeat(self, session_id: str) -> None:
+    def heartbeat(self, session_id: str, owner_key_hash: str | None = None) -> None:
         now = time.time()
+        owner = self._normalize_owner(owner_key_hash)
         with self._conn() as conn:
             conn.execute(
                 """
                 UPDATE session_lifecycle
                 SET last_heartbeat_at=?
-                WHERE session_id=?
+                WHERE session_id=? AND owner_key_hash=?
                 """,
-                (now, session_id),
+                (now, session_id, owner),
             )
             conn.commit()
 
     def get(self, session_id: str, owner_key_hash: str | None = None) -> dict[str, Any] | None:
+        owner = self._normalize_owner(owner_key_hash)
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT * FROM session_lifecycle WHERE session_id = ?", (session_id,)
+                "SELECT * FROM session_lifecycle WHERE session_id = ? AND owner_key_hash = ?",
+                (session_id, owner),
             ).fetchone()
         if row is None:
             return None
-        row_owner = row["owner_key_hash"] or _LEGACY_LOCAL_OWNER
-        if owner_key_hash is not None and row_owner != owner_key_hash:
-            return None
         return {
             "session_id": row["session_id"],
-            "owner_key_hash": row_owner,
+            "owner_key_hash": row["owner_key_hash"] or _LEGACY_LOCAL_OWNER,
             "created_at": row["created_at"],
             "completed_at": row["completed_at"],
             "exit_reason": row["exit_reason"] or "",
@@ -163,33 +205,25 @@ class SessionLifecycleStore:
         owner_key_hash: str | None = None,
         threshold_seconds: float = 300,
     ) -> list[dict[str, Any]]:
+        """List active sessions owned by ``owner_key_hash``.
+
+        ``None`` is normalized to the legacy-local sentinel so unauthenticated
+        callers cannot read sessions belonging to authenticated owners.
+        """
         cutoff = time.time() - threshold_seconds
-        if owner_key_hash is not None:
-            rows = (
-                self._conn()
-                .execute(
-                    """
-                SELECT * FROM session_lifecycle
-                WHERE status = 'running' AND owner_key_hash = ? AND last_heartbeat_at >= ?
-                ORDER BY last_heartbeat_at DESC
-                """,
-                    (owner_key_hash, cutoff),
-                )
-                .fetchall()
+        owner = self._normalize_owner(owner_key_hash)
+        rows = (
+            self._conn()
+            .execute(
+                """
+            SELECT * FROM session_lifecycle
+            WHERE status = 'running' AND owner_key_hash = ? AND last_heartbeat_at >= ?
+            ORDER BY last_heartbeat_at DESC
+            """,
+                (owner, cutoff),
             )
-        else:
-            rows = (
-                self._conn()
-                .execute(
-                    """
-                SELECT * FROM session_lifecycle
-                WHERE status = 'running' AND last_heartbeat_at >= ?
-                ORDER BY last_heartbeat_at DESC
-                """,
-                    (cutoff,),
-                )
-                .fetchall()
-            )
+            .fetchall()
+        )
         return [
             {
                 "session_id": r["session_id"],
@@ -203,20 +237,29 @@ class SessionLifecycleStore:
             for r in rows
         ]
 
-    def recover_aborted_sessions(self, threshold_seconds: float = 300) -> list[str]:
-        """Mark running sessions with stale heartbeats as aborted."""
+    def recover_aborted_sessions(
+        self, threshold_seconds: float = 300, owner_key_hash: str | None = None
+    ) -> list[str]:
+        """Mark running sessions with stale heartbeats as aborted.
+
+        ``None`` is normalized to the legacy-local sentinel; this never sweeps
+        rows belonging to authenticated owners. For admin-style full recovery,
+        introduce a dedicated ``recover_all_aborted_sessions`` later.
+        """
         cutoff = time.time() - threshold_seconds
+        owner = self._normalize_owner(owner_key_hash)
         with self._conn() as conn:
             rows = conn.execute(
                 """
-                SELECT session_id FROM session_lifecycle
-                WHERE status = 'running' AND last_heartbeat_at < ?
+                SELECT session_id, owner_key_hash FROM session_lifecycle
+                WHERE status = 'running' AND last_heartbeat_at < ? AND owner_key_hash = ?
                 """,
-                (cutoff,),
+                (cutoff, owner),
             ).fetchall()
         recovered: list[str] = []
         for row in rows:
             session_id = row["session_id"]
-            self.mark_aborted(session_id, "abnormal_exit_recovery")
+            row_owner = row["owner_key_hash"] or _LEGACY_LOCAL_OWNER
+            self.mark_aborted(session_id, "abnormal_exit_recovery", row_owner)
             recovered.append(session_id)
         return recovered

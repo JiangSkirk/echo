@@ -90,7 +90,10 @@ class StateMixin(AgentBase):
 
     async def load_checkpoint(self, session_id: str) -> AgentState | None:
         """Restore agent state from persistent store."""
-        data = await asyncio.to_thread(self.state_store.load, session_id)
+        from js.web.auth import _session_owner_hash
+
+        owner_key_hash = _session_owner_hash.get(None)
+        data = await asyncio.to_thread(self.state_store.load, session_id, owner_key_hash)
         if data is None:
             return None
         state = AgentState(

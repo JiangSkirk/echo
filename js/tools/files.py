@@ -147,8 +147,18 @@ class FileTools:
                 return ToolResult(success=False, error=f"File not found: {path}")
 
             content = target.read_text(encoding="utf-8", errors="replace")
+            lines = content.splitlines()
+            total_lines = len(lines)
+
+            if offset > 0:
+                lines = lines[offset:]
+            if limit > 0:
+                lines = lines[:limit]
+
+            result = "\n".join(lines)
             budget = self.limits.tool_output_budget_chars
-            if len(content) > budget:
+
+            if len(result) > budget:
                 return ToolResult(
                     success=True,
                     output="",
@@ -159,19 +169,10 @@ class FileTools:
                     },
                 )
 
-            lines = content.splitlines()
-
-            if offset > 0:
-                lines = lines[offset:]
-            if limit > 0:
-                lines = lines[:limit]
-
-            result = "\n".join(lines)
-
             return ToolResult(
                 success=True,
                 output=result,
-                metadata={"lines": len(lines), "total_lines": len(content.splitlines())},
+                metadata={"lines": len(lines), "total_lines": total_lines},
             )
         except Exception as e:
             return ToolResult(success=False, error=str(e))

@@ -58,7 +58,7 @@ class ReviewStore:
                 CREATE TABLE IF NOT EXISTS review_capsules (
                     session_id TEXT NOT NULL,
                     run_id TEXT NOT NULL,
-                    owner_key_hash TEXT,
+                    owner_key_hash TEXT NOT NULL,
                     first_user_message TEXT,
                     last_assistant_message TEXT,
                     tools_used TEXT,
@@ -67,7 +67,7 @@ class ReviewStore:
                     status TEXT,
                     error_message TEXT,
                     created_at REAL NOT NULL,
-                    PRIMARY KEY (session_id, run_id)
+                    PRIMARY KEY (session_id, run_id, owner_key_hash)
                 )
                 """
             )
@@ -84,11 +84,53 @@ class ReviewStore:
                 )
             except Exception:
                 pass
+            # Migration: if old table has only (session_id, run_id) as PK, recreate.
+            cols = conn.execute("PRAGMA table_info(review_capsules)").fetchall()
+            pk_cols = [c["name"] for c in cols if c["pk"]]
+            if pk_cols == ["session_id", "run_id"]:
+                conn.execute("ALTER TABLE review_capsules RENAME TO review_capsules_old")
+                conn.execute(
+                    """
+                    CREATE TABLE review_capsules (
+                        session_id TEXT NOT NULL,
+                        run_id TEXT NOT NULL,
+                        owner_key_hash TEXT NOT NULL,
+                        first_user_message TEXT,
+                        last_assistant_message TEXT,
+                        tools_used TEXT,
+                        total_tokens INTEGER,
+                        turn_count INTEGER,
+                        status TEXT,
+                        error_message TEXT,
+                        created_at REAL NOT NULL,
+                        PRIMARY KEY (session_id, run_id, owner_key_hash)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO review_capsules
+                    (session_id, run_id, owner_key_hash, first_user_message, last_assistant_message,
+                     tools_used, total_tokens, turn_count, status, error_message, created_at)
+                    SELECT session_id, run_id, COALESCE(owner_key_hash, ?), first_user_message,
+                           last_assistant_message, tools_used, total_tokens, turn_count, status,
+                           error_message, created_at
+                    FROM review_capsules_old
+                    """,
+                    (_LEGACY_LOCAL_OWNER,),
+                )
+                conn.execute("DROP TABLE review_capsules_old")
+                conn.execute(
+                    "CREATE INDEX idx_review_owner ON review_capsules(owner_key_hash, created_at)"
+                )
             conn.commit()
+
+    def _normalize_owner(self, owner_key_hash: str | None) -> str:
+        return owner_key_hash or _LEGACY_LOCAL_OWNER
 
     def store(self, capsule: ReviewCapsule) -> None:
         now = time.time() if capsule.created_at == 0 else capsule.created_at
-        owner = capsule.owner_key_hash or _LEGACY_LOCAL_OWNER
+        owner = self._normalize_owner(capsule.owner_key_hash)
         with self._conn() as conn:
             conn.execute(
                 """
@@ -96,8 +138,7 @@ class ReviewStore:
                 (session_id, run_id, owner_key_hash, first_user_message, last_assistant_message,
                  tools_used, total_tokens, turn_count, status, error_message, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(session_id, run_id) DO UPDATE SET
-                    owner_key_hash=excluded.owner_key_hash,
+                ON CONFLICT(session_id, run_id, owner_key_hash) DO UPDATE SET
                     first_user_message=excluded.first_user_message,
                     last_assistant_message=excluded.last_assistant_message,
                     tools_used=excluded.tools_used,
@@ -141,46 +182,37 @@ class ReviewStore:
     def get(
         self, session_id: str, run_id: str, owner_key_hash: str | None = None
     ) -> ReviewCapsule | None:
+        owner = self._normalize_owner(owner_key_hash)
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT * FROM review_capsules WHERE session_id = ? AND run_id = ?",
-                (session_id, run_id),
+                "SELECT * FROM review_capsules WHERE session_id = ? AND run_id = ? AND owner_key_hash = ?",
+                (session_id, run_id, owner),
             ).fetchone()
         if row is None:
-            return None
-        row_owner = row["owner_key_hash"] or _LEGACY_LOCAL_OWNER
-        if owner_key_hash is not None and row_owner != owner_key_hash:
             return None
         return self._row_to_capsule(row)
 
     def list_recent(
         self, owner_key_hash: str | None = None, limit: int = 20
     ) -> list[ReviewCapsule]:
-        if owner_key_hash is not None:
-            rows = (
-                self._conn()
-                .execute(
-                    """
-                SELECT * FROM review_capsules
-                WHERE owner_key_hash = ?
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                    (owner_key_hash, limit),
-                )
-                .fetchall()
+        """Recent capsules owned by ``owner_key_hash``.
+
+        ``None`` is normalized to the legacy-local sentinel — it does NOT
+        return the union of all owners. Use an explicit ``list_all_recent``
+        helper later if admin-style global listing is needed.
+        """
+        owner = self._normalize_owner(owner_key_hash)
+        rows = (
+            self._conn()
+            .execute(
+                """
+            SELECT * FROM review_capsules
+            WHERE owner_key_hash = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+                (owner, limit),
             )
-        else:
-            rows = (
-                self._conn()
-                .execute(
-                    """
-                SELECT * FROM review_capsules
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                    (limit,),
-                )
-                .fetchall()
-            )
+            .fetchall()
+        )
         return [self._row_to_capsule(r) for r in rows]

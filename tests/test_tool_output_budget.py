@@ -77,3 +77,29 @@ async def test_file_read_returns_small_file(tmp_path: Path) -> None:
     assert result.success is True
     assert result.output == "hello"
     assert result.metadata.get("too_large") is not True
+
+
+async def test_file_read_offset_limit_on_single_line_large_file(tmp_path: Path) -> None:
+    """A 5000-char single-line file with offset/limit should still respect budget."""
+    tools = FileTools(tmp_path, ToolLimits(tool_output_budget_chars=2000), _AllowGuard())
+    big = tmp_path / "single_line.txt"
+    big.write_text("a" * 5000)
+    result = await tools.read("single_line.txt", offset=0, limit=10)
+    # Single line: splitlines gives 1 line, limit 10 keeps it, but result is 5000 chars > budget
+    assert result.metadata.get("too_large") is True
+    assert result.metadata.get("size") == 5000
+
+
+async def test_file_read_offset_limit_on_multi_line_large_file(tmp_path: Path) -> None:
+    """Multi-line large file with offset/limit should return requested lines within budget."""
+    tools = FileTools(tmp_path, ToolLimits(tool_output_budget_chars=2000), _AllowGuard())
+    big = tmp_path / "multi_line.txt"
+    lines = [f"line {i}" for i in range(500)]
+    big.write_text("\n".join(lines))
+    result = await tools.read("multi_line.txt", offset=10, limit=20)
+    assert result.metadata.get("too_large") is not True
+    assert result.metadata.get("lines") == 20
+    assert result.metadata.get("total_lines") == 500
+    assert "line 10" in result.output
+    assert "line 29" in result.output
+    assert "line 30" not in result.output

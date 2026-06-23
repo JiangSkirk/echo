@@ -234,6 +234,9 @@ class TurnExecutor:
         from js.web.auth import _session_owner_hash
 
         owner = _session_owner_hash.get(None)
+        # Store owner on this executor instance (not the shared agent) so that
+        # concurrent runs for different users don't race on a shared field.
+        self.owner_key_hash = owner
         agent._cancel_tokens[self.session_id] = (asyncio.Event(), state.run_id, owner)
 
         # Track session lifecycle
@@ -472,7 +475,7 @@ class TurnExecutor:
         while state.turn_count < agent.settings.max_turns:
             # Heartbeat: keep session alive
             try:
-                agent.lifecycle_store.heartbeat(self.session_id)
+                agent.lifecycle_store.heartbeat(self.session_id, self.owner_key_hash)
             except Exception:
                 agent.logger.debug("Lifecycle heartbeat failed", exc_info=True)
 

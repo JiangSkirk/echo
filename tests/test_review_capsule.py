@@ -90,6 +90,58 @@ async def test_review_capsule_owner_isolation(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_review_capsule_same_session_run_different_owners(tmp_path):
+    finalizer = _make_finalizer(tmp_path)
+    for owner in ("owner_a", "owner_b"):
+        state = AgentState(session_id="same", run_id="same_run")
+        state.messages = [ChatMessage(role="user", content=f"hi {owner}")]
+        state.status = "completed"
+        token = _session_owner_hash.set(owner)
+        try:
+            await finalizer._finalize_run(state, "same", "same_run", f"hi {owner}", 0)
+        finally:
+            _session_owner_hash.reset(token)
+
+    cap_a = finalizer.review_store.get("same", "same_run", "owner_a")
+    cap_b = finalizer.review_store.get("same", "same_run", "owner_b")
+    assert cap_a is not None
+    assert cap_b is not None
+    assert cap_a.first_user_message == "hi owner_a"
+    assert cap_b.first_user_message == "hi owner_b"
+
+
+def test_review_list_recent_none_does_not_leak_authenticated_owners(tmp_path):
+    """list_recent(None) must NOT return capsules from authenticated owners."""
+    from js.persistence.review_store import ReviewCapsule
+
+    def _cap(session_id: str, run_id: str, owner: str, first_user: str) -> ReviewCapsule:
+        return ReviewCapsule(
+            session_id=session_id,
+            run_id=run_id,
+            first_user_message=first_user,
+            last_assistant_message="",
+            tools_used=[],
+            total_tokens=0,
+            turn_count=0,
+            status="completed",
+            error_message="",
+            owner_key_hash=owner,
+        )
+
+    store = ReviewStore(tmp_path / "review.db")
+    store.store(_cap("s_auth_a", "r_a", "owner_a", "auth_a"))
+    store.store(_cap("s_auth_b", "r_b", "owner_b", "auth_b"))
+
+    leaked = store.list_recent(None)
+    assert leaked == []
+    # Default arg behaves identically — legacy-local sentinel, not wildcard.
+    assert store.list_recent() == []
+
+    # Owner-scoped reads still work.
+    assert [c.run_id for c in store.list_recent("owner_a")] == ["r_a"]
+
+
+@pytest.mark.asyncio
 async def test_review_capsule_redacts_secrets(tmp_path):
     finalizer = _make_finalizer(tmp_path)
     state = AgentState(session_id="s3", run_id="r3")

@@ -33,7 +33,7 @@ class FinalizerMixin(AgentBase):
         # Mark session lifecycle completed
         exit_reason = state.error_message or state.status
         try:
-            self.lifecycle_store.mark_completed(session_id, exit_reason)
+            self.lifecycle_store.mark_completed(session_id, exit_reason, owner_key_hash)
         except Exception:
             self.logger.warning("Failed to mark session completed", exc_info=True)
 
