@@ -28,7 +28,16 @@ _session_owner_hash: contextvars.ContextVar[str | None] = contextvars.ContextVar
 
 logger = get_logger("js.web.auth")
 
-__all__ = ["AuthManager", "require_auth", "require_admin", "require_auth_dep", "check_origin"]
+__all__ = [
+    "AuthManager",
+    "require_auth",
+    "require_admin",
+    "require_user_write",
+    "require_admin_write",
+    "require_auth_dep",
+    "check_origin",
+    "memory_owner",
+]
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -126,7 +135,9 @@ def check_origin(request: Request | WebSocket) -> None:
             )
         suffix = f":{port}" if port else ""
         names = ["localhost", "127.0.0.1"]
-        allowed = frozenset(f"{scheme}://{h}{suffix}" for scheme in ("http", "https") for h in names)
+        allowed = frozenset(
+            f"{scheme}://{h}{suffix}" for scheme in ("http", "https") for h in names
+        )
         if hostname == "::1":
             allowed = allowed | {f"http://[::1]{suffix}", f"https://[::1]{suffix}"}
 
@@ -296,6 +307,7 @@ class AuthManager:
 # FastAPI dependency helpers
 # ----------------------------------------------------------------------
 
+
 def memory_owner(auth_ctx: dict[str, Any] | None) -> str | None:
     """Owner key for per-user memory scoping.
 
@@ -339,7 +351,11 @@ async def require_auth(
         # otherwise return an admin context so local convenience mode works.
         if api_key:
             return auth_mgr.verify(api_key)
-        return {"name": "anonymous", "role": _ADMIN_ROLE, "key_hash": _hash_key(secrets.token_urlsafe(16))}
+        return {
+            "name": "anonymous",
+            "role": _ADMIN_ROLE,
+            "key_hash": _hash_key(secrets.token_urlsafe(16)),
+        }
 
     try:
         return auth_mgr.verify(api_key)
@@ -374,6 +390,38 @@ async def require_admin(
     return auth_ctx
 
 
+async def require_user_write(
+    request: Request,
+    auth_ctx: dict[str, Any] = Depends(require_auth_dep),
+) -> dict[str, Any]:
+    """FastAPI dependency: any authenticated user may modify their own state.
+
+    State-changing methods always require Origin/Host validation.  This is the
+    user-scoped counterpart to ``require_admin`` for endpoints that mutate data
+    belonging to the current owner (e.g. sessions, personal memories).
+    """
+    if request.method.upper() in _STATE_CHANGING_METHODS:
+        check_origin(request)
+    return auth_ctx
+
+
+async def require_admin_write(
+    request: Request,
+    auth_ctx: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
+    """FastAPI dependency: admin role + Origin/Host check for state changes.
+
+    This is a convenience wrapper for global-state mutation endpoints (provider
+    config, Hermes refresh, embedder recovery, etc.) that must be both admin-only
+    and CSRF-protected regardless of HTTP method.
+    """
+    # require_admin already enforces role and checks Origin for mutating methods.
+    # Force Origin validation even for GET/POST-style admin actions that do not
+    # naturally fall under _STATE_CHANGING_METHODS in all call sites.
+    check_origin(request)
+    return auth_ctx
+
+
 async def require_setup_auth(
     api_key: str | None = Security(api_key_header),
 ) -> dict[str, Any]:
@@ -398,7 +446,11 @@ async def require_setup_auth(
     if not effective_settings.security.api_key_required:
         if api_key:
             return auth_mgr.verify(api_key)
-        return {"name": "anonymous", "role": _USER_ROLE, "key_hash": _hash_key(secrets.token_urlsafe(16))}
+        return {
+            "name": "anonymous",
+            "role": _USER_ROLE,
+            "key_hash": _hash_key(secrets.token_urlsafe(16)),
+        }
 
     # Bootstrap window only when BOTH conditions hold:
     # 1. No admin key exists yet

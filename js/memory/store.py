@@ -216,18 +216,14 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
             # Keep the full-text index in sync (upsert == delete + insert).
             if getattr(self, "_fts_enabled", False):
                 conn.execute("DELETE FROM memories_fts WHERE key = ?", (key,))
-                conn.execute(
-                    "INSERT INTO memories_fts(key, value) VALUES (?, ?)", (key, value)
-                )
+                conn.execute("INSERT INTO memories_fts(key, value) VALUES (?, ?)", (key, value))
             conn.commit()
 
     def retrieve(self, key: str) -> str | None:
         """Retrieve a memory by key."""
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT * FROM memories WHERE key = ?", (key,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM memories WHERE key = ?", (key,)).fetchone()
 
         if row:
             with db_connection(self.db_path) as conn:
@@ -320,14 +316,19 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         ]
 
     def get_context_string(
-        self, max_chars: int = 4000, query: str = "", session_id: str = "",
+        self,
+        max_chars: int = 4000,
+        query: str = "",
+        session_id: str = "",
         owner_key_hash: str | None = None,
     ) -> str:
         """Get rich context from all memory layers for injection into prompts."""
         # Use enhanced multi-layer memory if available
         if hasattr(self, "enhanced"):
             return self.enhanced.get_context_string(
-                query=query, session_id=session_id, max_chars=max_chars,
+                query=query,
+                session_id=session_id,
+                max_chars=max_chars,
                 owner_key_hash=owner_key_hash,
             )
 
@@ -354,20 +355,37 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         return "\n".join(parts) or "No memories stored yet."
 
     def store_working(
-        self, session_id: str, key: str, value: str,
-        category: str = "general", importance: int = 5,
+        self,
+        session_id: str,
+        key: str,
+        value: str,
+        category: str = "general",
+        importance: int = 5,
+        owner_key_hash: str | None = None,
     ) -> None:
         """Store a working memory entry for the current session."""
-        self.enhanced.store_working(session_id, key, value, category, importance)
+        self.enhanced.store_working(
+            session_id, key, value, category, importance, owner_key_hash=owner_key_hash
+        )
 
     def store_episode(
-        self, session_id: str, summary: str, topics: list[str],
-        tokens_used: int = 0, turn_count: int = 0, importance: int = 5,
+        self,
+        session_id: str,
+        summary: str,
+        topics: list[str],
+        tokens_used: int = 0,
+        turn_count: int = 0,
+        importance: int = 5,
         owner_key_hash: str | None = None,
     ) -> None:
         """Store an episodic memory (session summary)."""
         self.enhanced.store_episode(
-            session_id, summary, topics, tokens_used, turn_count, importance,
+            session_id,
+            summary,
+            topics,
+            tokens_used,
+            turn_count,
+            importance,
             owner_key_hash=owner_key_hash,
         )
 
@@ -389,7 +407,9 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
             return self.enhanced.get_episodes(limit, owner_key_hash=owner_key_hash)
         return []
 
-    def get_sessions(self, limit: int = 30, owner_key_hash: str | None = None) -> list[dict[str, Any]]:
+    def get_sessions(
+        self, limit: int = 30, owner_key_hash: str | None = None
+    ) -> list[dict[str, Any]]:
         """List recent conversation sessions."""
         if hasattr(self, "enhanced"):
             return self.enhanced.list_sessions(limit, owner_key_hash=owner_key_hash)
@@ -401,12 +421,16 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
             return self.enhanced.cleanup_empty_sessions()
         return 0
 
-    def store_messages(self, session_id: str, messages: list[dict[str, str]]) -> None:
+    def store_messages(
+        self, session_id: str, messages: list[dict[str, str]], owner_key_hash: str | None = None
+    ) -> None:
         """Store conversation messages in batch."""
         if hasattr(self, "enhanced"):
-            self.enhanced.store_messages(session_id, messages)
+            self.enhanced.store_messages(session_id, messages, owner_key_hash=owner_key_hash)
 
-    def get_session_messages(self, session_id: str, owner_key_hash: str | None = None) -> list[dict[str, Any]]:
+    def get_session_messages(
+        self, session_id: str, owner_key_hash: str | None = None
+    ) -> list[dict[str, Any]]:
         """Get all messages for a session."""
         if hasattr(self, "enhanced"):
             return self.enhanced.get_session_messages(session_id, owner_key_hash=owner_key_hash)
@@ -423,10 +447,18 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         session_id: str,
         capsule_text: str,
         owner_key_hash: str | None = None,
-    ) -> None:
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         """Store or update a short context capsule for a session."""
         if hasattr(self, "enhanced"):
-            self.enhanced.store_capsule(session_id, capsule_text, owner_key_hash=owner_key_hash)
+            return self.enhanced.store_capsule(
+                session_id, capsule_text, owner_key_hash=owner_key_hash, **kwargs
+            )
+        return {
+            "session_id": session_id,
+            "capsule_text": capsule_text,
+            "owner_key_hash": owner_key_hash,
+        }
 
     def get_capsule(
         self,
@@ -448,16 +480,20 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
             return self.enhanced.delete_capsule(session_id, owner_key_hash=owner_key_hash)
         return False
 
-    def get_working(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    def get_working(
+        self, session_id: str, limit: int = 50, owner_key_hash: str | None = None
+    ) -> list[dict[str, Any]]:
         """Get working memories for a session."""
         if hasattr(self, "enhanced"):
-            return self.enhanced.get_working(session_id, limit)
+            return self.enhanced.get_working(session_id, limit, owner_key_hash=owner_key_hash)
         return []
 
-    def get_all_working(self, limit: int = 50) -> list[dict[str, Any]]:
+    def get_all_working(
+        self, limit: int = 50, owner_key_hash: str | None = None
+    ) -> list[dict[str, Any]]:
         """Get recent working memories across all sessions."""
         if hasattr(self, "enhanced"):
-            return self.enhanced.get_all_working(limit)
+            return self.enhanced.get_all_working(limit, owner_key_hash=owner_key_hash)
         return []
 
     def get_all_semantic(
@@ -469,18 +505,37 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         return []
 
     def store_semantic(
-        self, key: str, value: str, category: str = "fact", confidence: float = 0.5,
-        source: str = "", memory_path: str | None = None, entity_type: str | None = None,
-        entity_name: str | None = None, parent_id: int | None = None,
-        relation_type: str | None = None, owner_key_hash: str | None = None,
-        session_id: str = "", evidence: str = "",
+        self,
+        key: str,
+        value: str,
+        category: str = "fact",
+        confidence: float = 0.5,
+        source: str = "",
+        memory_path: str | None = None,
+        entity_type: str | None = None,
+        entity_name: str | None = None,
+        parent_id: int | None = None,
+        relation_type: str | None = None,
+        owner_key_hash: str | None = None,
+        session_id: str = "",
+        evidence: str = "",
     ) -> dict[str, Any]:
         """Store a semantic memory."""
         if hasattr(self, "enhanced"):
             return self.enhanced.store_semantic(
-                key, value, category, confidence, source,
-                memory_path, entity_type, entity_name, parent_id, relation_type,
-                owner_key_hash=owner_key_hash, session_id=session_id, evidence=evidence,
+                key,
+                value,
+                category,
+                confidence,
+                source,
+                memory_path,
+                entity_type,
+                entity_name,
+                parent_id,
+                relation_type,
+                owner_key_hash=owner_key_hash,
+                session_id=session_id,
+                evidence=evidence,
             )
         return {"conflicts": [], "evicted": 0}
 
@@ -495,30 +550,51 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         return False
 
     def update_semantic(
-        self, memory_id: int, value: str, category: str | None = None,
-        source: str = "", memory_path: str | None = None,
-        entity_type: str | None = None, entity_name: str | None = None,
-        parent_id: int | None = None, relation_type: str | None = None,
+        self,
+        memory_id: int,
+        value: str,
+        category: str | None = None,
+        source: str = "",
+        memory_path: str | None = None,
+        entity_type: str | None = None,
+        entity_name: str | None = None,
+        parent_id: int | None = None,
+        relation_type: str | None = None,
         owner_key_hash: str | None = None,
     ) -> bool:
         """Update a semantic memory by id."""
         if hasattr(self, "enhanced"):
             return self.enhanced.update_semantic(
-                memory_id, value, category, source,
-                memory_path, entity_type, entity_name, parent_id, relation_type,
+                memory_id,
+                value,
+                category,
+                source,
+                memory_path,
+                entity_type,
+                entity_name,
+                parent_id,
+                relation_type,
                 owner_key_hash=owner_key_hash,
             )
         return False
 
     def search_semantic(
-        self, query: str, category: str | None = None, limit: int = 10,
-        path_prefix: str | None = None, block_priority: bool = True,
+        self,
+        query: str,
+        category: str | None = None,
+        limit: int = 10,
+        path_prefix: str | None = None,
+        block_priority: bool = True,
         owner_key_hash: str | None = None,
     ) -> list[Any]:
         """Search semantic memories."""
         if hasattr(self, "enhanced"):
             return self.enhanced.search_semantic(
-                query, category, limit, path_prefix, block_priority,
+                query,
+                category,
+                limit,
+                path_prefix,
+                block_priority,
                 owner_key_hash=owner_key_hash,
             )
         return []
@@ -544,9 +620,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
     ) -> bool:
         """Mark a semantic memory as verified."""
         if hasattr(self, "enhanced"):
-            return self.enhanced.verify_semantic(
-                memory_id, source, owner_key_hash=owner_key_hash
-            )
+            return self.enhanced.verify_semantic(memory_id, source, owner_key_hash=owner_key_hash)
         return False
 
     # ── Proposed changes (staging queue) ──

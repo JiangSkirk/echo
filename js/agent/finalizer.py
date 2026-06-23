@@ -25,11 +25,10 @@ class FinalizerMixin(AgentBase):
         """Persist memory, audit logs, and learning data after a run completes."""
         try:
             from js.web.auth import _session_owner_hash
+
             owner_key_hash = _session_owner_hash.get(None)
         except Exception:
-            owner_key_hash = getattr(self, "_session_owner", None)
-        if owner_key_hash is None:
-            owner_key_hash = getattr(self, "_session_owner", None)
+            owner_key_hash = None
 
         # Extract assistant output for memory storage
         assistant_output = ""
@@ -54,6 +53,7 @@ class FinalizerMixin(AgentBase):
                     self.memory.store_messages,
                     session_id,
                     new_messages,
+                    owner_key_hash,
                 )
         except Exception as e:
             self.logger.debug(f"Failed to store messages: {e}")
@@ -61,10 +61,13 @@ class FinalizerMixin(AgentBase):
         # Store episodic memory second
         try:
             summary = f"User: {user_input[:80]}... → Assistant: {assistant_output[:80]}..."
-            topics = list({
-                word.lower() for word in (user_input + " " + assistant_output).split()
-                if len(word) > 4 and word.isalpha()
-            })[:5]
+            topics = list(
+                {
+                    word.lower()
+                    for word in (user_input + " " + assistant_output).split()
+                    if len(word) > 4 and word.isalpha()
+                }
+            )[:5]
             await asyncio.to_thread(
                 self.memory.store_episode,
                 session_id=session_id,
@@ -77,7 +80,8 @@ class FinalizerMixin(AgentBase):
             )
             try:
                 self._dream_scheduler.notify_activity(
-                    user_input, assistant_output,
+                    user_input,
+                    assistant_output,
                     owner_key_hash=owner_key_hash,
                     session_id=session_id,
                 )
@@ -100,6 +104,7 @@ class FinalizerMixin(AgentBase):
                         value=learning_ctx,
                         category="meta",
                         importance=8,
+                        owner_key_hash=owner_key_hash,
                     )
             except Exception:
                 self.logger.debug("Learning context injection failed", exc_info=True)

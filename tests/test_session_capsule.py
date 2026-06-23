@@ -30,8 +30,12 @@ class MockProvider(ModelProvider):
         max_tokens: int | None = None,
     ) -> ChatResponse:
         self.last_messages = messages
-        resp = self.responses[self.index] if self.index < len(self.responses) else ChatResponse(
-            content="done", tool_calls=[], model=model, usage={}, finish_reason="stop"
+        resp = (
+            self.responses[self.index]
+            if self.index < len(self.responses)
+            else ChatResponse(
+                content="done", tool_calls=[], model=model, usage={}, finish_reason="stop"
+            )
         )
         self.index += 1
         return resp
@@ -39,6 +43,7 @@ class MockProvider(ModelProvider):
     def chat_stream(self, *args: Any, **kwargs: Any) -> Any:
         async def _gen():
             yield "done"
+
         return _gen()
 
     async def health_check(self) -> bool:
@@ -75,13 +80,46 @@ def test_capsule_crud(tmp_store: EnhancedMemoryStore) -> None:
 
 def test_capsule_owner_isolation(tmp_store: EnhancedMemoryStore) -> None:
     tmp_store.store_capsule("s1", "owner a capsule", owner_key_hash="owner-a")
+    tmp_store.store_capsule("s1", "owner b capsule", owner_key_hash="owner-b")
 
-    assert tmp_store.get_capsule("s1", owner_key_hash="owner-a") is not None
-    assert tmp_store.get_capsule("s1", owner_key_hash="owner-b") is None
+    assert (
+        tmp_store.get_capsule("s1", owner_key_hash="owner-a")["capsule_text"] == "owner a capsule"
+    )
+    assert (
+        tmp_store.get_capsule("s1", owner_key_hash="owner-b")["capsule_text"] == "owner b capsule"
+    )
+    # No owner → only the legacy/shared NULL-owner row is visible.
     assert tmp_store.get_capsule("s1") is None
 
-    assert tmp_store.delete_capsule("s1", owner_key_hash="owner-b") is False
+    # Updating one owner's capsule must not touch the other owner's row.
+    tmp_store.store_capsule("s1", "owner a updated", owner_key_hash="owner-a")
+    assert (
+        tmp_store.get_capsule("s1", owner_key_hash="owner-b")["capsule_text"] == "owner b capsule"
+    )
+
+    # Deleting one owner's capsule must not touch the other owner's row.
     assert tmp_store.delete_capsule("s1", owner_key_hash="owner-a") is True
+    assert tmp_store.get_capsule("s1", owner_key_hash="owner-a") is None
+    assert tmp_store.get_capsule("s1", owner_key_hash="owner-b") is not None
+
+    assert tmp_store.delete_capsule("s1", owner_key_hash="owner-b") is True
+    assert tmp_store.get_capsule("s1", owner_key_hash="owner-b") is None
+
+
+def test_capsule_owner_partition_delete_isolation(tmp_store: EnhancedMemoryStore) -> None:
+    """Deleting one owner's capsule must leave the other owner's capsule intact."""
+    tmp_store.store_capsule("shared-session", "owner a", owner_key_hash="owner-a")
+    tmp_store.store_capsule("shared-session", "owner b", owner_key_hash="owner-b")
+
+    assert tmp_store.delete_capsule("shared-session", owner_key_hash="owner-a") is True
+    assert tmp_store.get_capsule("shared-session", owner_key_hash="owner-a") is None
+    assert (
+        tmp_store.get_capsule("shared-session", owner_key_hash="owner-b")["capsule_text"]
+        == "owner b"
+    )
+
+    assert tmp_store.delete_capsule("shared-session", owner_key_hash="owner-b") is True
+    assert tmp_store.get_capsule("shared-session", owner_key_hash="owner-b") is None
 
 
 @pytest.mark.asyncio
@@ -96,6 +134,7 @@ async def test_run_rejects_cross_owner_session_history(tmp_path: Path) -> None:
     agent.memory.store_messages(
         "private-session",
         [{"role": "user", "content": "owner-a private context"}],
+        owner_key_hash="owner-a",
     )
     agent.memory.store_episode(
         "private-session",
@@ -104,28 +143,40 @@ async def test_run_rejects_cross_owner_session_history(tmp_path: Path) -> None:
         owner_key_hash="owner-a",
     )
 
-    provider = MockProvider([
-        ChatResponse(
-            content="should not run",
-            tool_calls=[],
-            model="mock",
-            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-            finish_reason="stop",
-        ),
-    ])
+    provider = MockProvider(
+        [
+            ChatResponse(
+                content="should not run",
+                tool_calls=[],
+                model="mock",
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                finish_reason="stop",
+            ),
+        ]
+    )
     from js.config import ModelConfig
-    agent.router.add_provider("mock", provider, [ModelConfig(id="mock", name="Mock", context_window=4096)])
+
+    agent.router.add_provider(
+        "mock", provider, [ModelConfig(id="mock", name="Mock", context_window=4096)]
+    )
 
     from js.web.auth import _session_owner_hash
+
     token = _session_owner_hash.set("owner-b")
     try:
-        with pytest.raises(PermissionError):
-            await agent.run("hello", session_id="private-session", model="mock/mock")
+        await agent.run("hello", session_id="private-session", model="mock/mock")
     finally:
         _session_owner_hash.reset(token)
         await agent.close()
 
-    assert provider.last_messages is None
+    # owner-b's run must not see owner-a's private context.
+    assert provider.last_messages is not None
+    contents = "\n".join(str(m.content) for m in provider.last_messages)
+    assert "owner-a private context" not in contents
+
+    # owner-a's isolated session data must remain intact.
+    assert len(agent.memory.get_session_messages("private-session", owner_key_hash="owner-a")) == 1
+    assert agent.memory.get_episodes(owner_key_hash="owner-a")[0].session_id == "private-session"
 
 
 @pytest.mark.asyncio
@@ -143,6 +194,8 @@ async def test_capsule_injection_keeps_recent_turns(tmp_path: Path) -> None:
         max_turns=3,
     )
     agent = JSAgent(settings)
+    # Disable compression so we can verify exact message counts.
+    agent.compressor.config.enable_compression = False
 
     # Seed session history: 10 user/assistant pairs
     store = agent.memory
@@ -155,12 +208,23 @@ async def test_capsule_injection_keeps_recent_turns(tmp_path: Path) -> None:
     # Store a capsule
     store.store_capsule("session-x", "This is the long capsule summary.")
 
-    # Mock provider
-    provider = MockProvider([
-        ChatResponse(content="ok", tool_calls=[], model="mock", usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}, finish_reason="stop"),
-    ])
+    # Mock provider: use a context window that keeps dynamic recent_turns at the base value.
+    provider = MockProvider(
+        [
+            ChatResponse(
+                content="ok",
+                tool_calls=[],
+                model="mock",
+                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                finish_reason="stop",
+            ),
+        ]
+    )
     from js.config import ModelConfig
-    agent.router.add_provider("mock", provider, [ModelConfig(id="mock", name="Mock", context_window=4096)])
+
+    agent.router.add_provider(
+        "mock", provider, [ModelConfig(id="mock", name="Mock", context_window=32000)]
+    )
 
     await agent.run("hello", session_id="session-x", model="mock/mock")
 
@@ -198,26 +262,32 @@ async def test_capsule_refresh_uses_current_owner_context(tmp_path: Path) -> Non
     agent = JSAgent(settings)
     agent._session_owner = "stale-owner"  # type: ignore[attr-defined]
 
-    provider = MockProvider([
-        ChatResponse(
-            content="ok",
-            tool_calls=[],
-            model="mock",
-            usage={"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
-            finish_reason="stop",
-        ),
-        ChatResponse(
-            content="fresh owner capsule",
-            tool_calls=[],
-            model="mock",
-            usage={"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
-            finish_reason="stop",
-        ),
-    ])
+    provider = MockProvider(
+        [
+            ChatResponse(
+                content="ok",
+                tool_calls=[],
+                model="mock",
+                usage={"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+                finish_reason="stop",
+            ),
+            ChatResponse(
+                content="fresh owner capsule",
+                tool_calls=[],
+                model="mock",
+                usage={"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+                finish_reason="stop",
+            ),
+        ]
+    )
     from js.config import ModelConfig
-    agent.router.add_provider("mock", provider, [ModelConfig(id="mock", name="Mock", context_window=4096)])
+
+    agent.router.add_provider(
+        "mock", provider, [ModelConfig(id="mock", name="Mock", context_window=4096)]
+    )
 
     from js.web.auth import _session_owner_hash
+
     token = _session_owner_hash.set("fresh-owner")
     try:
         await agent.run("hello", session_id="owner-session", model="mock/mock")
@@ -249,11 +319,22 @@ async def test_capsule_disabled_uses_full_history(tmp_path: Path) -> None:
         history.append({"role": "assistant", "content": f"reply {i}"})
     store.store_messages("session-y", history)
 
-    provider = MockProvider([
-        ChatResponse(content="ok", tool_calls=[], model="mock", usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}, finish_reason="stop"),
-    ])
+    provider = MockProvider(
+        [
+            ChatResponse(
+                content="ok",
+                tool_calls=[],
+                model="mock",
+                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                finish_reason="stop",
+            ),
+        ]
+    )
     from js.config import ModelConfig
-    agent.router.add_provider("mock", provider, [ModelConfig(id="mock", name="Mock", context_window=4096)])
+
+    agent.router.add_provider(
+        "mock", provider, [ModelConfig(id="mock", name="Mock", context_window=4096)]
+    )
 
     await agent.run("hello", session_id="session-y", model="mock/mock")
 
@@ -281,14 +362,28 @@ async def test_capsule_load_failure_fallback(tmp_path: Path) -> None:
     original = agent.memory.get_capsule
     agent.memory.get_capsule = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))  # type: ignore[method-assign]
 
-    history = [{"role": "user", "content": "old user"}, {"role": "assistant", "content": "old assistant"}]
+    history = [
+        {"role": "user", "content": "old user"},
+        {"role": "assistant", "content": "old assistant"},
+    ]
     agent.memory.store_messages("session-z", history)
 
-    provider = MockProvider([
-        ChatResponse(content="ok", tool_calls=[], model="mock", usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}, finish_reason="stop"),
-    ])
+    provider = MockProvider(
+        [
+            ChatResponse(
+                content="ok",
+                tool_calls=[],
+                model="mock",
+                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                finish_reason="stop",
+            ),
+        ]
+    )
     from js.config import ModelConfig
-    agent.router.add_provider("mock", provider, [ModelConfig(id="mock", name="Mock", context_window=4096)])
+
+    agent.router.add_provider(
+        "mock", provider, [ModelConfig(id="mock", name="Mock", context_window=4096)]
+    )
 
     state = await agent.run("hello", session_id="session-z", model="mock/mock")
     assert state.status == "completed"
@@ -296,3 +391,97 @@ async def test_capsule_load_failure_fallback(tmp_path: Path) -> None:
     # Restore
     agent.memory.get_capsule = original  # type: ignore[method-assign]
     await agent.close()
+
+
+def test_get_session_messages_owner_filter(tmp_store: EnhancedMemoryStore) -> None:
+    """Messages are strictly isolated by owner; no cross-owner fallback."""
+    tmp_store.store_messages(
+        "s1",
+        [{"role": "user", "content": "legacy message"}],
+        owner_key_hash=None,
+    )
+    tmp_store.store_messages(
+        "s1",
+        [{"role": "user", "content": "owner-a message"}],
+        owner_key_hash="owner-a",
+    )
+    tmp_store.store_messages(
+        "s1",
+        [{"role": "user", "content": "owner-b message"}],
+        owner_key_hash="owner-b",
+    )
+
+    # No-auth / local anonymous request sees only the sentinel-owner legacy rows.
+    messages = tmp_store.get_session_messages("s1", owner_key_hash=None)
+    contents = {m["content"] for m in messages}
+    assert contents == {"legacy message"}
+
+    # Authenticated owners see only their own rows.
+    messages_a = tmp_store.get_session_messages("s1", owner_key_hash="owner-a")
+    assert {m["content"] for m in messages_a} == {"owner-a message"}
+
+    messages_b = tmp_store.get_session_messages("s1", owner_key_hash="owner-b")
+    assert {m["content"] for m in messages_b} == {"owner-b message"}
+
+
+def test_delete_session_is_owner_scoped(tmp_store: EnhancedMemoryStore) -> None:
+    """delete_session must only remove the current owner's partition."""
+    tmp_store.store_messages(
+        "shared-session",
+        [{"role": "user", "content": "owner-a message"}],
+        owner_key_hash="owner-a",
+    )
+    tmp_store.store_episode(
+        "shared-session",
+        "owner-a summary",
+        ["owner-a"],
+        owner_key_hash="owner-a",
+    )
+    tmp_store.store_working(
+        "shared-session",
+        "key",
+        "owner-a working",
+        owner_key_hash="owner-a",
+    )
+    tmp_store.store_capsule(
+        "shared-session",
+        "owner-a capsule",
+        owner_key_hash="owner-a",
+    )
+
+    tmp_store.store_messages(
+        "shared-session",
+        [{"role": "user", "content": "owner-b message"}],
+        owner_key_hash="owner-b",
+    )
+    tmp_store.store_episode(
+        "shared-session",
+        "owner-b summary",
+        ["owner-b"],
+        owner_key_hash="owner-b",
+    )
+    tmp_store.store_working(
+        "shared-session",
+        "key",
+        "owner-b working",
+        owner_key_hash="owner-b",
+    )
+    tmp_store.store_capsule(
+        "shared-session",
+        "owner-b capsule",
+        owner_key_hash="owner-b",
+    )
+
+    # Delete only owner-a's partition.
+    assert tmp_store.delete_session("shared-session", owner_key_hash="owner-a") is True
+
+    assert tmp_store.get_session_messages("shared-session", owner_key_hash="owner-a") == []
+    assert tmp_store.get_working("shared-session", owner_key_hash="owner-a") == []
+    assert tmp_store.get_capsule("shared-session", owner_key_hash="owner-a") is None
+    assert tmp_store.get_episodes(owner_key_hash="owner-a") == []
+
+    # Owner-b's partition must remain intact.
+    assert len(tmp_store.get_session_messages("shared-session", owner_key_hash="owner-b")) == 1
+    assert len(tmp_store.get_working("shared-session", owner_key_hash="owner-b")) == 1
+    assert tmp_store.get_capsule("shared-session", owner_key_hash="owner-b") is not None
+    assert len(tmp_store.get_episodes(owner_key_hash="owner-b")) == 1

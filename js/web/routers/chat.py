@@ -46,7 +46,9 @@ async def chat(
     # Size limit
     payload_size = len(json.dumps(payload).encode("utf-8"))
     if payload_size > _MAX_PAYLOAD_BYTES:
-        raise HTTPException(413, f"Request payload too large: {payload_size} bytes (max {_MAX_PAYLOAD_BYTES})")
+        raise HTTPException(
+            413, f"Request payload too large: {payload_size} bytes (max {_MAX_PAYLOAD_BYTES})"
+        )
 
     agent = get_agent()
     message = payload.get("message", "")
@@ -60,11 +62,13 @@ async def chat(
         async with session_lock:
             try:
                 from js.web.auth import _session_owner_hash, memory_owner
+
                 owner = memory_owner(auth)
                 token = _session_owner_hash.set(owner)
                 try:
-                    agent._session_owner = owner  # type: ignore[attr-defined]
-                    state = await agent.run(message, session_id=session_id, model=model, attachments=attachments)
+                    state = await agent.run(
+                        message, session_id=session_id, model=model, attachments=attachments
+                    )
                 finally:
                     _session_owner_hash.reset(token)
             except asyncio.CancelledError:
@@ -93,7 +97,11 @@ async def chat(
             model_id = None
         model_id = model_id or model or "unknown"
         cfg = agent.router.get_model_config(model_id)
-        provider = cfg.provider if cfg and hasattr(cfg, "provider") and isinstance(cfg.provider, str) else ""
+        provider = (
+            cfg.provider
+            if cfg and hasattr(cfg, "provider") and isinstance(cfg.provider, str)
+            else ""
+        )
         cached_tokens = getattr(state, "cached_tokens", 0)
         if not isinstance(cached_tokens, int):
             cached_tokens = 0

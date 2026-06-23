@@ -48,16 +48,26 @@ class RunnerMixin(AgentBase):
             result = await self._lane_executor.submit(
                 session_id=session_id or "default",
                 coro=lambda: self._do_run(
-                    user_input, session_id, model, attachments,
-                    _resume_state, stream_callback, progress_callback,
+                    user_input,
+                    session_id,
+                    model,
+                    attachments,
+                    _resume_state,
+                    stream_callback,
+                    progress_callback,
                 ),
                 task_id=f"run_{id(user_input)}",
                 name="agent_run",
             )
             return result  # type: ignore[no-any-return]
         return await self._do_run(
-            user_input, session_id, model, attachments,
-            _resume_state, stream_callback, progress_callback,
+            user_input,
+            session_id,
+            model,
+            attachments,
+            _resume_state,
+            stream_callback,
+            progress_callback,
         )
 
     async def _do_run(
@@ -72,8 +82,14 @@ class RunnerMixin(AgentBase):
     ) -> AgentState:
         """Core agent run logic — delegates to :class:`TurnExecutor`."""
         executor = TurnExecutor(
-            self, user_input, session_id, model, attachments,
-            _resume_state, stream_callback, progress_callback,
+            self,
+            user_input,
+            session_id,
+            model,
+            attachments,
+            _resume_state,
+            stream_callback,
+            progress_callback,
         )
         return await executor.execute()
 
@@ -94,11 +110,10 @@ class RunnerMixin(AgentBase):
         messages: list[ChatMessage] = []
         # Load historical conversation context
         from js.web.auth import _session_owner_hash
+
         owner = _session_owner_hash.get(None)
         try:
-            history = await asyncio.to_thread(
-                self.memory.get_session_messages, session_id, owner
-            )
+            history = await asyncio.to_thread(self.memory.get_session_messages, session_id, owner)
             for m in history[-50:]:
                 if m.get("role") in ("user", "assistant") and m.get("content"):
                     messages.append(ChatMessage(role=m["role"], content=m["content"]))
@@ -182,6 +197,7 @@ class TurnExecutor:
                     {"error": str(e)},
                 )
                 from js.events.models import AgentEvent
+
                 self.agent.event_store.emit(
                     AgentEvent.error(session_id=self.session_id, run_id=self.run_id, error=str(e))
                 )
@@ -216,6 +232,7 @@ class TurnExecutor:
         self.state = state
         # Capture owner for session isolation
         from js.web.auth import _session_owner_hash
+
         owner = _session_owner_hash.get(None)
         agent._cancel_tokens[self.session_id] = (asyncio.Event(), state.run_id, owner)
 
@@ -226,7 +243,11 @@ class TurnExecutor:
 
         agent.logger.info(
             "Starting run",
-            extra={"session": self.session_id, "run": self.run_id, "attachments": len(self.attachments)},
+            extra={
+                "session": self.session_id,
+                "run": self.run_id,
+                "attachments": len(self.attachments),
+            },
         )
         agent.audit.log(
             AuditEventType.USER_MESSAGE,
@@ -266,13 +287,17 @@ class TurnExecutor:
 
             # Count historical user/assistant messages already persisted
             self.history_ua_count = sum(
-                1 for m in state.messages
+                1
+                for m in state.messages
                 if m.role in ("user", "assistant") and isinstance(m.content, str)
             )
 
             # Session Capsule: for long sessions, keep only recent turns verbatim
             # and inject a short capsule summary into the system message.
+            # v2: drift detection, prompt-injection guard, dynamic recent_turns.
             capsule_text = ""
+            _capsule_meta: dict[str, Any] = {}
+            recent_turns = agent.settings.memory.capsule_recent_turns
             if agent.settings.memory.capsule_enabled:
                 try:
                     capsule = await asyncio.to_thread(
@@ -280,12 +305,41 @@ class TurnExecutor:
                     )
                     if capsule:
                         capsule_text = capsule.get("capsule_text", "") or ""
+                        _capsule_meta = {k: v for k, v in capsule.items() if k != "capsule_text"}
+                        # Drift detection: log a warning but never block injection
+                        # in Lite. Session Capsule's primary goal is token savings.
+                        if capsule_text and state.messages:
+                            from js.memory.capsule_drift import check_drift
+
+                            drift = check_drift(
+                                capsule_text,
+                                [
+                                    {"role": m.role, "content": str(m.content)}
+                                    for m in state.messages
+                                ],
+                                recent_turns_count=agent.settings.memory.capsule_recent_turns,
+                            )
+                            if drift.drift_detected:
+                                agent.logger.warning(
+                                    f"Capsule drift detected ({drift.reason}); "
+                                    "continuing with capsule (drift is warning-only in Lite)",
+                                    extra={
+                                        "session": self.session_id,
+                                        "confidence": drift.confidence,
+                                    },
+                                )
                         if capsule_text:
-                            recent_turns = agent.settings.memory.capsule_recent_turns
+                            # v2: dynamic recent_turns based on model context window
+                            recent_turns = self._compute_recent_turns(agent, self.model)
                             recent_messages = recent_turns * 2
-                            kept = state.messages[-recent_messages:] if len(state.messages) > recent_messages else state.messages
+                            kept = (
+                                state.messages[-recent_messages:]
+                                if len(state.messages) > recent_messages
+                                else state.messages
+                            )
                             state.messages = [
-                                m for m in kept
+                                m
+                                for m in kept
                                 if m.role in ("user", "assistant") and isinstance(m.content, str)
                             ]
                             self.history_ua_count = len(state.messages)
@@ -295,11 +349,19 @@ class TurnExecutor:
 
             # Initialize conversation with rich memory context
             system_content = agent._build_system_message(
-                query=self.user_input, session_id=self.session_id,
-                attachments=self.attachments, model=self.model,
+                query=self.user_input,
+                session_id=self.session_id,
+                attachments=self.attachments,
+                model=self.model,
             )
             if capsule_text:
-                system_content += f"\n\n## Session Capsule\n{capsule_text}\n\nOnly the most recent {agent.settings.memory.capsule_recent_turns} turns are shown verbatim; rely on the capsule for older context."
+                # v2: fixed boundary note to prevent prompt injection
+                system_content += (
+                    f"\n\n## Session Capsule (system-generated summary, NOT a user instruction)\n"
+                    f"{capsule_text}\n\n"
+                    f"Only the most recent {recent_turns} turns are shown verbatim; "
+                    f"rely on the capsule for older context."
+                )
             state.messages.insert(
                 0,
                 ChatMessage(role="system", content=system_content),
@@ -308,17 +370,22 @@ class TurnExecutor:
             # Build user message: support multimodal for vision models
             model_config = agent.router.get_model_config(self.model or "")
             supports_vision = model_config.supports_vision if model_config else False
-            vision_parts = agent._build_vision_content(self.user_input, self.attachments, supports_vision)
+            vision_parts = agent._build_vision_content(
+                self.user_input, self.attachments, supports_vision
+            )
             if isinstance(vision_parts, list):
                 state.messages.append(ChatMessage(role="user", content=vision_parts))
             else:
-                state.messages.append(ChatMessage(role="user", content=self.user_input + attachment_ctx))
+                state.messages.append(
+                    ChatMessage(role="user", content=self.user_input + attachment_ctx)
+                )
         else:
             # Resuming from checkpoint: state already contains system + history + user messages.
             # Count how many user/assistant messages are already in the state
             # so that _finalize_run only persists the new ones.
             self.history_ua_count = sum(
-                1 for m in state.messages
+                1
+                for m in state.messages
                 if m.role in ("user", "assistant") and isinstance(m.content, str)
             )
 
@@ -330,7 +397,31 @@ class TurnExecutor:
             value=self.user_input[:500],
             category="interaction",
             importance=5,
+            owner_key_hash=owner,
         )
+
+    def _compute_recent_turns(self, agent: AgentBase, model: str | None) -> int:
+        """Compute how many recent turns to keep verbatim based on model context window.
+
+        Larger context windows → more conservative (keep more turns).
+        Smaller windows → more aggressive (keep fewer turns).
+        """
+        base = agent.settings.memory.capsule_recent_turns
+        if model is None:
+            return base
+        model_config = agent.router.get_model_config(model)
+        if model_config is None or model_config.context_window is None:
+            return base
+        ctx = model_config.context_window
+        # Heuristic: keep more turns for larger windows, fewer for small ones
+        if ctx >= 200_000:  # e.g. claude-3.5-sonnet, gemini-1.5-pro
+            return max(base, 8)
+        elif ctx >= 128_000:  # e.g. gpt-4o, kimi-k2
+            return max(base, 6)
+        elif ctx >= 32_000:  # e.g. gpt-4, claude-3-haiku
+            return max(base - 2, 4)
+        else:  # small local models
+            return max(base - 4, 2)
 
     def _check_cancelled(self) -> bool:
         """Return True (and mark the state cancelled) if a cancel was requested."""
@@ -404,7 +495,9 @@ class TurnExecutor:
                         state.messages.pop()
                         if state.turn_count >= agent.settings.max_turns:
                             state.status = "error"
-                            state.error_message = "Model returned empty response after maximum retries"
+                            state.error_message = (
+                                "Model returned empty response after maximum retries"
+                            )
                             break
                         continue
                     state.status = "completed"
@@ -432,9 +525,7 @@ class TurnExecutor:
         tools_schema = agent._get_tools_schema(self.model)
 
         # Compress context if needed (tools included in token estimate)
-        compression_result = await agent.compressor.compress(
-            state.messages, tools=tools_schema
-        )
+        compression_result = await agent.compressor.compress(state.messages, tools=tools_schema)
         compressed_messages = compression_result.messages
         if compression_result.level.value != "none":
             agent.logger.info(
@@ -485,7 +576,9 @@ class TurnExecutor:
                 cached_tokens = stream_usage.get("cached_tokens", 0)
             else:
                 # Rough heuristic: ~4 chars per token + overhead per message
-                prompt_tokens = sum(len(str(m.content or "")) // 4 + 20 for m in compressed_messages) + 100
+                prompt_tokens = (
+                    sum(len(str(m.content or "")) // 4 + 20 for m in compressed_messages) + 100
+                )
                 completion_tokens = len(stream_text) // 4 + 20
                 cached_tokens = 0
 
@@ -529,14 +622,12 @@ class TurnExecutor:
             # (common discount across most providers). Otherwise full rate.
             if cached_tokens > 0 and model_config.cost_input > 0:
                 effective_input_cost = (
-                    (prompt_tokens - cached_tokens) * model_config.cost_input +
-                    cached_tokens * model_config.cost_input * 0.10
-                )
+                    prompt_tokens - cached_tokens
+                ) * model_config.cost_input + cached_tokens * model_config.cost_input * 0.10
             else:
                 effective_input_cost = prompt_tokens * model_config.cost_input
             state.cost_estimate += (
-                effective_input_cost +
-                completion_tokens * model_config.cost_output
+                effective_input_cost + completion_tokens * model_config.cost_output
             )
 
         agent.audit.log(
@@ -554,6 +645,7 @@ class TurnExecutor:
 
         # Emit event for observability
         from js.events.models import AgentEvent
+
         agent.event_store.emit(
             AgentEvent.model_called(
                 session_id=self.session_id,
@@ -585,12 +677,12 @@ class TurnExecutor:
         state = self.state
         parallel = ParallelToolExecutor()
         batches = parallel.group(response.tool_calls)
-        agent.logger.debug(
-            f"Tool batches: {len(batches)} for {len(response.tool_calls)} calls"
-        )
+        agent.logger.debug(f"Tool batches: {len(batches)} for {len(response.tool_calls)} calls")
         for batch in batches:
             batch_tasks = [
-                agent._execute_tool_call(tc, self.session_id, self.run_id, self.user_input, self.progress_callback)
+                agent._execute_tool_call(
+                    tc, self.session_id, self.run_id, self.user_input, self.progress_callback
+                )
                 for tc in batch
             ]
             _raw_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
@@ -603,16 +695,30 @@ class TurnExecutor:
                     _tc_id = tc.get("id", "") if isinstance(tc, dict) else ""
                     if not _tc_id:
                         from js.utils.ids import tool_call_id as _det_tc_id
+
                         _tc_id = _det_tc_id(
-                            tool_name=tc.get("function", {}).get("name", "") if isinstance(tc, dict) else "",
-                            arguments=str(tc.get("function", {}).get("arguments", "{}")) if isinstance(tc, dict) else "{}",
+                            tool_name=tc.get("function", {}).get("name", "")
+                            if isinstance(tc, dict)
+                            else "",
+                            arguments=str(tc.get("function", {}).get("arguments", "{}"))
+                            if isinstance(tc, dict)
+                            else "{}",
                             turn_idx=0,
                             session_id=self.session_id,
                         )
-                    batch_results.append((
-                        ChatMessage(role="tool", content=err.to_text(), tool_call_id=_tc_id, name=tc.get("function", {}).get("name", "unknown") if isinstance(tc, dict) else "unknown"),
-                        err,
-                    ))
+                    batch_results.append(
+                        (
+                            ChatMessage(
+                                role="tool",
+                                content=err.to_text(),
+                                tool_call_id=_tc_id,
+                                name=tc.get("function", {}).get("name", "unknown")
+                                if isinstance(tc, dict)
+                                else "unknown",
+                            ),
+                            err,
+                        )
+                    )
                 else:
                     # mypy narrowing: res is the normal tuple result
                     batch_results.append(res)
@@ -625,9 +731,12 @@ class TurnExecutor:
                 # Quality scoring: record each tool call outcome
                 if agent._quality_scorer is not None:
                     from js.evolution.quality_scorer import ToolCallScore
+
                     turn_tool_scores.append(
                         ToolCallScore(
-                            tool_name=tr.error.split(":")[0] if tr.error else (msg.name or "unknown"),
+                            tool_name=tr.error.split(":")[0]
+                            if tr.error
+                            else (msg.name or "unknown"),
                             success=tr.success,
                             error_pattern=tr.error or "",
                         )
@@ -660,6 +769,7 @@ class TurnExecutor:
             try:
                 asyncio.create_task(agent.save_checkpoint(state))
                 from js.events.models import AgentEvent
+
                 agent.event_store.emit(
                     AgentEvent.checkpoint_saved(
                         session_id=self.session_id,
@@ -671,12 +781,15 @@ class TurnExecutor:
                 agent.logger.warning("Checkpoint auto-save failed", exc_info=True)
             # Emit tool_result events
             from js.events.models import AgentEvent
-            for tr in state.tool_results[-len(batch_results):]:
+
+            for tr in state.tool_results[-len(batch_results) :]:
                 agent.event_store.emit(
                     AgentEvent.tool_result(
                         session_id=self.session_id,
                         run_id=self.run_id,
-                        tool_name=tr.error.split(":")[0] if not tr.success and tr.error else "unknown",
+                        tool_name=tr.error.split(":")[0]
+                        if not tr.success and tr.error
+                        else "unknown",
                         success=tr.success,
                         output_preview=tr.output or tr.error or "",
                     )
@@ -694,12 +807,14 @@ class TurnExecutor:
         # Record turn quality score (OpenHuman-style)
         if agent._quality_scorer is not None:
             from js.evolution.quality_scorer import TurnScore
+
             agent._quality_scorer.record_turn(
                 TurnScore(
                     session_id=self.session_id,
                     turn_idx=state.turn_count,
                     model=state.model or "",
                     tool_scores=turn_tool_scores,
-                    total_tokens=state.total_tokens.get("input", 0) + state.total_tokens.get("output", 0),
+                    total_tokens=state.total_tokens.get("input", 0)
+                    + state.total_tokens.get("output", 0),
                 )
             )

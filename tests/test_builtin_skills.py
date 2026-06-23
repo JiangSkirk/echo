@@ -38,15 +38,14 @@ class TestFileSearchSkill:
 
     @pytest.mark.asyncio
     async def test_file_search_by_name(self, file_search_spec, tmp_path: Path) -> None:
-        """Search files by name pattern."""
-        # Create test files
+        """Search files by name pattern relative to the skill workspace."""
         (tmp_path / "test_a.py").write_text("# a")
         (tmp_path / "test_b.py").write_text("# b")
         (tmp_path / "readme.md").write_text("# readme")
 
         result = await execute_skill(
             spec=file_search_spec,
-            args={"pattern": "*.py", "path": str(tmp_path), "max_results": 10},
+            args={"pattern": "*.py", "path": ".", "max_results": 10},
             workspace=tmp_path,
         )
         assert result["success"] is True
@@ -58,13 +57,13 @@ class TestFileSearchSkill:
 
     @pytest.mark.asyncio
     async def test_file_search_by_content(self, file_search_spec, tmp_path: Path) -> None:
-        """Search files by content."""
+        """Search files by content relative to the skill workspace."""
         (tmp_path / "foo.py").write_text("def hello(): pass\n")
         (tmp_path / "bar.py").write_text("def world(): pass\n")
 
         result = await execute_skill(
             spec=file_search_spec,
-            args={"content": "hello", "path": str(tmp_path), "max_results": 10},
+            args={"content": "hello", "path": ".", "max_results": 10},
             workspace=tmp_path,
         )
         assert result["success"] is True
@@ -77,7 +76,7 @@ class TestFileSearchSkill:
         """Graceful handling when nothing matches — returns friendly message."""
         result = await execute_skill(
             spec=file_search_spec,
-            args={"pattern": "*.nonexistent", "path": str(tmp_path)},
+            args={"pattern": "*.nonexistent", "path": "."},
             workspace=tmp_path,
         )
         assert result["success"] is True
@@ -85,18 +84,92 @@ class TestFileSearchSkill:
         assert out["count"] == 1
         assert "No files matching" in out["results"][0]
 
+    @pytest.mark.asyncio
+    async def test_file_search_rejects_absolute_path(
+        self, file_search_spec, tmp_path: Path
+    ) -> None:
+        """Absolute paths outside the workspace must be rejected."""
+        result = await execute_skill(
+            spec=file_search_spec,
+            args={"pattern": "*.py", "path": "/etc"},
+            workspace=tmp_path,
+        )
+        assert result["success"] is True
+        out = json.loads(result["output"])
+        assert out["count"] == 0
+        assert any("Access denied" in r and "Absolute paths" in r for r in out["results"])
+
+    @pytest.mark.asyncio
+    async def test_file_search_rejects_parent_traversal(
+        self, file_search_spec, tmp_path: Path
+    ) -> None:
+        """Parent-directory traversal must be rejected."""
+        result = await execute_skill(
+            spec=file_search_spec,
+            args={"pattern": "*.py", "path": ".."},
+            workspace=tmp_path,
+        )
+        assert result["success"] is True
+        out = json.loads(result["output"])
+        assert out["count"] == 0
+        assert any("Access denied" in r and "Parent-directory" in r for r in out["results"])
+
+    @pytest.mark.asyncio
+    async def test_file_search_rejects_symlink_escape(
+        self, file_search_spec, tmp_path: Path
+    ) -> None:
+        """Symlink escapes outside the workspace must be rejected."""
+        outside = tmp_path / ".." / "outside_search"
+        outside.mkdir(parents=True, exist_ok=True)
+        (outside / "secret.txt").write_text("secret")
+
+        link_dir = tmp_path / "link_escape"
+        link_dir.symlink_to(outside, target_is_directory=True)
+
+        result = await execute_skill(
+            spec=file_search_spec,
+            args={"pattern": "*.txt", "path": "link_escape"},
+            workspace=tmp_path,
+        )
+        assert result["success"] is True
+        out = json.loads(result["output"])
+        assert out["count"] == 0
+        assert any("Access denied" in r and "escapes workspace" in r for r in out["results"])
+
+    @pytest.mark.asyncio
+    async def test_file_search_can_search_subdirectory(
+        self, file_search_spec, tmp_path: Path
+    ) -> None:
+        """Searching a subdirectory inside the workspace must work."""
+        subdir = tmp_path / "src"
+        subdir.mkdir()
+        (subdir / "module.py").write_text("x = 1")
+
+        result = await execute_skill(
+            spec=file_search_spec,
+            args={"pattern": "*.py", "path": "src", "max_results": 10},
+            workspace=tmp_path,
+        )
+        assert result["success"] is True
+        out = json.loads(result["output"])
+        assert out["count"] == 1
+        assert any("module.py" in r for r in out["results"])
+
 
 class TestPromptSkillsLoaded:
     """Verify prompt-type builtin skills are loadable and have content."""
 
-    @pytest.mark.parametrize("skill_id", [
-        "arxiv-research",
-        "code-review",
-        "excel-helper",
-        "pdf-helper",
-        "shell-safety",
-        "web-fetch",
-    ])
+    @pytest.mark.parametrize(
+        "skill_id",
+        [
+            "arxiv-research",
+            "code-review",
+            "excel-helper",
+            "pdf-helper",
+            "shell-safety",
+            "web-fetch",
+        ],
+    )
     def test_skill_loaded(self, manager: SkillManager, skill_id: str) -> None:
         spec = manager.get_skill(skill_id)
         assert spec is not None, f"Skill {skill_id} not loaded"
@@ -104,12 +177,15 @@ class TestPromptSkillsLoaded:
         assert spec.full_content
         assert len(spec.full_content) > 100
 
-    @pytest.mark.parametrize("skill_id,required_param", [
-        ("arxiv-research", "query"),
-        ("code-review", "code"),
-        ("shell-safety", "command"),
-        ("web-fetch", "url"),
-    ])
+    @pytest.mark.parametrize(
+        "skill_id,required_param",
+        [
+            ("arxiv-research", "query"),
+            ("code-review", "code"),
+            ("shell-safety", "command"),
+            ("web-fetch", "url"),
+        ],
+    )
     def test_skill_has_required_param(
         self, manager: SkillManager, skill_id: str, required_param: str
     ) -> None:
@@ -124,11 +200,15 @@ class TestPromptSkillExecution:
     """Test prompt skill execution path."""
 
     @pytest.mark.asyncio
-    async def test_code_review_prompt_execution(self, manager: SkillManager, tmp_path: Path) -> None:
+    async def test_code_review_prompt_execution(
+        self, manager: SkillManager, tmp_path: Path
+    ) -> None:
         spec = manager.get_skill("code-review")
         assert spec is not None
 
-        llm_caller = AsyncMock(return_value="[MEDIUM] Style: Missing type hints\nSuggestion: Add typing")
+        llm_caller = AsyncMock(
+            return_value="[MEDIUM] Style: Missing type hints\nSuggestion: Add typing"
+        )
         result = await execute_skill(
             spec=spec,
             args={"code": "def add(a, b): return a + b", "language": "python"},
@@ -142,7 +222,9 @@ class TestPromptSkillExecution:
         assert "def add(a, b)" in prompt
 
     @pytest.mark.asyncio
-    async def test_shell_safety_prompt_execution(self, manager: SkillManager, tmp_path: Path) -> None:
+    async def test_shell_safety_prompt_execution(
+        self, manager: SkillManager, tmp_path: Path
+    ) -> None:
         spec = manager.get_skill("shell-safety")
         assert spec is not None
 
@@ -159,7 +241,9 @@ class TestPromptSkillExecution:
         assert "rm -rf /" in prompt
 
     @pytest.mark.asyncio
-    async def test_arxiv_research_prompt_execution(self, manager: SkillManager, tmp_path: Path) -> None:
+    async def test_arxiv_research_prompt_execution(
+        self, manager: SkillManager, tmp_path: Path
+    ) -> None:
         spec = manager.get_skill("arxiv-research")
         assert spec is not None
 
@@ -333,7 +417,11 @@ class TestWorkflowSkillExecution:
             metadata={
                 "workflow": {
                     "steps": [
-                        {"type": "prompt", "input": "skip me", "condition": {"if": "mode", "eq": "debug"}},
+                        {
+                            "type": "prompt",
+                            "input": "skip me",
+                            "condition": {"if": "mode", "eq": "debug"},
+                        },
                         {"type": "prompt", "input": "run me"},
                     ]
                 }

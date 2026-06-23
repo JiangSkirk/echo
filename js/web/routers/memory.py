@@ -8,7 +8,13 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from js.utils.log import get_logger
-from js.web.auth import memory_owner, require_admin, require_auth_dep
+from js.web.auth import (
+    memory_owner,
+    require_admin,
+    require_admin_write,
+    require_auth_dep,
+    require_user_write,
+)
 from js.web.deps import get_agent
 
 logger = get_logger("js.web.memory")
@@ -46,11 +52,13 @@ async def memory_enhanced(
         ],
         "dream_logs": agent.memory.get_dream_logs(limit=10),
         "semantic_memories": agent.memory.get_all_semantic(limit=20, owner_key_hash=owner),
-        "working_memories": agent.memory.get_all_working(limit=20),
+        "working_memories": agent.memory.get_all_working(limit=20, owner_key_hash=owner),
         "memory_files": agent.memory.list_memory_files(),
     }
     if session_id:
-        result["session_working"] = agent.memory.get_working(session_id, limit=20)
+        result["session_working"] = agent.memory.get_working(
+            session_id, limit=20, owner_key_hash=owner
+        )
     return result
 
 
@@ -74,7 +82,7 @@ async def memory_file_get(
 
 @router.put("/api/memory/files/{name}")
 async def memory_file_put(
-    name: str, body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)
+    name: str, body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin_write)
 ) -> dict[str, Any]:
     agent = get_agent()
     try:
@@ -86,7 +94,7 @@ async def memory_file_put(
 
 @router.post("/api/memory/semantic")
 async def memory_semantic_post(
-    body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)
+    body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin_write)
 ) -> dict[str, Any]:
     agent = get_agent()
     key = (body.get("key") or "").strip()
@@ -114,11 +122,13 @@ async def memory_semantic_post(
 
 @router.delete("/api/memory/semantic/{memory_id}")
 async def memory_semantic_delete(
-    memory_id: int, auth: dict[str, Any] = Depends(require_admin)
+    memory_id: int, auth: dict[str, Any] = Depends(require_admin_write)
 ) -> dict[str, Any]:
     agent = get_agent()
     ok = await asyncio.to_thread(
-        agent.memory.delete_semantic, memory_id, source="user",
+        agent.memory.delete_semantic,
+        memory_id,
+        source="user",
         owner_key_hash=memory_owner(auth),
     )
     if not ok:
@@ -128,7 +138,7 @@ async def memory_semantic_delete(
 
 @router.put("/api/memory/semantic/{memory_id}")
 async def memory_semantic_put(
-    memory_id: int, body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)
+    memory_id: int, body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin_write)
 ) -> dict[str, Any]:
     agent = get_agent()
     value = (body.get("value") or "").strip()
@@ -196,6 +206,7 @@ async def memory_search(
 
 # ── Structured Blocks ──
 
+
 @router.get("/api/memory/blocks")
 async def memory_blocks(
     prefix: str | None = None,
@@ -226,12 +237,14 @@ async def memory_block_contents(
 @router.post("/api/memory/semantic/{memory_id}/verify")
 async def memory_semantic_verify(
     memory_id: int,
-    auth: dict[str, Any] = Depends(require_admin),
+    auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Mark a memory as verified (updates last_verified_at)."""
     agent = get_agent()
     ok = await asyncio.to_thread(
-        agent.memory.verify_semantic, memory_id, "user",
+        agent.memory.verify_semantic,
+        memory_id,
+        "user",
         owner_key_hash=memory_owner(auth),
     )
     if not ok:
@@ -240,6 +253,7 @@ async def memory_semantic_verify(
 
 
 # ── Proposed changes (review queue) ──
+
 
 @router.get("/api/memory/proposals")
 async def memory_proposals(
@@ -259,7 +273,7 @@ async def memory_proposals(
 async def memory_proposal_approve(
     proposal_id: int,
     body: dict[str, Any] | None = Body(default=None),
-    auth: dict[str, Any] = Depends(require_admin),
+    auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Approve a pending proposal, committing it to the memory library.
 
@@ -282,7 +296,7 @@ async def memory_proposal_approve(
 @router.post("/api/memory/proposals/{proposal_id}/reject")
 async def memory_proposal_reject(
     proposal_id: int,
-    auth: dict[str, Any] = Depends(require_admin),
+    auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Reject a pending proposal."""
     agent = get_agent()
@@ -296,7 +310,7 @@ async def memory_proposal_reject(
 
 @router.post("/api/memory/organize")
 async def memory_organize(
-    auth: dict[str, Any] = Depends(require_admin),
+    auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Manually organize memories from the recent conversation buffer.
 
@@ -309,8 +323,12 @@ async def memory_organize(
     buffer = ds.snapshot_buffer() if ds is not None and hasattr(ds, "snapshot_buffer") else []
     if not buffer:
         return {
-            "success": True, "turns": 0, "proposed": 0,
-            "auto_applied": 0, "pending": 0, "skipped": "no recent conversation",
+            "success": True,
+            "turns": 0,
+            "proposed": 0,
+            "auto_applied": 0,
+            "pending": 0,
+            "skipped": "no recent conversation",
         }
     if not hasattr(agent, "_extract_memories"):
         raise HTTPException(501, "Agent does not support memory extraction.")
@@ -320,10 +338,11 @@ async def memory_organize(
 
 # ── Block operations (move / merge) ──
 
+
 @router.post("/api/memory/blocks/move")
 async def memory_block_move(
     body: dict[str, Any],
-    auth: dict[str, Any] = Depends(require_admin),
+    auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Re-path every memory under one block prefix to another."""
     src = (body.get("src") or "").strip()
@@ -340,7 +359,7 @@ async def memory_block_move(
 @router.post("/api/memory/blocks/merge")
 async def memory_block_merge(
     body: dict[str, Any],
-    auth: dict[str, Any] = Depends(require_admin),
+    auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Merge one block into another (all memories adopt the target prefix)."""
     src = (body.get("src") or "").strip()
@@ -355,6 +374,7 @@ async def memory_block_merge(
 
 
 # ── Audit & Conflicts ──
+
 
 @router.get("/api/memory/audit")
 async def memory_audit(
@@ -390,6 +410,7 @@ async def memory_conflicts(
 
 
 # ── Metrics & Recovery ──
+
 
 @router.get("/api/memory/metrics")
 async def memory_metrics(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
@@ -431,9 +452,15 @@ async def memory_metrics(auth: dict[str, Any] = Depends(require_auth_dep)) -> di
             "memory_search_fallback_total": _sample("memory_search_fallback_total"),
         },
         "counts": {
-            "episodes": len(agent.memory.get_episodes(limit=1000)),
-            "semantic_memories": len(agent.memory.get_all_semantic(limit=1000)),
-            "working_memories": len(agent.memory.get_all_working(limit=1000)),
+            "episodes": len(
+                agent.memory.get_episodes(limit=1000, owner_key_hash=memory_owner(auth))
+            ),
+            "semantic_memories": len(
+                agent.memory.get_all_semantic(limit=1000, owner_key_hash=memory_owner(auth))
+            ),
+            "working_memories": len(
+                agent.memory.get_all_working(limit=1000, owner_key_hash=memory_owner(auth))
+            ),
             "dream_logs": len(agent.memory.get_dream_logs(limit=1000)),
         },
     }
@@ -441,7 +468,7 @@ async def memory_metrics(auth: dict[str, Any] = Depends(require_auth_dep)) -> di
 
 @router.post("/api/memory/embedder/recover")
 async def memory_embedder_recover(
-    auth: dict[str, Any] = Depends(require_auth_dep),
+    auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Manually trigger embedder recovery probe."""
     agent = get_agent()
@@ -449,6 +476,7 @@ async def memory_embedder_recover(
     try:
         new_embedder = await asyncio.to_thread(agent._setup_embedder)
         from js.memory.embeddings import KeywordEmbedder
+
         if not isinstance(new_embedder, KeywordEmbedder):
             agent.memory.replace_embedder(new_embedder)
             health = new_embedder.health()
@@ -501,7 +529,14 @@ async def get_session_capsule(
     session_id: str,
     auth: dict[str, Any] = Depends(require_auth_dep),
 ) -> dict[str, Any]:
-    """Get the session capsule for the current session (owner-isolated)."""
+    """Get the session capsule for the current session (owner-isolated).
+
+    Lite MVP: returns capsule text, owner, updated_at, version, source_range,
+    generated_by_model, recent_turns_kept, estimated_tokens_saved,
+    refresh_reason, secrets_redacted, and enabled flag. Drift, TTL, and
+    quality metadata are computed/assessed at persistence time but are not
+    returned by this endpoint.
+    """
     agent = get_agent()
     owner = memory_owner(auth)
     capsule = await asyncio.to_thread(
@@ -510,20 +545,36 @@ async def get_session_capsule(
         owner_key_hash=owner,
     )
     if capsule is None:
-        return {"session_id": session_id, "capsule_text": "", "updated_at": None}
+        return {
+            "session_id": session_id,
+            "capsule_text": "",
+            "updated_at": None,
+            "enabled": agent.settings.memory.capsule_enabled,
+        }
     return {
         "session_id": capsule["session_id"],
         "capsule_text": capsule["capsule_text"],
         "updated_at": capsule["updated_at"],
+        "version": capsule.get("version"),
+        "source_range": capsule.get("source_range"),
+        "generated_by_model": capsule.get("generated_by_model"),
+        "recent_turns_kept": capsule.get("recent_turns_kept"),
+        "estimated_tokens_saved": capsule.get("estimated_tokens_saved"),
+        "refresh_reason": capsule.get("refresh_reason"),
+        "secrets_redacted": capsule.get("secrets_redacted"),
+        "enabled": agent.settings.memory.capsule_enabled,
     }
 
 
 @router.post("/api/sessions/{session_id}/capsule/refresh")
 async def refresh_session_capsule(
     session_id: str,
-    auth: dict[str, Any] = Depends(require_auth_dep),
+    auth: dict[str, Any] = Depends(require_user_write),
 ) -> dict[str, Any]:
-    """Regenerate the session capsule from current session messages."""
+    """Regenerate the session capsule from current session messages.
+
+    Returns structured status and metadata. Secrets are redacted before storage.
+    """
     agent = get_agent()
     owner = memory_owner(auth)
     try:
@@ -540,17 +591,34 @@ async def refresh_session_capsule(
             if m.get("role") in ("user", "assistant") and m.get("content")
         ]
         if not chat_messages:
-            return {"session_id": session_id, "refreshed": False, "reason": "no messages"}
+            return {
+                "session_id": session_id,
+                "status": "no_messages",
+                "refreshed": False,
+                "reason": "no messages",
+            }
         capsule_text = await agent._summarize_context(chat_messages)
         if not capsule_text:
-            return {"session_id": session_id, "refreshed": False, "reason": "empty summary"}
-        await asyncio.to_thread(
+            return {
+                "session_id": session_id,
+                "status": "empty_summary",
+                "refreshed": False,
+                "reason": "empty summary",
+            }
+        meta = await asyncio.to_thread(
             agent.memory.store_capsule,
             session_id=session_id,
             capsule_text=capsule_text,
             owner_key_hash=owner,
+            refresh_reason="manual_refresh",
         )
-        return {"session_id": session_id, "refreshed": True, "capsule_text": capsule_text}
+        return {
+            "session_id": session_id,
+            "status": "success",
+            "refreshed": True,
+            "capsule_text": capsule_text,
+            "metadata": {k: v for k, v in meta.items() if k != "capsule_text"},
+        }
     except Exception as e:
         logger.warning("Failed to refresh session capsule", exc_info=True)
         status = 503 if "No models configured" in str(e) else 500
@@ -560,7 +628,7 @@ async def refresh_session_capsule(
 @router.delete("/api/sessions/{session_id}/capsule")
 async def delete_session_capsule(
     session_id: str,
-    auth: dict[str, Any] = Depends(require_auth_dep),
+    auth: dict[str, Any] = Depends(require_user_write),
 ) -> dict[str, Any]:
     """Clear the session capsule for the current session."""
     agent = get_agent()

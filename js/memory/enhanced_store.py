@@ -18,6 +18,12 @@ from js.utils.log import get_logger
 
 logger = get_logger("js.memory.enhanced")
 
+# Sentinel owner used for pre-isolation / no-auth local sessions.  It is stored
+# in the database as a non-NULL value so SQLite composite unique constraints
+# reliably isolate rows.  It is treated as "local / legacy" and must never be
+# used as a fallback for authenticated API-key owners.
+_LEGACY_LOCAL_OWNER = "__legacy_local__"
+
 
 @dataclass
 class Episode:
@@ -68,6 +74,7 @@ class EnhancedMemoryStore:
         self.embedder = embedder or KeywordEmbedder()
         self._init_db()
         from cachetools import TTLCache
+
         self._working_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=1000, ttl=3600)
         self._last_dream: float = 0.0
 
@@ -80,6 +87,7 @@ class EnhancedMemoryStore:
         """Lazy-loaded SecretManager for data-at-rest encryption."""
         if not hasattr(self, "_secrets_inst"):
             from js.security.secrets import SecretManager
+
             self._secrets_inst = SecretManager(self.state_dir)
         return self._secrets_inst
 
@@ -87,114 +95,503 @@ class EnhancedMemoryStore:
     def _owner_filter(owner_key_hash: str | None) -> tuple[str, list[Any]]:
         """Build a reusable owner-scoping SQL predicate.
 
-        Returns ``(clause, params)``.  When an owner is given, reads see that
-        owner's rows plus legacy/shared (NULL-owner) rows; when ``None`` (no
-        auth / single-user), no filter is applied and everything is visible.
+        Returns ``(clause, params)``.  When an owner is given, reads see only
+        that owner's rows.  ``None`` (no-auth / single-user) returns no filter,
+        which is intended for admin/legacy paths and should not be used for
+        authenticated session data.
         """
         if owner_key_hash is None:
             return "", []
-        return "(owner_key_hash = ? OR owner_key_hash IS NULL)", [owner_key_hash]
+        return "owner_key_hash = ?", [owner_key_hash]
+
+    @staticmethod
+    def _session_owner(owner_key_hash: str | None) -> str:
+        """Normalize an owner key for session-scoped tables.
+
+        Session-scoped tables store owner_key_hash as NOT NULL.  ``None``
+        (no-auth / local / legacy) maps to a fixed sentinel so that composite
+        unique constraints reliably isolate rows and authenticated owners can
+        never accidentally read or overwrite legacy data.
+        """
+        return owner_key_hash if owner_key_hash is not None else _LEGACY_LOCAL_OWNER
 
     # Keyword → hierarchical block mapping for auto-classification.
     # Each tuple: (keyword_set, entity_type, memory_path, relation_type)
     _ENTITY_BLOCK_RULES: list[tuple[set[str], str, str, str]] = [
         # family → /people/family
-        ({"wife", "husband", "spouse", "mom", "dad", "mother", "father",
-          "son", "daughter", "brother", "sister", "parent", "grandma",
-          "grandpa", "grandmother", "grandfather", "uncle", "aunt",
-          "cousin", "nephew", "niece",
-          "妻子", "老婆", "老公", "丈夫", "媳妇", "妈妈", "父亲",
-          "母亲", "爸爸", "妈", "爸", "儿子", "女儿", "哥哥", "弟弟",
-          "姐姐", "妹妹", "爷爷", "奶奶", "外公", "外婆", "叔叔",
-          "阿姨", "侄子", "侄女", "亲戚", "家人", "家庭"},
-         "family", "/people/family", "has"),
+        (
+            {
+                "wife",
+                "husband",
+                "spouse",
+                "mom",
+                "dad",
+                "mother",
+                "father",
+                "son",
+                "daughter",
+                "brother",
+                "sister",
+                "parent",
+                "grandma",
+                "grandpa",
+                "grandmother",
+                "grandfather",
+                "uncle",
+                "aunt",
+                "cousin",
+                "nephew",
+                "niece",
+                "妻子",
+                "老婆",
+                "老公",
+                "丈夫",
+                "媳妇",
+                "妈妈",
+                "父亲",
+                "母亲",
+                "爸爸",
+                "妈",
+                "爸",
+                "儿子",
+                "女儿",
+                "哥哥",
+                "弟弟",
+                "姐姐",
+                "妹妹",
+                "爷爷",
+                "奶奶",
+                "外公",
+                "外婆",
+                "叔叔",
+                "阿姨",
+                "侄子",
+                "侄女",
+                "亲戚",
+                "家人",
+                "家庭",
+            },
+            "family",
+            "/people/family",
+            "has",
+        ),
         # friend → /people/friends
-        ({"friend", "friends", "buddy", "pal", "bestie", "bff",
-          "classmate", "roommate", "acquaintance", "neighbor",
-          "朋友", "好友", "闺蜜", "哥们", "兄弟", "同学", "室友",
-          "死党", "发小", "邻居", "熟人"},
-         "friend", "/people/friends", "knows"),
+        (
+            {
+                "friend",
+                "friends",
+                "buddy",
+                "pal",
+                "bestie",
+                "bff",
+                "classmate",
+                "roommate",
+                "acquaintance",
+                "neighbor",
+                "朋友",
+                "好友",
+                "闺蜜",
+                "哥们",
+                "兄弟",
+                "同学",
+                "室友",
+                "死党",
+                "发小",
+                "邻居",
+                "熟人",
+            },
+            "friend",
+            "/people/friends",
+            "knows",
+        ),
         # colleague → /work/colleagues
-        ({"boss", "colleague", "coworker", "teammate", "peer",
-          "manager", "lead", "supervisor", "mentor", "partner",
-          "collaborator", "老板", "同事", "队友", "经理", "主管",
-          "领导", "导师", "合伙人"},
-         "colleague", "/work/colleagues", "works_with"),
+        (
+            {
+                "boss",
+                "colleague",
+                "coworker",
+                "teammate",
+                "peer",
+                "manager",
+                "lead",
+                "supervisor",
+                "mentor",
+                "partner",
+                "collaborator",
+                "老板",
+                "同事",
+                "队友",
+                "经理",
+                "主管",
+                "领导",
+                "导师",
+                "合伙人",
+            },
+            "colleague",
+            "/work/colleagues",
+            "works_with",
+        ),
         # project → /work/projects
-        ({"project", "sprint", "milestone", "deliverable",
-          "roadmap", "backlog", "feature",
-          "release", "版本", "发布",
-          "项目", "冲刺", "里程碑", "交付物", "路线图",
-          "需求", "功能"},
-         "project", "/work/projects", "part_of"),
+        (
+            {
+                "project",
+                "sprint",
+                "milestone",
+                "deliverable",
+                "roadmap",
+                "backlog",
+                "feature",
+                "release",
+                "版本",
+                "发布",
+                "项目",
+                "冲刺",
+                "里程碑",
+                "交付物",
+                "路线图",
+                "需求",
+                "功能",
+            },
+            "project",
+            "/work/projects",
+            "part_of",
+        ),
         # company → /work/company
-        ({"company", "office", "workplace", "employer", "organization",
-          "org", "firm", "corporation", "startup", "enterprise",
-          "department", "team", "公司", "办公室", "工作单位", "雇主",
-          "企业", "创业", "部门", "团队"},
-         "company", "/work/company", "works_for"),
+        (
+            {
+                "company",
+                "office",
+                "workplace",
+                "employer",
+                "organization",
+                "org",
+                "firm",
+                "corporation",
+                "startup",
+                "enterprise",
+                "department",
+                "team",
+                "公司",
+                "办公室",
+                "工作单位",
+                "雇主",
+                "企业",
+                "创业",
+                "部门",
+                "团队",
+            },
+            "company",
+            "/work/company",
+            "works_for",
+        ),
         # active plan / goal / todo → /plans/active
-        ({"plan", "goal", "todo", "objective", "target", "intention",
-          "aspiration", "resolution", "deadline", "task", "assignment",
-          "计划", "目标", "打算", "待办", "想做", "准备", "截止日期",
-          "任务", "安排", "规划", "愿望"},
-         "plan", "/plans/active", "plans"),
+        (
+            {
+                "plan",
+                "goal",
+                "todo",
+                "objective",
+                "target",
+                "intention",
+                "aspiration",
+                "resolution",
+                "deadline",
+                "task",
+                "assignment",
+                "计划",
+                "目标",
+                "打算",
+                "待办",
+                "想做",
+                "准备",
+                "截止日期",
+                "任务",
+                "安排",
+                "规划",
+                "愿望",
+            },
+            "plan",
+            "/plans/active",
+            "plans",
+        ),
         # completed plan / history → /plans/history
-        ({"completed", "finished", "achieved", "accomplished",
-          "已完成", "完成了", "搞定", "达成", "结束了", "做完"},
-         "plan", "/plans/history", "completed"),
+        (
+            {
+                "completed",
+                "finished",
+                "achieved",
+                "accomplished",
+                "已完成",
+                "完成了",
+                "搞定",
+                "达成",
+                "结束了",
+                "做完",
+            },
+            "plan",
+            "/plans/history",
+            "completed",
+        ),
         # preference → /user/preferences
-        ({"like", "prefer", "favorite", "enjoy", "hate", "dislike",
-          "love", "want", "need", "wish", "avoid",
-          "喜欢", "爱", "讨厌", "恨", "厌恶", "偏好", "想要",
-          "需要", "希望", "感兴趣", "热衷", "回避",
-          "口味", "习惯", "常用", "首选"},
-         "preference", "/user/preferences", "prefers"),
+        (
+            {
+                "like",
+                "prefer",
+                "favorite",
+                "enjoy",
+                "hate",
+                "dislike",
+                "love",
+                "want",
+                "need",
+                "wish",
+                "avoid",
+                "喜欢",
+                "爱",
+                "讨厌",
+                "恨",
+                "厌恶",
+                "偏好",
+                "想要",
+                "需要",
+                "希望",
+                "感兴趣",
+                "热衷",
+                "回避",
+                "口味",
+                "习惯",
+                "常用",
+                "首选",
+            },
+            "preference",
+            "/user/preferences",
+            "prefers",
+        ),
         # personality → /user/personality
-        ({"personality", "character", "trait", "temperament", "introvert",
-          "extrovert", "mbti", "enneagram", "values", "attitude", "mindset",
-          "性格", "个性", "脾气", "价值观", "内向", "外向", "性情",
-          "人格", "三观", "心态", "为人"},
-         "personality", "/user/personality", "is"),
+        (
+            {
+                "personality",
+                "character",
+                "trait",
+                "temperament",
+                "introvert",
+                "extrovert",
+                "mbti",
+                "enneagram",
+                "values",
+                "attitude",
+                "mindset",
+                "性格",
+                "个性",
+                "脾气",
+                "价值观",
+                "内向",
+                "外向",
+                "性情",
+                "人格",
+                "三观",
+                "心态",
+                "为人",
+            },
+            "personality",
+            "/user/personality",
+            "is",
+        ),
         # body / health → /user/body
-        ({"height", "weight", "blood", "allergy", "allergic", "medical",
-          "health", "illness", "disease", "diagnosis", "medication",
-          "fitness", "bmi", "身高", "体重", "血型", "过敏", "病史",
-          "健康", "疾病", "体检", "身体", "用药", "病情", "体质"},
-         "body", "/user/body", "has"),
+        (
+            {
+                "height",
+                "weight",
+                "blood",
+                "allergy",
+                "allergic",
+                "medical",
+                "health",
+                "illness",
+                "disease",
+                "diagnosis",
+                "medication",
+                "fitness",
+                "bmi",
+                "身高",
+                "体重",
+                "血型",
+                "过敏",
+                "病史",
+                "健康",
+                "疾病",
+                "体检",
+                "身体",
+                "用药",
+                "病情",
+                "体质",
+            },
+            "body",
+            "/user/body",
+            "has",
+        ),
         # device → /user/devices
-        ({"phone", "laptop", "computer", "device", "mac", "iphone",
-          "ipad", "monitor", "keyboard", "mouse", "headphone", "earbud",
-          "camera", "tablet", "watch", "console", "speaker", "router",
-          "printer", "手机", "电脑", "笔记本", "台式机", "显示器",
-          "键盘", "鼠标", "耳机", "音箱", "相机", "平板", "手表",
-          "游戏机", "路由器", "打印机", "设备"},
-         "device", "/user/devices", "owns"),
+        (
+            {
+                "phone",
+                "laptop",
+                "computer",
+                "device",
+                "mac",
+                "iphone",
+                "ipad",
+                "monitor",
+                "keyboard",
+                "mouse",
+                "headphone",
+                "earbud",
+                "camera",
+                "tablet",
+                "watch",
+                "console",
+                "speaker",
+                "router",
+                "printer",
+                "手机",
+                "电脑",
+                "笔记本",
+                "台式机",
+                "显示器",
+                "键盘",
+                "鼠标",
+                "耳机",
+                "音箱",
+                "相机",
+                "平板",
+                "手表",
+                "游戏机",
+                "路由器",
+                "打印机",
+                "设备",
+            },
+            "device",
+            "/user/devices",
+            "owns",
+        ),
         # identity → /user/identity
-        ({"age", "birthday", "birth", "address", "email", "phone_number",
-          "identity", "gender", "pronoun", "nationality", "language",
-          "occupation", "title", "degree", "年龄", "生日", "出生",
-          "地址", "邮箱", "电话", "性别", "代词", "国籍", "语言",
-          "职业", "职位", "学位", "身份证"},
-         "identity", "/user/identity", "is"),
+        (
+            {
+                "age",
+                "birthday",
+                "birth",
+                "address",
+                "email",
+                "phone_number",
+                "identity",
+                "gender",
+                "pronoun",
+                "nationality",
+                "language",
+                "occupation",
+                "title",
+                "degree",
+                "年龄",
+                "生日",
+                "出生",
+                "地址",
+                "邮箱",
+                "电话",
+                "性别",
+                "代词",
+                "国籍",
+                "语言",
+                "职业",
+                "职位",
+                "学位",
+                "身份证",
+            },
+            "identity",
+            "/user/identity",
+            "is",
+        ),
         # event → /user/events
-        ({"schedule", "appointment", "meeting", "event", "trip", "travel",
-          "vacation", "holiday", "conference",
-          "reminder", "calendar", "日程", "约会", "会议", "活动",
-          "旅行", "出行", "假期", "节日", "大会", "提醒",
-          "日历", "行程"},
-         "event", "/user/events", "attends"),
+        (
+            {
+                "schedule",
+                "appointment",
+                "meeting",
+                "event",
+                "trip",
+                "travel",
+                "vacation",
+                "holiday",
+                "conference",
+                "reminder",
+                "calendar",
+                "日程",
+                "约会",
+                "会议",
+                "活动",
+                "旅行",
+                "出行",
+                "假期",
+                "节日",
+                "大会",
+                "提醒",
+                "日历",
+                "行程",
+            },
+            "event",
+            "/user/events",
+            "attends",
+        ),
         # location → /user/locations
-        ({"location", "city", "country", "place", "home", "apartment",
-          "house", "address", "neighborhood", "office_location", "site",
-          "building", "room", "位置", "城市", "国家", "地点", "家",
-          "公寓", "房子", "住址", "小区", "办公楼", "大厦", "房间",
-          "住所"},
-         "location", "/user/locations", "located_at"),
+        (
+            {
+                "location",
+                "city",
+                "country",
+                "place",
+                "home",
+                "apartment",
+                "house",
+                "address",
+                "neighborhood",
+                "office_location",
+                "site",
+                "building",
+                "room",
+                "位置",
+                "城市",
+                "国家",
+                "地点",
+                "家",
+                "公寓",
+                "房子",
+                "住址",
+                "小区",
+                "办公楼",
+                "大厦",
+                "房间",
+                "住所",
+            },
+            "location",
+            "/user/locations",
+            "located_at",
+        ),
         # chat history → /history/chats
-        ({"conversation", "chat", "session", "discussion", "transcript",
-          "会话", "聊天", "对话", "记录", "历史"},
-         "chat", "/history/chats", "discussed"),
+        (
+            {
+                "conversation",
+                "chat",
+                "session",
+                "discussion",
+                "transcript",
+                "会话",
+                "聊天",
+                "对话",
+                "记录",
+                "历史",
+            },
+            "chat",
+            "/history/chats",
+            "discussed",
+        ),
     ]
 
     def _infer_entity_block(
@@ -223,7 +620,8 @@ class EnhancedMemoryStore:
         text = f"{key} {value}".lower()
         # Split on spaces, underscores, hyphens, and dots to handle compound keys
         import re
-        raw_words = re.split(r'[\s_.-]+', text)
+
+        raw_words = re.split(r"[\s_.-]+", text)
         words = {w.strip() for w in raw_words if w.strip()}
 
         best_match: tuple[str, str, str, str] | None = None
@@ -266,7 +664,10 @@ class EnhancedMemoryStore:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         with db_connection(self.db_path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")  # Writers no longer block readers
-            # Working memory: short-term, per-session
+            # Working memory: short-term, per-session, owner-isolated.
+            # v2 schema: added owner_key_hash so the same (session_id, key) can
+            # coexist for different owners. Legacy pre-isolation rows are mapped
+            # to the __legacy_local__ sentinel.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS working_memories (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -278,46 +679,358 @@ class EnhancedMemoryStore:
                     created_at REAL NOT NULL,
                     access_count INTEGER DEFAULT 0,
                     last_accessed REAL NOT NULL,
-                    UNIQUE(session_id, key)
+                    owner_key_hash TEXT NOT NULL DEFAULT '__legacy_local__',
+                    UNIQUE(owner_key_hash, session_id, key)
                 )
             """)
             conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_working_session ON working_memories(session_id)
+                CREATE INDEX IF NOT EXISTS idx_working_session
+                ON working_memories(owner_key_hash, session_id)
             """)
 
-            # Episodic memory: session summaries
+            # Migration: owner-partitioned schema for working_memories.
+            # Rebuild whenever owner_key_hash is not NOT NULL or the composite
+            # unique key is missing.  Pre-isolation rows become __legacy_local__.
+            wm_sql = (
+                conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='working_memories'"
+                ).fetchone()
+                or [""]
+            )[0] or ""
+            wm_normalized = wm_sql.lower().replace(" ", "")
+            needs_wm_rebuild = (
+                "owner_key_hashtextnotnull" not in wm_normalized
+                or "unique(owner_key_hash,session_id,key)" not in wm_normalized
+            )
+            if needs_wm_rebuild:
+                old_cols = [
+                    c[1] for c in conn.execute("PRAGMA table_info(working_memories)").fetchall()
+                ]
+                new_cols = {
+                    "id",
+                    "session_id",
+                    "key",
+                    "value",
+                    "category",
+                    "importance",
+                    "created_at",
+                    "access_count",
+                    "last_accessed",
+                    "owner_key_hash",
+                }
+                shared_cols = [c for c in old_cols if c in new_cols]
+                col_list = ", ".join(shared_cols)
+                conn.execute("DROP TABLE IF EXISTS working_memories_new")
+                conn.execute("""
+                    CREATE TABLE working_memories_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT NOT NULL,
+                        key TEXT NOT NULL,
+                        value TEXT NOT NULL,
+                        category TEXT DEFAULT 'general',
+                        importance INTEGER DEFAULT 5,
+                        created_at REAL NOT NULL,
+                        access_count INTEGER DEFAULT 0,
+                        last_accessed REAL NOT NULL,
+                        owner_key_hash TEXT NOT NULL DEFAULT '__legacy_local__',
+                        UNIQUE(owner_key_hash, session_id, key)
+                    )
+                """)
+                # Build SELECT matching the new column order so values line up
+                # even when owner_key_hash is replaced with COALESCE.
+                ordered_cols = [
+                    "id",
+                    "session_id",
+                    "key",
+                    "value",
+                    "category",
+                    "importance",
+                    "created_at",
+                    "access_count",
+                    "last_accessed",
+                    "owner_key_hash",
+                ]
+                select_items = []
+                for col in ordered_cols:
+                    if col in old_cols:
+                        if col == "owner_key_hash":
+                            select_items.append("COALESCE(owner_key_hash, '__legacy_local__')")
+                        else:
+                            select_items.append(col)
+                    else:
+                        select_items.append(
+                            "'__legacy_local__'" if col == "owner_key_hash" else "NULL"
+                        )
+                insert_cols = ", ".join(ordered_cols)
+                select_cols = ", ".join(select_items)
+                conn.execute(
+                    f"INSERT INTO working_memories_new ({insert_cols}) "
+                    f"SELECT {select_cols} FROM working_memories"
+                )
+                conn.execute("DROP TABLE working_memories")
+                conn.execute("ALTER TABLE working_memories_new RENAME TO working_memories")
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_working_session
+                    ON working_memories(owner_key_hash, session_id)
+                """)
+
+            # Episodic memory: session summaries, owner-isolated.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS episodes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT UNIQUE,
+                    session_id TEXT NOT NULL,
                     summary TEXT,
                     topics TEXT,
                     tokens_used INTEGER DEFAULT 0,
                     turn_count INTEGER DEFAULT 0,
                     created_at REAL NOT NULL,
                     importance INTEGER DEFAULT 5,
-                    owner_key_hash TEXT
+                    owner_key_hash TEXT NOT NULL DEFAULT '__legacy_local__',
+                    UNIQUE(session_id, owner_key_hash)
                 )
             """)
-            # Migration: add owner_key_hash for existing databases
-            try:
-                conn.execute("ALTER TABLE episodes ADD COLUMN owner_key_hash TEXT")
-            except Exception:
-                pass
+            # Migration: owner-partitioned schema for episodes.
+            # Rebuild whenever owner_key_hash is not NOT NULL or the composite
+            # unique key is missing (handles old UNIQUE(session_id) and
+            # UNIQUE(session_id, key) intermediate schemas).
+            ep_sql = (
+                conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='episodes'"
+                ).fetchone()
+                or [""]
+            )[0] or ""
+            ep_normalized = ep_sql.lower().replace(" ", "")
+            needs_ep_rebuild = (
+                "owner_key_hashtextnotnull" not in ep_normalized
+                or "unique(session_id,owner_key_hash)" not in ep_normalized
+            )
+            if needs_ep_rebuild:
+                old_cols = [c[1] for c in conn.execute("PRAGMA table_info(episodes)").fetchall()]
+                new_cols = {
+                    "id",
+                    "session_id",
+                    "summary",
+                    "topics",
+                    "tokens_used",
+                    "turn_count",
+                    "created_at",
+                    "importance",
+                    "owner_key_hash",
+                }
+                shared_cols = [c for c in old_cols if c in new_cols]
+                col_list = ", ".join(shared_cols)
+                conn.execute("DROP TABLE IF EXISTS episodes_new")
+                conn.execute("""
+                    CREATE TABLE episodes_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT NOT NULL,
+                        summary TEXT,
+                        topics TEXT,
+                        tokens_used INTEGER DEFAULT 0,
+                        turn_count INTEGER DEFAULT 0,
+                        created_at REAL NOT NULL,
+                        importance INTEGER DEFAULT 5,
+                        owner_key_hash TEXT NOT NULL DEFAULT '__legacy_local__',
+                        UNIQUE(session_id, owner_key_hash)
+                    )
+                """)
+                # Build SELECT matching the new column order so values line up
+                # even when owner_key_hash is replaced with COALESCE.
+                ordered_cols = [
+                    "id",
+                    "session_id",
+                    "summary",
+                    "topics",
+                    "tokens_used",
+                    "turn_count",
+                    "created_at",
+                    "importance",
+                    "owner_key_hash",
+                ]
+                select_items = []
+                for col in ordered_cols:
+                    if col in old_cols:
+                        if col == "owner_key_hash":
+                            select_items.append("COALESCE(owner_key_hash, '__legacy_local__')")
+                        else:
+                            select_items.append(col)
+                    else:
+                        select_items.append(
+                            "'__legacy_local__'" if col == "owner_key_hash" else "NULL"
+                        )
+                insert_cols = ", ".join(ordered_cols)
+                select_cols = ", ".join(select_items)
+                conn.execute(
+                    f"INSERT INTO episodes_new ({insert_cols}) SELECT {select_cols} FROM episodes"
+                )
+                conn.execute("DROP TABLE episodes")
+                conn.execute("ALTER TABLE episodes_new RENAME TO episodes")
 
             # Session capsules: short context summary for long conversations.
+            # v2 schema: added metadata for quality tracking, lifecycle, drift detection.
+            # v4 schema: owner_key_hash is NOT NULL; legacy NULL-owner rows are
+            # migrated to the __legacy_local__ sentinel.  Composite unique
+            # (session_id, owner_key_hash) guarantees one capsule per owner.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS session_capsules (
-                    session_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
                     capsule_text TEXT NOT NULL,
-                    owner_key_hash TEXT,
-                    updated_at REAL NOT NULL
+                    owner_key_hash TEXT NOT NULL DEFAULT '__legacy_local__',
+                    updated_at REAL NOT NULL,
+                    version INTEGER DEFAULT 1,
+                    source_range TEXT,
+                    generated_by_model TEXT,
+                    recent_turns_kept INTEGER,
+                    estimated_tokens_saved INTEGER,
+                    refresh_reason TEXT,
+                    fail_count INTEGER DEFAULT 0,
+                    last_accessed REAL DEFAULT 0,
+                    ttl_seconds INTEGER DEFAULT 0,
+                    is_pinned INTEGER DEFAULT 0,
+                    is_expired INTEGER DEFAULT 0,
+                    drift_detected INTEGER DEFAULT 0,
+                    drift_reason TEXT,
+                    secrets_redacted INTEGER DEFAULT 0,
+                    UNIQUE(session_id, owner_key_hash)
                 )
             """)
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_session_capsules_owner
                 ON session_capsules(owner_key_hash)
             """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_session_capsules_accessed
+                ON session_capsules(last_accessed DESC)
+            """)
+
+            # Migration: any schema that does not declare owner_key_hash as
+            # NOT NULL (old single-key or v3 NULLable owner-partitioned) is
+            # rebuilt into the v4 NOT NULL sentinel schema.
+            capsule_sql = (
+                conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='session_capsules'"
+                ).fetchone()
+                or [""]
+            )[0] or ""
+            if "owner_key_hash text not null" not in capsule_sql.lower():
+                old_cols = [
+                    c[1] for c in conn.execute("PRAGMA table_info(session_capsules)").fetchall()
+                ]
+                new_cols = {
+                    "session_id",
+                    "capsule_text",
+                    "owner_key_hash",
+                    "updated_at",
+                    "version",
+                    "source_range",
+                    "generated_by_model",
+                    "recent_turns_kept",
+                    "estimated_tokens_saved",
+                    "refresh_reason",
+                    "fail_count",
+                    "last_accessed",
+                    "ttl_seconds",
+                    "is_pinned",
+                    "is_expired",
+                    "drift_detected",
+                    "drift_reason",
+                    "secrets_redacted",
+                }
+                shared_cols = [c for c in old_cols if c in new_cols]
+                col_list = ", ".join(shared_cols)
+                conn.execute("DROP TABLE IF EXISTS session_capsules_new")
+                conn.execute("""
+                    CREATE TABLE session_capsules_new (
+                        session_id TEXT NOT NULL,
+                        capsule_text TEXT NOT NULL,
+                        owner_key_hash TEXT NOT NULL DEFAULT '__legacy_local__',
+                        updated_at REAL NOT NULL,
+                        version INTEGER DEFAULT 1,
+                        source_range TEXT,
+                        generated_by_model TEXT,
+                        recent_turns_kept INTEGER,
+                        estimated_tokens_saved INTEGER,
+                        refresh_reason TEXT,
+                        fail_count INTEGER DEFAULT 0,
+                        last_accessed REAL DEFAULT 0,
+                        ttl_seconds INTEGER DEFAULT 0,
+                        is_pinned INTEGER DEFAULT 0,
+                        is_expired INTEGER DEFAULT 0,
+                        drift_detected INTEGER DEFAULT 0,
+                        drift_reason TEXT,
+                        secrets_redacted INTEGER DEFAULT 0,
+                        UNIQUE(session_id, owner_key_hash)
+                    )
+                """)
+                # Build SELECT matching the new column order so values line up
+                # even when owner_key_hash is replaced with COALESCE.
+                ordered_cols = [
+                    "session_id",
+                    "capsule_text",
+                    "owner_key_hash",
+                    "updated_at",
+                    "version",
+                    "source_range",
+                    "generated_by_model",
+                    "recent_turns_kept",
+                    "estimated_tokens_saved",
+                    "refresh_reason",
+                    "fail_count",
+                    "last_accessed",
+                    "ttl_seconds",
+                    "is_pinned",
+                    "is_expired",
+                    "drift_detected",
+                    "drift_reason",
+                    "secrets_redacted",
+                ]
+                select_items = []
+                for col in ordered_cols:
+                    if col in old_cols:
+                        if col == "owner_key_hash":
+                            select_items.append("COALESCE(owner_key_hash, '__legacy_local__')")
+                        else:
+                            select_items.append(col)
+                    else:
+                        select_items.append(
+                            "'__legacy_local__'" if col == "owner_key_hash" else "NULL"
+                        )
+                insert_cols = ", ".join(ordered_cols)
+                select_cols = ", ".join(select_items)
+                conn.execute(
+                    f"INSERT INTO session_capsules_new ({insert_cols}) "
+                    f"SELECT {select_cols} FROM session_capsules"
+                )
+                conn.execute("DROP TABLE session_capsules")
+                conn.execute("ALTER TABLE session_capsules_new RENAME TO session_capsules")
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_session_capsules_owner
+                    ON session_capsules(owner_key_hash)
+                """)
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_session_capsules_accessed
+                    ON session_capsules(last_accessed DESC)
+                """)
+            # Migration: add v2 columns for existing databases
+            v2_cols = [
+                ("version", "INTEGER DEFAULT 1"),
+                ("source_range", "TEXT"),
+                ("generated_by_model", "TEXT"),
+                ("recent_turns_kept", "INTEGER"),
+                ("estimated_tokens_saved", "INTEGER"),
+                ("refresh_reason", "TEXT"),
+                ("fail_count", "INTEGER DEFAULT 0"),
+                ("last_accessed", "REAL DEFAULT 0"),
+                ("ttl_seconds", "INTEGER DEFAULT 0"),
+                ("is_pinned", "INTEGER DEFAULT 0"),
+                ("is_expired", "INTEGER DEFAULT 0"),
+                ("drift_detected", "INTEGER DEFAULT 0"),
+                ("drift_reason", "TEXT"),
+                ("secrets_redacted", "INTEGER DEFAULT 0"),
+            ]
+            for col, dtype in v2_cols:
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute(f"ALTER TABLE session_capsules ADD COLUMN {col} {dtype}")
 
             # Semantic memory: extracted knowledge / preferences.
             # NOTE: no table-level UNIQUE(key) — uniqueness is per-owner, enforced
@@ -342,13 +1055,16 @@ class EnhancedMemoryStore:
             # UNIQUE(key) table constraint.  We copy every shared column into a
             # constraint-free table so the same key can coexist per owner.
             # Runs at most once per DB (afterwards the table sql has no UNIQUE).
-            table_sql = (conn.execute(
-                "SELECT sql FROM sqlite_master WHERE type='table' AND name='semantic_memories'"
-            ).fetchone() or [""])[0] or ""
+            table_sql = (
+                conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='semantic_memories'"
+                ).fetchone()
+                or [""]
+            )[0] or ""
             if "UNIQUE" in table_sql.upper():
-                old_cols = [c[1] for c in conn.execute(
-                    "PRAGMA table_info(semantic_memories)"
-                ).fetchall()]
+                old_cols = [
+                    c[1] for c in conn.execute("PRAGMA table_info(semantic_memories)").fetchall()
+                ]
                 conn.execute("DROP TABLE IF EXISTS semantic_memories_rebuild")
                 conn.execute("""
                     CREATE TABLE semantic_memories_rebuild (
@@ -377,12 +1093,28 @@ class EnhancedMemoryStore:
                     )
                 """)
                 canonical = {
-                    "id", "key", "value", "category", "confidence", "source",
-                    "created_at", "last_accessed", "access_count", "embedding",
-                    "feedback_score", "conflict_status", "importance",
-                    "memory_path", "entity_type", "entity_name", "parent_id",
-                    "relation_type", "last_verified_at", "owner_key_hash",
-                    "session_id", "evidence",
+                    "id",
+                    "key",
+                    "value",
+                    "category",
+                    "confidence",
+                    "source",
+                    "created_at",
+                    "last_accessed",
+                    "access_count",
+                    "embedding",
+                    "feedback_score",
+                    "conflict_status",
+                    "importance",
+                    "memory_path",
+                    "entity_type",
+                    "entity_name",
+                    "parent_id",
+                    "relation_type",
+                    "last_verified_at",
+                    "owner_key_hash",
+                    "session_id",
+                    "evidence",
                 }
                 shared = [c for c in old_cols if c in canonical]
                 col_list = ", ".join(shared)
@@ -391,9 +1123,7 @@ class EnhancedMemoryStore:
                     f"SELECT {col_list} FROM semantic_memories"
                 )
                 conn.execute("DROP TABLE semantic_memories")
-                conn.execute(
-                    "ALTER TABLE semantic_memories_rebuild RENAME TO semantic_memories"
-                )
+                conn.execute("ALTER TABLE semantic_memories_rebuild RENAME TO semantic_memories")
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_semantic_category ON semantic_memories(category)
             """)
@@ -428,28 +1158,86 @@ class EnhancedMemoryStore:
             """)
 
             # Session messages: full conversation history per session
+            # v2: added owner_key_hash for per-session isolation at the message level.
+            # v3: owner_key_hash is NOT NULL; legacy NULL rows migrate to the
+            #     __legacy_local__ sentinel.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS session_messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
                     role TEXT NOT NULL,
                     content TEXT,
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    owner_key_hash TEXT NOT NULL DEFAULT '__legacy_local__'
                 )
             """)
+            # Migration: rebuild session_messages if owner_key_hash is not NOT NULL.
+            sm_sql = (
+                conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='session_messages'"
+                ).fetchone()
+                or [""]
+            )[0] or ""
+            if "owner_key_hash text not null" not in sm_sql.lower():
+                old_cols = [
+                    c[1] for c in conn.execute("PRAGMA table_info(session_messages)").fetchall()
+                ]
+                new_cols = {"id", "session_id", "role", "content", "created_at", "owner_key_hash"}
+                shared_cols = [c for c in old_cols if c in new_cols]
+                col_list = ", ".join(shared_cols)
+                conn.execute("DROP TABLE IF EXISTS session_messages_new")
+                conn.execute("""
+                    CREATE TABLE session_messages_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT,
+                        created_at REAL NOT NULL,
+                        owner_key_hash TEXT NOT NULL DEFAULT '__legacy_local__'
+                    )
+                """)
+                # Build SELECT matching the new column order so values line up
+                # even when owner_key_hash is replaced with COALESCE.
+                ordered_cols = [
+                    "id",
+                    "session_id",
+                    "role",
+                    "content",
+                    "created_at",
+                    "owner_key_hash",
+                ]
+                select_items = []
+                for col in ordered_cols:
+                    if col in old_cols:
+                        if col == "owner_key_hash":
+                            select_items.append("COALESCE(owner_key_hash, '__legacy_local__')")
+                        else:
+                            select_items.append(col)
+                    else:
+                        select_items.append(
+                            "'__legacy_local__'" if col == "owner_key_hash" else "NULL"
+                        )
+                insert_cols = ", ".join(ordered_cols)
+                select_cols = ", ".join(select_items)
+                conn.execute(
+                    f"INSERT INTO session_messages_new ({insert_cols}) "
+                    f"SELECT {select_cols} FROM session_messages"
+                )
+                conn.execute("DROP TABLE session_messages")
+                conn.execute("ALTER TABLE session_messages_new RENAME TO session_messages")
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_session_messages_session
-                ON session_messages(session_id)
+                ON session_messages(owner_key_hash, session_id)
             """)
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_session_messages_time
-                ON session_messages(session_id, created_at)
+                ON session_messages(owner_key_hash, session_id, created_at)
             """)
 
             # Fix: add unique indexes for tables created before constraints were added
             conn.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_working_session_key
-                ON working_memories(session_id, key)
+                ON working_memories(owner_key_hash, session_id, key)
             """)
 
             # Migration: add quality-control columns for semantic memories
@@ -620,7 +1408,9 @@ class EnhancedMemoryStore:
                 (memory_id, table_name, action, old_value, new_value, source, time.time()),
             )
             # Prune audit log to prevent unbounded growth (keep last 5000 entries)
-            conn.execute("DELETE FROM memory_audit_log WHERE id NOT IN (SELECT id FROM memory_audit_log ORDER BY created_at DESC LIMIT 5000)")
+            conn.execute(
+                "DELETE FROM memory_audit_log WHERE id NOT IN (SELECT id FROM memory_audit_log ORDER BY created_at DESC LIMIT 5000)"
+            )
             conn.commit()
 
     def get_audit_log(
@@ -684,15 +1474,19 @@ class EnhancedMemoryStore:
         value: str,
         category: str = "general",
         importance: int = 5,
+        owner_key_hash: str | None = None,
     ) -> None:
         # Sanitize secrets before persisting
         value = self._secrets.detect_and_redact(value, f"working:{session_id}:{key}")
         import time as _time
+
         _start = _time.perf_counter()
         now = _time.time()
-        cache_key = f"{session_id}:{key}"
+        owner = self._session_owner(owner_key_hash)
+        cache_key = f"{owner}:{session_id}:{key}"
         self._working_cache[cache_key] = {
             "session_id": session_id,
+            "owner_key_hash": owner,
             "key": key,
             "value": value,
             "category": category,
@@ -706,51 +1500,59 @@ class EnhancedMemoryStore:
                 """
                 INSERT INTO working_memories (
                     session_id, key, value, category, importance,
-                    created_at, access_count, last_accessed
+                    created_at, access_count, last_accessed, owner_key_hash
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 0, ?)
-                ON CONFLICT(session_id, key) DO UPDATE SET
+                VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+                ON CONFLICT(owner_key_hash, session_id, key) DO UPDATE SET
                     value=excluded.value,
                     category=excluded.category,
                     importance=excluded.importance,
                     last_accessed=excluded.last_accessed
                 """,
-                (session_id, key, value, category, importance, now, now),
+                (session_id, key, value, category, importance, now, now, owner),
             )
             conn.commit()
         try:
             from js.utils.metrics import get_metrics
+
             get_metrics().memory_store_latency_seconds.labels(operation="store_working").observe(
                 _time.perf_counter() - _start
             )
         except Exception:
-            logger.warning('Operation failed', exc_info=True)
+            logger.warning("Operation failed", exc_info=True)
 
-    def get_working(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    def get_working(
+        self, session_id: str, limit: int = 50, owner_key_hash: str | None = None
+    ) -> list[dict[str, Any]]:
+        owner = self._session_owner(owner_key_hash)
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
                 SELECT * FROM working_memories
-                WHERE session_id = ?
+                WHERE owner_key_hash = ? AND session_id = ?
                 ORDER BY importance DESC, last_accessed DESC
                 LIMIT ?
                 """,
-                (session_id, limit),
+                (owner, session_id, limit),
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_all_working(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Get recent working memories across all sessions."""
+    def get_all_working(
+        self, limit: int = 50, owner_key_hash: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Get recent working memories across all sessions (owner-scoped)."""
+        owner = self._session_owner(owner_key_hash)
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
                 SELECT * FROM working_memories
+                WHERE owner_key_hash = ?
                 ORDER BY last_accessed DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (owner, limit),
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -789,7 +1591,9 @@ class EnhancedMemoryStore:
         # Sanitize secrets from summary before persisting
         summary = self._secrets.detect_and_redact(summary, f"episode:{session_id}")
         import time as _time
+
         _start = _time.perf_counter()
+        owner = self._session_owner(owner_key_hash)
         with db_connection(self.db_path) as conn:
             conn.execute(
                 """
@@ -797,40 +1601,47 @@ class EnhancedMemoryStore:
                     session_id, summary, topics, tokens_used, turn_count, created_at, importance, owner_key_hash
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(session_id) DO UPDATE SET
+                ON CONFLICT(session_id, owner_key_hash) DO UPDATE SET
                     summary=excluded.summary,
                     topics=excluded.topics,
                     tokens_used=excluded.tokens_used,
                     turn_count=excluded.turn_count,
                     importance=excluded.importance,
-                    owner_key_hash=COALESCE(excluded.owner_key_hash, episodes.owner_key_hash)
+                    owner_key_hash=excluded.owner_key_hash
                 """,
                 (
-                    session_id, summary, json.dumps(topics), tokens_used,
-                    turn_count, _time.time(), importance, owner_key_hash,
+                    session_id,
+                    summary,
+                    json.dumps(topics),
+                    tokens_used,
+                    turn_count,
+                    _time.time(),
+                    importance,
+                    owner,
                 ),
             )
             conn.commit()
         try:
             from js.utils.metrics import get_metrics
+
             get_metrics().memory_store_latency_seconds.labels(operation="store_episode").observe(
                 _time.perf_counter() - _start
             )
         except Exception:
-            logger.warning('Operation failed', exc_info=True)
+            logger.warning("Operation failed", exc_info=True)
 
     def get_episodes(self, limit: int = 20, owner_key_hash: str | None = None) -> list[Episode]:
-        owner_clause, owner_params = self._owner_filter(owner_key_hash)
+        owner = self._session_owner(owner_key_hash)
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                f"""
+                """
                 SELECT * FROM episodes
-                {("WHERE " + owner_clause) if owner_clause else ""}
+                WHERE owner_key_hash = ?
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (*owner_params, limit),
+                (owner, limit),
             ).fetchall()
         return [
             Episode(
@@ -855,24 +1666,102 @@ class EnhancedMemoryStore:
         session_id: str,
         capsule_text: str,
         owner_key_hash: str | None = None,
-    ) -> None:
-        """Store or update a short context capsule for a session."""
+        *,
+        version: int = 1,
+        source_range: str | None = None,
+        generated_by_model: str | None = None,
+        recent_turns_kept: int | None = None,
+        estimated_tokens_saved: int | None = None,
+        refresh_reason: str | None = None,
+        run_quality_check: bool = True,
+    ) -> dict[str, Any]:
+        """Store or update a short context capsule for a session.
+
+        Returns the stored capsule metadata dict.  If *run_quality_check* is True
+        (default) the capsule is evaluated against the built-in quality rubric
+        before storage; low-quality capsules are still stored but flagged with
+        a warning in the returned metadata.
+        """
         import time as _time
 
+        # 0. Owner partitioning: each owner gets its own capsule row for the
+        #    same session_id.  No-auth / local / legacy requests map to the
+        #    fixed sentinel so authenticated owners can never read or overwrite
+        #    legacy/shared data.
+        owner = self._session_owner(owner_key_hash)
+
+        # 1. Secrets redaction (always)
         redacted = self._secrets.detect_and_redact(capsule_text, f"capsule:{session_id}")
+        secrets_redacted = 1 if redacted != capsule_text else 0
+
+        # 2. Quality assessment (optional but default)
+        quality_score: dict[str, Any] | None = None
+        if run_quality_check:
+            try:
+                from js.memory.capsule_quality import CapsuleQuality
+
+                qa = CapsuleQuality()
+                quality_score = qa.evaluate(redacted).to_dict()
+            except Exception:
+                # Quality module may be missing in minimal installs — degrade gracefully
+                quality_score = None
+
+        now = _time.time()
         with db_connection(self.db_path) as conn:
             conn.execute(
                 """
-                INSERT INTO session_capsules (session_id, capsule_text, owner_key_hash, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(session_id) DO UPDATE SET
+                INSERT INTO session_capsules (
+                    session_id, capsule_text, owner_key_hash, updated_at,
+                    version, source_range, generated_by_model, recent_turns_kept,
+                    estimated_tokens_saved, refresh_reason, secrets_redacted
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, owner_key_hash) DO UPDATE SET
                     capsule_text=excluded.capsule_text,
-                    owner_key_hash=COALESCE(excluded.owner_key_hash, session_capsules.owner_key_hash),
-                    updated_at=excluded.updated_at
+                    updated_at=excluded.updated_at,
+                    version=excluded.version,
+                    source_range=excluded.source_range,
+                    generated_by_model=excluded.generated_by_model,
+                    recent_turns_kept=excluded.recent_turns_kept,
+                    estimated_tokens_saved=excluded.estimated_tokens_saved,
+                    refresh_reason=excluded.refresh_reason,
+                    secrets_redacted=excluded.secrets_redacted
                 """,
-                (session_id, redacted, owner_key_hash, _time.time()),
+                (
+                    session_id,
+                    redacted,
+                    owner,
+                    now,
+                    version,
+                    source_range,
+                    generated_by_model,
+                    recent_turns_kept,
+                    estimated_tokens_saved,
+                    refresh_reason,
+                    secrets_redacted,
+                ),
             )
             conn.commit()
+        result: dict[str, Any] = {
+            "session_id": session_id,
+            "capsule_text": redacted,
+            "owner_key_hash": owner,
+            "updated_at": now,
+            "version": version,
+            "source_range": source_range,
+            "generated_by_model": generated_by_model,
+            "recent_turns_kept": recent_turns_kept,
+            "estimated_tokens_saved": estimated_tokens_saved,
+            "refresh_reason": refresh_reason,
+            "secrets_redacted": secrets_redacted,
+        }
+        if quality_score is not None:
+            result["quality_score"] = quality_score
+            if not quality_score.get("passed", True):
+                result["quality_warning"] = (
+                    "Capsule quality check failed — summary may be missing key context. "
+                    "Consider refreshing with a longer prompt or more recent turns."
+                )
+        return result
 
     def get_capsule(
         self,
@@ -880,21 +1769,18 @@ class EnhancedMemoryStore:
         owner_key_hash: str | None = None,
     ) -> dict[str, Any] | None:
         """Retrieve a session capsule if it exists and belongs to the owner."""
-        if owner_key_hash is None:
-            owner_clause = "owner_key_hash IS NULL"
-            owner_params: list[Any] = []
-        else:
-            owner_clause = "owner_key_hash = ?"
-            owner_params = [owner_key_hash]
+        owner = self._session_owner(owner_key_hash)
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
-                f"""
-                SELECT session_id, capsule_text, owner_key_hash, updated_at
+                """
+                SELECT session_id, capsule_text, owner_key_hash, updated_at,
+                       version, source_range, generated_by_model, recent_turns_kept,
+                       estimated_tokens_saved, refresh_reason, secrets_redacted
                 FROM session_capsules
-                WHERE session_id = ? AND {owner_clause}
+                WHERE session_id = ? AND owner_key_hash = ?
                 """,
-                (session_id, *owner_params),
+                (session_id, owner),
             ).fetchone()
         if row is None:
             return None
@@ -903,6 +1789,13 @@ class EnhancedMemoryStore:
             "capsule_text": row["capsule_text"],
             "owner_key_hash": row["owner_key_hash"],
             "updated_at": row["updated_at"],
+            "version": row["version"],
+            "source_range": row["source_range"],
+            "generated_by_model": row["generated_by_model"],
+            "recent_turns_kept": row["recent_turns_kept"],
+            "estimated_tokens_saved": row["estimated_tokens_saved"],
+            "refresh_reason": row["refresh_reason"],
+            "secrets_redacted": row["secrets_redacted"],
         }
 
     def delete_capsule(
@@ -911,62 +1804,46 @@ class EnhancedMemoryStore:
         owner_key_hash: str | None = None,
     ) -> bool:
         """Delete a session capsule. Returns True if a row was removed."""
-        if owner_key_hash is None:
-            owner_clause = "owner_key_hash IS NULL"
-            owner_params: list[Any] = []
-        else:
-            owner_clause = "owner_key_hash = ?"
-            owner_params = [owner_key_hash]
+        owner = self._session_owner(owner_key_hash)
         with db_connection(self.db_path) as conn:
             cursor = conn.execute(
-                f"""
+                """
                 DELETE FROM session_capsules
-                WHERE session_id = ? AND {owner_clause}
+                WHERE session_id = ? AND owner_key_hash = ?
                 """,
-                (session_id, *owner_params),
+                (session_id, owner),
             )
             conn.commit()
             return cursor.rowcount > 0
 
-    def list_sessions(self, limit: int = 30, owner_key_hash: str | None = None) -> list[dict[str, Any]]:
+    def list_sessions(
+        self, limit: int = 30, owner_key_hash: str | None = None
+    ) -> list[dict[str, Any]]:
         """List recent conversation sessions that have at least one message."""
+        owner = self._session_owner(owner_key_hash)
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            if owner_key_hash:
-                # Include legacy sessions with NULL owner_key_hash for backward
-                # compatibility, so users don't lose access to pre-isolation data.
-                rows = conn.execute(
-                    """
-                    SELECT e.session_id, e.summary, e.created_at, e.turn_count,
-                           (
-                               SELECT COUNT(*)
-                               FROM session_messages m
-                               WHERE m.session_id = e.session_id
-                           ) as message_count
-                    FROM episodes e
-                    WHERE EXISTS (SELECT 1 FROM session_messages m WHERE m.session_id = e.session_id)
-                      AND (e.owner_key_hash = ? OR e.owner_key_hash IS NULL)
-                    ORDER BY e.created_at DESC
-                    LIMIT ?
-                    """,
-                    (owner_key_hash, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """
-                    SELECT e.session_id, e.summary, e.created_at, e.turn_count,
-                           (
-                               SELECT COUNT(*)
-                               FROM session_messages m
-                               WHERE m.session_id = e.session_id
-                           ) as message_count
-                    FROM episodes e
-                    WHERE EXISTS (SELECT 1 FROM session_messages m WHERE m.session_id = e.session_id)
-                    ORDER BY e.created_at DESC
-                    LIMIT ?
-                    """,
-                    (limit,),
-                ).fetchall()
+            rows = conn.execute(
+                """
+                SELECT e.session_id, e.summary, e.created_at, e.turn_count,
+                       (
+                           SELECT COUNT(*)
+                           FROM session_messages m
+                           WHERE m.session_id = e.session_id
+                             AND m.owner_key_hash = e.owner_key_hash
+                       ) as message_count
+                FROM episodes e
+                WHERE EXISTS (
+                    SELECT 1 FROM session_messages m
+                    WHERE m.session_id = e.session_id
+                      AND m.owner_key_hash = e.owner_key_hash
+                )
+                  AND e.owner_key_hash = ?
+                ORDER BY e.created_at DESC
+                LIMIT ?
+                """,
+                (owner, limit),
+            ).fetchall()
         return [
             {
                 "session_id": r["session_id"],
@@ -979,24 +1856,38 @@ class EnhancedMemoryStore:
         ]
 
     def cleanup_empty_sessions(self) -> int:
-        """Remove episode records for sessions that have no messages."""
+        """Remove episode records for sessions that have no messages.
+
+        Owner-scoped: only the partition for a given (session_id, owner) is
+        removed when that owner has no messages left.
+        """
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            # Find session_ids in episodes that have no messages
             rows = conn.execute(
-                """
-                SELECT e.session_id FROM episodes e
-                LEFT JOIN session_messages m ON m.session_id = e.session_id
-                WHERE m.id IS NULL
-                """
+                "SELECT DISTINCT session_id, owner_key_hash FROM episodes"
             ).fetchall()
             deleted = 0
             for row in rows:
                 sid = row["session_id"]
-                conn.execute("DELETE FROM episodes WHERE session_id = ?", (sid,))
-                conn.execute("DELETE FROM working_memories WHERE session_id = ?", (sid,))
-                conn.execute("DELETE FROM semantic_memories WHERE source = ?", (sid,))
-                deleted += 1
+                owner = row["owner_key_hash"]
+                msg = conn.execute(
+                    "SELECT 1 FROM session_messages WHERE session_id = ? AND owner_key_hash = ? LIMIT 1",
+                    (sid, owner),
+                ).fetchone()
+                if msg is None:
+                    conn.execute(
+                        "DELETE FROM episodes WHERE session_id = ? AND owner_key_hash = ?",
+                        (sid, owner),
+                    )
+                    conn.execute(
+                        "DELETE FROM working_memories WHERE session_id = ? AND owner_key_hash = ?",
+                        (sid, owner),
+                    )
+                    conn.execute(
+                        "DELETE FROM session_capsules WHERE session_id = ? AND owner_key_hash = ?",
+                        (sid, owner),
+                    )
+                    deleted += 1
             conn.commit()
         logger.info(f"Cleaned up {deleted} empty sessions")
         return deleted
@@ -1005,24 +1896,30 @@ class EnhancedMemoryStore:
     # Session Messages (conversation history)
     # ------------------------------------------------------------------
 
-    def store_messages(self, session_id: str, messages: list[dict[str, str]]) -> None:
-        """Batch store messages for a session.  Content is encrypted at rest."""
+    def store_messages(
+        self, session_id: str, messages: list[dict[str, str]], owner_key_hash: str | None = None
+    ) -> None:
+        """Batch store messages for a session.  Content is encrypted at rest.
+
+        v3: stores owner_key_hash at the message level for per-owner isolation.
+            No-auth / local / legacy requests map to the __legacy_local__ sentinel.
+        """
         if not messages:
             return
         import time as _time
+
         _start = _time.perf_counter()
         now = _time.time()
         _enc = self._secrets.encrypt_blob
+        owner = self._session_owner(owner_key_hash)
         with db_connection(self.db_path) as conn:
             conn.executemany(
                 """
-                INSERT INTO session_messages (session_id, role, content, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO session_messages (session_id, role, content, created_at, owner_key_hash)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 [
-                    (session_id, m["role"],
-                     _enc(m["content"].encode("utf-8")),
-                     now)
+                    (session_id, m["role"], _enc(m["content"].encode("utf-8")), now, owner)
                     for m in messages
                     if m.get("role") in ("user", "assistant") and m.get("content")
                 ],
@@ -1030,88 +1927,102 @@ class EnhancedMemoryStore:
             conn.commit()
         try:
             from js.utils.metrics import get_metrics
+
             get_metrics().memory_store_latency_seconds.labels(operation="store_messages").observe(
                 _time.perf_counter() - _start
             )
         except Exception:
-            logger.warning('Operation failed', exc_info=True)
+            logger.warning("Operation failed", exc_info=True)
 
-        # Prune old messages per session to prevent unbounded DB growth
+        # Prune old messages per owner/session to prevent unbounded DB growth.
         _max_msg_per_session = 500
         with db_connection(self.db_path) as conn:
             count_row = conn.execute(
-                "SELECT COUNT(*) FROM session_messages WHERE session_id = ?",
-                (session_id,),
+                "SELECT COUNT(*) FROM session_messages WHERE session_id = ? AND owner_key_hash = ?",
+                (session_id, owner),
             ).fetchone()
             if count_row and count_row[0] > _max_msg_per_session:
                 excess = count_row[0] - _max_msg_per_session
                 conn.execute(
                     "DELETE FROM session_messages WHERE id IN "
-                    "(SELECT id FROM session_messages WHERE session_id = ? "
+                    "(SELECT id FROM session_messages WHERE session_id = ? AND owner_key_hash = ? "
                     "ORDER BY created_at ASC LIMIT ?)",
-                    (session_id, excess),
+                    (session_id, owner, excess),
                 )
                 conn.commit()
 
-    def get_session_messages(self, session_id: str, owner_key_hash: str | None = None) -> list[dict[str, Any]]:
-        """Get all messages for a session, ordered by time."""
+    def get_session_messages(
+        self, session_id: str, owner_key_hash: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Get all messages for a session, ordered by time.
+
+        Owner isolation is strict: only rows matching the requested owner are
+        returned.  There is no fallback to legacy/shared rows and the owner is
+        never inferred from message content.
+        """
+        owner = self._session_owner(owner_key_hash)
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            if owner_key_hash:
-                owner_row = conn.execute(
-                    "SELECT owner_key_hash FROM episodes WHERE session_id = ?",
-                    (session_id,),
-                ).fetchone()
-                # Reject only if the session has a non-NULL owner that doesn't match.
-                # NULL-owner sessions are legacy data — allow access for backward compatibility.
-                if owner_row is not None and owner_row[0] is not None and owner_row[0] != owner_key_hash:
-                    raise PermissionError("Session access denied")
             rows = conn.execute(
                 """
                 SELECT role, content, created_at
                 FROM session_messages
-                WHERE session_id = ?
+                WHERE session_id = ? AND owner_key_hash = ?
                 ORDER BY created_at ASC
                 """,
-                (session_id,),
+                (session_id, owner),
             ).fetchall()
         _dec = self._secrets.decrypt_blob
         return [
             {
                 "role": r["role"],
                 "content": _dec(r["content"]).decode("utf-8", errors="replace")
-                if isinstance(r["content"], bytes) else r["content"],
+                if isinstance(r["content"], bytes)
+                else r["content"],
                 "created_at": r["created_at"],
             }
             for r in rows
         ]
 
     def delete_session(self, session_id: str, owner_key_hash: str | None = None) -> bool:
-        """Delete all data for a session (messages, working memory, episode, semantic memory)."""
+        """Delete all session-scoped data for the current owner.
+
+        Only rows belonging to ``owner_key_hash`` are removed:
+        messages, working memory, episode, capsule.  Semantic memories with
+        ``source = session_id`` are also removed for the same owner.
+
+        Returns ``True`` if any row was deleted, ``False`` for a no-op/wrong owner.
+        """
+        owner = self._session_owner(owner_key_hash)
         with db_connection(self.db_path) as conn:
-            if owner_key_hash:
-                owner_row = conn.execute(
-                    "SELECT owner_key_hash FROM episodes WHERE session_id = ?",
-                    (session_id,),
-                ).fetchone()
-                # Reject only if the session has a non-NULL owner that doesn't match.
-                # NULL-owner sessions are legacy data — allow deletion for backward compatibility.
-                if owner_row is not None and owner_row[0] is not None and owner_row[0] != owner_key_hash:
-                    raise PermissionError("Session deletion denied")
-            conn.execute(
-                "DELETE FROM session_messages WHERE session_id = ?", (session_id,)
+            total = 0
+            cur = conn.execute(
+                "DELETE FROM session_messages WHERE session_id = ? AND owner_key_hash = ?",
+                (session_id, owner),
             )
-            conn.execute(
-                "DELETE FROM working_memories WHERE session_id = ?", (session_id,)
+            total += cur.rowcount
+            cur = conn.execute(
+                "DELETE FROM working_memories WHERE session_id = ? AND owner_key_hash = ?",
+                (session_id, owner),
             )
-            conn.execute(
-                "DELETE FROM episodes WHERE session_id = ?", (session_id,)
+            total += cur.rowcount
+            cur = conn.execute(
+                "DELETE FROM episodes WHERE session_id = ? AND owner_key_hash = ?",
+                (session_id, owner),
             )
-            conn.execute(
-                "DELETE FROM semantic_memories WHERE source = ?", (session_id,)
+            total += cur.rowcount
+            cur = conn.execute(
+                "DELETE FROM session_capsules WHERE session_id = ? AND owner_key_hash = ?",
+                (session_id, owner),
             )
+            total += cur.rowcount
+            cur = conn.execute(
+                "DELETE FROM semantic_memories WHERE source = ? AND owner_key_hash = ?",
+                (session_id, owner),
+            )
+            total += cur.rowcount
             conn.commit()
-        return True
+        return total > 0
 
     # ------------------------------------------------------------------
     # Semantic Memory (extracted knowledge)
@@ -1143,6 +2054,7 @@ class EnhancedMemoryStore:
         # Sanitize secrets before persisting semantic memory
         value = self._secrets.detect_and_redact(value, f"semantic:{key}")
         import time
+
         _start = time.perf_counter()
         now = time.time()
 
@@ -1190,11 +2102,12 @@ class EnhancedMemoryStore:
                 embedding_json = ""
         try:
             from js.utils.metrics import get_metrics
+
             get_metrics().memory_store_latency_seconds.labels(operation="store_semantic").observe(
                 time.perf_counter() - _start
             )
         except Exception:
-            logger.warning('Operation failed', exc_info=True)
+            logger.warning("Operation failed", exc_info=True)
 
         # Detect and auto-resolve conflicts — user should never be bothered.
         # Conflict detection is scoped to the same owner partition so one user's
@@ -1209,6 +2122,7 @@ class EnhancedMemoryStore:
                 confidence=confidence,
                 source=source,
                 conflict_ids=conflicts,
+                owner_key_hash=owner_key_hash,
             )
             if not keep_new:
                 # Existing user-confirmed memory wins; drop this one silently.
@@ -1236,9 +2150,20 @@ class EnhancedMemoryStore:
                     WHERE id = ?
                     """,
                     (
-                        value, category, confidence, source, now, embedding_json,
-                        inferred_path, inferred_type, inferred_name, parent_id,
-                        inferred_rel, last_verified, session_id, evidence,
+                        value,
+                        category,
+                        confidence,
+                        source,
+                        now,
+                        embedding_json,
+                        inferred_path,
+                        inferred_type,
+                        inferred_name,
+                        parent_id,
+                        inferred_rel,
+                        last_verified,
+                        session_id,
+                        evidence,
                         existing[0],
                     ),
                 )
@@ -1256,10 +2181,23 @@ class EnhancedMemoryStore:
                     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, '', 5, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        key, value, category, confidence, source, now, now,
-                        embedding_json, inferred_path, inferred_type,
-                        inferred_name, parent_id, inferred_rel, last_verified,
-                        owner_key_hash, session_id, evidence,
+                        key,
+                        value,
+                        category,
+                        confidence,
+                        source,
+                        now,
+                        now,
+                        embedding_json,
+                        inferred_path,
+                        inferred_type,
+                        inferred_name,
+                        parent_id,
+                        inferred_rel,
+                        last_verified,
+                        owner_key_hash,
+                        session_id,
+                        evidence,
                     ),
                 )
                 memory_id = cur.lastrowid
@@ -1347,12 +2285,16 @@ class EnhancedMemoryStore:
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             # Limit to recent 200 entries to avoid full-table scans.
-            # Only consider the same owner's (or shared/NULL) memories.
+            # Only consider the same owner's memories (exact match).  Legacy/shared
+            # NULL-owner rows are never considered conflicts for authenticated
+            # owners, and vice versa.
             params: list[Any] = [category]
             owner_clause = ""
             if owner_key_hash is not None:
-                owner_clause = " AND (owner_key_hash = ? OR owner_key_hash IS NULL)"
+                owner_clause = " AND owner_key_hash = ?"
                 params.append(owner_key_hash)
+            else:
+                owner_clause = " AND owner_key_hash IS NULL"
             rows = conn.execute(
                 f"""
                 SELECT id, key, value, embedding FROM semantic_memories
@@ -1376,9 +2318,8 @@ class EnhancedMemoryStore:
             other_words = set(other_key.split())
             keyword_overlap = 0.0
             if key_words and other_words:
-                keyword_overlap = (
-                    len(key_words & other_words)
-                    / max(len(key_words), len(other_words))
+                keyword_overlap = len(key_words & other_words) / max(
+                    len(key_words), len(other_words)
                 )
 
             # Tier 2: embedding similarity (if available)
@@ -1405,6 +2346,7 @@ class EnhancedMemoryStore:
         confidence: float,
         source: str,
         conflict_ids: list[int],
+        owner_key_hash: str | None = None,
     ) -> bool:
         """Automatically resolve memory conflicts without bothering the user.
 
@@ -1417,6 +2359,9 @@ class EnhancedMemoryStore:
            trustworthy (>0.2 gap), overwrite the old one.
         4. Otherwise: keep both — they may be related but distinct facts.
 
+        All deletions are guarded by ``owner_key_hash`` so auto-resolution can
+        never delete another owner's memories.
+
         Returns True if the new memory should be kept (either by winning or
         by coexisting), False if it should be dropped.
         """
@@ -1425,13 +2370,23 @@ class EnhancedMemoryStore:
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             placeholders = ",".join("?" * len(conflict_ids))
+            owner_filter = ""
+            delete_owner_filter = ""
+            owner_params: list[Any] = []
+            if owner_key_hash is not None:
+                owner_filter = " AND owner_key_hash = ?"
+                delete_owner_filter = "owner_key_hash = ?"
+                owner_params.append(owner_key_hash)
+            else:
+                owner_filter = " AND owner_key_hash IS NULL"
+                delete_owner_filter = "owner_key_hash IS NULL"
             rows = conn.execute(
                 f"""
                 SELECT id, key, value, confidence, source, created_at
                 FROM semantic_memories
-                WHERE id IN ({placeholders})
+                WHERE id IN ({placeholders}){owner_filter}
                 """,
-                tuple(conflict_ids),
+                tuple(conflict_ids) + tuple(owner_params),
             ).fetchall()
 
         for r in rows:
@@ -1446,7 +2401,10 @@ class EnhancedMemoryStore:
                 if confidence >= old_conf:
                     # New is better (or equal), delete old
                     with db_connection(self.db_path) as conn:
-                        conn.execute("DELETE FROM semantic_memories WHERE id = ?", (old_id,))
+                        conn.execute(
+                            f"DELETE FROM semantic_memories WHERE id = ? AND {delete_owner_filter}",
+                            (old_id, *owner_params),
+                        )
                         conn.commit()
                     self._audit_log(
                         memory_id=old_id,
@@ -1467,7 +2425,10 @@ class EnhancedMemoryStore:
             # Rule 3: new memory is much more trustworthy → overwrite old
             if confidence >= old_conf + 0.2:
                 with db_connection(self.db_path) as conn:
-                    conn.execute("DELETE FROM semantic_memories WHERE id = ?", (old_id,))
+                    conn.execute(
+                        f"DELETE FROM semantic_memories WHERE id = ? AND {delete_owner_filter}",
+                        (old_id, *owner_params),
+                    )
                     conn.commit()
                 self._audit_log(
                     memory_id=old_id,
@@ -1559,8 +2520,7 @@ class EnhancedMemoryStore:
 
         if evicted:
             logger.info(
-                f"Evicted {evicted} semantic memories "
-                f"(strategy={strategy}, limit={max_memories})"
+                f"Evicted {evicted} semantic memories (strategy={strategy}, limit={max_memories})"
             )
         return evicted
 
@@ -1710,6 +2670,7 @@ class EnhancedMemoryStore:
         owner_key_hash: str | None = None,
     ) -> list[SemanticMemory]:
         import time
+
         _start = time.perf_counter()
         owner_clause, owner_params = self._owner_filter(owner_key_hash)
         fallback_reason = None
@@ -1786,6 +2747,7 @@ class EnhancedMemoryStore:
         # + entity-block match boost                         [+0.1]
         # + recency decay (config-weighted)                  [+0..recency_weight]
         import math
+
         _now = time.time()
         recency_weight = float(getattr(self.config, "context_recency_weight", 0.0) or 0.0)
         half_life_days = max(
@@ -1846,15 +2808,16 @@ class EnhancedMemoryStore:
         # Record metrics on exit
         try:
             from js.utils.metrics import get_metrics
-            get_metrics().memory_retrieve_latency_seconds.labels(operation="search_semantic").observe(
-                time.perf_counter() - _start
-            )
+
+            get_metrics().memory_retrieve_latency_seconds.labels(
+                operation="search_semantic"
+            ).observe(time.perf_counter() - _start)
             if fallback_reason:
                 get_metrics().memory_search_fallback_total.labels(reason=fallback_reason).inc()
             elif query_vec is None:
                 get_metrics().memory_search_fallback_total.labels(reason="no_embedding").inc()
         except Exception:
-            logger.warning('Operation failed', exc_info=True)
+            logger.warning("Operation failed", exc_info=True)
 
         return [
             SemanticMemory(
@@ -1989,13 +2952,13 @@ class EnhancedMemoryStore:
         Sensitive blocks (configurable, default identity/family/body) and
         low-confidence items always require explicit user confirmation.
         """
-        for p in (getattr(self.config, "extract_confirm_paths", None) or []):
+        for p in getattr(self.config, "extract_confirm_paths", None) or []:
             p = str(p).rstrip("/")
             if memory_path == p or memory_path.startswith(p + "/"):
                 return False
-        threshold = float(getattr(
-            self.config, "auto_apply_confidence", self._AUTO_APPLY_CONFIDENCE_DEFAULT
-        ))
+        threshold = float(
+            getattr(self.config, "auto_apply_confidence", self._AUTO_APPLY_CONFIDENCE_DEFAULT)
+        )
         return confidence >= threshold
 
     def _apply_proposal_row(self, row: dict[str, Any]) -> int | None:
@@ -2079,7 +3042,9 @@ class EnhancedMemoryStore:
         # Infer block when missing so the confirm-path policy can evaluate it.
         if action in ("create", "update") and (not memory_path or not entity_type):
             ip, it, iname, irel = self._infer_entity_block(
-                key, value, category,
+                key,
+                value,
+                category,
                 memory_path=memory_path or None,
                 entity_type=entity_type or None,
                 entity_name=entity_name or None,
@@ -2105,12 +3070,20 @@ class EnhancedMemoryStore:
         applied_memory_id: int | None = None
 
         row = {
-            "owner_key_hash": owner_key_hash, "action": action,
-            "target_memory_id": target_memory_id, "key": key, "value": value,
-            "category": category, "memory_path": memory_path,
-            "entity_type": entity_type, "entity_name": entity_name,
-            "relation_type": relation_type, "confidence": confidence,
-            "source": source, "session_id": session_id, "evidence": evidence,
+            "owner_key_hash": owner_key_hash,
+            "action": action,
+            "target_memory_id": target_memory_id,
+            "key": key,
+            "value": value,
+            "category": category,
+            "memory_path": memory_path,
+            "entity_type": entity_type,
+            "entity_name": entity_name,
+            "relation_type": relation_type,
+            "confidence": confidence,
+            "source": source,
+            "session_id": session_id,
+            "evidence": evidence,
         }
         if auto_apply:
             applied_memory_id = self._apply_proposal_row(row)
@@ -2126,10 +3099,23 @@ class EnhancedMemoryStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    owner_key_hash, action, target_memory_id or applied_memory_id, key,
-                    value, category, memory_path, entity_type, entity_name,
-                    relation_type, confidence, source, session_id, evidence, status,
-                    now, now if status == "auto_applied" else None,
+                    owner_key_hash,
+                    action,
+                    target_memory_id or applied_memory_id,
+                    key,
+                    value,
+                    category,
+                    memory_path,
+                    entity_type,
+                    entity_name,
+                    relation_type,
+                    confidence,
+                    source,
+                    session_id,
+                    evidence,
+                    status,
+                    now,
+                    now if status == "auto_applied" else None,
                 ),
             )
             proposal_id = cur.lastrowid
@@ -2170,8 +3156,13 @@ class EnhancedMemoryStore:
         return dict(row) if row else None
 
     _PROPOSAL_OVERRIDE_FIELDS = (
-        "key", "value", "category", "memory_path",
-        "entity_type", "entity_name", "relation_type",
+        "key",
+        "value",
+        "category",
+        "memory_path",
+        "entity_type",
+        "entity_name",
+        "relation_type",
     )
 
     def approve_proposal(
@@ -2211,9 +3202,16 @@ class EnhancedMemoryStore:
                 "entity_name = ?, relation_type = ?, "
                 "target_memory_id = COALESCE(target_memory_id, ?) WHERE id = ?",
                 (
-                    time.time(), row.get("key"), row.get("value"), row.get("category"),
-                    row.get("memory_path"), row.get("entity_type"), row.get("entity_name"),
-                    row.get("relation_type"), memory_id, proposal_id,
+                    time.time(),
+                    row.get("key"),
+                    row.get("value"),
+                    row.get("category"),
+                    row.get("memory_path"),
+                    row.get("entity_type"),
+                    row.get("entity_name"),
+                    row.get("relation_type"),
+                    memory_id,
+                    proposal_id,
                 ),
             )
             conn.commit()
@@ -2255,8 +3253,7 @@ class EnhancedMemoryStore:
         with db_connection(self.db_path) as conn:
             # Exact-block rows
             cur1 = conn.execute(
-                f"UPDATE semantic_memories SET memory_path = ? "
-                f"WHERE memory_path = ?{guard}",
+                f"UPDATE semantic_memories SET memory_path = ? WHERE memory_path = ?{guard}",
                 (dst, src, *owner_params),
             )
             # Nested sub-block rows: replace the leading prefix.
@@ -2270,8 +3267,12 @@ class EnhancedMemoryStore:
             moved = (cur1.rowcount or 0) + (cur2.rowcount or 0)
         if moved:
             self._audit_log(
-                memory_id=None, table_name="semantic", action="move_block",
-                old_value=src, new_value=dst, source="user",
+                memory_id=None,
+                table_name="semantic",
+                action="move_block",
+                old_value=src,
+                new_value=dst,
+                source="user",
             )
         return moved
 
@@ -2365,19 +3366,20 @@ class EnhancedMemoryStore:
         except Exception:
             blocks = []
         if blocks:
-            summary = " · ".join(
-                f"{b['block_path']}({b['memory_count']})" for b in blocks[:12]
-            )
+            summary = " · ".join(f"{b['block_path']}({b['memory_count']})" for b in blocks[:12])
             _add("## 记忆区块\n" + summary + "\n\n")
 
         # 2. Working memory for the current session (already session-scoped).
         if session_id:
-            working = self.get_working(session_id, limit=10)
+            working = self.get_working(session_id, limit=10, owner_key_hash=owner_key_hash)
             if working:
-                _add("## 当前上下文\n" + "\n".join(
-                    f"- [{m['category']}] {m['key']}: {m['value'][:100]}"
-                    for m in working
-                ) + "\n\n")
+                _add(
+                    "## 当前上下文\n"
+                    + "\n".join(
+                        f"- [{m['category']}] {m['key']}: {m['value'][:100]}" for m in working
+                    )
+                    + "\n\n"
+                )
 
         # 3. Key facts: query-relevant first, then core user-facing blocks.
         #    Collect SemanticMemory objects (deduped) so evidence can follow.
@@ -2392,15 +3394,19 @@ class EnhancedMemoryStore:
 
         if query:
             _collect(self.search_semantic(query, limit=6, owner_key_hash=owner_key_hash))
-        _collect(self.search_semantic(
-            "", category="preference", limit=4, owner_key_hash=owner_key_hash))
+        _collect(
+            self.search_semantic("", category="preference", limit=4, owner_key_hash=owner_key_hash)
+        )
         for core_path in ("/user/identity", "/user/personality"):
-            _collect(self.search_semantic(
-                "", path_prefix=core_path, limit=3, owner_key_hash=owner_key_hash))
-        _collect(self.search_semantic(
-            "", category="fact", limit=4, owner_key_hash=owner_key_hash))
-        _collect(self.search_semantic(
-            "", category="external", limit=3, owner_key_hash=owner_key_hash))
+            _collect(
+                self.search_semantic(
+                    "", path_prefix=core_path, limit=3, owner_key_hash=owner_key_hash
+                )
+            )
+        _collect(self.search_semantic("", category="fact", limit=4, owner_key_hash=owner_key_hash))
+        _collect(
+            self.search_semantic("", category="external", limit=3, owner_key_hash=owner_key_hash)
+        )
 
         facts_added = False
         if key_facts:
@@ -2408,8 +3414,7 @@ class EnhancedMemoryStore:
             for m in key_facts:
                 tag = m.memory_path or f"/{m.category}"
                 conf = (
-                    "✓" if (m.last_verified_at or 0) > 0
-                    else f"{int((m.confidence or 0.5) * 100)}%"
+                    "✓" if (m.last_verified_at or 0) > 0 else f"{int((m.confidence or 0.5) * 100)}%"
                 )
                 lines.append(f"- [{tag}] {m.key}: {_clean(m.value[:200])} ({conf})")
             facts_added = _add("## 关键事实\n" + "\n".join(lines) + "\n\n")
@@ -2432,7 +3437,7 @@ class EnhancedMemoryStore:
     # ------------------------------------------------------------------
 
     async def dream(self, llm_summarizer: Any | None = None) -> dict[str, Any]:
-        """Run full dreaming cycle: light -> rem -> deep."""
+        """Run full dreaming cycle: light -> rem -> deep (owner-scoped)."""
         logger.info("Starting dreaming cycle")
         report: dict[str, Any] = {"phases": []}
 
@@ -2446,8 +3451,16 @@ class EnhancedMemoryStore:
         report["phases"].append({"phase": "rem", "summary": rem})
         self._log_dream("rem", rem)
 
-        # Phase 3: Deep Sleep - promote to semantic / episode
-        deep = await self._deep_sleep(llm_summarizer)
+        # Phase 3: Deep Sleep - promote to semantic / episode, scoped per owner.
+        # Without owner scoping, one user's working memories leak into the
+        # shared semantic pool.
+        with db_connection(self.db_path) as conn:
+            rows = conn.execute("SELECT DISTINCT owner_key_hash FROM working_memories").fetchall()
+            owners = [r[0] for r in rows]
+        deep_summaries: list[str] = []
+        for owner in owners:
+            deep_summaries.append(await self._deep_sleep(llm_summarizer, owner_key_hash=owner))
+        deep = "\n".join(deep_summaries) if deep_summaries else "No working memories to promote."
         report["phases"].append({"phase": "deep", "summary": deep})
         self._log_dream("deep", deep)
 
@@ -2509,21 +3522,119 @@ class EnhancedMemoryStore:
         return f"Removed {len(duplicates)} duplicate working memories."
 
     # Common English stop-words to ignore when computing keyword overlap.
-    _STOP_WORDS: frozenset[str] = frozenset({
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "must", "shall", "can", "need", "dare",
-        "ought", "used", "to", "of", "in", "for", "on", "with", "at", "by",
-        "from", "as", "into", "through", "during", "before", "after", "above",
-        "below", "between", "under", "again", "further", "then", "once",
-        "here", "there", "when", "where", "why", "how", "all", "any", "both",
-        "each", "few", "more", "most", "other", "some", "such", "no", "nor",
-        "not", "only", "own", "same", "so", "than", "too", "very", "just",
-        "and", "but", "if", "or", "because", "until", "while", "about",
-        "against", "among", "around", "behind", "beyond", "despite", "down",
-        "except", "inside", "like", "near", "off", "out", "outside", "over",
-        "past", "since", "till", "up", "upon", "within", "without",
-    })
+    _STOP_WORDS: frozenset[str] = frozenset(
+        {
+            "the",
+            "a",
+            "an",
+            "is",
+            "are",
+            "was",
+            "were",
+            "be",
+            "been",
+            "being",
+            "have",
+            "has",
+            "had",
+            "do",
+            "does",
+            "did",
+            "will",
+            "would",
+            "could",
+            "should",
+            "may",
+            "might",
+            "must",
+            "shall",
+            "can",
+            "need",
+            "dare",
+            "ought",
+            "used",
+            "to",
+            "of",
+            "in",
+            "for",
+            "on",
+            "with",
+            "at",
+            "by",
+            "from",
+            "as",
+            "into",
+            "through",
+            "during",
+            "before",
+            "after",
+            "above",
+            "below",
+            "between",
+            "under",
+            "again",
+            "further",
+            "then",
+            "once",
+            "here",
+            "there",
+            "when",
+            "where",
+            "why",
+            "how",
+            "all",
+            "any",
+            "both",
+            "each",
+            "few",
+            "more",
+            "most",
+            "other",
+            "some",
+            "such",
+            "no",
+            "nor",
+            "not",
+            "only",
+            "own",
+            "same",
+            "so",
+            "than",
+            "too",
+            "very",
+            "just",
+            "and",
+            "but",
+            "if",
+            "or",
+            "because",
+            "until",
+            "while",
+            "about",
+            "against",
+            "among",
+            "around",
+            "behind",
+            "beyond",
+            "despite",
+            "down",
+            "except",
+            "inside",
+            "like",
+            "near",
+            "off",
+            "out",
+            "outside",
+            "over",
+            "past",
+            "since",
+            "till",
+            "up",
+            "upon",
+            "within",
+            "without",
+        }
+    )
 
     def _rem_sleep(self) -> str:
         """Build simple keyword-based associations between memories."""
@@ -2555,8 +3666,15 @@ class EnhancedMemoryStore:
                 overlap = len(words_a & words_b)
                 if overlap >= 3:
                     links.append(
-                        (a["id"], b["id"], "semantic_memories", "semantic_memories",
-                         min(1.0, overlap / 10), "association", now)
+                        (
+                            a["id"],
+                            b["id"],
+                            "semantic_memories",
+                            "semantic_memories",
+                            min(1.0, overlap / 10),
+                            "association",
+                            now,
+                        )
                     )
 
         if links:
@@ -2576,29 +3694,38 @@ class EnhancedMemoryStore:
 
         return f"Created {len(links)} associative links."
 
-    async def _deep_sleep(self, llm_summarizer: Any | None = None) -> str:
+    async def _deep_sleep(
+        self, llm_summarizer: Any | None = None, owner_key_hash: str | None = None
+    ) -> str:
         """Promote important working memories to semantic / episodic,
-        with LLM insight generation."""
+        with LLM insight generation. Scoped to a single owner so promoted
+        memories do not leak across users."""
+        is_legacy = owner_key_hash is None or owner_key_hash == _LEGACY_LOCAL_OWNER
+        query_owner = _LEGACY_LOCAL_OWNER if is_legacy else owner_key_hash
+        semantic_owner = None if is_legacy else owner_key_hash
+
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
                 SELECT * FROM working_memories
-                WHERE importance >= 7
+                WHERE importance >= 7 AND owner_key_hash = ?
                 ORDER BY created_at DESC
                 LIMIT 20
-                """
+                """,
+                (query_owner,),
             ).fetchall()
 
         promoted = 0
         for r in rows:
-            # Promote to semantic memory
+            # Promote to semantic memory, preserving owner isolation.
             self.store_semantic(
                 key=r["key"],
                 value=r["value"],
                 category=r["category"],
                 confidence=0.7,
                 source=r["session_id"],
+                owner_key_hash=semantic_owner,
             )
             promoted += 1
 
@@ -2606,8 +3733,7 @@ class EnhancedMemoryStore:
         if llm_summarizer and rows:
             # Build a summary of promoted memories for LLM analysis
             memory_text = "\n".join(
-                f"[{r['category']}] {r['key']}: {r['value'][:200]}"
-                for r in rows
+                f"[{r['category']}] {r['key']}: {r['value'][:200]}" for r in rows
             )
             try:
                 insight = await llm_summarizer(memory_text)
@@ -2620,11 +3746,13 @@ class EnhancedMemoryStore:
                         category="insight",
                         confidence=0.85,
                         source="deep_sleep_llm",
+                        owner_key_hash=semantic_owner,
                     )
             except Exception:
                 logger.warning("LLM summarizer failed during deep sleep", exc_info=True)
 
-        base = f"Promoted {promoted} important memories to long-term storage."
+        owner_label = owner_key_hash or "legacy"
+        base = f"Promoted {promoted} important memories to long-term storage ({owner_label})."
         if insight:
             base += f"\nInsight: {insight[:300]}"
         return base

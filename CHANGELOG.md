@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.gitignore` now excludes `.playwright-mcp/` runtime cache files.
 - `uv.lock` synchronized with the new `httpx2` dev dependency.
-- Version bumped to `0.1.3-alpha` across package metadata, CLI, TUI, and README.
+- Version metadata remains `0.1.3` for PEP 440 compliance; release is tagged `v0.1.3-alpha`. README/TUI display the alpha release name.
 
 ### Verified
 

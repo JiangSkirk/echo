@@ -1,8 +1,9 @@
 """Cross-user isolation tests for the hierarchical memory library.
 
 Verifies that ``owner_key_hash`` partitions semantic memories and proposals:
-one user never sees, edits, or evicts another's data, while legacy NULL-owner
-rows remain shared (visible to everyone) for backward compatibility.
+one user never sees, edits, or evicts another's data.  Legacy NULL-owner rows
+are migrated to the ``__legacy_local__`` sentinel and are no longer visible to
+authenticated owners.
 """
 
 from __future__ import annotations
@@ -45,8 +46,14 @@ class TestSemanticIsolation:
         store.store_semantic("private_a", "仅A", source="user", owner_key_hash=A)
         a_keys = {m["key"] for m in store.get_all_semantic(owner_key_hash=A)}
         b_keys = {m["key"] for m in store.get_all_semantic(owner_key_hash=B)}
-        assert "shared" in a_keys and "shared" in b_keys
+        # Legacy NULL-owner rows are now isolated to the __legacy_local__ sentinel
+        # and must not be visible to authenticated owners.
+        assert "shared" not in a_keys
+        assert "shared" not in b_keys
         assert "private_a" in a_keys and "private_a" not in b_keys
+        # No-auth / local anonymous queries see the sentinel-owned legacy row.
+        legacy_keys = {m["key"] for m in store.get_all_semantic(owner_key_hash=None)}
+        assert "shared" in legacy_keys
 
     def test_search_is_owner_scoped(self, store: EnhancedMemoryStore) -> None:
         store.store_semantic("project_x", "Alice's secret project", source="user", owner_key_hash=A)
@@ -60,6 +67,32 @@ class TestSemanticIsolation:
         b_blocks = {b["block_path"] for b in store.get_blocks(owner_key_hash=B)}
         assert "/people" in a_blocks
         assert "/people" not in b_blocks
+
+    def test_authenticated_semantic_write_does_not_touch_legacy_or_other_owner(
+        self, store: EnhancedMemoryStore
+    ) -> None:
+        """Auto-conflict resolution must not delete/update legacy NULL or other-owner rows."""
+        # Legacy NULL-owner shared row.
+        store.store_semantic("favorite", "tea", source="import")
+        # Other owner's row with a similar key.
+        store.store_semantic("favorite drink", "coffee", source="user", owner_key_hash=B)
+
+        # Owner A writes a similar key; conflict detection should only consider A's rows.
+        result = store.store_semantic("favorite", "oolong", source="user", owner_key_hash=A)
+        assert result["memory_id"] is not None
+
+        # Legacy row must remain intact and visible to no-auth queries.
+        legacy = store.get_all_semantic(owner_key_hash=None)
+        assert any(m["key"] == "favorite" and m["value"] == "tea" for m in legacy)
+
+        # Owner B's row must remain intact.
+        b_rows = store.get_all_semantic(owner_key_hash=B)
+        assert any(m["key"] == "favorite drink" and m["value"] == "coffee" for m in b_rows)
+
+        # Owner A sees only their own row.
+        a_rows = store.get_all_semantic(owner_key_hash=A)
+        assert any(m["key"] == "favorite" and m["value"] == "oolong" for m in a_rows)
+        assert len(a_rows) == 1
 
     def test_delete_guard_blocks_other_owner(self, store: EnhancedMemoryStore) -> None:
         store.store_semantic("k", "alice", source="user", owner_key_hash=A)
@@ -80,22 +113,25 @@ class TestSemanticIsolation:
         assert store.verify_semantic(row["id"], owner_key_hash=A) is True
 
     def test_context_string_excludes_other_owner(self, store: EnhancedMemoryStore) -> None:
-        store.store_semantic("秘密", "Alice的银行卡尾号1234", category="fact",
-                             source="user", owner_key_hash=A)
+        store.store_semantic(
+            "秘密", "Alice的银行卡尾号1234", category="fact", source="user", owner_key_hash=A
+        )
         ctx_b = store.get_context_string(query="银行卡", owner_key_hash=B, max_chars=2000)
         assert "1234" not in ctx_b
 
 
 class TestProposalIsolation:
     def test_proposals_owner_scoped(self, store: EnhancedMemoryStore) -> None:
-        store.propose_change(action="create", key="生日", value="1990",
-                             confidence=0.9, owner_key_hash=A)  # sensitive → pending
+        store.propose_change(
+            action="create", key="生日", value="1990", confidence=0.9, owner_key_hash=A
+        )  # sensitive → pending
         assert len(store.list_proposals(owner_key_hash=A)) == 1
         assert len(store.list_proposals(owner_key_hash=B)) == 0
 
     def test_other_owner_cannot_approve(self, store: EnhancedMemoryStore) -> None:
-        res = store.propose_change(action="create", key="生日", value="1990",
-                                   confidence=0.9, owner_key_hash=A)
+        res = store.propose_change(
+            action="create", key="生日", value="1990", confidence=0.9, owner_key_hash=A
+        )
         pid = res["proposal_id"]
         assert store.approve_proposal(pid, owner_key_hash=B)["success"] is False
         assert store.approve_proposal(pid, owner_key_hash=A)["success"] is True
@@ -107,3 +143,32 @@ class TestProposalIsolation:
             store._evict_semantic_if_needed(max_memories=0, owner_key_hash=A)
         # B's memory survives an owner-A eviction sweep.
         assert any(m["key"] == "b_keep" for m in store.get_all_semantic(owner_key_hash=B))
+
+
+class TestDeepSleepIsolation:
+    @pytest.mark.asyncio
+    async def test_dream_promotion_is_owner_scoped(self, store: EnhancedMemoryStore) -> None:
+        """Deep sleep must promote working memories only into the same owner's semantic partition."""
+        store.store_working("session", "promote_a", "value a", importance=8, owner_key_hash=A)
+        store.store_working("session", "promote_b", "value b", importance=8, owner_key_hash=B)
+        store.store_working(
+            "session", "promote_legacy", "value legacy", importance=8, owner_key_hash=None
+        )
+
+        await store.dream()
+
+        a_keys = {m["key"] for m in store.get_all_semantic(owner_key_hash=A)}
+        b_keys = {m["key"] for m in store.get_all_semantic(owner_key_hash=B)}
+        legacy_keys = {m["key"] for m in store.get_all_semantic(owner_key_hash=None)}
+
+        assert "promote_a" in a_keys
+        assert "promote_b" not in a_keys
+        assert "promote_legacy" not in a_keys
+
+        assert "promote_b" in b_keys
+        assert "promote_a" not in b_keys
+        assert "promote_legacy" not in b_keys
+
+        # No-auth / admin queries are unfiltered, but the promoted legacy row
+        # must at least be visible among them.
+        assert "promote_legacy" in legacy_keys

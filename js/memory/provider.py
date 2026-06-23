@@ -78,10 +78,13 @@ class BuiltinMemoryProvider(MemoryProvider):
 
     async def prefetch(self, query: str) -> list[MemoryQueryResult]:
         """Search episodic + semantic memory for relevant context."""
+        from js.web.auth import _session_owner_hash
+
+        owner = _session_owner_hash.get(None)
         results: list[MemoryQueryResult] = []
         try:
             # Semantic search
-            semantic = self._store.enhanced.search_semantic(query, limit=5)
+            semantic = self._store.enhanced.search_semantic(query, limit=5, owner_key_hash=owner)
             for s in semantic:
                 results.append(
                     MemoryQueryResult(
@@ -96,7 +99,7 @@ class BuiltinMemoryProvider(MemoryProvider):
             logger.debug("Semantic prefetch failed", exc_info=True)
         try:
             # Episodic search
-            episodes = self._store.enhanced.get_episodes(limit=3)
+            episodes = self._store.enhanced.get_episodes(limit=3, owner_key_hash=owner)
             for ep in episodes:
                 results.append(
                     MemoryQueryResult(
@@ -121,6 +124,9 @@ class BuiltinMemoryProvider(MemoryProvider):
         # Delegate to the existing store methods
         import asyncio
 
+        from js.web.auth import _session_owner_hash
+
+        owner = _session_owner_hash.get(None)
         await asyncio.to_thread(
             self._store.store_messages,
             session_id,
@@ -128,6 +134,7 @@ class BuiltinMemoryProvider(MemoryProvider):
                 {"role": "user", "content": user_message},
                 {"role": "assistant", "content": assistant_message},
             ],
+            owner_key_hash=owner,
         )
 
     async def shutdown(self) -> None:

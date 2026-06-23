@@ -91,9 +91,63 @@ def client(tmp_path: Path) -> TestClient:
 
     # Create an admin API key so admin-only endpoints work in tests
     from js.web.auth import AuthManager
+
     auth_mgr = AuthManager(mock_agent.settings.state_dir)
     admin_key = auth_mgr.create_key("test-admin", role="admin")
     return TestClient(app, headers={"X-API-Key": admin_key})
+
+
+@pytest.fixture
+def user_client(client: TestClient) -> TestClient:
+    """Return a client authenticated with a non-admin user key."""
+    from js.web import server as web_server
+    from js.web.auth import AuthManager
+
+    mock_agent = web_server._agent
+    auth_mgr = AuthManager(mock_agent.settings.state_dir)
+    user_key = auth_mgr.create_key("test-user", role="user")
+    return TestClient(client.app, headers={"X-API-Key": user_key})
+
+
+class TestUserCannotModifyGlobalState:
+    def test_user_cannot_update_provider(self, user_client: TestClient) -> None:
+        resp = user_client.patch("/api/providers/test", json={"api_key": "leak"})
+        assert resp.status_code == 403
+
+    def test_user_cannot_delete_provider(self, user_client: TestClient) -> None:
+        resp = user_client.delete("/api/providers/test")
+        assert resp.status_code == 403
+
+    def test_user_cannot_recover_embedder(self, user_client: TestClient) -> None:
+        resp = user_client.post("/api/memory/embedder/recover")
+        assert resp.status_code == 403
+
+    def test_user_cannot_refresh_hermes(self, user_client: TestClient) -> None:
+        resp = user_client.post("/api/skills/hermes/refresh")
+        assert resp.status_code == 403
+
+
+class TestOriginRejection:
+    def test_malicious_origin_rejected_for_state_methods(self, client: TestClient) -> None:
+        endpoints = [
+            (
+                "post",
+                "/api/providers/connect",
+                {"json": {"name": "x", "base_url": "http://x", "models": [{"id": "x"}]}},
+            ),
+            ("put", "/api/memory/semantic/1", {"json": {"value": "x"}}),
+            ("patch", "/api/providers/test", {"json": {"api_key": "x"}}),
+            ("delete", "/api/providers/test", {}),
+        ]
+        for method, path, kwargs in endpoints:
+            resp = getattr(client, method)(
+                path,
+                headers={"Origin": "https://evil.example.com"},
+                **kwargs,
+            )
+            assert resp.status_code == 403, (
+                f"{method.upper()} {path} did not reject malicious Origin"
+            )
 
 
 class TestDiagEndpoint:
@@ -182,6 +236,7 @@ class TestEvolutionRunErrors:
         app = create_app()
 
         from js.web.auth import AuthManager
+
         auth_mgr = AuthManager(mock_agent.settings.state_dir)
         admin_key = auth_mgr.create_key("test-admin", role="admin")
         client = TestClient(app, headers={"X-API-Key": admin_key})
@@ -218,6 +273,7 @@ class TestEvolutionRunErrors:
         app = create_app()
 
         from js.web.auth import AuthManager
+
         auth_mgr = AuthManager(mock_agent.settings.state_dir)
         admin_key = auth_mgr.create_key("test-admin", role="admin")
         client = TestClient(app, headers={"X-API-Key": admin_key})
