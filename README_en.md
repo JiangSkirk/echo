@@ -58,8 +58,13 @@ The model is the engine. The harness is the complete frame that lets the engine 
 ## Quick Start
 
 ```bash
-# Install
-pip install -e ".[dev]"
+# Core install (no heavy Office/PDF deps)
+pip install -e .
+
+# Optional extras
+pip install -e ".[office]"  # openpyxl + pandas (Excel read/write)
+pip install -e ".[pdf]"     # pypdf + pdfplumber + reportlab (PDF read/generate)
+pip install -e ".[dev]"     # dev tooling
 
 # One-shot setup (auto-detects LM Studio / Ollama)
 js setup
@@ -108,6 +113,10 @@ The release gate covers lint, typing, full tests, mock benchmarks, and release s
 
 - **Session Capsule Lite is experimental**: the API/UI currently support view, refresh, and clear only. Failures fall back to full history; it does not provide complex editing, cross-session planning, or full long-term memory guarantees.
 - **Auto-Fetch Pipeline is experimental**: Gmail / Slack / Drive / Calendar / GitHub / Notion connectors are mock/experimental for architecture demos.
+- **Tool output budget**: each tool call is capped at `ToolLimits.tool_output_budget_chars` (default 20k chars). Oversized results return `metadata.too_large=True` instead of stuffing the prompt; `file_read` applies `offset`/`limit` paging before the budget check, so paged reads of large files still work.
+- **Task Review Capsule (deterministic MVP)**: each run persists an owner-scoped, deterministic record (first user message, last assistant message, tool-call summary, token/turn counts, exit status) to `review_capsules.db`. **This is a deterministic post-run summary, not an LLM-generated reflection or learning signal.**
+- **Abnormal-exit recovery is a status marker, not auto-resume**: on startup, sessions whose heartbeat has gone stale are marked `aborted` with `exit_reason="abnormal_exit_recovery"`. **The agent does not automatically re-run, re-tool, or continue an aborted session from its last checkpoint.** Users still need to start a new run; the existing checkpoint-resume APIs are unchanged.
+- **Optional extras**: Office/PDF tools require `pip install -e ".[office]"` / `".[pdf]"`; without them the related tools fail with a clear error and core agent still works.
 
 ## Production Deployment
 

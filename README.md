@@ -69,7 +69,14 @@ JS Agent 不是聊天机器人，而是一套**本地个人 Agent Harness**—�
 手动安装：
 
 ```bash
+# 核心安装（不含 Office/PDF 重依赖）
 pip install -e .
+
+# 可选 extras：Excel 读写
+pip install -e ".[office]"   # openpyxl + pandas
+
+# 可选 extras：PDF 读取与生成
+pip install -e ".[pdf]"      # pypdf + pdfplumber + reportlab
 
 # 一键配置（自动检测 LM Studio / Ollama）
 js setup
@@ -235,6 +242,10 @@ python -m build
 - **LM Studio Embeddings**: 需手动在 LM Studio 中开启 Embedding 服务端点，否则自动降级为关键词匹配。
 - **Session Capsule Lite（实验性）**: 当前只提供查看、刷新、清空；失败会回退完整历史；不提供复杂编辑、跨会话长期规划或完整长期记忆保证。
 - **Auto-Fetch Pipeline (实验性)**: Gmail / Slack / Drive / Calendar / GitHub / Notion 连接器目前为 **mock / 实验性**实现，仅用于演示数据流架构。生产环境请使用文件系统连接器 (`file`) 或等待后续稳定版本。
+- **单工具输出预算**: 单次工具调用默认上限 20k 字符（`ToolLimits.tool_output_budget_chars`）。超额结果返回 `metadata.too_large=True` 而非塞进 prompt；`file_read` 在预算前先做 `offset`/`limit` 分页，所以大文件按行切片仍可读。
+- **Task Review Capsule（MVP）**: 每次 run 结束会落地一条确定性的、owner 隔离的复盘记录（首条 user 消息、末条 assistant 消息、工具调用清单、token/turn 计数、退出状态），存于 `review_capsules.db`。**这是去 LLM 的确定性摘要，不是 LLM 反思或反馈学习。**
+- **Abnormal-Exit Recovery（仅状态标记，非自动续跑）**: 启动时如发现 `SessionLifecycleStore` 中存在心跳超时的 `running` session，会被标记为 `aborted`（`exit_reason="abnormal_exit_recovery"`）。**这只是状态标记，agent 不会自动重跑、重做工具或从 checkpoint 续上**；用户仍需手动开启新 run。Checkpoint 续跑 API 没有变化。
+- **可选 extras**: Office/PDF 工具依赖通过 `pip install -e ".[office]"` / `".[pdf]"` 单独安装；未安装时相关工具会以清晰错误退场，不影响核心 agent。
 
 ## 生产部署
 
