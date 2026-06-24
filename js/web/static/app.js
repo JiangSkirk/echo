@@ -1427,12 +1427,33 @@ function handleFleetEvent(data) {
     appendFleetThinkingMessage(data.agent_name, data.agent_role, data.content);
     return;
   }
+  if (data.type === 'agent_token') {
+    // PR-4.4: live final-response text deltas. Re-use the system-message
+    // append path with the agent's role tag so the dashboard shows tokens
+    // streaming in. The aggregated final result still arrives via
+    // agent_done -> appendFleetAgentMessage.
+    appendFleetSystemMessage(`[${data.agent_name || data.agent_role || 'agent'}] ${data.content}`);
+    return;
+  }
   if (data.type === 'agent_tool_call') {
     appendFleetToolCallMessage(data.agent_name, data.agent_role, data.tool_name, data.arguments);
     return;
   }
   if (data.type === 'agent_tool_result') {
     appendFleetToolResultMessage(data.agent_name, data.agent_role, data.tool_name, data.preview, data.success);
+    return;
+  }
+  if (data.type === 'agent_usage') {
+    // PR-4.4: structured usage from the in-stream usage event. Stashed for
+    // diagnostics — UI display is intentionally deferred to avoid churn.
+    state.fleetLastUsage = state.fleetLastUsage || {};
+    if (data.agent_id) state.fleetLastUsage[data.agent_id] = data.usage || {};
+    return;
+  }
+  if (data.type === 'agent_error') {
+    // PR-4.4: streaming error from the provider. Surface as a system line
+    // so operators see the failure before the agent_done frame arrives.
+    appendFleetSystemMessage(`[${data.agent_name || 'agent'}] 流式错误: ${data.content || ''}`);
     return;
   }
   if (data.type === 'review_done') {
