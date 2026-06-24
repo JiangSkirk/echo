@@ -19,6 +19,31 @@ logger = get_logger("js.skills.evolver")
 LLMCaller = Callable[[str], Awaitable[str]]
 
 
+def _is_protected_for_promote(skill_id: str, skill_path: Path | None) -> bool:
+    """Return True if skill_id refers to a protected skill (builtin or Hermes).
+
+    v0.1.4-alpha hardening: builtin and Hermes skills must never be overwritten
+    by auto-promotion. We check by id prefix first (cheap) and fall back to
+    parsing the SKILL.md frontmatter trust_level when a path is provided.
+    Any parse failure is treated as "not protected" so the existing failure
+    path in promote_variant still runs.
+    """
+    if skill_id.startswith("hermes:"):
+        return True
+    if skill_path is None:
+        return False
+    manifest = skill_path / "SKILL.md"
+    if not manifest.exists():
+        return False
+    try:
+        from js.skills.spec import TrustLevel, parse_skill_manifest
+
+        spec = parse_skill_manifest(manifest)
+        return spec.trust_level == TrustLevel.BUILTIN
+    except Exception:
+        return False
+
+
 @dataclass
 class SkillVariant:
     id: str
@@ -109,6 +134,7 @@ class SkillEvolver:
     ) -> SkillVariant:
         """Create a new variant for A/B testing."""
         import uuid
+
         variant_id = f"{skill_id}_{uuid.uuid4().hex[:8]}"
         variant = SkillVariant(
             id=variant_id,
@@ -138,8 +164,8 @@ class SkillEvolver:
             if success:
                 variant.success_count += 1
             variant.avg_score = (
-                (variant.avg_score * (variant.total_count - 1) + score) / variant.total_count
-            )
+                variant.avg_score * (variant.total_count - 1) + score
+            ) / variant.total_count
 
         with db_connection(self.db_path) as conn:
             conn.execute(
@@ -237,7 +263,9 @@ class SkillEvolver:
         # Check if evolution is warranted
         success_rate = self._get_skill_success_rate(skill_id)
         if success_rate is not None and success_rate >= self.AUTO_EVOLVE_THRESHOLD:
-            logger.debug(f"Skill {skill_id} success rate {success_rate:.2f} above threshold, skipping evolution")
+            logger.debug(
+                f"Skill {skill_id} success rate {success_rate:.2f} above threshold, skipping evolution"
+            )
             return None
 
         improved = await self.generate_improved_code(skill_id, current_code, feedback, llm_caller)
@@ -250,10 +278,13 @@ class SkillEvolver:
         # Record generation lineage
         parent = self.select_best_variant(skill_id)
         with db_connection(self.db_path) as conn:
-            generation = conn.execute(
-                "SELECT COUNT(*) FROM evolution_generations WHERE skill_id = ?",
-                (skill_id,),
-            ).fetchone()[0] + 1
+            generation = (
+                conn.execute(
+                    "SELECT COUNT(*) FROM evolution_generations WHERE skill_id = ?",
+                    (skill_id,),
+                ).fetchone()[0]
+                + 1
+            )
             conn.execute(
                 """
                 INSERT INTO evolution_generations (skill_id, generation, parent_variant, child_variant, improvement, created_at)
@@ -264,7 +295,9 @@ class SkillEvolver:
             conn.commit()
 
         self._last_evolution[skill_id] = time.time()
-        logger.info(f"Created evolution variant {variant.id} (gen {generation}) for skill {skill_id}")
+        logger.info(
+            f"Created evolution variant {variant.id} (gen {generation}) for skill {skill_id}"
+        )
         return variant
 
     def should_evolve(self, skill_id: str) -> bool:
@@ -348,7 +381,9 @@ class SkillEvolver:
 
         recent_rate = (total[1] or 0) / max(total[0] or 1, 1)
         parts: list[str] = []
-        parts.append(f"Recent 24h success rate: {recent_rate:.1%} ({total[1] or 0}/{total[0] or 0})")
+        parts.append(
+            f"Recent 24h success rate: {recent_rate:.1%} ({total[1] or 0}/{total[0] or 0})"
+        )
         if failure_msgs:
             parts.append("Recent errors:")
             for msg in failure_msgs[:5]:
@@ -367,15 +402,30 @@ class SkillEvolver:
                 parsed: list[dict[str, Any]] = json.loads(rows[0][0])
                 return parsed
             except json.JSONDecodeError:
-                logger.warning('Operation failed', exc_info=True)
+                logger.warning("Operation failed", exc_info=True)
         return [{"input": "example", "expected": "result"}]
 
-    def promote_variant(self, skill_id: str, skill_path: Path | None = None, entry: str = "main.py") -> bool:
+    def promote_variant(
+        self, skill_id: str, skill_path: Path | None = None, entry: str = "main.py"
+    ) -> bool:
         """Promote the best variant to the primary skill code.
 
         Writes the winning variant's code back to the skill's entry file.
         Returns True if promotion happened.
+
+        v0.1.4-alpha hardening: builtin and Hermes skills are PROTECTED from
+        automatic promotion. Even if a variant performs well, the original
+        entry file is never overwritten. Operators can still call SkillEvolver
+        directly for explicit evolution; this guard only blocks the auto-promote
+        path triggered after every successful skill execution.
         """
+        if _is_protected_for_promote(skill_id, skill_path):
+            logger.info(
+                "Skipping auto-promote for protected skill %s (builtin or hermes)",
+                skill_id,
+            )
+            return False
+
         best = self.select_best_variant(skill_id)
         if not best:
             return False
@@ -383,7 +433,9 @@ class SkillEvolver:
         if best.total_count < self.MIN_EXECUTIONS:
             logger.debug(
                 "Variant %s has only %d executions, need %d for promotion",
-                best.id, best.total_count, self.MIN_EXECUTIONS
+                best.id,
+                best.total_count,
+                self.MIN_EXECUTIONS,
             )
             return False
 
@@ -391,7 +443,9 @@ class SkillEvolver:
         if success_rate < self.AUTO_EVOLVE_THRESHOLD:
             logger.debug(
                 "Variant %s success rate %.2f below threshold %.2f, skipping promotion",
-                best.id, success_rate, self.AUTO_EVOLVE_THRESHOLD
+                best.id,
+                success_rate,
+                self.AUTO_EVOLVE_THRESHOLD,
             )
             return False
 
@@ -408,7 +462,9 @@ class SkillEvolver:
             entry_file.write_text(best.code, encoding="utf-8")
             logger.info(
                 "Promoted variant %s (success_rate=%.2f) to skill %s",
-                best.id, success_rate, skill_id
+                best.id,
+                success_rate,
+                skill_id,
             )
             return True
         except Exception as e:
@@ -429,9 +485,13 @@ class SkillEvolver:
                 """,
                 (skill_id,),
             ).fetchone()
-            generations = conn.execute(
-                "SELECT MAX(generation) FROM evolution_generations WHERE skill_id = ?", (skill_id,)
-            ).fetchone()[0] or 0
+            generations = (
+                conn.execute(
+                    "SELECT MAX(generation) FROM evolution_generations WHERE skill_id = ?",
+                    (skill_id,),
+                ).fetchone()[0]
+                or 0
+            )
             feedback_count = conn.execute(
                 "SELECT COUNT(*) FROM skill_feedback WHERE skill_id = ?", (skill_id,)
             ).fetchone()[0]

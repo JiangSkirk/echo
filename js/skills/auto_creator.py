@@ -52,10 +52,13 @@ class AutoSkillCreator:
 
         examples_text = ""
         if examples:
-            examples_text = "\n## Examples\n\n" + "\n\n".join(
-                f"- {ex}" for ex in examples[:5]
-            )
+            examples_text = "\n## Examples\n\n" + "\n\n".join(f"- {ex}" for ex in examples[:5])
 
+        # v0.1.4-alpha hardening: auto-generated skills default to QUARANTINE
+        # with metadata.state="draft". They are NOT executable until a human
+        # promotes them via `js skill trust <id> community` (or higher).
+        # SkillManager.execute() refuses to run QUARANTINE skills, so a draft
+        # skill cannot be invoked even if it appears in list_skills().
         manifest = skill_dir / "SKILL.md"
         manifest.write_text(
             f"""---
@@ -66,9 +69,10 @@ version: 0.1.0
 author: JS Agent (Auto)
 type: prompt
 category: auto-generated
-trust_level: community
+trust_level: quarantine
 metadata:
   auto_generated: true
+  state: draft
   source_pattern: "{pattern}"
 ---
 

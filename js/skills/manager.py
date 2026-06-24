@@ -225,6 +225,7 @@ class SkillManager:
     async def load_hermes_async(self) -> None:
         """Asynchronously load Hermes skills in a background thread."""
         import asyncio
+
         await asyncio.to_thread(self._load_hermes_skills)
 
     def _load_hermes_skills(self) -> None:
@@ -253,7 +254,9 @@ class SkillManager:
 
                     # Skip if a JS Agent skill with the same ID already exists
                     if spec.id in self._skills:
-                        logger.debug(f"Skipping Hermes skill {spec.id}: ID conflict with existing skill")
+                        logger.debug(
+                            f"Skipping Hermes skill {spec.id}: ID conflict with existing skill"
+                        )
                         continue
 
                     # Security scan (with optional Hermes guard enhancement)
@@ -373,7 +376,12 @@ class SkillManager:
                 INSERT OR REPLACE INTO skill_scan_cache (skill_id, content_hash, risk_flags, trust_level)
                 VALUES (?, ?, ?, ?)
                 """,
-                (result.skill_id, result.content_hash, json.dumps(result.risk_flags), result.trust_level.value),
+                (
+                    result.skill_id,
+                    result.content_hash,
+                    json.dumps(result.risk_flags),
+                    result.trust_level.value,
+                ),
             )
             conn.commit()
 
@@ -407,11 +415,17 @@ class SkillManager:
                 continue
             if skill_type and spec.type != skill_type:
                 continue
-            if trust_min is not None and self._TRUST_ORDER.get(spec.trust_level, 99) > self._TRUST_ORDER.get(trust_min, 99):
+            if trust_min is not None and self._TRUST_ORDER.get(
+                spec.trust_level, 99
+            ) > self._TRUST_ORDER.get(trust_min, 99):
                 continue
             if only_compatible and not spec.is_compatible():
                 continue
-            if query and query.lower() not in f"{spec.name} {spec.description} {' '.join(spec.tags)}".lower():
+            if (
+                query
+                and query.lower()
+                not in f"{spec.name} {spec.description} {' '.join(spec.tags)}".lower()
+            ):
                 continue
             results.append(spec.to_summary_dict())
         return results
@@ -495,13 +509,15 @@ class SkillManager:
     # ------------------------------------------------------------------
 
     # Allowed git host domains for skill installation.
-    _SKILL_SOURCE_ALLOWLIST: frozenset[str] = frozenset({
-        "github.com",
-        "gitlab.com",
-        "bitbucket.org",
-        "gitee.com",
-        "codeberg.org",
-    })
+    _SKILL_SOURCE_ALLOWLIST: frozenset[str] = frozenset(
+        {
+            "github.com",
+            "gitlab.com",
+            "bitbucket.org",
+            "gitee.com",
+            "codeberg.org",
+        }
+    )
 
     def _validate_skill_source(self, source: str) -> None:
         """Validate that a skill source URL is from an allowed domain.
@@ -510,6 +526,7 @@ class SkillManager:
         """
         if source.startswith("http") or source.startswith("git@"):
             from urllib.parse import urlparse
+
             parsed = urlparse(source.replace("git@", "https://"))
             hostname = parsed.hostname or ""
             if hostname not in self._SKILL_SOURCE_ALLOWLIST:
@@ -520,7 +537,9 @@ class SkillManager:
         elif not Path(source).exists():
             raise ValueError(f"Unknown skill source: {source}")
 
-    async def install(self, source: str, skill_id: str | None = None, expected_hash: str | None = None) -> SkillSpec:
+    async def install(
+        self, source: str, skill_id: str | None = None, expected_hash: str | None = None
+    ) -> SkillSpec:
         """Install a skill from git repo or local path.
 
         New skills enter quarantine until explicitly trusted.
@@ -535,6 +554,7 @@ class SkillManager:
             raise ValueError(f"Invalid skill ID: {skill_id or Path(source).name}")
         # Validate ID format (same rules as plugins)
         import re
+
         if not re.match(r"^[a-z0-9_-]+$", target_id) or len(target_id) > 64:
             raise ValueError(
                 f"Invalid skill ID: {target_id!r}. "
@@ -551,7 +571,12 @@ class SkillManager:
 
         if source.startswith("http") or source.startswith("git@"):
             proc = await asyncio.create_subprocess_exec(
-                "git", "clone", "--depth", "1", source, str(target_dir),
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                source,
+                str(target_dir),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -563,6 +588,7 @@ class SkillManager:
                 # copytree with symlink rejection
                 def _safe_copytree(src: str, dst: str) -> None:
                     shutil.copytree(src, dst, symlinks=False)
+
                 await asyncio.to_thread(_safe_copytree, str(source), str(target_dir))
             else:
                 target_dir.mkdir(parents=True, exist_ok=True)
@@ -610,6 +636,7 @@ entry: main.py
             import re as _re
 
             import yaml
+
             text = manifest.read_text(encoding="utf-8")
             # Try YAML frontmatter format first (---\n...\n---\n)
             match = _re.match(r"^---\s*\n(.*?)\n---\s*\n", text, _re.DOTALL)
@@ -620,9 +647,11 @@ entry: main.py
                 frontmatter = yaml.safe_load(text) or {}
             has_explicit_type = "type" in frontmatter
         except Exception:
-            logger.warning('Operation failed', exc_info=True)
+            logger.warning("Operation failed", exc_info=True)
         if not has_explicit_type:
-            has_scripts = (target_dir / "scripts").exists() and any((target_dir / "scripts").iterdir())
+            has_scripts = (target_dir / "scripts").exists() and any(
+                (target_dir / "scripts").iterdir()
+            )
             if not has_scripts:
                 spec.type = SkillType.PROMPT
                 logger.debug(f"Inferred type=prompt for {spec.id} (no scripts/ dir)")
@@ -655,15 +684,16 @@ entry: main.py
                     or "//" in stripped
                     or ";" in stripped
                 ):
-                    raise ValueError(
-                        f"Blocked unsafe requirement in {spec.id}: {stripped[:80]}"
-                    )
+                    raise ValueError(f"Blocked unsafe requirement in {spec.id}: {stripped[:80]}")
             venv_dir = target_dir / ".venv"
             pip_cmd = [sys.executable, "-m", "pip"]
             if not venv_dir.exists():
                 # Create isolated venv for this skill
                 venv_proc = await asyncio.create_subprocess_exec(
-                    sys.executable, "-m", "venv", str(venv_dir),
+                    sys.executable,
+                    "-m",
+                    "venv",
+                    str(venv_dir),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -676,7 +706,10 @@ entry: main.py
                 if sys.platform == "win32":
                     pip_cmd = [str(venv_dir / "Scripts" / "python.exe"), "-m", "pip"]
             proc = await asyncio.create_subprocess_exec(
-                *pip_cmd, "install", "-r", str(req_file),
+                *pip_cmd,
+                "install",
+                "-r",
+                str(req_file),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -728,7 +761,10 @@ entry: main.py
 
         # Security checks
         if spec.trust_level == TrustLevel.QUARANTINE:
-            return {"success": False, "error": f"Skill {skill_id} is quarantined. Run 'trust' to review."}
+            return {
+                "success": False,
+                "error": f"Skill {skill_id} is quarantined. Run 'trust' to review.",
+            }
 
         if spec.trust_level != TrustLevel.BUILTIN and not verify_integrity(spec):
             logger.warning(f"Skill {skill_id} hash mismatch, rescanning")
@@ -770,10 +806,15 @@ entry: main.py
         # Emit Prometheus metrics
         try:
             from js.utils.metrics import get_metrics
+
             m = get_metrics()
             source = "hermes" if skill_id.startswith("hermes:") else "native"
-            m.skill_usage_total.labels(skill_id=skill_id, skill_type=spec.type.value, source=source).inc()
-            m.skill_latency_seconds.labels(skill_id=skill_id, skill_type=spec.type.value).observe(latency / 1000.0)
+            m.skill_usage_total.labels(
+                skill_id=skill_id, skill_type=spec.type.value, source=source
+            ).inc()
+            m.skill_latency_seconds.labels(skill_id=skill_id, skill_type=spec.type.value).observe(
+                latency / 1000.0
+            )
             # Success rate as a point-in-time gauge (based on in-memory stats)
             if spec.success_rate is not None:
                 m.skill_success_rate_gauge.labels(skill_id=skill_id).observe(spec.success_rate)
@@ -792,9 +833,20 @@ entry: main.py
                     error_message=error_msg,
                     context=session_id or "",
                 )
-                # Try auto-promotion if the skill is performing well
-                if success and spec.path:
-                    self._evolver.promote_variant(skill_id, spec.path, getattr(spec, "entry", "main.py"))
+                # Try auto-promotion if the skill is performing well.
+                # v0.1.4-alpha hardening: builtin and Hermes skills are
+                # never auto-promoted — their entry files must remain
+                # exactly as shipped. SkillEvolver.promote_variant() has
+                # the same guard, this is defense-in-depth.
+                if (
+                    success
+                    and spec.path
+                    and spec.trust_level != TrustLevel.BUILTIN
+                    and not skill_id.startswith("hermes:")
+                ):
+                    self._evolver.promote_variant(
+                        skill_id, spec.path, getattr(spec, "entry", "main.py")
+                    )
             except Exception:
                 logger.warning("Failed to record evolution result for %s", skill_id, exc_info=True)
 
@@ -820,7 +872,9 @@ entry: main.py
             dep_spec = self._skills.get(dep_id)
             if not dep_spec:
                 return {"success": False, "error": f"Dependency skill not found: {dep_id}"}
-            result = await execute_skill(dep_spec, args, self.workspace, llm_caller, self._sandbox, self.execute)
+            result = await execute_skill(
+                dep_spec, args, self.workspace, llm_caller, self._sandbox, self.execute
+            )
             return result
 
         for dep_id in spec.dependencies:
@@ -832,7 +886,9 @@ entry: main.py
 
         return results
 
-    def _record_usage(self, skill_id: str, skill_type: str, success: bool, latency_ms: float) -> None:
+    def _record_usage(
+        self, skill_id: str, skill_type: str, success: bool, latency_ms: float
+    ) -> None:
         source = "hermes" if skill_id.startswith("hermes:") else "native"
         with db_connection(self.db_path) as conn:
             conn.execute(
@@ -866,7 +922,9 @@ entry: main.py
             try:
                 self._composer.record_transition(last_skill, skill_id, session_id)
             except Exception:
-                logger.warning(f"Failed to record transition {last_skill} -> {skill_id}", exc_info=True)
+                logger.warning(
+                    f"Failed to record transition {last_skill} -> {skill_id}", exc_info=True
+                )
 
         self._last_skill_by_session[session_id] = skill_id
 
@@ -907,6 +965,10 @@ entry: main.py
             "overall_success_rate": (success / executions) if executions else 1.0,
             "avg_latency_ms": avg_lat or 0.0,
             "skills_loaded": len(self._skills),
-            "builtin_count": sum(1 for s in self._skills.values() if s.trust_level == TrustLevel.BUILTIN),
-            "quarantined_count": sum(1 for s in self._skills.values() if s.trust_level == TrustLevel.QUARANTINE),
+            "builtin_count": sum(
+                1 for s in self._skills.values() if s.trust_level == TrustLevel.BUILTIN
+            ),
+            "quarantined_count": sum(
+                1 for s in self._skills.values() if s.trust_level == TrustLevel.QUARANTINE
+            ),
         }
