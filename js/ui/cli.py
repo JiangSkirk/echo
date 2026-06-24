@@ -788,6 +788,152 @@ def skill_trust(skill_id: str, level: str, config: str | None) -> None:
         console.print(f"[red]Skill not found: {skill_id}[/red]")
 
 
+@skill.group("promote")
+def skill_promote() -> None:
+    """Review and apply skill promotion proposals."""
+
+
+def _promotion_store(settings: JSSettings) -> Any:
+    from js.skills.promotion_store import PromotionStore
+
+    return PromotionStore(settings.state_dir / "skill_promotions.db")
+
+
+def _event_rows(event: Any) -> list[tuple[str, str]]:
+    failed_step = event.details.get("failed_step") if isinstance(event.details, dict) else None
+    return [
+        ("Event", event.event_id),
+        ("Skill", event.skill_id),
+        ("Status", event.status),
+        ("Source", event.source),
+        ("From", event.from_level),
+        ("To", event.to_level),
+        ("Reason", event.reason or ""),
+        ("Failed step", str(failed_step or "")),
+    ]
+
+
+@skill_promote.command("list")
+@click.option("--all", "include_all", is_flag=True, help="Include non-open events")
+@click.option("--limit", default=50, show_default=True, help="Maximum events to show")
+@click.option("--config", "-c", type=click.Path(), help="Config file path")
+def skill_promote_list(include_all: bool, limit: int, config: str | None) -> None:
+    """List open skill promotion proposals."""
+    from js.skills.promotion_store import STATUS_APPROVED, STATUS_PROPOSED
+
+    settings = JSSettings.from_file(config)
+    store = _promotion_store(settings)
+    events = store.list_recent(limit=limit)
+    if not include_all:
+        events = [e for e in events if e.status in {STATUS_PROPOSED, STATUS_APPROVED}]
+
+    table = Table(title=f"Skill Promotions ({len(events)} shown)")
+    table.add_column("Event ID", style="cyan", no_wrap=True)
+    table.add_column("Skill")
+    table.add_column("Status", style="yellow")
+    table.add_column("From")
+    table.add_column("To")
+    table.add_column("Source")
+    table.add_column("Reason", max_width=36)
+    for event in events:
+        table.add_row(
+            event.event_id,
+            event.skill_id,
+            event.status,
+            event.from_level,
+            event.to_level,
+            event.source,
+            event.reason or "",
+        )
+    console.print(table)
+    for event in events:
+        console.print(
+            f"{event.event_id} {event.skill_id} {event.status} "
+            f"{event.from_level}->{event.to_level} {event.source} {event.reason or ''}"
+        )
+
+
+@skill_promote.command("show")
+@click.argument("event_id")
+@click.option("--config", "-c", type=click.Path(), help="Config file path")
+def skill_promote_show(event_id: str, config: str | None) -> None:
+    """Show a skill promotion event."""
+    settings = JSSettings.from_file(config)
+    event = _promotion_store(settings).get(event_id)
+    if event is None:
+        raise click.ClickException(f"Promotion event not found: {event_id}")
+
+    table = Table(title="Skill Promotion")
+    table.add_column("Field", style="cyan", no_wrap=True)
+    table.add_column("Value")
+    for field, value in _event_rows(event):
+        table.add_row(field, value)
+    if event.details:
+        table.add_row("Details", json.dumps(event.details, sort_keys=True, default=str))
+    console.print(table)
+
+
+@skill_promote.command("approve")
+@click.argument("event_id")
+@click.option("--config", "-c", type=click.Path(), help="Config file path")
+def skill_promote_approve(event_id: str, config: str | None) -> None:
+    """Approve and apply a promotion proposal."""
+    settings = JSSettings.from_file(config)
+    cli = JSCLI(settings)
+
+    async def _do() -> None:
+        await cli.init()
+        if not cli.agent:
+            raise click.ClickException("Agent not initialized")
+        result = await cli.agent.skills.apply_proposal(event_id, decided_by="cli")
+        if result.get("success"):
+            console.print(f"[green]Approved promotion: {event_id}[/green]")
+        else:
+            console.print(f"[red]Promotion failed: {result.get('error') or result.get('failed_step')}[/red]")
+            raise click.ClickException("Promotion approval failed")
+
+    asyncio.run(_do())
+
+
+@skill_promote.command("reject")
+@click.argument("event_id")
+@click.option("--reason", default="", help="Rejection reason")
+@click.option("--config", "-c", type=click.Path(), help="Config file path")
+def skill_promote_reject(event_id: str, reason: str, config: str | None) -> None:
+    """Reject a promotion proposal."""
+    settings = JSSettings.from_file(config)
+    ok = _promotion_store(settings).mark_rejected(
+        event_id,
+        decided_by="cli",
+        reason=reason,
+    )
+    if not ok:
+        raise click.ClickException(f"Promotion event cannot be rejected: {event_id}")
+    console.print(f"[green]Rejected promotion: {event_id}[/green]")
+
+
+@skill_promote.command("revert")
+@click.argument("event_id")
+@click.option("--config", "-c", type=click.Path(), help="Config file path")
+def skill_promote_revert(event_id: str, config: str | None) -> None:
+    """Revert an applied skill promotion."""
+    settings = JSSettings.from_file(config)
+    cli = JSCLI(settings)
+
+    async def _do() -> None:
+        await cli.init()
+        if not cli.agent:
+            raise click.ClickException("Agent not initialized")
+        result = cli.agent.skills.revert_promotion(event_id, decided_by="cli")
+        if result.get("success"):
+            console.print(f"[green]Reverted promotion: {event_id}[/green]")
+        else:
+            console.print(f"[red]Revert failed: {result.get('error')}[/red]")
+            raise click.ClickException("Promotion revert failed")
+
+    asyncio.run(_do())
+
+
 @skill.command("discover")
 @click.argument("query", default="")
 @click.option("--install", "-i", help="Install a skill by ID from search results")

@@ -9,6 +9,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from js.config import DefenseMode
+from js.skills.promotion_store import PromotionStore
+from js.skills.spec import TrustLevel
 from js.web import server as web_server
 from js.web.server import create_app
 
@@ -61,7 +63,16 @@ def client(tmp_path: Path) -> TestClient:
     mock_skills.get_global_stats.return_value = {"skills_loaded": 0}
     mock_skills.view_skill.return_value = None
     mock_skills.get_all.return_value = {}
+    mock_skills.apply_proposal = AsyncMock(
+        return_value={"success": True, "event_id": "event-approve"}
+    )
+    mock_skills.revert_promotion.return_value = {
+        "success": True,
+        "event_id": "event-revert",
+        "trust_reverted": True,
+    }
     mock_agent.skills = mock_skills
+    mock_agent.promotion_store = PromotionStore(mock_agent.settings.state_dir / "skill_promotions.db")
 
     # Router
     mock_router = MagicMock()
@@ -134,6 +145,104 @@ class TestUserCannotModifyGlobalState:
     def test_user_cannot_refresh_hermes(self, user_client: TestClient) -> None:
         resp = user_client.post("/api/skills/hermes/refresh")
         assert resp.status_code == 403
+
+    def test_user_cannot_approve_skill_promotion(self, user_client: TestClient) -> None:
+        resp = user_client.post("/api/skills/promotions/event-1/approve")
+        assert resp.status_code == 403
+
+    def test_user_cannot_reject_skill_promotion(self, user_client: TestClient) -> None:
+        resp = user_client.post("/api/skills/promotions/event-1/reject", json={"reason": "no"})
+        assert resp.status_code == 403
+
+    def test_user_cannot_revert_skill_promotion(self, user_client: TestClient) -> None:
+        resp = user_client.post("/api/skills/promotions/event-1/revert")
+        assert resp.status_code == 403
+
+
+class TestSkillPromotionAPI:
+    def _seed_event(self, client: TestClient, *, skill_id: str = "api-skill") -> str:
+        from js.web.auth import AuthManager, memory_owner
+
+        auth = AuthManager(web_server._agent.settings.state_dir).verify(client.headers["X-API-Key"])
+        owner = memory_owner(auth)
+        store = web_server._agent.promotion_store
+        return store.propose(
+            skill_id,
+            TrustLevel.COMMUNITY.value,
+            TrustLevel.TRUSTED.value,
+            "auto_curator",
+            "20 runs / 95% success",
+            owner_key_hash=owner,
+        )
+
+    def test_list_skill_promotions(self, client: TestClient) -> None:
+        event_id = self._seed_event(client)
+
+        resp = client.get("/api/skills/promotions")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 1
+        assert data["events"][0]["event_id"] == event_id
+        assert data["events"][0]["skill_id"] == "api-skill"
+
+    def test_show_skill_promotion(self, client: TestClient) -> None:
+        event_id = self._seed_event(client)
+
+        resp = client.get(f"/api/skills/promotions/{event_id}")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["event_id"] == event_id
+        assert data["source"] == "auto_curator"
+        assert data["reason"] == "20 runs / 95% success"
+
+    def test_approve_skill_promotion_calls_manager(self, client: TestClient) -> None:
+        resp = client.post("/api/skills/promotions/event-approve/approve")
+
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+        web_server._agent.skills.apply_proposal.assert_awaited_once()
+        args = web_server._agent.skills.apply_proposal.await_args
+        assert args.args == ("event-approve",)
+        assert args.kwargs["decided_by"] == "web"
+        assert args.kwargs["owner_key_hash"]
+
+    def test_reject_skill_promotion_marks_event(self, client: TestClient) -> None:
+        event_id = self._seed_event(client)
+
+        resp = client.post(
+            f"/api/skills/promotions/{event_id}/reject",
+            json={"reason": "not safe enough"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+        event = web_server._agent.promotion_store.get(event_id)
+        if event is None:
+            from js.web.auth import AuthManager, memory_owner
+
+            auth = AuthManager(web_server._agent.settings.state_dir).verify(
+                client.headers["X-API-Key"]
+            )
+            event = web_server._agent.promotion_store.get(
+                event_id,
+                owner_key_hash=memory_owner(auth),
+            )
+        assert event is not None
+        assert event.status == "rejected"
+        assert "not safe enough" in event.reason
+
+    def test_revert_skill_promotion_calls_manager(self, client: TestClient) -> None:
+        resp = client.post("/api/skills/promotions/event-revert/revert")
+
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+        web_server._agent.skills.revert_promotion.assert_called_once()
+        args = web_server._agent.skills.revert_promotion.call_args
+        assert args.args == ("event-revert",)
+        assert args.kwargs["decided_by"] == "web"
+        assert args.kwargs["owner_key_hash"]
 
 
 class TestOriginRejection:

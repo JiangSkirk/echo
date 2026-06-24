@@ -1332,6 +1332,109 @@ def create_app() -> FastAPI:
             return result
         raise HTTPException(500, result.get("error", "Refresh failed"))
 
+    def _promotion_store_for(agent: Any) -> Any:
+        store = getattr(agent, "promotion_store", None)
+        if store is None:
+            store = getattr(getattr(agent, "skills", None), "promotion_store", None)
+        if store is None:
+            raise HTTPException(503, "Skill promotion store is not initialized")
+        return store
+
+    def _promotion_event_payload(event: Any) -> dict[str, Any]:
+        return {
+            "event_id": event.event_id,
+            "skill_id": event.skill_id,
+            "from_level": event.from_level,
+            "to_level": event.to_level,
+            "source": event.source,
+            "reason": event.reason,
+            "status": event.status,
+            "variant_id": event.variant_id,
+            "artifact_path": event.artifact_path,
+            "details": event.details,
+            "created_at": event.created_at,
+            "decided_by": event.decided_by,
+            "decided_at": event.decided_at,
+            "applied_at": event.applied_at,
+            "rolled_back_at": event.rolled_back_at,
+        }
+
+    @app.get("/api/skills/promotions")
+    async def skill_promotions_list(
+        include_all: bool = False,
+        limit: int = 50,
+        auth: dict[str, Any] = Depends(require_auth_dep),
+    ) -> dict[str, Any]:
+        """List skill promotion events. Defaults to open proposals only."""
+        from js.skills.promotion_store import STATUS_APPROVED, STATUS_PROPOSED
+
+        agent = get_agent()
+        owner = memory_owner(auth)
+        events = _promotion_store_for(agent).list_recent(owner_key_hash=owner, limit=limit)
+        if not include_all:
+            events = [e for e in events if e.status in {STATUS_PROPOSED, STATUS_APPROVED}]
+        return {
+            "events": [_promotion_event_payload(e) for e in events],
+            "count": len(events),
+        }
+
+    @app.get("/api/skills/promotions/{event_id}")
+    async def skill_promotion_detail(
+        event_id: str,
+        auth: dict[str, Any] = Depends(require_auth_dep),
+    ) -> dict[str, Any]:
+        """Return a single skill promotion event."""
+        agent = get_agent()
+        event = _promotion_store_for(agent).get(event_id, owner_key_hash=memory_owner(auth))
+        if event is None:
+            raise HTTPException(404, f"Promotion event '{event_id}' not found")
+        return _promotion_event_payload(event)
+
+    @app.post("/api/skills/promotions/{event_id}/approve")
+    async def skill_promotion_approve(
+        event_id: str,
+        auth: dict[str, Any] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        """Approve and apply a promotion proposal."""
+        agent = get_agent()
+        return await agent.skills.apply_proposal(
+            event_id,
+            decided_by="web",
+            owner_key_hash=memory_owner(auth),
+        )
+
+    @app.post("/api/skills/promotions/{event_id}/reject")
+    async def skill_promotion_reject(
+        event_id: str,
+        payload: dict[str, Any] | None = None,
+        auth: dict[str, Any] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        """Reject a promotion proposal without mutating the skill."""
+        agent = get_agent()
+        reason = (payload or {}).get("reason", "")
+        ok = _promotion_store_for(agent).mark_rejected(
+            event_id,
+            owner_key_hash=memory_owner(auth),
+            decided_by="web",
+            reason=reason,
+        )
+        if not ok:
+            raise HTTPException(404, f"Promotion event '{event_id}' cannot be rejected")
+        return {"success": True, "event_id": event_id, "status": "rejected"}
+
+    @app.post("/api/skills/promotions/{event_id}/revert")
+    async def skill_promotion_revert(
+        event_id: str,
+        auth: dict[str, Any] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        """Revert an applied promotion."""
+        agent = get_agent()
+        return agent.skills.revert_promotion(
+            event_id,
+            decided_by="web",
+            owner_key_hash=memory_owner(auth),
+        )
+
     @app.get("/api/skills/{skill_id}")
     async def skill_detail(
         skill_id: str, auth: dict[str, Any] = Depends(require_auth_dep)
