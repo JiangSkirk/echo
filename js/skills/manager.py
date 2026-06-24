@@ -20,6 +20,7 @@ from js.skills.hermes_bridge import (
     get_bridge_stats,
     load_hermes_skill,
 )
+from js.skills.promotion_store import PromotionStore
 from js.skills.security import ScanResult, scan_skill, verify_integrity
 from js.skills.spec import (
     SkillSpec,
@@ -54,7 +55,15 @@ class SkillManager:
     SKILL_MANIFEST = "SKILL.md"
     BUILTIN_DIR = Path(__file__).parent / "builtin"
 
-    def __init__(self, state_dir: Path, workspace: Path) -> None:
+    def __init__(
+        self,
+        state_dir: Path,
+        workspace: Path,
+        *,
+        promotion_store: PromotionStore | None = None,
+        owner_key_hash: str | None = None,
+        audit_logger: Any | None = None,
+    ) -> None:
         self.state_dir = state_dir
         self.workspace = workspace
         self.skills_dir = state_dir / "skills"
@@ -67,6 +76,14 @@ class SkillManager:
         self._composer: Any | None = None
         self._last_skill_by_session: dict[str, str] = {}
         self._tool_registry: Any | None = None
+        # v0.1.5-alpha: PromotionStore powers the auditable trust/variant pipeline.
+        # When None, a per-state_dir store is created lazily so SkillManager
+        # remains usable in unit tests and CLI contexts that don't wire one.
+        self.promotion_store: PromotionStore = promotion_store or PromotionStore(
+            state_dir / "skill_promotions.db"
+        )
+        self._owner_key_hash: str | None = owner_key_hash
+        self._audit_logger: Any | None = audit_logger
         self._load_all()
 
     def _init_db(self) -> None:
@@ -751,7 +768,16 @@ entry: main.py
         logger.info(f"Uninstalled skill: {skill_id}")
         return True
 
-    def trust_skill(self, skill_id: str, level: TrustLevel) -> bool:
+    def trust_skill(
+        self,
+        skill_id: str,
+        level: TrustLevel,
+        *,
+        source: str = "operator",
+        reason: str | None = None,
+        decided_by: str | None = None,
+        event_id: str | None = None,
+    ) -> bool:
         """Manually override a skill's trust level after review.
 
         v0.1.4-alpha PR-1.5 hardening: trust transitions also flip tool
@@ -759,6 +785,13 @@ entry: main.py
         the skill as a callable tool; downgrading back to QUARANTINE
         unregisters it. All other transitions are a no-op for the registry
         because the skill was already exposed.
+
+        v0.1.5-alpha extension: every successful mutation is recorded in
+        ``promotion_events`` and emits a ``SKILL_PROMOTION`` audit row.
+        The old two-arg signature still works — defaults give the legacy
+        ``source="operator"`` semantics. When ``event_id`` is supplied the
+        caller is finalising a previously-proposed event via
+        ``apply_proposal`` and must NOT trigger a duplicate write here.
         """
         spec = self._skills.get(skill_id)
         if not spec:
@@ -773,7 +806,357 @@ entry: main.py
         elif was_exposed and not now_exposed:
             self._unregister_skill_as_tool(skill_id)
         logger.info(f"Trust level for {skill_id} set to {level.value}")
+
+        # Audit + promotion-event persistence. Failures degrade to warnings —
+        # operator UX must never depend on telemetry pathing.
+        actor = decided_by or "local"
+        if event_id is None:
+            try:
+                self.promotion_store.record_operator_apply(
+                    skill_id,
+                    previous.value,
+                    level.value,
+                    owner_key_hash=self._owner_key_hash,
+                    decided_by=actor,
+                    reason=reason,
+                    source=source,
+                )
+            except Exception:
+                logger.warning("promotion_store.record_operator_apply failed", exc_info=True)
+        self._emit_promotion_audit(
+            skill_id=skill_id,
+            from_level=previous.value,
+            to_level=level.value,
+            source=source,
+            reason=reason,
+            decided_by=actor,
+            event_id=event_id,
+            action="skill_trust_changed",
+        )
         return True
+
+    # ------------------------------------------------------------------
+    # v0.1.5-alpha promotion pipeline: apply / rollback
+    # ------------------------------------------------------------------
+
+    async def apply_proposal(
+        self,
+        event_id: str,
+        *,
+        decided_by: str,
+        owner_key_hash: str | None = None,
+        smoke_args: dict[str, Any] | None = None,
+        run_tests: bool = True,
+        run_smoke: bool = True,
+    ) -> dict[str, Any]:
+        """Run the promotion gate for ``event_id`` and apply on pass.
+
+        Pipeline:
+          1. Load the event (must be ``proposed``).
+          2. ``mark_approved`` (audit trail of decision authority).
+          3. Run :class:`PromotionGate`.
+          4. Pass:
+             - if ``variant_id`` / ``artifact_path`` set, back up the entry
+               file and overlay the variant.
+             - if ``to_level != from_level``, call ``trust_skill`` with the
+               event_id so the second event-write is suppressed.
+             - ``mark_applied``.
+          5. Fail → ``mark_failed``; spec untouched, no file write.
+        """
+        # Local imports keep promotion_gate optional at module-load time
+        # (e.g. cli / web that never apply proposals).
+        from js.skills.promotion_gate import PromotionGate
+
+        owner = owner_key_hash if owner_key_hash is not None else self._owner_key_hash
+
+        event = self.promotion_store.get(event_id, owner_key_hash=owner)
+        if event is None:
+            return {"success": False, "error": f"Promotion event not found: {event_id}"}
+        if event.status != "proposed":
+            return {
+                "success": False,
+                "error": f"Promotion event {event_id} is in status {event.status!r}, not 'proposed'",
+            }
+
+        spec = self._skills.get(event.skill_id)
+        if spec is None:
+            self.promotion_store.mark_failed(
+                event_id,
+                owner_key_hash=owner,
+                failed_step="load",
+                details={"reason": "skill not registered"},
+            )
+            return {"success": False, "error": f"Skill not registered: {event.skill_id}"}
+
+        self.promotion_store.mark_approved(event_id, owner_key_hash=owner, decided_by=decided_by)
+
+        gate = PromotionGate(
+            workspace=self.workspace,
+            sandbox=self._sandbox,
+            smoke_args=smoke_args,
+            audit_logger=self._audit_logger,
+            run_tests=run_tests,
+            run_smoke=run_smoke,
+        )
+        gate_result = await gate.run(spec)
+        if not gate_result.passed:
+            self.promotion_store.mark_failed(
+                event_id,
+                owner_key_hash=owner,
+                failed_step=gate_result.failed_step or "unknown",
+                details=gate_result.details,
+            )
+            return {
+                "success": False,
+                "event_id": event_id,
+                "failed_step": gate_result.failed_step,
+                "details": gate_result.details,
+            }
+
+        # Pass: overlay variant code if any, then flip trust if changed.
+        overlay_info: dict[str, Any] = {"overlay": False}
+        if event.variant_id and event.artifact_path and spec.path is not None:
+            try:
+                overlay_info = self._overlay_variant_artifact(
+                    spec=spec,
+                    event_id=event_id,
+                    artifact_path=Path(event.artifact_path),
+                )
+            except Exception as exc:
+                self.promotion_store.mark_failed(
+                    event_id,
+                    owner_key_hash=owner,
+                    failed_step="apply",
+                    details={"overlay_error": str(exc)[:500]},
+                )
+                logger.warning("Variant overlay failed for %s", event_id, exc_info=True)
+                return {
+                    "success": False,
+                    "event_id": event_id,
+                    "failed_step": "apply",
+                    "error": str(exc),
+                }
+
+        trust_changed = event.to_level != event.from_level
+        if trust_changed:
+            try:
+                level_enum = TrustLevel(event.to_level)
+            except ValueError:
+                self.promotion_store.mark_failed(
+                    event_id,
+                    owner_key_hash=owner,
+                    failed_step="apply",
+                    details={"reason": f"unknown to_level: {event.to_level}"},
+                )
+                return {
+                    "success": False,
+                    "event_id": event_id,
+                    "failed_step": "apply",
+                    "error": f"unknown to_level: {event.to_level}",
+                }
+            self.trust_skill(
+                event.skill_id,
+                level_enum,
+                source=event.source,
+                reason=event.reason,
+                decided_by=decided_by,
+                event_id=event_id,
+            )
+
+        self.promotion_store.mark_applied(
+            event_id,
+            owner_key_hash=owner,
+            details={**overlay_info, "gate": gate_result.details},
+        )
+        return {
+            "success": True,
+            "event_id": event_id,
+            "trust_changed": trust_changed,
+            "overlay": overlay_info,
+            "gate": gate_result.details,
+        }
+
+    def revert_promotion(
+        self,
+        event_id: str,
+        *,
+        decided_by: str,
+        owner_key_hash: str | None = None,
+    ) -> dict[str, Any]:
+        """Roll back a previously-applied promotion.
+
+        Restores the entry file from the per-event backup (if a variant
+        overlay was applied) and rolls trust back to ``from_level``.
+        Writes a ``SKILL_PROMOTION`` audit row with ``action="skill_rollback"``
+        and transitions the event row to ``rolled_back``.
+        """
+        owner = owner_key_hash if owner_key_hash is not None else self._owner_key_hash
+        event = self.promotion_store.get(event_id, owner_key_hash=owner)
+        if event is None:
+            return {"success": False, "error": f"Promotion event not found: {event_id}"}
+        if event.status != "applied":
+            return {
+                "success": False,
+                "error": f"Promotion event {event_id} is in status {event.status!r}, not 'applied'",
+            }
+
+        spec = self._skills.get(event.skill_id)
+        if spec is None:
+            return {"success": False, "error": f"Skill not registered: {event.skill_id}"}
+
+        restored = self._restore_variant_backup(spec=spec, event_id=event_id)
+
+        trust_reverted = False
+        if event.to_level != event.from_level:
+            try:
+                prior = TrustLevel(event.from_level)
+            except ValueError:
+                return {
+                    "success": False,
+                    "error": f"unknown from_level: {event.from_level}",
+                }
+            self._rollback_trust(spec, prior, event_id=event_id, decided_by=decided_by)
+            trust_reverted = True
+
+        self.promotion_store.mark_rolled_back(
+            event_id,
+            owner_key_hash=owner,
+            details={"restored_files": restored, "trust_reverted": trust_reverted},
+        )
+        self._emit_promotion_audit(
+            skill_id=event.skill_id,
+            from_level=event.to_level,
+            to_level=event.from_level,
+            source=event.source,
+            reason=event.reason,
+            decided_by=decided_by,
+            event_id=event_id,
+            action="skill_rollback",
+        )
+        return {
+            "success": True,
+            "event_id": event_id,
+            "trust_reverted": trust_reverted,
+            "restored_files": restored,
+        }
+
+    # ------------------------------------------------------------------
+    # promotion helpers
+    # ------------------------------------------------------------------
+
+    def _overlay_variant_artifact(
+        self,
+        *,
+        spec: SkillSpec,
+        event_id: str,
+        artifact_path: Path,
+    ) -> dict[str, Any]:
+        """Back up the current entry file and overlay the variant code.
+
+        The backup lives at ``<spec.path>/.promotion_backups/<event_id>/<entry>``;
+        ``revert_promotion`` restores from there. Backups are intentionally
+        kept inside the skill directory so they ride along with the skill if
+        operators move it.
+        """
+        if spec.path is None:
+            raise RuntimeError("spec.path is None; cannot overlay variant")
+        entry_name = spec.entry or "main.py"
+        target = spec.path / entry_name
+        if not artifact_path.exists():
+            raise FileNotFoundError(f"variant artifact missing: {artifact_path}")
+        backup_dir = spec.path / ".promotion_backups" / event_id
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_file = backup_dir / entry_name
+        if target.exists():
+            shutil.copy2(target, backup_file)
+        shutil.copy2(artifact_path, target)
+        return {
+            "overlay": True,
+            "entry": entry_name,
+            "backup": str(backup_file),
+        }
+
+    def _restore_variant_backup(self, *, spec: SkillSpec, event_id: str) -> list[str]:
+        """Restore the entry file from a per-event backup, if one exists."""
+        if spec.path is None:
+            return []
+        backup_dir = spec.path / ".promotion_backups" / event_id
+        if not backup_dir.exists():
+            return []
+        restored: list[str] = []
+        for backup_file in backup_dir.iterdir():
+            if not backup_file.is_file():
+                continue
+            target = spec.path / backup_file.name
+            shutil.copy2(backup_file, target)
+            restored.append(backup_file.name)
+        return restored
+
+    def _rollback_trust(
+        self,
+        spec: SkillSpec,
+        prior: TrustLevel,
+        *,
+        event_id: str,
+        decided_by: str,
+    ) -> None:
+        """Direct trust mutation used by ``revert_promotion``.
+
+        Skips ``trust_skill`` to avoid writing a *second* operator-apply
+        promotion event — the rollback path is audited by
+        ``revert_promotion`` itself via ``_emit_promotion_audit``.
+        """
+        previous = spec.trust_level
+        spec.trust_level = prior
+        was_exposed = previous != TrustLevel.QUARANTINE
+        now_exposed = prior != TrustLevel.QUARANTINE
+        if not was_exposed and now_exposed:
+            self._register_skill_as_tool(spec)
+        elif was_exposed and not now_exposed:
+            self._unregister_skill_as_tool(spec.id)
+        logger.info(
+            "Trust level for %s rolled back from %s to %s (event=%s)",
+            spec.id,
+            previous.value,
+            prior.value,
+            event_id,
+        )
+
+    def _emit_promotion_audit(
+        self,
+        *,
+        skill_id: str,
+        from_level: str,
+        to_level: str,
+        source: str,
+        reason: str | None,
+        decided_by: str,
+        event_id: str | None,
+        action: str,
+    ) -> None:
+        """Write a SKILL_PROMOTION audit row. Failures degrade to warnings."""
+        if self._audit_logger is None:
+            return
+        try:
+            from js.security.audit import AuditEventType
+
+            self._audit_logger.log(
+                AuditEventType.SKILL_PROMOTION,
+                "",
+                "",
+                actor=decided_by,
+                action=action,
+                details={
+                    "skill_id": skill_id,
+                    "from_level": from_level,
+                    "to_level": to_level,
+                    "source": source,
+                    "reason": reason or "",
+                    "event_id": event_id or "",
+                },
+            )
+        except Exception:
+            logger.warning("audit emit failed for skill promotion", exc_info=True)
 
     def _is_builtin(self, spec: SkillSpec) -> bool:
         return spec.trust_level == TrustLevel.BUILTIN

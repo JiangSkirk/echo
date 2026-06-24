@@ -131,6 +131,11 @@ class MetricsCollector:
             ["skill_id"],
             buckets=[0.0, 0.25, 0.5, 0.75, 0.9, 0.95, 1.0],
         )
+        self.skill_promotion_events_total = Counter(
+            "skill_promotion_events_total",
+            "Skill promotion gate decisions (pass/fail per step)",
+            ["decision", "failed_step"],
+        )
         # Memory metrics
         self.memory_store_latency_seconds = Histogram(
             "memory_store_latency_seconds",

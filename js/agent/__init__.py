@@ -46,6 +46,7 @@ from js.skills.composer import SkillComposer
 from js.skills.curator import SkillCurator
 from js.skills.evolver import SkillEvolver
 from js.skills.manager import SkillManager
+from js.skills.promotion_store import PromotionStore
 from js.tools.registry import ToolRegistry
 from js.utils.log import get_logger
 
@@ -107,13 +108,25 @@ class JSAgent(
 
         # Tooling layer
         self.registry = ToolRegistry(settings.tools, self.guard)
-        self.skills = SkillManager(settings.state_dir, settings.workspace)
+        # v0.1.5-alpha: PromotionStore must be constructed before SkillManager
+        # so trust changes / proposals can be audited from the very first
+        # ``trust_skill`` call. Curator and Evolver share the same store.
+        self.promotion_store = PromotionStore(settings.state_dir / "skill_promotions.db")
+        self.skills = SkillManager(
+            settings.state_dir,
+            settings.workspace,
+            promotion_store=self.promotion_store,
+            audit_logger=self.audit,
+        )
         self.search = self._setup_search()
 
         # Learning & evolution
         self.learner = SelfLearner(settings.state_dir)
         self.optimizer = PromptOptimizer(settings.state_dir)
-        self.evolver = SkillEvolver(settings.state_dir)
+        self.evolver = SkillEvolver(
+            settings.state_dir,
+            promotion_store=self.promotion_store,
+        )
         self.composer = SkillComposer(settings.state_dir)
         self._clawhub: Any | None = None
         self.compression_config = CompressionConfig()
@@ -130,7 +143,11 @@ class JSAgent(
             compression_config=self.compression_config,
             composer=self.composer,
         )
-        self.curator = SkillCurator(settings.state_dir)
+        self.curator = SkillCurator(
+            settings.state_dir,
+            promotion_store=self.promotion_store,
+            skill_manager=self.skills,
+        )
 
         # Execution & safety
         self.skills.set_composer(self.composer)

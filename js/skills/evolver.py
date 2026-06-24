@@ -8,10 +8,13 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from js.utils.db import db_connection
 from js.utils.log import get_logger
+
+if TYPE_CHECKING:
+    from js.skills.promotion_store import PromotionStore
 
 logger = get_logger("js.skills.evolver")
 
@@ -64,12 +67,29 @@ class SkillEvolver:
     MIN_EXECUTIONS = 5  # Minimum executions before considering evolution
     EVOLUTION_COOLDOWN_SECONDS = 3600  # Max 1 evolution per skill per hour
 
-    def __init__(self, state_dir: Path) -> None:
+    def __init__(
+        self,
+        state_dir: Path,
+        *,
+        promotion_store: PromotionStore | None = None,
+        proposals_dir: Path | None = None,
+        owner_key_hash: str | None = None,
+    ) -> None:
         self.state_dir = state_dir
         self.db_path = state_dir / "skill_evolution.db"
         self._init_db()
         self._variants: dict[str, SkillVariant] = {}
         self._last_evolution: dict[str, float] = {}
+        # v0.1.5-alpha: when a promotion store is wired, ``promote_variant``
+        # stops overwriting the entry file — it writes the candidate code into
+        # ``proposals_dir / <variant_id> / <entry>`` and inserts a ``proposed``
+        # row instead. Operators apply via ``SkillManager.apply_proposal``.
+        self.promotion_store: PromotionStore | None = promotion_store
+        self.proposals_dir: Path = proposals_dir or (state_dir / "skill_proposals")
+        self._owner_key_hash: str | None = owner_key_hash
+        # Filled by the most recent promote_variant call when a proposal is
+        # created — lets callers surface the event_id without parsing logs.
+        self.last_proposal_event_id: str | None = None
 
     def _init_db(self) -> None:
         with db_connection(self.db_path) as conn:
@@ -408,17 +428,23 @@ class SkillEvolver:
     def promote_variant(
         self, skill_id: str, skill_path: Path | None = None, entry: str = "main.py"
     ) -> bool:
-        """Promote the best variant to the primary skill code.
+        """Promote the best variant for a skill.
 
-        Writes the winning variant's code back to the skill's entry file.
-        Returns True if promotion happened.
+        Legacy behaviour (``promotion_store is None``): writes the winning
+        variant's code back to the skill's entry file and returns True.
+
+        v0.1.5-alpha behaviour (``promotion_store`` wired): writes the variant
+        code to ``proposals_dir/<variant_id>/<entry>``, inserts a ``proposed``
+        promotion event with ``source="auto_evolver"``, and returns False
+        (since trust / file mutation has NOT yet happened). The caller can
+        read ``self.last_proposal_event_id`` if it needs the event id.
 
         v0.1.4-alpha hardening: builtin and Hermes skills are PROTECTED from
         automatic promotion. Even if a variant performs well, the original
-        entry file is never overwritten. Operators can still call SkillEvolver
-        directly for explicit evolution; this guard only blocks the auto-promote
-        path triggered after every successful skill execution.
+        entry file is never overwritten and no proposal is ever recorded.
         """
+        self.last_proposal_event_id = None
+
         if _is_protected_for_promote(skill_id, skill_path):
             logger.info(
                 "Skipping auto-promote for protected skill %s (builtin or hermes)",
@@ -458,10 +484,64 @@ class SkillEvolver:
             logger.warning("Entry file not found for skill %s: %s", skill_id, entry_file)
             return False
 
+        # v0.1.5-alpha: gated proposal path.
+        if self.promotion_store is not None:
+            try:
+                artifact_dir = self.proposals_dir / best.id
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                artifact_path = artifact_dir / entry
+                artifact_path.write_text(best.code, encoding="utf-8")
+                reason = (
+                    f"auto_evolver: variant {best.id} success_rate={success_rate:.2f} "
+                    f"(score={best.avg_score:.2f}, runs={best.total_count})"
+                )
+                # to_level == from_level: evolver proposals don't change trust,
+                # they only swap the entry file contents. The gate is what
+                # actually decides whether the swap is safe.
+                event_id = self.promotion_store.propose(
+                    skill_id,
+                    "evolver",  # synthetic placeholder; trust isn't moving
+                    "evolver",
+                    "auto_evolver",
+                    reason,
+                    owner_key_hash=self._owner_key_hash,
+                    decided_by="auto",
+                    variant_id=best.id,
+                    artifact_path=str(artifact_path),
+                    details={
+                        "success_rate": success_rate,
+                        "avg_score": best.avg_score,
+                        "total_count": best.total_count,
+                        "entry": entry,
+                    },
+                )
+                self.last_proposal_event_id = event_id
+                logger.info(
+                    "Evolver proposed variant %s for skill %s (event=%s)",
+                    best.id,
+                    skill_id,
+                    event_id,
+                )
+                # Proposal recorded; entry file unchanged. Caller treats
+                # False as "no direct apply happened yet".
+                return False
+            except Exception:
+                logger.warning(
+                    "Failed to record evolver proposal for %s",
+                    skill_id,
+                    exc_info=True,
+                )
+                # Fall through — do NOT silently overwrite the entry file
+                # when the gated path errored; legacy callers expect the
+                # in-place write only when no store is wired.
+                return False
+
+        # Legacy: direct in-place overwrite (kept for tests / CLIs that
+        # haven't wired a PromotionStore yet).
         try:
             entry_file.write_text(best.code, encoding="utf-8")
             logger.info(
-                "Promoted variant %s (success_rate=%.2f) to skill %s",
+                "Promoted variant %s (success_rate=%.2f) to skill %s (legacy direct path)",
                 best.id,
                 success_rate,
                 skill_id,

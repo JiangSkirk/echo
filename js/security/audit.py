@@ -29,6 +29,8 @@ class AuditEventType(StrEnum):
     AGENT_MESSAGE = "agent_message"
     DELEGATION = "delegation"
     ERROR = "error"
+    SKILL_PROMOTION = "skill_promotion"
+    SKILL_PROMOTION_GATE = "skill_promotion_gate"
 
 
 @dataclass(frozen=True)
