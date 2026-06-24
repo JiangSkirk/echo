@@ -200,6 +200,20 @@ Web 界面的 Skills 面板支持：
 - 点击展开查看完整内容
 - 在线安装/卸载/信任调整
 
+## Skill Promotion Gate（v0.1.5-alpha）
+
+自动 curator 与 evolver **不再**直接修改 skill 信任等级或覆盖 entry 文件。两者只会向 `skill_promotions.db` 写入 `proposed` 事件，由操作员显式批准后才会过 5 步门禁（`protected → validate → security → tests → smoke`，smoke 默认 30 s 超时）。门禁失败不修改任何状态，也不污染 `skill_usage` 统计。
+
+| 操作 | CLI | Web | 认证 |
+|---|---|---|---|
+| 查看待办列表 | `js skill promote list` | `GET /api/skills/promotions` | 普通认证 |
+| 查看事件详情 | `js skill promote show <event_id>` | `GET /api/skills/promotions/{event_id}` | 普通认证 |
+| 批准并执行门禁 | `js skill promote approve <event_id>` | `POST .../{event_id}/approve` | admin |
+| 拒绝（只改状态） | `js skill promote reject <event_id>` | `POST .../{event_id}/reject` | admin |
+| 回滚已 apply 的事件 | `js skill promote revert <event_id>` | `POST .../{event_id}/revert` | admin |
+
+排障入口：`event.details.failed_step` 指出在哪一步被拒；smoke 超时会额外携带 `details.timeout=True` 与 `details.smoke_error`。Web 响应里**不会**包含 `owner_key_hash`，owner 隔离由后端自动用 `memory_owner(auth)` 注入。详细操作员流程见 [`docs/deployment.md`](docs/deployment.md) 的 *Skill Promotion Operations* 段。
+
 ## 测试
 
 ```bash

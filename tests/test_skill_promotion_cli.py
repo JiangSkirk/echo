@@ -131,3 +131,16 @@ def test_skill_promote_revert_calls_revert_promotion(tmp_path: Path, monkeypatch
 
     assert result.exit_code == 0, result.output
     assert "Reverted" in result.output
+
+
+def test_skill_promote_help_lists_all_subcommands() -> None:
+    """Smoke check that `js skill promote --help` enumerates the 5 subcommands.
+
+    Guards against accidental decorator removal — if any one of list/show/
+    approve/reject/revert disappears from the click group, the help output
+    stops listing it and this assertion catches it before release.
+    """
+    result = CliRunner().invoke(main, ["skill", "promote", "--help"])
+    assert result.exit_code == 0, result.output
+    for sub in ("list", "show", "approve", "reject", "revert"):
+        assert sub in result.output, f"missing subcommand `{sub}` in help"

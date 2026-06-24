@@ -55,6 +55,20 @@ The model is the engine. The harness is the complete frame that lets the engine 
 - **Audit log**: Complete tool-call history with traceability
 - **Skill panel**: Install, uninstall, adjust trust levels, and view content online
 
+## Skill Promotion Gate (v0.1.5-alpha)
+
+Auto curator and evolver **no longer** mutate trust levels or overwrite entry files directly. Both record `proposed` events in `skill_promotions.db`, which an operator must explicitly approve. Approval runs a 5-step gate (`protected → validate → security → tests → smoke`, smoke bounded by a 30 s timeout). A failed gate changes nothing — no trust flip, no file overwrite, no `skill_usage` pollution.
+
+| Action | CLI | Web | Auth |
+|---|---|---|---|
+| List open proposals | `js skill promote list` | `GET /api/skills/promotions` | normal auth |
+| Show event detail | `js skill promote show <event_id>` | `GET /api/skills/promotions/{event_id}` | normal auth |
+| Approve + run gate | `js skill promote approve <event_id>` | `POST .../{event_id}/approve` | admin |
+| Reject (status only) | `js skill promote reject <event_id>` | `POST .../{event_id}/reject` | admin |
+| Roll back an applied event | `js skill promote revert <event_id>` | `POST .../{event_id}/revert` | admin |
+
+Troubleshooting starts at `event.details.failed_step` (one of `protected/validate/security/tests/smoke`); smoke timeouts also carry `details.timeout=True` and `details.smoke_error`. Web responses **never** expose `owner_key_hash` — isolation is enforced server-side via `memory_owner(auth)`. See [`docs/deployment.md`](docs/deployment.md) → *Skill Promotion Operations* for the full operator runbook.
+
 ## Quick Start
 
 ```bash

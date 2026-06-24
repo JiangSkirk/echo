@@ -127,3 +127,41 @@ JS Agent Harness 使用两个数据卷来实现状态持久化：
 ```bash
 docker inspect --format='{{.State.Health.Status}}' js-agent
 ```
+
+---
+
+## Skill Promotion Operations（v0.1.5-alpha）
+
+生产环境下，自动 curator 与 evolver **不会**直接改 skill 信任等级或覆盖 entry 文件；它们只产生 `proposed` 事件，需要操作员批准后才会通过 5 步门禁应用。
+
+### 日常流程
+
+1. `js skill promote list` 查看 open 提案；`--all` 可看历史全部事件，`--limit N` 控制条数。
+2. `js skill promote show <event_id>` 查看完整事件 JSON（含 `details`、`reason`、`source`、`variant_id`、`artifact_path`）。
+3. 决策：
+   - 通过 → `js skill promote approve <event_id>`，触发 `SkillManager.apply_proposal`（跑 5 步 gate；失败时不修改 trust/文件）。
+   - 拒绝 → `js skill promote reject <event_id> --reason "..."`，只改事件 status，不动 skill。
+   - 已 apply 的事件要回滚 → `js skill promote revert <event_id>`，恢复 trust 与 entry 文件（若有 variant artifact 备份）。
+
+### `failed_step` 含义
+
+| 值 | 含义 | 应对 |
+|---|---|---|
+| `protected` | 命中 builtin 或 `hermes:` 受保护 skill | 永久不允许自动晋升，直接拒绝。 |
+| `validate` | SKILL.md / entry 文件缺失或格式错误 | 修复源 skill 后重新生成提案。 |
+| `security` | `scan_skill` 或 `runtime_security_check` 命中风险模式 | 审查 `details.risk_flags` / `details.runtime_warnings`；若误报可手动 `trust_skill`，否则保留 quarantine。 |
+| `tests` | `run_skill_tests` 失败（pytest 在隔离临时目录跑） | 查看 `details.tests` 中的 pytest 输出。 |
+| `smoke` | `execute_skill` 失败或超时 | 看 `details.smoke_error`；`details.timeout=True` 表示卡死，默认 30 s 截断，可通过构造 `PromotionGate(smoke_timeout=N)` 调整。 |
+
+### 回滚边界
+
+- `revert_promotion` 仅对 `status="applied"` 的事件生效。
+- 信任降级（trust 反向 flip）总能恢复；entry 文件恢复依赖 `<spec.path>/.promotion_backups/<event_id>/<entry>` 备份，该备份在 `apply_proposal` 成功覆盖文件时写入。
+- 若 skill 目录已被人手动改过（直接编辑 `main.py`），`revert` 仍会用备份覆盖；**操作前请用 `git diff` 确认 skill 目录**。
+
+### Web API 权限
+
+- `GET /api/skills/promotions` 和 `GET /api/skills/promotions/{event_id}` 走普通认证，但只能看自己 owner（`memory_owner(auth)`）的事件。
+- `POST .../approve`、`POST .../reject`、`POST .../revert` 必须 admin 凭证（`require_admin`）。
+- 响应正文不携带 `owner_key_hash`，owner 隔离由后端自动注入。
+- 路由注册在 `/api/skills/{skill_id}` 通配之前，不会被吞。
