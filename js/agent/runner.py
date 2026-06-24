@@ -37,11 +37,19 @@ class RunnerMixin(AgentBase):
         _resume_state: AgentState | None = None,
         stream_callback: Callable[[str], Awaitable[None]] | None = None,
         progress_callback: Callable[[str, ToolResult], Awaitable[None]] | None = None,
+        event_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> AgentState:
         """Execute a full agent run.
 
         When a LaneExecutor is available, runs are serialised per session
         to prevent race conditions (OpenClaw Lane Queue pattern).
+
+        ``stream_callback`` keeps the legacy ``str -> None`` contract — it
+        receives the redacted text-delta tokens that already feed the UI.
+        ``event_callback`` (PR-4.3) is the new structured side-channel:
+        it receives ``{kind, ...}`` dicts derived from PR-4.2 StreamEvents
+        (thinking_delta, tool_call_delta, usage, error). Both default to
+        None, so callers that don't opt in see the historical behaviour.
         """
         # Lane Queue: serialise per session
         if self._lane_executor is not None:
@@ -55,6 +63,7 @@ class RunnerMixin(AgentBase):
                     _resume_state,
                     stream_callback,
                     progress_callback,
+                    event_callback,
                 ),
                 task_id=f"run_{id(user_input)}",
                 name="agent_run",
@@ -68,6 +77,7 @@ class RunnerMixin(AgentBase):
             _resume_state,
             stream_callback,
             progress_callback,
+            event_callback,
         )
 
     async def _do_run(
@@ -79,6 +89,7 @@ class RunnerMixin(AgentBase):
         _resume_state: AgentState | None = None,
         stream_callback: Callable[[str], Awaitable[None]] | None = None,
         progress_callback: Callable[[str, ToolResult], Awaitable[None]] | None = None,
+        event_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> AgentState:
         """Core agent run logic — delegates to :class:`TurnExecutor`."""
         executor = TurnExecutor(
@@ -90,6 +101,7 @@ class RunnerMixin(AgentBase):
             _resume_state,
             stream_callback,
             progress_callback,
+            event_callback,
         )
         return await executor.execute()
 
@@ -161,6 +173,7 @@ class TurnExecutor:
         resume_state: AgentState | None,
         stream_callback: Callable[[str], Awaitable[None]] | None,
         progress_callback: Callable[[str, ToolResult], Awaitable[None]] | None,
+        event_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self.agent = agent
         self.user_input = user_input
@@ -170,6 +183,7 @@ class TurnExecutor:
         self.resume_state = resume_state
         self.stream_callback = stream_callback
         self.progress_callback = progress_callback
+        self.event_callback = event_callback
         self.run_id = ""
         self.history_ua_count = 0
         self.state: AgentState
@@ -573,24 +587,68 @@ class TurnExecutor:
         """Call the model — streaming when there are no tools, else a normal chat."""
         agent = self.agent
         if self.stream_callback and not tools_schema:
-            # Stream final assistant response when no tools
+            # Stream final assistant response when no tools.
+            # PR-4.3: consume the PR-4.2 structured event stream so we can
+            # forward thinking_delta / tool_call_delta / usage / error to
+            # the optional ``event_callback`` while keeping the legacy
+            # text-only ``stream_callback`` contract intact.
             decision = await agent.router.select_model(preferred=self.model)
             stream_text = ""
+            stream_usage_event: dict[str, int] | None = None
 
-            async def _redacted_callback(token: str) -> None:
+            async def _redacted_text_callback(token: str) -> None:
                 safe_token = agent.secrets.detect_and_redact(token, "stream")
                 if self.stream_callback is not None:
                     await self.stream_callback(safe_token)
 
-            async for token in decision.provider.chat_stream(
-                messages=compressed_messages,
-                model=decision.model,
-            ):
-                stream_text += token
-                await _redacted_callback(token)
+            async def _emit_event(payload: dict[str, Any]) -> None:
+                if self.event_callback is None:
+                    return
+                try:
+                    await self.event_callback(payload)
+                except Exception:
+                    # Side-channel must never abort the main stream.
+                    agent.logger.warning("event_callback raised; suppressed", exc_info=True)
 
-            # Try to get accurate usage from provider; fallback to heuristic estimate
-            stream_usage = getattr(decision.provider, "_last_stream_usage", None)
+            try:
+                async for ev in decision.provider.chat_stream_events(
+                    messages=compressed_messages,
+                    model=decision.model,
+                ):
+                    if ev.kind == "text_delta":
+                        if ev.text:
+                            stream_text += ev.text
+                            await _redacted_text_callback(ev.text)
+                    elif ev.kind == "thinking_delta":
+                        if ev.text:
+                            safe = agent.secrets.detect_and_redact(ev.text, "stream_thinking")
+                            await _emit_event({"kind": "thinking_delta", "text": safe})
+                    elif ev.kind == "tool_call_delta":
+                        if ev.tool_call:
+                            await _emit_event(
+                                {"kind": "tool_call_delta", "tool_call": ev.tool_call}
+                            )
+                    elif ev.kind == "usage":
+                        if ev.usage:
+                            stream_usage_event = dict(ev.usage)
+                            await _emit_event({"kind": "usage", "usage": ev.usage})
+                    elif ev.kind == "error":
+                        await _emit_event({"kind": "error", "error": ev.error})
+                        # Re-raise so the outer agent loop records the failure
+                        # via its existing error path (no behaviour change).
+                        raise RuntimeError(ev.error or "stream error")
+                    # ``done`` events are absorbed: the agent run finalises
+                    # via ChatResponse below, so the UI's "done" is a higher
+                    # level signal sent by the web layer.
+            except Exception:
+                raise
+
+            # Prefer the in-band usage event (PR-4.2) when present; fall
+            # back to provider-cached usage; finally to a heuristic estimate
+            # so legacy providers keep working.
+            stream_usage = stream_usage_event or getattr(
+                decision.provider, "_last_stream_usage", None
+            )
             if stream_usage:
                 prompt_tokens = stream_usage.get("prompt_tokens", 0)
                 completion_tokens = stream_usage.get("completion_tokens", 0)

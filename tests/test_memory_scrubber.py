@@ -117,8 +117,18 @@ async def test_streaming_callback_receives_redacted_tokens():
     async def fake_stream(*args, **kwargs):
         yield f"token {_SECRET}"
 
+    # PR-4.3: TurnExecutor now consumes chat_stream_events(). The structured
+    # equivalent of yielding "token <SECRET>" is a single text_delta event,
+    # which the executor then redacts and forwards to stream_callback.
+    from js.models.stream_events import StreamEvent
+
+    async def fake_stream_events(*args, **kwargs):
+        yield StreamEvent(kind="text_delta", text=f"token {_SECRET}")
+
     provider = MagicMock()
     provider.chat_stream = fake_stream
+    provider.chat_stream_events = fake_stream_events
+    provider._last_stream_usage = None
     decision = MagicMock()
     decision.provider = provider
     decision.model = "m"

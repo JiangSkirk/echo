@@ -473,6 +473,23 @@ function connectWS() {
     }
     if (data.type === 'token') {
       appendToken(data.content);
+    } else if (data.type === 'thinking') {
+      // PR-4.3: structured thinking_delta from chat_stream_events().
+      // Direct path: bypass <think> tag parsing and feed the reasoning
+      // panel verbatim. <think> fallback in appendToken() still works
+      // for providers that only emit inline tags.
+      appendThinkingDelta(data.content);
+    } else if (data.type === 'tool_call') {
+      // PR-4.3: streamed tool-call fragment; show as a live progress row.
+      const tc = data.tool_call || {};
+      const label = tc.name || tc.id || ('tool#' + (tc.index ?? '?'));
+      showProgress(label, tc.arguments_delta || '');
+    } else if (data.type === 'usage') {
+      // PR-4.3: stash the structured usage for diagnostics; UI display
+      // is intentionally deferred so we don't churn the chat surface.
+      state.lastUsage = data.usage || {};
+    } else if (data.type === 'channel_error') {
+      appendMessage('system', '流式通道错误: ' + (data.content || ''));
     } else if (data.type === 'response') {
       state.sessionId = data.session_id;
       finishResponse(data.content, data.model);
@@ -670,6 +687,28 @@ function appendToken(token) {
   if (!state.tokenRAF) {
     state.tokenRAF = requestAnimationFrame(_flushTokenQueue);
   }
+}
+
+// PR-4.3: direct thinking-delta path from chat_stream_events(). Bypasses
+// the <think>...</think> tag scanner in _flushTokenQueue and goes straight
+// into state.thinkingBuffer + the <details> reasoning panel. The legacy
+// inline-tag fallback in _flushTokenQueue() remains active for providers
+// that only emit text deltas with embedded <think> markers.
+function appendThinkingDelta(text) {
+  if (!text) return;
+  if (!state.currentBubble) {
+    state.currentBubble = appendMessage('assistant', '');
+    state.currentBubble.id = 'streaming-bubble';
+    state.currentBubble.classList.add('typing-cursor');
+  }
+  _ensureThinkingBlock();
+  state.thinkingBuffer += text;
+  if (state.thinkingBlock) {
+    const tc = state.thinkingBlock.querySelector('.thinking-content');
+    if (tc) tc.textContent = state.thinkingBuffer;
+  }
+  const container = document.getElementById('chat-messages');
+  if (container) container.scrollTop = container.scrollHeight;
 }
 
 function _finalizeStreamBubble(model) {

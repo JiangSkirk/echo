@@ -1867,6 +1867,43 @@ def create_app() -> FastAPI:
                         streamed = True
                         await websocket.send_json({"type": "token", "content": token})
 
+                    async def _send_event(payload: dict[str, Any]) -> None:
+                        """PR-4.3 side-channel: structured StreamEvent → WS frame.
+
+                        Maps:
+                          thinking_delta  → {type:"thinking", content:<text>}
+                          tool_call_delta → {type:"tool_call", tool_call:<dict>}
+                          usage           → {type:"usage", usage:<dict>}
+                          error           → {type:"channel_error", content:<str>}
+                        Empty/unknown kinds are dropped silently so the
+                        legacy frontend ({type:"token"}) keeps working.
+                        """
+                        kind = payload.get("kind")
+                        try:
+                            if kind == "thinking_delta":
+                                text = payload.get("text") or ""
+                                if text:
+                                    await websocket.send_json({"type": "thinking", "content": text})
+                            elif kind == "tool_call_delta":
+                                tc = payload.get("tool_call") or {}
+                                if tc:
+                                    await websocket.send_json(
+                                        {"type": "tool_call", "tool_call": tc}
+                                    )
+                            elif kind == "usage":
+                                usage = payload.get("usage") or {}
+                                if usage:
+                                    await websocket.send_json({"type": "usage", "usage": usage})
+                            elif kind == "error":
+                                err = payload.get("error") or ""
+                                if err:
+                                    await websocket.send_json(
+                                        {"type": "channel_error", "content": err}
+                                    )
+                        except Exception:
+                            # Never let the side-channel kill the main turn.
+                            logger.warning("WebSocket event-channel send failed", exc_info=True)
+
                     from js.web.auth import _session_owner_hash
 
                     owner_token = _session_owner_hash.set(ws_owner_hash)
@@ -1877,6 +1914,7 @@ def create_app() -> FastAPI:
                             model=model,
                             attachments=attachments,
                             stream_callback=_send_token,
+                            event_callback=_send_event,
                         )
                     finally:
                         _session_owner_hash.reset(owner_token)
