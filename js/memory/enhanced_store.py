@@ -1340,9 +1340,7 @@ class EnhancedMemoryStore:
                 )
             """)
             try:
-                audit_cols = {
-                    row[1] for row in conn.execute("PRAGMA table_info(memory_audit_log)")
-                }
+                audit_cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_audit_log)")}
                 if "owner_key_hash" not in audit_cols:
                     conn.execute("ALTER TABLE memory_audit_log ADD COLUMN owner_key_hash TEXT")
             except Exception:
@@ -2277,25 +2275,38 @@ class EnhancedMemoryStore:
             "entity_type": inferred_type,
         }
 
-    def feedback(self, memory_id: int, helpful: bool) -> bool:
+    def feedback(
+        self,
+        memory_id: int,
+        helpful: bool,
+        owner_key_hash: str | None = None,
+    ) -> bool:
         """Record user feedback on a semantic memory's usefulness.
 
         Positive feedback increases the memory's weight, negative feedback
         decreases it.  Affects eviction priority.
+
+        ``owner_key_hash`` follows the same convention as ``update_semantic``
+        and ``delete_semantic``: a concrete hash only touches that owner's
+        rows; ``None`` only touches shared/legacy NULL-owner rows.  Without
+        this guard a second user could mutate another user's feedback by
+        guessing the integer primary key.
         """
         delta = 1.0 if helpful else -1.0
+        owner_clause, owner_params = self._owner_filter(owner_key_hash)
+        guard = f" AND {owner_clause}" if owner_clause else ""
         with db_connection(self.db_path) as conn:
-            conn.execute(
-                """
+            cur = conn.execute(
+                f"""
                 UPDATE semantic_memories
                 SET feedback_score = COALESCE(feedback_score, 0) + ?,
                     access_count = access_count + 1,
                     last_accessed = ?
-                WHERE id = ?
+                WHERE id = ?{guard}
                 """,
-                (delta, time.time(), memory_id),
+                (delta, time.time(), memory_id, *owner_params),
             )
-            updated = conn.total_changes > 0
+            updated = cur.rowcount > 0
             conn.commit()
         return updated
 
@@ -2559,8 +2570,16 @@ class EnhancedMemoryStore:
             else:
                 rows = []
 
+            # Defense-in-depth: even though id selection above was already
+            # confined to ``owner_filter``, the DELETE re-asserts the owner
+            # predicate so a future refactor or a race on the integer PK
+            # cannot delete another owner's row.
+            delete_owner = f" AND{owner_filter}" if owner_filter else ""
             for row in rows:
-                conn.execute("DELETE FROM semantic_memories WHERE id = ?", (row[0],))
+                conn.execute(
+                    f"DELETE FROM semantic_memories WHERE id = ?{delete_owner}",
+                    (row[0], *owner_params),
+                )
                 evicted += 1
             conn.commit()
 
@@ -3540,7 +3559,13 @@ class EnhancedMemoryStore:
             f.write(entry)
 
     def _light_sleep(self) -> str:
-        """Deduplicate and compress working memories."""
+        """Deduplicate and compress working memories.
+
+        Dedup is partitioned by ``owner_key_hash`` so two users (or a user
+        and the ``__legacy_local__`` shared pool) that happen to write the
+        same ``(key, value)`` never have one row's existence delete the
+        other's.  The dedup key is ``(owner_key_hash, key, value)``.
+        """
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
@@ -3550,11 +3575,16 @@ class EnhancedMemoryStore:
         if not rows:
             return "No working memories to consolidate."
 
-        # Simple dedup: remove entries with identical key+value, keep newest
-        seen: set[tuple[str, str]] = set()
+        # Simple dedup: remove entries with identical (owner, key, value),
+        # keep newest.  Mixing owners into the same dedup key would let one
+        # user's write erase another's row with the same text.
+        seen: set[tuple[str, str, str]] = set()
         duplicates: list[int] = []
         for r in rows:
-            k = (r["key"], r["value"])
+            # working_memories.owner_key_hash is NOT NULL (default
+            # __legacy_local__), so this is always a real string and safe
+            # to use as a tuple element.
+            k = (r["owner_key_hash"], r["key"], r["value"])
             if k in seen:
                 duplicates.append(r["id"])
             else:
