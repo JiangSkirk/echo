@@ -243,8 +243,8 @@ class SessionLifecycleStore:
         """Mark running sessions with stale heartbeats as aborted.
 
         ``None`` is normalized to the legacy-local sentinel; this never sweeps
-        rows belonging to authenticated owners. For admin-style full recovery,
-        introduce a dedicated ``recover_all_aborted_sessions`` later.
+        rows belonging to authenticated owners. For admin-style full recovery
+        (typically used at process startup), use ``recover_all_aborted_sessions``.
         """
         cutoff = time.time() - threshold_seconds
         owner = self._normalize_owner(owner_key_hash)
@@ -262,4 +262,33 @@ class SessionLifecycleStore:
             row_owner = row["owner_key_hash"] or _LEGACY_LOCAL_OWNER
             self.mark_aborted(session_id, "abnormal_exit_recovery", row_owner)
             recovered.append(session_id)
+        return recovered
+
+    def recover_all_aborted_sessions(self, threshold_seconds: float = 300) -> list[tuple[str, str]]:
+        """Mark *all* owners' stale-heartbeat running sessions as aborted.
+
+        Intended for process-startup recovery: a crash kills every in-flight
+        run regardless of owner, so every stale ``running`` row should flip to
+        ``aborted`` with ``exit_reason="abnormal_exit_recovery"``. This is the
+        ONLY API in this store that crosses owner boundaries, and it is
+        write-only (it does not return per-owner content) — it returns the
+        ``(session_id, owner_key_hash)`` pairs that were recovered so callers
+        can log/audit. ``owner_key_hash`` in the result is already the stored
+        sentinel-normalized value.
+        """
+        cutoff = time.time() - threshold_seconds
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT session_id, owner_key_hash FROM session_lifecycle
+                WHERE status = 'running' AND last_heartbeat_at < ?
+                """,
+                (cutoff,),
+            ).fetchall()
+        recovered: list[tuple[str, str]] = []
+        for row in rows:
+            session_id = row["session_id"]
+            row_owner = row["owner_key_hash"] or _LEGACY_LOCAL_OWNER
+            self.mark_aborted(session_id, "abnormal_exit_recovery", row_owner)
+            recovered.append((session_id, row_owner))
         return recovered

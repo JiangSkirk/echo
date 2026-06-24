@@ -159,3 +159,72 @@ def test_recover_aborted_sessions_scoped_by_owner(tmp_path):
     assert recovered_a == ["stale_a"]
     assert store.get("stale_a", "owner_a")["status"] == "aborted"
     assert store.get("stale_b", "owner_b")["status"] == "running"
+
+
+def test_recover_all_aborted_sessions_sweeps_every_owner(tmp_path):
+    """Startup recovery must mark stale rows across ALL owners, not just legacy-local.
+
+    Regression for v0.1.4-alpha P1: ``Agent.__init__`` originally called
+    ``recover_aborted_sessions()`` with no owner, which sentinel-normalized to
+    ``__legacy_local__`` and left every authenticated owner's stale ``running``
+    row stuck forever. The new ``recover_all_aborted_sessions`` API is the only
+    cross-owner write path and is the one wired into startup.
+    """
+    store = SessionLifecycleStore(tmp_path / "lifecycle.db")
+    store.mark_started("legacy_stale", None)  # __legacy_local__
+    store.mark_started("auth_stale_a", "owner_a")
+    store.mark_started("auth_stale_b", "owner_b")
+    store.mark_started("auth_fresh_c", "owner_c")  # heartbeat stays fresh
+
+    import sqlite3
+
+    conn = sqlite3.connect(str(tmp_path / "lifecycle.db"), check_same_thread=False)
+    cutoff = time.time() - 1000
+    for sid, owner in (
+        ("legacy_stale", "__legacy_local__"),
+        ("auth_stale_a", "owner_a"),
+        ("auth_stale_b", "owner_b"),
+    ):
+        conn.execute(
+            "UPDATE session_lifecycle SET last_heartbeat_at = ? "
+            "WHERE session_id = ? AND owner_key_hash = ?",
+            (cutoff, sid, owner),
+        )
+    conn.commit()
+    conn.close()
+
+    recovered = store.recover_all_aborted_sessions(threshold_seconds=300)
+    assert sorted(recovered) == sorted(
+        [
+            ("legacy_stale", "__legacy_local__"),
+            ("auth_stale_a", "owner_a"),
+            ("auth_stale_b", "owner_b"),
+        ]
+    )
+
+    # All three stale rows flipped to aborted with the expected exit_reason,
+    # regardless of owner; the fresh row is untouched.
+    for sid, owner in (
+        ("legacy_stale", "__legacy_local__"),
+        ("auth_stale_a", "owner_a"),
+        ("auth_stale_b", "owner_b"),
+    ):
+        row = store.get(sid, owner)
+        assert row is not None
+        assert row["status"] == "aborted"
+        assert row["exit_reason"] == "abnormal_exit_recovery"
+    fresh = store.get("auth_fresh_c", "owner_c")
+    assert fresh is not None
+    assert fresh["status"] == "running"
+
+
+def test_recover_all_aborted_sessions_ignores_fresh_heartbeats(tmp_path):
+    """The all-owner sweep must respect the heartbeat threshold."""
+    store = SessionLifecycleStore(tmp_path / "lifecycle.db")
+    store.mark_started("fresh_a", "owner_a")
+    store.mark_started("fresh_b", "owner_b")
+
+    recovered = store.recover_all_aborted_sessions(threshold_seconds=300)
+    assert recovered == []
+    assert store.get("fresh_a", "owner_a")["status"] == "running"
+    assert store.get("fresh_b", "owner_b")["status"] == "running"

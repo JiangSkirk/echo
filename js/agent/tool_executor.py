@@ -57,8 +57,12 @@ class ToolExecutorMixin(AgentBase):
             # and multi-step WebBridge workflows.  Keep only the essentials.
             _local_core = {
                 "web_search",
-                "file_read", "file_write", "file_edit", "file_view",
-                "shell", "python",
+                "file_read",
+                "file_write",
+                "file_edit",
+                "file_view",
+                "shell",
+                "python",
             }
             trimmed = [s for s in schemas if s.get("function", {}).get("name", "") in _local_core]
             self.logger.info(
@@ -68,12 +72,25 @@ class ToolExecutorMixin(AgentBase):
         elif context_window < 32_000 and len(schemas) > 15:
             # Small-context cloud models: trim skills/office but keep browser tools
             _cloud_core = {
-                "web_search", "browser_fetch",
-                "file_read", "file_write", "file_edit", "file_view", "file_list",
-                "code_search", "shell", "python",
-                "web_navigate", "web_snapshot", "web_click", "web_fill",
-                "web_screenshot", "web_evaluate", "web_extract_text",
-                "web_find_tab", "web_list_tabs",
+                "web_search",
+                "browser_fetch",
+                "file_read",
+                "file_write",
+                "file_edit",
+                "file_view",
+                "file_list",
+                "code_search",
+                "shell",
+                "python",
+                "web_navigate",
+                "web_snapshot",
+                "web_click",
+                "web_fill",
+                "web_screenshot",
+                "web_evaluate",
+                "web_extract_text",
+                "web_find_tab",
+                "web_list_tabs",
             }
             trimmed = [s for s in schemas if s.get("function", {}).get("name", "") in _cloud_core]
             self.logger.debug(
@@ -115,10 +132,13 @@ class ToolExecutorMixin(AgentBase):
         # Kimi WebBridge — real browser control (navigate, click, screenshot, etc.)
         try:
             from js.tools.webbridge import WebBridgeTool
+
             self._webbridge_tool = WebBridgeTool(state_dir=self.settings.state_dir)
             self._webbridge_tool.register_all(self.registry)
         except Exception:
-            self.logger.warning("WebBridge tools not available (daemon may not be running)", exc_info=True)
+            self.logger.warning(
+                "WebBridge tools not available (daemon may not be running)", exc_info=True
+            )
 
         office_tools = OfficeTools(self.settings.workspace, self.settings.tools, self.guard)
         office_tools.register_all(self.registry)
@@ -145,6 +165,7 @@ class ToolExecutorMixin(AgentBase):
         # (Hermes-style: same args → same ID across restarts)
         if not raw_tool_call_id:
             from js.utils.ids import tool_call_id as _det_tool_call_id
+
             raw_tool_call_id = _det_tool_call_id(
                 tool_name=tool_name,
                 arguments=raw_args,
@@ -155,7 +176,12 @@ class ToolExecutorMixin(AgentBase):
         if not tool_name:
             err_result = ToolResult(success=False, error="Tool call missing name")
             return (
-                ChatMessage(role="tool", content=err_result.to_text(), tool_call_id=tool_call_id, name="unknown"),
+                ChatMessage(
+                    role="tool",
+                    content=err_result.to_text(),
+                    tool_call_id=tool_call_id,
+                    name="unknown",
+                ),
                 err_result,
             )
 
@@ -171,32 +197,104 @@ class ToolExecutorMixin(AgentBase):
                 "Use one of the available tools or answer directly.",
             )
             return (
-                ChatMessage(role="tool", content=err_result.to_text(), tool_call_id=tool_call_id, name=tool_name),
+                ChatMessage(
+                    role="tool",
+                    content=err_result.to_text(),
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                ),
                 err_result,
             )
 
         try:
-            arguments = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args if isinstance(raw_args, dict) else {})
+            arguments = (
+                json.loads(raw_args)
+                if isinstance(raw_args, str)
+                else (raw_args if isinstance(raw_args, dict) else {})
+            )
         except json.JSONDecodeError as e:
             err_result = ToolResult(success=False, error=f"Invalid tool arguments JSON: {e}")
             return (
-                ChatMessage(role="tool", content=err_result.to_text(), tool_call_id=tool_call_id, name=tool_name),
+                ChatMessage(
+                    role="tool",
+                    content=err_result.to_text(),
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                ),
                 err_result,
             )
 
         # Role-based tool permissions (least privilege)
         _role_tool_whitelist: dict[str, set[str]] = {
-            "orchestrator": {"web_search", "browser_fetch", "file_read", "file_view", "web_navigate", "web_snapshot", "web_extract_text"},
-            "coder": {"file_read", "file_write", "file_edit", "code_search", "shell", "python", "file_view", "file_list"},
+            "orchestrator": {
+                "web_search",
+                "browser_fetch",
+                "file_read",
+                "file_view",
+                "web_navigate",
+                "web_snapshot",
+                "web_extract_text",
+            },
+            "coder": {
+                "file_read",
+                "file_write",
+                "file_edit",
+                "code_search",
+                "shell",
+                "python",
+                "file_view",
+                "file_list",
+            },
             "reviewer": {"file_read", "code_search", "file_view", "file_list"},
-            "researcher": {"web_search", "browser_fetch", "file_read", "file_view", "web_navigate", "web_snapshot", "web_click", "web_fill", "web_extract_text"},
+            "researcher": {
+                "web_search",
+                "browser_fetch",
+                "file_read",
+                "file_view",
+                "web_navigate",
+                "web_snapshot",
+                "web_click",
+                "web_fill",
+                "web_extract_text",
+            },
             "tester": {"shell", "python", "file_read", "file_view", "code_search"},
-            "generalist": {"file_read", "file_write", "file_edit", "shell", "python", "web_search", "code_search", "file_view", "file_list", "web_navigate", "web_snapshot", "web_click", "web_fill", "web_extract_text"},
+            "generalist": {
+                "file_read",
+                "file_write",
+                "file_edit",
+                "shell",
+                "python",
+                "web_search",
+                "code_search",
+                "file_view",
+                "file_list",
+                "web_navigate",
+                "web_snapshot",
+                "web_click",
+                "web_fill",
+                "web_extract_text",
+            },
             "architect": {"file_read", "code_search", "file_view", "file_list"},
             "designer": {"file_read", "file_view", "file_list"},
             "doc_writer": {"file_read", "file_write", "file_edit", "file_view", "file_list"},
-            "security": {"file_read", "shell", "code_search", "file_view", "file_list", "web_navigate", "web_snapshot", "web_extract_text"},
-            "performance": {"file_read", "shell", "python", "code_search", "file_view", "file_list"},
+            "security": {
+                "file_read",
+                "shell",
+                "code_search",
+                "file_view",
+                "file_list",
+                "web_navigate",
+                "web_snapshot",
+                "web_extract_text",
+            },
+            "performance": {
+                "file_read",
+                "shell",
+                "python",
+                "code_search",
+                "file_view",
+                "file_list",
+            },
         }
         if self._role and tool_name not in _role_tool_whitelist.get(self._role, set()):
             denied_result = ToolResult(
@@ -215,6 +313,7 @@ class ToolExecutorMixin(AgentBase):
 
         # Strategy-based defense
         from js.security.strategies import DefenseContext
+
         defense_ctx = DefenseContext(
             tool_name=tool_name,
             arguments=arguments,
@@ -225,7 +324,9 @@ class ToolExecutorMixin(AgentBase):
         )
         defense_result = self.defense_strategies.evaluate(defense_ctx)
         if defense_result.blocked:
-            blocked_result = ToolResult(success=False, error=f"Security blocked: {defense_result.reason}")
+            blocked_result = ToolResult(
+                success=False, error=f"Security blocked: {defense_result.reason}"
+            )
             return (
                 ChatMessage(
                     role="tool",
@@ -240,6 +341,7 @@ class ToolExecutorMixin(AgentBase):
         spec = self.registry.get(tool_name)
         if spec and spec.dangerous:
             from js.events.models import AgentEvent
+
             self.event_store.emit(
                 AgentEvent.approval_requested(
                     session_id=session_id,
@@ -263,7 +365,9 @@ class ToolExecutorMixin(AgentBase):
                         reason="approval required but not granted",
                     )
                 )
-                denied_result = ToolResult(success=False, error="Operation denied: approval required but not granted")
+                denied_result = ToolResult(
+                    success=False, error="Operation denied: approval required but not granted"
+                )
                 return (
                     ChatMessage(
                         role="tool",
@@ -290,6 +394,7 @@ class ToolExecutorMixin(AgentBase):
             {"arguments": arguments},
         )
         from js.events.models import AgentEvent
+
         self.event_store.emit(
             AgentEvent.tool_called(
                 session_id=session_id,
@@ -300,6 +405,13 @@ class ToolExecutorMixin(AgentBase):
         )
 
         result = await self.registry.execute(run_id, tool_name, arguments)
+
+        # Redact secrets in output BEFORE any downstream consumer (progress
+        # callback, repeated-failure guard, model context) sees it. Previously
+        # progress_callback received the raw output, so a WebSocket preview
+        # could leak the first ~200 chars of a secret-bearing tool result.
+        if result.output:
+            result.output = self.secrets.detect_and_redact(result.output, f"tool:{tool_name}")
 
         # Notify progress callback (e.g. WebSocket frontend)
         if progress_callback:
@@ -312,10 +424,6 @@ class ToolExecutorMixin(AgentBase):
         fail_check = self.guard.check_repeated_failure(run_id, tool_name, result.success)
         if fail_check.decision == "block":
             result = ToolResult(success=False, error=f"Security: {fail_check.reason}")
-
-        # Redact secrets in output
-        if result.output:
-            result.output = self.secrets.detect_and_redact(result.output, f"tool:{tool_name}")
 
         return (
             ChatMessage(
@@ -336,8 +444,7 @@ class ToolExecutorMixin(AgentBase):
             if not results:
                 return ToolResult(success=False, error="Search returned no results")
             output = "\n\n".join(
-                f"[{i+1}] {r.title}\nURL: {r.url}\n{r.snippet}"
-                for i, r in enumerate(results)
+                f"[{i + 1}] {r.title}\nURL: {r.url}\n{r.snippet}" for i, r in enumerate(results)
             )
             return ToolResult(success=True, output=output)
 

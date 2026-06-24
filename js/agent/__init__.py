@@ -169,10 +169,16 @@ class JSAgent(
 
         self.review_store = ReviewStore(settings.state_dir / "review_capsules.db")
         try:
-            recovered = self.lifecycle_store.recover_aborted_sessions()
+            # Startup recovery must sweep ALL owners — a crash kills every
+            # in-flight run regardless of who owns it. The per-owner
+            # ``recover_aborted_sessions`` would only sweep the legacy-local
+            # partition and silently leave authenticated owners' stale rows
+            # stuck in ``running`` forever.
+            recovered = self.lifecycle_store.recover_all_aborted_sessions()
             if recovered:
                 self.logger.info(
-                    f"Recovered {len(recovered)} aborted sessions", extra={"sessions": recovered}
+                    f"Recovered {len(recovered)} aborted sessions",
+                    extra={"sessions": [sid for sid, _ in recovered]},
                 )
         except Exception:
             self.logger.warning("Session recovery failed", exc_info=True)
