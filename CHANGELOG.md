@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `ruff check js/ tests/ scripts/` → All checks passed
 - `mypy js/ --no-error-summary` → zero errors
-- `pytest tests/ -q --tb=short` → 1317 passed, 2 skipped, 11 deselected
+- `pytest tests/ -q --tb=short` → 1321 passed, 3 skipped, 11 deselected
 - `python -m benchmarks.runner --mock` → Overall score 1.000 / Baseline 1.000
 - `python scripts/release_smoke.py --all` → passed
 - `python -m js --help` → CLI loads cleanly
