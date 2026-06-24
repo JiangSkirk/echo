@@ -16,6 +16,7 @@ from js.models.providers import (
     ModelProvider,
     OpenAICompatibleProvider,
 )
+from js.models.stream_events import StreamEvent
 from js.utils.log import get_logger
 
 logger = get_logger("js.models.router")
@@ -35,7 +36,9 @@ class ModelRouter:
     def __init__(self, settings: JSSettings) -> None:
         self.settings = settings
         self._providers: dict[str, ModelProvider] = {}
-        self._model_map: dict[str, tuple[str, ModelConfig]] = {}  # model_id -> (provider_name, config)
+        self._model_map: dict[
+            str, tuple[str, ModelConfig]
+        ] = {}  # model_id -> (provider_name, config)
         self._routing_cache: TTLCache[str, RoutingDecision] = TTLCache(maxsize=50, ttl=10)
         self.preferred_model: str | None = None
         self._init_providers()
@@ -62,9 +65,7 @@ class ModelRouter:
         # Clear stale mappings for this provider first so that old model ids
         # (e.g. from a previous discover_models refresh) don't linger.
         old_provider = self._providers.pop(name, None)
-        self._model_map = {
-            k: v for k, v in self._model_map.items() if v[0] != name
-        }
+        self._model_map = {k: v for k, v in self._model_map.items() if v[0] != name}
         self._providers[name] = provider
         for m in models:
             self._model_map[m.id] = (name, m)
@@ -74,6 +75,7 @@ class ModelRouter:
         if old_provider is not None:
             try:
                 import asyncio
+
                 asyncio.get_running_loop()
                 asyncio.create_task(old_provider.close())
             except RuntimeError:
@@ -84,13 +86,12 @@ class ModelRouter:
         if name not in self._providers:
             return False
         old_provider = self._providers.pop(name)
-        self._model_map = {
-            k: v for k, v in self._model_map.items() if v[0] != name
-        }
+        self._model_map = {k: v for k, v in self._model_map.items() if v[0] != name}
         self._routing_cache.clear()
         # Close the old provider asynchronously without blocking the caller.
         try:
             import asyncio
+
             asyncio.get_running_loop()
             asyncio.create_task(old_provider.close())
         except RuntimeError:
@@ -119,7 +120,7 @@ class ModelRouter:
         """Check if provider is healthy and circuit is not OPEN."""
         try:
             # Fast path: check circuit state without network call
-            if hasattr(provider, 'circuit'):
+            if hasattr(provider, "circuit"):
                 circuit_state = await provider.circuit.state()
                 if circuit_state.value == "open":
                     return False
@@ -246,9 +247,7 @@ class ModelRouter:
             errors.append(f"{decision.provider_name}/{decision.model}: {e}")
             if model is not None:
                 # User explicitly requested this model – do not silently fallback.
-                raise RuntimeError(
-                    f"Requested model '{model}' failed: {e}"
-                ) from e
+                raise RuntimeError(f"Requested model '{model}' failed: {e}") from e
 
         # Fallback is only reached when ``model`` is None (auto-select).
         # Try fallback providers (skip unhealthy ones)
@@ -260,7 +259,11 @@ class ModelRouter:
                     continue
                 # Use provider's default model
                 fallback_model = next(
-                    (m.id for mid, (p, m) in self._model_map.items() if p == name and "/" not in mid),
+                    (
+                        m.id
+                        for mid, (p, m) in self._model_map.items()
+                        if p == name and "/" not in mid
+                    ),
                     "",
                 )
                 if not fallback_model:
@@ -312,9 +315,7 @@ class ModelRouter:
         except Exception as e:
             errors.append(f"{decision.provider_name}/{decision.model}: {e}")
             if model is not None:
-                raise RuntimeError(
-                    f"Requested model '{model}' failed: {e}"
-                ) from e
+                raise RuntimeError(f"Requested model '{model}' failed: {e}") from e
 
         # Fallback is only reached when ``model`` is None (auto-select).
         # Fallback providers (skip unhealthy)
@@ -325,7 +326,11 @@ class ModelRouter:
                 if not await self._provider_healthy(provider):
                     continue
                 fallback_model = next(
-                    (m.id for mid, (p, m) in self._model_map.items() if p == name and "/" not in mid),
+                    (
+                        m.id
+                        for mid, (p, m) in self._model_map.items()
+                        if p == name and "/" not in mid
+                    ),
                     "",
                 )
                 if not fallback_model:
@@ -342,6 +347,87 @@ class ModelRouter:
 
         raise RuntimeError(f"All providers failed: {'; '.join(errors)}")
 
+    async def chat_stream_events(
+        self,
+        messages: list[ChatMessage],
+        model: str | None = None,
+        temperature: float = 0.7,
+    ) -> AsyncIterator[StreamEvent]:
+        """Structured-event variant of ``chat_stream``.
+
+        Returns one stream of ``StreamEvent`` (text_delta / thinking_delta /
+        tool_call_delta / usage / done / error). When the chosen provider
+        emits a terminal ``error`` event AND ``model`` was auto-selected,
+        we transparently fail over to the next healthy provider — mirroring
+        ``chat_stream``'s fallback semantics. When the caller pinned a
+        specific ``model``, no fallback happens: the ``error`` event is
+        forwarded so the consumer can react.
+        """
+        from js.models.stream_events import StreamEvent
+
+        decision = await self.select_model(preferred=model)
+        first_error: StreamEvent | None = None
+
+        async for ev in decision.provider.chat_stream_events(
+            messages=messages,
+            model=decision.model,
+            temperature=temperature,
+        ):
+            if not ev.provider:
+                ev.provider = decision.provider_name
+            if ev.kind == "error":
+                first_error = ev
+                if model is not None:
+                    # Pinned model: surface the error and stop.
+                    yield ev
+                    return
+                # Auto-select: hold the error and try fallbacks.
+                break
+            yield ev
+            if ev.kind == "done":
+                return
+
+        # Fallback path is only reached when ``model`` is None.
+        for name, provider in self._providers.items():
+            if name == decision.provider_name:
+                continue
+            try:
+                if not await self._provider_healthy(provider):
+                    continue
+                fallback_model = next(
+                    (
+                        m.id
+                        for mid, (p, m) in self._model_map.items()
+                        if p == name and "/" not in mid
+                    ),
+                    "",
+                )
+                if not fallback_model:
+                    continue
+                async for ev in provider.chat_stream_events(
+                    messages=messages,
+                    model=fallback_model,
+                    temperature=temperature,
+                ):
+                    if not ev.provider:
+                        ev.provider = name
+                    yield ev
+                    if ev.kind == "done":
+                        return
+                return
+            except Exception as e:
+                logger.warning(f"Stream-event fallback {name} failed: {e}")
+
+        # All providers failed: emit the original error (or a synthesised one)
+        # so the consumer always sees a terminal event.
+        if first_error is not None:
+            yield first_error
+        else:
+            yield StreamEvent(
+                kind="error",
+                error="all providers failed to produce a stream",
+            )
+
     async def health_check(self) -> dict[str, bool]:
         """Check health of all providers."""
         results: dict[str, bool] = {}
@@ -355,4 +441,4 @@ class ModelRouter:
             try:
                 await provider.close()
             except Exception:
-                logger.warning('Operation failed', exc_info=True)
+                logger.warning("Operation failed", exc_info=True)

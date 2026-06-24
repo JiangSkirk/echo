@@ -20,6 +20,7 @@ from tenacity import (
 
 from js.config import ModelProviderConfig
 from js.models.circuit_breaker import CircuitBreaker
+from js.models.stream_events import StreamEvent
 from js.utils.log import get_logger
 from js.utils.metrics import get_metrics, start_span
 
@@ -27,6 +28,7 @@ from js.utils.metrics import get_metrics, start_span
 _transport_available = False
 try:
     from js.models.transports import ChatCompletionsTransport, get_transport
+
     _transport_available = True
 except Exception:
     pass
@@ -50,12 +52,21 @@ def _is_local_provider(base_url: str) -> bool:
 
 def _is_retryable_exception(exc: BaseException) -> bool:
     """Retry on network errors, protocol errors, timeouts, 5xx, and 429 rate limits."""
-    if isinstance(exc, (httpx.NetworkError, httpx.TimeoutException, asyncio.TimeoutError,
-                        httpx.RemoteProtocolError, httpx.ConnectError)):
+    if isinstance(
+        exc,
+        (
+            httpx.NetworkError,
+            httpx.TimeoutException,
+            asyncio.TimeoutError,
+            httpx.RemoteProtocolError,
+            httpx.ConnectError,
+        ),
+    ):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code >= 500 or exc.response.status_code == 429
     return False
+
 
 logger = get_logger("js.models")
 
@@ -91,8 +102,7 @@ class ModelProvider(ABC):
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
-    ) -> ChatResponse:
-        ...
+    ) -> ChatResponse: ...
 
     @abstractmethod
     def chat_stream(
@@ -102,16 +112,47 @@ class ModelProvider(ABC):
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
-    ) -> AsyncIterator[str]:
-        ...
+    ) -> AsyncIterator[str]: ...
+
+    async def chat_stream_events(
+        self,
+        messages: list[ChatMessage],
+        model: str,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Structured streaming events (text/thinking/tool/usage/done/error).
+
+        Default implementation wraps ``chat_stream()`` so providers that only
+        emit token text still feed the structured pipeline — each yielded
+        chunk becomes one ``text_delta`` event, followed by a terminal
+        ``done`` event. Concrete providers override this to expose richer
+        deltas (thinking, tool-call partials, usage) without breaking the
+        legacy ``chat_stream()`` contract that ``runner.py`` / ``router.py``
+        already depend on.
+        """
+        from js.models.stream_events import StreamEvent
+
+        try:
+            async for token in self.chat_stream(
+                messages=messages,
+                model=model,
+                tools=tools,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ):
+                if token:
+                    yield StreamEvent(kind="text_delta", text=token, model=model)
+            yield StreamEvent(kind="done", finish_reason="stop", model=model)
+        except Exception as exc:
+            yield StreamEvent(kind="error", error=str(exc), model=model)
 
     @abstractmethod
-    async def health_check(self) -> bool:
-        ...
+    async def health_check(self) -> bool: ...
 
     @abstractmethod
-    async def close(self) -> None:
-        ...
+    async def close(self) -> None: ...
 
 
 class OpenAICompatibleProvider(ModelProvider):
@@ -327,18 +368,22 @@ class OpenAICompatibleProvider(ModelProvider):
                     tool_calls: list[dict[str, Any]] = []
                     if message.tool_calls:
                         for tc in message.tool_calls:
-                            tool_calls.append({
-                                "id": tc.id,
-                                "type": tc.type,
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments,
-                                },
-                            })
+                            tool_calls.append(
+                                {
+                                    "id": tc.id,
+                                    "type": tc.type,
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments,
+                                    },
+                                }
+                            )
 
                     usage: dict[str, int] = {
                         "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
-                        "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+                        "completion_tokens": response.usage.completion_tokens
+                        if response.usage
+                        else 0,
                         "total_tokens": response.usage.total_tokens if response.usage else 0,
                         "cached_tokens": 0,
                     }
@@ -425,7 +470,7 @@ class OpenAICompatibleProvider(ModelProvider):
 
         # Retry wrapper for stream initialization
         last_error: BaseException | None = None
-        max_retries = getattr(self.config, 'max_retries', 3)
+        max_retries = getattr(self.config, "max_retries", 3)
         for attempt in range(max_retries):
             try:
                 # Use ``async with`` so the stream is closed cleanly even if
@@ -448,7 +493,9 @@ class OpenAICompatibleProvider(ModelProvider):
                             # Some providers include cached token details in stream usage
                             details = getattr(chunk.usage, "prompt_tokens_details", None)
                             if details:
-                                self._last_stream_usage["cached_tokens"] = getattr(details, "cached_tokens", 0) or 0
+                                self._last_stream_usage["cached_tokens"] = (
+                                    getattr(details, "cached_tokens", 0) or 0
+                                )
                         if chunk.choices and chunk.choices[0].delta.content:
                             yield chunk.choices[0].delta.content
                 await self.circuit.record_success()
@@ -474,11 +521,113 @@ class OpenAICompatibleProvider(ModelProvider):
                 if not _is_retryable_exception(e):
                     break
                 if attempt < max_retries - 1:
-                    wait = min(2 ** attempt, 30)
-                    logger.warning(f"Stream retry {attempt + 1} for {self.config.name} after {wait}s: {e}")
+                    wait = min(2**attempt, 30)
+                    logger.warning(
+                        f"Stream retry {attempt + 1} for {self.config.name} after {wait}s: {e}"
+                    )
                     await asyncio.sleep(wait)
         await self.circuit.record_failure()
         raise last_error or RuntimeError(f"Stream failed for {self.config.name}")
+
+    async def chat_stream_events(
+        self,
+        messages: list[ChatMessage],
+        model: str,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """OpenAI-compatible structured event stream.
+
+        Unlike the legacy ``chat_stream()`` (which only yields text fragments),
+        this exposes every protocol-level event the OpenAI streaming format
+        carries: text, reasoning content (DeepSeek-R1/QwQ/Kimi-K2-Thinking),
+        partial tool calls, the final usage summary, and a terminal
+        done / error marker. Each event is tagged with the provider name
+        and model id at the boundary so downstream consumers can attribute
+        them without bookkeeping.
+        """
+        from js.models.stream_events import StreamEvent, parse_openai_chunk
+
+        if not await self.circuit.can_execute():
+            yield StreamEvent(
+                kind="error",
+                error=f"Circuit breaker OPEN for {self.config.name}",
+                provider=self.config.name,
+                model=model,
+            )
+            return
+
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": self._convert_messages(messages),
+            "temperature": temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+        if max_tokens:
+            kwargs["max_tokens"] = max_tokens
+
+        stream_options_supported = True
+        last_error: BaseException | None = None
+        max_retries = getattr(self.config, "max_retries", 3)
+        done_emitted = False
+        for attempt in range(max_retries):
+            try:
+                sem = await self._semaphore()
+                async with sem:
+                    stream = await self.client.chat.completions.create(**kwargs)
+                async with stream as stream_ctx:
+                    async for chunk in stream_ctx:
+                        for ev in parse_openai_chunk(chunk):
+                            ev.provider = self.config.name
+                            if not ev.model:
+                                ev.model = model
+                            if ev.kind == "done":
+                                done_emitted = True
+                            yield ev
+                await self.circuit.record_success()
+                if not done_emitted:
+                    yield StreamEvent(
+                        kind="done",
+                        finish_reason="stop",
+                        provider=self.config.name,
+                        model=model,
+                    )
+                return
+            except Exception as e:
+                if stream_options_supported and attempt == 0 and "stream_options" in str(e):
+                    stream_options_supported = False
+                    kwargs.pop("stream_options", None)
+                    continue
+                if isinstance(e, RuntimeError) and (
+                    "generator didn't stop after throw()" in str(e)
+                    or "generator didn't stop after athrow()" in str(e)
+                ):
+                    last_error = RuntimeError(
+                        f"Connection to {self.config.name} was interrupted. "
+                        "The remote server may have closed the connection unexpectedly."
+                    )
+                    break
+                last_error = e
+                if not _is_retryable_exception(e):
+                    break
+                if attempt < max_retries - 1:
+                    wait = min(2**attempt, 30)
+                    logger.warning(
+                        f"Event-stream retry {attempt + 1} for {self.config.name} after {wait}s: {e}"
+                    )
+                    await asyncio.sleep(wait)
+        await self.circuit.record_failure()
+        yield StreamEvent(
+            kind="error",
+            error=str(last_error or f"Stream failed for {self.config.name}"),
+            provider=self.config.name,
+            model=model,
+        )
 
     async def health_check(self) -> bool:
         # Fast path: return cached result without lock
