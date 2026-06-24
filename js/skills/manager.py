@@ -148,8 +148,30 @@ class SkillManager:
         # Replace anything that is NOT a-z, A-Z, 0-9, _ or -
         return re.sub(r"[^a-zA-Z0-9_-]", "_", raw)
 
+    def _should_expose_as_tool(self, spec: SkillSpec) -> bool:
+        """Decide whether a skill is allowed into the model-callable tool registry.
+
+        v0.1.4-alpha PR-1.5 hardening: QUARANTINE skills (including auto-created
+        draft skills) must NOT appear as tools the model can invoke. Operators
+        promote them via ``trust_skill`` once reviewed. Any other trust level
+        is permitted — the per-execution scan / sandbox / approval still runs
+        downstream in ``execute()``.
+
+        This is the single decision point referenced by every call into
+        ``_register_skill_as_tool``; do not duplicate the trust-level check
+        at the call sites.
+        """
+        return spec.trust_level != TrustLevel.QUARANTINE
+
     def _register_skill_as_tool(self, spec: SkillSpec) -> None:
         if not self._tool_registry:
+            return
+        if not self._should_expose_as_tool(spec):
+            logger.debug(
+                "Skipping tool registration for %s (trust_level=%s)",
+                spec.id,
+                spec.trust_level.value,
+            )
             return
 
         tool_name = self._skill_id_to_tool_name(spec.id)
@@ -730,11 +752,26 @@ entry: main.py
         return True
 
     def trust_skill(self, skill_id: str, level: TrustLevel) -> bool:
-        """Manually override a skill's trust level after review."""
+        """Manually override a skill's trust level after review.
+
+        v0.1.4-alpha PR-1.5 hardening: trust transitions also flip tool
+        exposure. Upgrading out of QUARANTINE (operator approve) registers
+        the skill as a callable tool; downgrading back to QUARANTINE
+        unregisters it. All other transitions are a no-op for the registry
+        because the skill was already exposed.
+        """
         spec = self._skills.get(skill_id)
         if not spec:
             return False
+        previous = spec.trust_level
         spec.trust_level = level
+        # Only mutate the registry when the QUARANTINE boundary is crossed.
+        was_exposed = previous != TrustLevel.QUARANTINE
+        now_exposed = level != TrustLevel.QUARANTINE
+        if not was_exposed and now_exposed:
+            self._register_skill_as_tool(spec)
+        elif was_exposed and not now_exposed:
+            self._unregister_skill_as_tool(skill_id)
         logger.info(f"Trust level for {skill_id} set to {level.value}")
         return True
 
