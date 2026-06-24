@@ -140,6 +140,22 @@ class PromotionStore:
     def _normalize_owner(self, owner_key_hash: str | None) -> str:
         return owner_key_hash or _LEGACY_LOCAL_OWNER
 
+    def close(self) -> None:
+        """Close the thread-local SQLite connection if one is open.
+
+        Safe to call multiple times; subsequent ``propose`` / ``list_*`` calls
+        will lazily reopen a fresh connection via :meth:`_conn`. Used by
+        ``Agent.close()`` so long-running processes don't leak SQLite handles
+        across thread lifetimes.
+        """
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            self._local.conn = None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------

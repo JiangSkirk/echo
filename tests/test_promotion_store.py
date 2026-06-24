@@ -274,3 +274,33 @@ def test_variant_proposal_round_trip(store: PromotionStore, tmp_path: Path) -> N
     assert evt.artifact_path == str(artifact)
     assert evt.from_level == evt.to_level == "community"
     assert evt.details["avg_score"] == 0.91
+
+
+# ---------------------------------------------------------------------------
+# close(): thread-local SQLite handle hygiene
+# ---------------------------------------------------------------------------
+
+
+def test_close_is_idempotent(store: PromotionStore) -> None:
+    """close() must be safe to call multiple times (no-op after first call)."""
+    # Force a connection to materialize first.
+    _propose(store)
+    store.close()
+    # Second call must NOT raise even though _local.conn is already None.
+    store.close()
+    # Third call from a "cold" state — still a no-op.
+    store.close()
+
+
+def test_close_then_reuse_reopens_connection(store: PromotionStore) -> None:
+    """After close(), the next API call must lazily reopen the connection."""
+    eid = _propose(store, skill_id="reuse-skill")
+    store.close()
+    # If close() leaked or left a stale handle, this would raise
+    # ``sqlite3.ProgrammingError: Cannot operate on a closed database``.
+    events = store.list_by_skill("reuse-skill")
+    assert len(events) == 1
+    assert events[0].event_id == eid
+    # And we can still write after re-open.
+    eid2 = _propose(store, skill_id="reuse-skill-2")
+    assert eid2 != eid

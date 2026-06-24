@@ -79,6 +79,7 @@ class PromotionGate:
         run_id: str = "",
         run_tests: bool = True,
         run_smoke: bool = True,
+        smoke_timeout: float = 30.0,
     ) -> None:
         self.workspace = Path(workspace)
         self.sandbox = sandbox
@@ -91,6 +92,13 @@ class PromotionGate:
         # protected + validate + security to vet a proposal *into* the queue.
         self.run_tests = run_tests
         self.run_smoke = run_smoke
+        # Hard ceiling on the smoke ``execute_skill`` call. A malicious or
+        # buggy skill that hangs would otherwise stall ``apply_proposal``
+        # indefinitely. On timeout we fail the gate at the "smoke" step with
+        # details.timeout=True; trust / entry file / skill_usage stay
+        # untouched (smoke goes through ``execute_skill`` directly, which
+        # bypasses ``SkillManager.execute._record_usage``).
+        self.smoke_timeout = float(smoke_timeout)
 
     async def run(self, spec: SkillSpec) -> GateResult:
         """Run the gate steps in order, short-circuiting on first failure."""
@@ -197,14 +205,28 @@ class PromotionGate:
             try:
                 workspace = tmp_root / "workspace"
                 workspace.mkdir(parents=True, exist_ok=True)
-                exec_result = await execute_skill(
-                    spec,
-                    self.smoke_args,
-                    workspace,
-                    llm_caller=None,
-                    sandbox=self.sandbox,
-                    skill_resolver=None,
-                )
+                try:
+                    exec_result = await asyncio.wait_for(
+                        execute_skill(
+                            spec,
+                            self.smoke_args,
+                            workspace,
+                            llm_caller=None,
+                            sandbox=self.sandbox,
+                            skill_resolver=None,
+                        ),
+                        timeout=self.smoke_timeout,
+                    )
+                except TimeoutError:
+                    return self._finish(
+                        passed=False,
+                        failed_step="smoke",
+                        details={
+                            "skill_id": spec.id,
+                            "timeout": True,
+                            "smoke_error": f"timeout after {self.smoke_timeout:g}s",
+                        },
+                    )
                 if not exec_result.get("success", False):
                     return self._finish(
                         passed=False,

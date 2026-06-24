@@ -414,3 +414,63 @@ def test_gate_result_to_dict() -> None:
     assert d["passed"] is False
     assert d["failed_step"] == "security"
     assert d["details"]["k"] == "v"
+
+
+# ---------------------------------------------------------------------------
+# smoke timeout: hard ceiling on execute_skill
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gate_smoke_timeout_fails_gracefully(tmp_path: Path) -> None:
+    """A hanging skill must fail at ``smoke`` with details.timeout=True.
+
+    Regression guard for the v0.1.5-alpha contract: a runaway smoke
+    execution previously could stall ``apply_proposal`` indefinitely.
+    The wait_for guard caps it at ``smoke_timeout`` seconds and the
+    failure surfaces as a normal gate fail — trust / entry file /
+    skill_usage all remain untouched (smoke goes through
+    ``execute_skill`` low-level, which never writes ``skill_usage``).
+    """
+    import asyncio as _asyncio
+
+    spec = _write_skill_dir(tmp_path, "timeout_skill")
+    gate = PromotionGate(workspace=tmp_path / "ws", run_tests=False, smoke_timeout=0.05)
+
+    async def hanging_exec(*_a: Any, **_kw: Any) -> dict[str, Any]:
+        # Sleep longer than smoke_timeout to force the wait_for to fire.
+        await _asyncio.sleep(1.0)
+        return {"success": True}
+
+    with patch("js.skills.promotion_gate.execute_skill", side_effect=hanging_exec):
+        result = await gate.run(spec)
+
+    assert result.passed is False
+    assert result.failed_step == "smoke"
+    assert result.details.get("timeout") is True
+    assert "timeout" in result.details.get("smoke_error", "")
+    # gate did NOT pollute skill_usage (smoke uses low-level execute_skill).
+    assert _count_skill_usage_rows(tmp_path / "ws" / "skills.db") == 0
+
+
+@pytest.mark.asyncio
+async def test_gate_smoke_timeout_emits_metric(tmp_path: Path) -> None:
+    """Smoke timeout still emits the standard fail metric so callers can alert."""
+    import asyncio as _asyncio
+
+    spec = _write_skill_dir(tmp_path, "timeout_metric_skill")
+    gate = PromotionGate(workspace=tmp_path / "ws", run_tests=False, smoke_timeout=0.05)
+
+    async def hanging_exec(*_a: Any, **_kw: Any) -> dict[str, Any]:
+        await _asyncio.sleep(1.0)
+        return {"success": True}
+
+    with (
+        patch("js.skills.promotion_gate.execute_skill", side_effect=hanging_exec),
+        patch("js.utils.metrics.get_metrics") as mock_metrics,
+    ):
+        await gate.run(spec)
+
+    mock_metrics.return_value.skill_promotion_events_total.labels.assert_called_with(
+        decision="fail", failed_step="smoke"
+    )

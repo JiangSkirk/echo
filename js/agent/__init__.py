@@ -613,6 +613,7 @@ class JSAgent(
             ("memory", getattr(self, "memory", None)),
             ("audit", getattr(self, "audit", None)),
             ("skills", getattr(self, "skills", None)),
+            ("promotion_store", getattr(self, "promotion_store", None)),
         ]
         for name, obj in resources:
             if obj is None:
