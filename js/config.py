@@ -73,6 +73,29 @@ class ModelConfig(BaseModel):
     supports_tools: bool = True
     cost_input: float = Field(default=0.0, ge=0.0)
     cost_output: float = Field(default=0.0, ge=0.0)
+    # --- v0.1.6 capability fields (all default-on for backward compat) ---
+    supports_streaming: bool = Field(
+        default=True,
+        description="Whether the model supports streaming responses (token deltas)",
+    )
+    supports_thinking: bool = Field(
+        default=False,
+        description="Whether the model emits structured thinking/reasoning deltas",
+    )
+    max_output_tokens: int | None = Field(
+        default=None,
+        gt=0,
+        description="Maximum tokens the model can generate in a single response (None = use max_tokens)",
+    )
+    context_source: str = Field(
+        default="heuristic",
+        description="Where context_window came from: api | preset | heuristic",
+        pattern=r"^(api|preset|heuristic)$",
+    )
+    probed_at: float | None = Field(
+        default=None,
+        description="Unix timestamp when this capability profile was last probed",
+    )
 
 
 class ToolLimits(BaseModel):
