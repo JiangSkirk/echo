@@ -219,7 +219,7 @@ class JSSettings(BaseSettings):
     )
 
     # Core
-    version: str = "0.1.3"
+    version: str = "0.1.5"
     workspace: Path = Field(default_factory=lambda: Path.home() / ".js" / "workspace")
     state_dir: Path = Field(default_factory=lambda: Path.home() / ".js" / "state")
     # Agent behavior

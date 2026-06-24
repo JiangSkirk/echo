@@ -128,9 +128,7 @@ class TestAuthEnforcement:
 
 
 class TestRootInjection:
-    def test_root_injects_key_for_local_browser(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_root_injects_key_for_local_browser(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(web_server, "_bootstrap_admin_key", "KEY-XYZ")
         monkeypatch.setattr(web_server, "_is_loopback", lambda req: True)
         client = TestClient(create_app())
@@ -139,18 +137,14 @@ class TestRootInjection:
         assert "window.__BOOTSTRAP_API_KEY__" in r.text
         assert "KEY-XYZ" in r.text
 
-    def test_root_no_inject_when_no_bootstrap_key(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_root_no_inject_when_no_bootstrap_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(web_server, "_bootstrap_admin_key", None)
         client = TestClient(create_app())
         r = client.get("/")
         assert r.status_code == 200
         assert "__BOOTSTRAP_API_KEY__" not in r.text
 
-    def test_root_no_inject_for_remote_client(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_root_no_inject_for_remote_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Even if a key was minted, a non-loopback client must never receive it.
         monkeypatch.setattr(web_server, "_bootstrap_admin_key", "KEY-XYZ")
         monkeypatch.setattr(web_server, "_is_loopback", lambda req: False)
@@ -182,9 +176,7 @@ def _wire_globals(settings: JSSettings, agent: MagicMock) -> None:
 class TestProcessSmoke:
     """End-to-end: a fresh install must land *usable*, not 401-locked."""
 
-    def test_fresh_install_authenticates_and_reaches_status(
-        self, tmp_path: Path
-    ) -> None:
+    def test_fresh_install_authenticates_and_reaches_status(self, tmp_path: Path) -> None:
         # Genuinely fresh: auth required, no admin key, no models configured.
         s = _settings(tmp_path, api_key_required=True)
         s.providers = []
@@ -218,9 +210,7 @@ class TestFirstStartWizard:
         fake_discovery = MagicMock()
         fake_discovery.discover_all = AsyncMock(return_value=[])
         fake_discovery.close = AsyncMock(return_value=None)
-        monkeypatch.setattr(
-            setup_router, "LocalModelDiscovery", lambda *a, **k: fake_discovery
-        )
+        monkeypatch.setattr(setup_router, "LocalModelDiscovery", lambda *a, **k: fake_discovery)
 
         client = TestClient(create_app())
         resp = client.get("/api/setup/first-start")
@@ -257,13 +247,17 @@ class TestSetupCompleteProvisioning:
         import yaml
 
         config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.safe_dump({
-            "version": "0.1.3",
-            "first_run_completed": False,
-            # Pin to tmp dirs so the test never touches the real ~/.js state.
-            "state_dir": str(tmp_path / "state"),
-            "workspace": str(tmp_path / "ws"),
-        }))
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "version": "0.1.5",
+                    "first_run_completed": False,
+                    # Pin to tmp dirs so the test never touches the real ~/.js state.
+                    "state_dir": str(tmp_path / "state"),
+                    "workspace": str(tmp_path / "ws"),
+                }
+            )
+        )
         monkeypatch.setenv("JS_CONFIG_PATH", str(config_path))
 
         settings = JSSettings.from_file(config_path)

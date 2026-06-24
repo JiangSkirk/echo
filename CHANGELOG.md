@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.5] - 2026-06-24
 
 ### Added
 
@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Task Review Capsule (deterministic MVP, no LLM)**: at the end of every run the agent stores a lightweight, owner-scoped record in `review_capsules.db` containing the first user message, last assistant message, tool-call summary, token totals, turn count and exit status. Secrets are redacted before storage. This is a deterministic post-run summary, **not** an LLM-generated reflection.
 - **Session lifecycle tracking + abnormal-exit recovery (marker only)**: `SessionLifecycleStore` records `running` / `completed` / `aborted` state with heartbeats. On startup, runs whose heartbeats have gone stale beyond the configured threshold are marked as `aborted` with `exit_reason="abnormal_exit_recovery"`. **This is a status marker, not full task resumption**: the agent does not automatically re-run, re-tool, or continue an aborted session from its last checkpoint. Resuming work after an abnormal exit still requires the user to start a new run (existing checkpoint-resume APIs unchanged).
 - **Tool batch telemetry**: after each tool batch the agent emits a `TOOL_BATCH` audit event recording `turn`, `tool_names`, `all_failed`, `batch_size`, `total_output_chars`, `owner_key_hash`, plus `session_id` / `run_id`, and increments a `tool_batches_total{all_failed,tool_count}` Prometheus counter. Per-tool **latency** is *not* in this batch event — per-tool latency continues to flow through the existing `js.utils.metrics` histograms/counters. `TOOL_BATCH` only describes batch shape and outcome.
-- **Skill Promotion Gate CLI/Web controls (v0.1.5-alpha)**: auto curator and evolver no longer mutate trust levels or overwrite entry files directly — both produce `proposed` events in `skill_promotions.db`, which an operator then reviews and applies through a 5-step gate (`protected → validate → security → tests → smoke`; smoke is bounded by a 30 s `asyncio.wait_for`). New surfaces:
+- **Skill Promotion Gate CLI/Web controls**: auto curator and evolver no longer mutate trust levels or overwrite entry files directly — both produce `proposed` events in `skill_promotions.db`, which an operator then reviews and applies through a 5-step gate (`protected → validate → security → tests → smoke`; smoke is bounded by a 30 s `asyncio.wait_for`). New surfaces:
   - **CLI**: `js skill promote list | show <event_id> | approve <event_id> | reject <event_id> | revert <event_id>`. `approve` runs the gate via `SkillManager.apply_proposal`; `reject` only flips event status (never touches trust or files); `revert` rolls back trust + entry file via `SkillManager.revert_promotion`.
   - **Web**: `GET /api/skills/promotions` and `/api/skills/promotions/{event_id}` require normal auth and are scoped by `memory_owner(auth)`. `POST /api/skills/promotions/{event_id}/{approve|reject|revert}` all require `require_admin`. Responses never include `owner_key_hash`. Routes are registered before `/api/skills/{skill_id}` so the wildcard cannot swallow them.
   - **Failure surfaces**: every gate decision emits an `AuditEventType.SKILL_PROMOTION_GATE` audit row and a `skill_promotion_events_total{decision,failed_step}` Prometheus counter. Failure context lives in `event.details.failed_step` (one of `protected/validate/security/tests/smoke`) and, for smoke timeouts, `event.details.timeout=True` + `event.details.smoke_error`.
@@ -229,3 +229,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.1.1-alpha]: https://github.com/JiangSkirk/titan-agent/releases/tag/v0.1.1-alpha
 [0.1.2-alpha]: https://github.com/JiangSkirk/titan-agent/releases/tag/v0.1.2-alpha
 [0.1.3-alpha]: https://github.com/JiangSkirk/titan-agent/releases/tag/v0.1.3-alpha
+[0.1.5]: https://github.com/JiangSkirk/titan-agent/releases/tag/v0.1.5

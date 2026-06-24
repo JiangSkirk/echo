@@ -130,7 +130,7 @@ docker inspect --format='{{.State.Health.Status}}' js-agent
 
 ---
 
-## Skill Promotion Operations（v0.1.5-alpha）
+## Skill Promotion Operations（v0.1.5）
 
 生产环境下，自动 curator 与 evolver **不会**直接改 skill 信任等级或覆盖 entry 文件；它们只产生 `proposed` 事件，需要操作员批准后才会通过 5 步门禁应用。
 

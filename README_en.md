@@ -4,7 +4,7 @@ An AI agent harness, not a chatbot. JS Agent wraps your chosen model with persis
 
 The model is the engine. The harness is the complete frame that lets the engine work.
 
-> **Status**: v0.1.3-alpha — APIs may change. Feedback welcome!
+> **Status**: v0.1.5 stable release — APIs stabilizing, feedback welcome!
 
 ## Core Harness Capabilities
 
@@ -55,7 +55,7 @@ The model is the engine. The harness is the complete frame that lets the engine 
 - **Audit log**: Complete tool-call history with traceability
 - **Skill panel**: Install, uninstall, adjust trust levels, and view content online
 
-## Skill Promotion Gate (v0.1.5-alpha)
+## Skill Promotion Gate (v0.1.5)
 
 Auto curator and evolver **no longer** mutate trust levels or overwrite entry files directly. Both record `proposed` events in `skill_promotions.db`, which an operator must explicitly approve. Approval runs a 5-step gate (`protected → validate → security → tests → smoke`, smoke bounded by a 30 s timeout). A failed gate changes nothing — no trust flip, no file overwrite, no `skill_usage` pollution.
 

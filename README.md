@@ -1,6 +1,6 @@
 # JS Agent — 本地个人 Agent Harness
 
-> **⚠️ 当前版本: v0.1.3-alpha — API 可能变更，欢迎反馈！**
+> **当前版本: v0.1.5 stable — API 趋稳，欢迎反馈！**
 >
 > [English README](README_en.md)
 
@@ -200,7 +200,7 @@ Web 界面的 Skills 面板支持：
 - 点击展开查看完整内容
 - 在线安装/卸载/信任调整
 
-## Skill Promotion Gate（v0.1.5-alpha）
+## Skill Promotion Gate（v0.1.5）
 
 自动 curator 与 evolver **不再**直接修改 skill 信任等级或覆盖 entry 文件。两者只会向 `skill_promotions.db` 写入 `proposed` 事件，由操作员显式批准后才会过 5 步门禁（`protected → validate → security → tests → smoke`，smoke 默认 30 s 超时）。门禁失败不修改任何状态，也不污染 `skill_usage` 统计。
 
@@ -246,8 +246,8 @@ pip install -e ".[dev]"
 python -m build
 
 # 产物位于 dist/
-#   js_agent-0.1.3-py3-none-any.whl
-#   js_agent-0.1.3.tar.gz
+#   js_agent-0.1.5-py3-none-any.whl
+#   js_agent-0.1.5.tar.gz
 ```
 
 ## 已知限制

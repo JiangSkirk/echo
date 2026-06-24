@@ -44,7 +44,7 @@ def _short(text: str, limit: int = 4000) -> str:
 def _write_config(base: Path) -> Path:
     config_path = base / "config.yaml"
     config = {
-        "version": "0.1.3",
+        "version": "0.1.5",
         "workspace": str(base / "workspace"),
         "state_dir": str(base / "state"),
         "log_level": "INFO",
@@ -86,9 +86,7 @@ def _run(cmd: list[str], *, env: dict[str, str], timeout: int = 120) -> str:
     output = proc.stdout or ""
     if proc.returncode != 0:
         raise SmokeError(
-            f"命令执行失败: {' '.join(cmd)}\n"
-            f"退出码: {proc.returncode}\n"
-            f"输出:\n{_short(output)}"
+            f"命令执行失败: {' '.join(cmd)}\n退出码: {proc.returncode}\n输出:\n{_short(output)}"
         )
     return output
 
@@ -137,7 +135,9 @@ def _wait_for_server(base_url: str, proc: subprocess.Popen[str], log_path: Path)
     last_error = ""
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            log = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+            log = (
+                log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+            )
             raise SmokeError(f"Web 服务启动后立刻退出。\n日志:\n{_short(log)}")
         try:
             html = _request_text(base_url, timeout=2.0)
@@ -147,11 +147,7 @@ def _wait_for_server(base_url: str, proc: subprocess.Popen[str], log_path: Path)
             last_error = str(exc)
         time.sleep(0.5)
     log = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
-    raise SmokeError(
-        "Web 服务没有在 45 秒内启动。\n"
-        f"最后错误: {last_error}\n"
-        f"日志:\n{_short(log)}"
-    )
+    raise SmokeError(f"Web 服务没有在 45 秒内启动。\n最后错误: {last_error}\n日志:\n{_short(log)}")
 
 
 def _stop_process(proc: subprocess.Popen[str]) -> None:
@@ -252,7 +248,9 @@ async def check_skills(base: Path) -> None:
     from js.skills.manager import SkillManager
     from js.skills.spec import SkillType
 
-    settings = JSSettings(workspace=base / "workspace", state_dir=base / "state", providers=[], models=[])
+    settings = JSSettings(
+        workspace=base / "workspace", state_dir=base / "state", providers=[], models=[]
+    )
     manager = SkillManager(settings.state_dir, settings.workspace)
 
     prompt_skill = base / "openclaw_prompt"
@@ -333,7 +331,9 @@ async def check_dream(base: Path) -> None:
     from js.config import JSSettings, MemoryConfig
     from js.memory.store import MemoryStore
 
-    settings = JSSettings(workspace=base / "workspace", state_dir=base / "state", providers=[], models=[])
+    settings = JSSettings(
+        workspace=base / "workspace", state_dir=base / "state", providers=[], models=[]
+    )
     memory = MemoryStore(settings.state_dir, MemoryConfig())
     memory.store(
         "release-smoke",
@@ -402,7 +402,9 @@ class _StaticRouter:
             )
         else:
             content = f"release smoke completed: {str(prompt)[:120]}"
-        return ChatResponse(content=content, model=model or "mock", tool_calls=[], usage={}, finish_reason="stop")
+        return ChatResponse(
+            content=content, model=model or "mock", tool_calls=[], usage={}, finish_reason="stop"
+        )
 
     async def chat_stream(
         self,
@@ -431,7 +433,12 @@ async def check_evolution(base: Path) -> None:
     )
     agent = JSAgent(settings)
     agent.router = _StaticRouter()  # type: ignore[assignment]
-    agent.memory.store("install-test", "用户想测试自主进化、梦境记忆和安装稳定性", category="conversation", importance=8)
+    agent.memory.store(
+        "install-test",
+        "用户想测试自主进化、梦境记忆和安装稳定性",
+        category="conversation",
+        importance=8,
+    )
     report = await agent._run_evolution_cycle(
         [{"user": "请测试安装、梦境记忆和自主进化", "assistant": "我会做端到端验证"}]
     )
@@ -520,7 +527,9 @@ async def run_checks(selected: list[str], keep_temp: bool) -> int:
             except SmokeError as exc:
                 print(f"  [失败] {step_name}")
                 print(str(exc))
-                print("\n排查建议：先在本机运行同一条命令；如果失败，把上面的输出和临时测试目录里的日志发给开发者。")
+                print(
+                    "\n排查建议：先在本机运行同一条命令；如果失败，把上面的输出和临时测试目录里的日志发给开发者。"
+                )
                 if keep_temp:
                     print(f"临时目录保留: {root}")
                     return 1
@@ -550,7 +559,9 @@ async def run_checks(selected: list[str], keep_temp: bool) -> int:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run JS Agent release smoke checks.")
     parser.add_argument("--all", action="store_true", help="Run all release smoke checks.")
-    parser.add_argument("--keep-temp", action="store_true", help="Keep temporary test files after failure.")
+    parser.add_argument(
+        "--keep-temp", action="store_true", help="Keep temporary test files after failure."
+    )
     parser.add_argument(
         "--checks",
         nargs="+",
