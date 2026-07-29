@@ -1,0 +1,27 @@
+{
+  "scenario": "ws_auth_fail",
+  "kind": "ws",
+  "input": {
+    "method": null,
+    "path": "/ws",
+    "headers": {
+      "Origin": "http://localhost"
+    },
+    "body": null,
+    "frames_in": []
+  },
+  "expected": {
+    "status": 101,
+    "headers": {},
+    "body": null,
+    "frames_out": [],
+    "close_code": 1008,
+    "close_reason": "Authentication failed"
+  },
+  "mock": {
+    "provider": "scripted",
+    "scripted_chunks": [],
+    "api_key_required": true
+  },
+  "notes": "api_key_required=True but no key cookie/header/query → server closes with code 1008."
+}

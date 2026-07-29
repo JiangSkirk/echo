@@ -5,7 +5,8 @@
   * :class:`~js.agent.prompt_builder.PromptBuilderMixin` — system/context prompts
   * :class:`~js.agent.tool_executor.ToolExecutorMixin` — tool schema + execution
   * :class:`~js.agent.finalizer.FinalizerMixin` — post-run persistence/learning
-  * :class:`~js.agent.runner.RunnerMixin` — the run loop (via ``TurnExecutor``)
+  * :class:`~js.agent.runner.RunnerMixin` — public run/stream API facade over
+    :class:`~js.echo.turn_runtime.EchoRuntime`
 
 The residual orchestration (subsystem wiring, health, evolution, dreaming) lives
 on ``JSAgent`` here.  ``AgentState`` is re-exported for backward compatibility:
@@ -15,7 +16,12 @@ on ``JSAgent`` here.  ``AgentState`` is re-exported for backward compatibility:
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import contextvars
+import secrets
+import threading
+import uuid
+from collections.abc import Callable
+from typing import Any, cast
 
 from cachetools import TTLCache
 
@@ -27,17 +33,35 @@ from js.agent.tool_executor import ToolExecutorMixin
 from js.compression.compressor import CompressionConfig, ContextCompressor
 from js.compression.feedback import CompressionFeedback
 from js.config import JSSettings
+from js.echo.context_tokenizer import TokenCounter, model_token_counter
+from js.echo.durable_thread import (
+    DurableClaim,
+    EchoDurableExecutor,
+    claim_to_thread,
+    durable_to_thread,
+)
+from js.echo.effect_interpreter import ModelEffect
+from js.echo.model_budget import EchoBudgetExceededError, EchoModelBudget
+from js.echo.primitives import BudgetLimits
+from js.echo.turn_context import RuntimeContext, current_owner_key_hash, current_runtime_context
+from js.echo.turn_loop import (
+    _authorize_echo_model_call,
+    _finish_echo_model_call,
+    _model_terminal_status,
+    _router_supports_model_gate_callbacks,
+)
 from js.evolution.learner import SelfLearner
 from js.evolution.metacognition import MetacognitionLoop
 from js.evolution.optimizer import PromptOptimizer
 from js.memory.embeddings import Embedder, HybridEmbedder, KeywordEmbedder, LLMEmbedder
 from js.memory.scheduler import DreamScheduler
 from js.memory.store import MemoryStore
-from js.models.provider_manager import ProviderManager
-from js.models.providers import ChatMessage
+from js.models.permit import ModelPermitIssuer
+from js.models.provider_manager import ProviderManager, hydrate_static_provider_api_keys
+from js.models.providers import ChatMessage, ChatResponse
 from js.models.router import ModelRouter
 from js.security.approvals import ApprovalMode, ApprovalQueue
-from js.security.audit import AuditLogger
+from js.security.audit import AuditEventType, AuditLogger
 from js.security.guard import BehaviorGuard
 from js.security.sandbox import SandboxExecutor
 from js.security.secrets import SecretManager
@@ -53,6 +77,12 @@ from js.utils.log import get_logger
 __all__ = ["AgentState", "JSAgent"]
 
 
+_SUMMARY_TENANT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "js_agent_summary_tenant",
+    default=None,
+)
+
+
 class JSAgent(
     StateMixin,
     PromptBuilderMixin,
@@ -65,15 +95,37 @@ class JSAgent(
     def __init__(self, settings: JSSettings) -> None:
         self.settings = settings
         self.logger = get_logger("js.agent")
+        self._echo_durable_executor = EchoDurableExecutor(
+            thread_name_prefix=f"echo-{getattr(settings, 'product_id', 'js-agent')}"
+        )
         self._role: str | None = None  # Set by AgentFleet.spawn() for role-based tool restrictions
         self._init_subsystems()
+
+    def _push_summary_tenant(self, tenant_id: str | None) -> contextvars.Token[str | None]:
+        return _SUMMARY_TENANT.set(tenant_id)
+
+    def _reset_summary_tenant(self, token: contextvars.Token[str | None]) -> None:
+        _SUMMARY_TENANT.reset(token)
 
     def _init_subsystems(self) -> None:
         """Initialize all agent subsystems."""
         settings = self.settings
+        features = settings.features
 
         # Core infrastructure
-        self.router = ModelRouter(settings)
+        static_provider_secrets = SecretManager(settings.state_dir)
+        hydrate_static_provider_api_keys(
+            self.settings.providers,
+            static_provider_secrets,
+        )
+        # Unforgeable model-call permit issuer owned by this Echo runtime.
+        # The router receives it as a verifier at construction time; there is
+        # no public way to rebind authorization callbacks afterwards.
+        self._model_permit_issuer = ModelPermitIssuer()
+        self.router = ModelRouter(settings, permit_verifier=self._model_permit_issuer)
+        from js.echo.ledger.service import EchoSafetyService
+
+        self.echo_safety_service = EchoSafetyService.from_settings(settings)
         # Load dynamically-added providers (skip if same name exists in static config)
         self.provider_manager = ProviderManager(settings.state_dir)
         static_names = {p.name for p in self.settings.providers}
@@ -93,72 +145,105 @@ class JSAgent(
             )
         self.guard = BehaviorGuard(settings.security, settings.workspace)
         self.audit = AuditLogger(settings.state_dir, settings.security.audit_retention_days)
-        self.secrets = SecretManager(settings.state_dir)
+        self.secrets = static_provider_secrets
         self.memory = MemoryStore(settings.state_dir, settings.memory, self._setup_embedder())
         self._dream_scheduler = DreamScheduler(self)
         # Structured memory extraction (facts/people/plans → proposal queue).
         from js.memory.organizer import MemoryOrganizer
 
-        self._organizer = MemoryOrganizer(self.memory, self.router, settings.memory)
+        self._organizer = MemoryOrganizer(
+            self.memory,
+            self._memory_extraction_model_chat,
+            settings.memory,
+        )
         self._memory_bootstrapped = False
 
         # Plugin system
         self.plugins: Any = None
-        self._init_plugins()
+        if features.plugins_enabled:
+            self._init_plugins()
 
         # Tooling layer
         self.registry = ToolRegistry(settings.tools, self.guard)
-        # v0.1.5-alpha: PromotionStore must be constructed before SkillManager
-        # so trust changes / proposals can be audited from the very first
-        # ``trust_skill`` call. Curator and Evolver share the same store.
-        self.promotion_store = PromotionStore(settings.state_dir / "skill_promotions.db")
-        self.skills = SkillManager(
-            settings.state_dir,
-            settings.workspace,
-            promotion_store=self.promotion_store,
-            audit_logger=self.audit,
-        )
+        self.promotion_store = None
+        self.skills = None  # type: ignore[assignment]
+        if features.skills_enabled:
+            # v0.1.5-alpha: PromotionStore must be constructed before SkillManager
+            # so trust changes / proposals can be audited from the very first
+            # ``trust_skill`` call. Curator and Evolver share the same store.
+            self.promotion_store = PromotionStore(settings.state_dir / "skill_promotions.db")
+            self.skills = SkillManager(
+                settings.state_dir,
+                settings.workspace,
+                promotion_store=self.promotion_store,
+                audit_logger=self.audit,
+                hermes_skills_enabled=features.hermes_skills_enabled,
+            )
         self.search = self._setup_search()
 
         # Learning & evolution
-        self.learner = SelfLearner(settings.state_dir)
-        self.optimizer = PromptOptimizer(settings.state_dir)
-        self.evolver = SkillEvolver(
-            settings.state_dir,
-            promotion_store=self.promotion_store,
-        )
-        self.composer = SkillComposer(settings.state_dir)
+        self.learner = None  # type: ignore[assignment]
+        self.optimizer = None  # type: ignore[assignment]
+        self.evolver = None  # type: ignore[assignment]
+        self.composer = None  # type: ignore[assignment]
         self._clawhub: Any | None = None
         self.compression_config = CompressionConfig()
         self.compressor = ContextCompressor(
             self.compression_config, summarizer=self._summarize_context
         )
+        self._model_token_counters: dict[tuple[str, str], TokenCounter] = {}
+        self._model_token_counter_lock = threading.Lock()
         self.compression_feedback = CompressionFeedback(settings.state_dir)
-        self.metacognition = MetacognitionLoop(
-            settings.state_dir,
-            learner=self.learner,
-            optimizer=self.optimizer,
-            evolver=self.evolver,
-            compression_feedback=self.compression_feedback,
-            compression_config=self.compression_config,
-            composer=self.composer,
-        )
-        self.curator = SkillCurator(
-            settings.state_dir,
-            promotion_store=self.promotion_store,
-            skill_manager=self.skills,
-        )
+        self.metacognition = None  # type: ignore[assignment]
+        self.curator = None  # type: ignore[assignment]
+        if features.evolution_enabled:
+            self.learner = SelfLearner(settings.state_dir)
+            self.optimizer = PromptOptimizer(settings.state_dir)
+            self.evolver = SkillEvolver(
+                settings.state_dir,
+                promotion_store=self.promotion_store,
+            )
+            self.composer = SkillComposer(settings.state_dir)
+            self.metacognition = MetacognitionLoop(
+                settings.state_dir,
+                learner=self.learner,
+                optimizer=self.optimizer,
+                evolver=self.evolver,
+                compression_feedback=self.compression_feedback,
+                compression_config=self.compression_config,
+                composer=self.composer,
+            )
+            self.curator = SkillCurator(
+                settings.state_dir,
+                promotion_store=self.promotion_store,
+                skill_manager=self.skills,
+            )
 
         # Execution & safety
-        self.skills.set_composer(self.composer)
-        self.skills.set_sandbox(SandboxExecutor(settings.workspace, strict_isolation=True))
-        self.skills.set_evolver(self.evolver)
-        self.approvals = ApprovalQueue(default_mode=ApprovalMode.MANUAL)
+        if self.skills is not None:
+            self.skills.set_composer(self.composer)
+            self.skills.set_sandbox(SandboxExecutor(settings.workspace, strict_isolation=True))
+            self.skills.set_evolver(self.evolver)
+        self.approvals = ApprovalQueue(
+            default_mode=ApprovalMode.MANUAL,
+            ledger_path=settings.state_dir / "echo_approvals.jsonl",
+        )
+        # Unify the approval lifecycle into the authoritative EchoLedger; the
+        # local JSONL file remains only a derived mirror.
+        from js.security.approvals import wire_echo_approval_sink
+
+        self.approvals.set_echo_event_sink(
+            wire_echo_approval_sink(
+                self.echo_safety_service,
+                product_id=str(getattr(settings, "product_id", "js-agent")),
+            )
+        )
         self.defense_strategies = build_default_strategies()
         self._setup_tools()
 
         # Register skills as callable tools
-        self.skills.register_as_tools(self.registry)
+        if self.skills is not None and features.skills_enabled and features.skill_tools_enabled:
+            self.skills.register_as_tools(self.registry)
 
         # Register default prompt variant for optimization
         self._init_default_prompt_variant()
@@ -169,7 +254,13 @@ class JSAgent(
         # popping each other's tokens.
         # The owner_key_hash prevents users from cancelling other users' sessions.
         self._cancel_tokens: dict[str, tuple[asyncio.Event, str, str | None]] = {}
+        self._active_run_tasks: dict[
+            str,
+            tuple[asyncio.Task[Any], str, str | None],
+        ] = {}
+        self._background_model_tasks: set[asyncio.Task[Any]] = set()
         self._shutdown_requested = False
+        self._last_skill_evolution_check_monotonic: float | None = None
         self._system_message_cache: TTLCache[tuple[str, str, str], str] = TTLCache(
             maxsize=100, ttl=60
         )
@@ -211,12 +302,20 @@ class JSAgent(
         except Exception:
             self._lane_executor = None  # type: ignore[assignment]
 
+        from js.echo.turn_runtime import EchoRuntime
+
+        self.echo_runtime = EchoRuntime(self)
+
         # Quality scoring & self-learning闭环 (OpenHuman-style)
         try:
             from js.evolution.quality_scorer import QualityScorer
 
             self._quality_scorer = QualityScorer(settings.state_dir)
         except Exception:
+            self.logger.warning(
+                "Quality scorer initialization failed; learning context is disabled",
+                exc_info=True,
+            )
             self._quality_scorer = None  # type: ignore[assignment]
 
         # Resource governance (started via start_background_tasks)
@@ -229,18 +328,86 @@ class JSAgent(
     def degraded(self) -> bool:
         return self._degraded
 
+    def bind_cancel_token(
+        self,
+        session_id: str,
+        token: asyncio.Event,
+        *,
+        owner_key_hash: str | None = None,
+        run_id: str | None = None,
+    ) -> None:
+        """Register a connection-owned cancel token before lane admission."""
+        from js.echo.turn_context import runtime_partition_key
+
+        partition_key = runtime_partition_key(
+            getattr(self.settings, "product_id", "js-agent"),
+            owner_key_hash,
+            session_id,
+        )
+        self._cancel_tokens[partition_key] = (
+            token,
+            run_id or f"conn-{secrets.token_hex(8)}",
+            owner_key_hash,
+        )
+
+    def unbind_cancel_token(
+        self,
+        session_id: str,
+        token: asyncio.Event,
+        *,
+        owner_key_hash: str | None = None,
+    ) -> None:
+        """Remove a connection-owned cancel token when it still matches ``token``."""
+        from js.echo.turn_context import runtime_partition_key
+
+        partition_key = runtime_partition_key(
+            getattr(self.settings, "product_id", "js-agent"),
+            owner_key_hash,
+            session_id,
+        )
+        entry = self._cancel_tokens.get(partition_key)
+        if entry is not None and entry[0] is token:
+            self._cancel_tokens.pop(partition_key, None)
+
     def request_cancel(self, session_id: str, owner_key_hash: str | None = None) -> bool:
         """Request cancellation of an active run.
 
         If owner_key_hash is provided, only cancel sessions owned by that key.
         """
-        entry = self._cancel_tokens.get(session_id)
+        from js.echo.turn_context import runtime_partition_key
+
+        partition_key = runtime_partition_key(
+            getattr(self.settings, "product_id", "js-agent"),
+            owner_key_hash,
+            session_id,
+        )
+        entry = self._cancel_tokens.get(partition_key)
         if entry is None:
             return False
-        _, _, session_owner = entry
-        if session_owner and owner_key_hash and session_owner != owner_key_hash:
+        _, run_id, session_owner = entry
+        expected_owner = owner_key_hash or "local-user"
+        if (session_owner or "local-user") != expected_owner:
             raise PermissionError("Cannot cancel another user's session")
-        entry[0].set()
+        cancel_event = entry[0]
+        if cancel_event.is_set():
+            return True
+        cancel_event.set()
+        try:
+            self.audit.log(
+                AuditEventType.CANCELLED,
+                session_id,
+                run_id,
+                "user",
+                "cancel_requested",
+                {"owner_bound": owner_key_hash is not None},
+            )
+        except Exception:
+            self.logger.warning("Failed to record cancellation audit event", exc_info=True)
+        active = self._active_run_tasks.get(partition_key)
+        if active is not None and active[1] == run_id:
+            task = active[0]
+            if task is not asyncio.current_task() and not task.done():
+                task.cancel()
         return True
 
     async def _check_degraded(self) -> None:
@@ -261,7 +428,11 @@ class JSAgent(
             self.degraded_reason = f"Health check failed: {type(e).__name__}"
 
     async def _summarize_context(
-        self, messages: list[ChatMessage], identifiers: list[str] | None = None
+        self,
+        messages: list[ChatMessage],
+        identifiers: list[str] | None = None,
+        *,
+        runtime_context: RuntimeContext | None = None,
     ) -> str:
         """Generate an LLM-powered summary of conversation turns."""
         from js.compression.compressor import _SUMMARY_SYSTEM_PROMPT
@@ -278,10 +449,311 @@ class JSAgent(
             ChatMessage(role="system", content=_SUMMARY_SYSTEM_PROMPT + preserve_hint),
             ChatMessage(role="user", content=prompt_text),
         ]
-        response = await self.router.chat(messages=summary_messages, model=None)
+        context = runtime_context or current_runtime_context()
+        if context is None:
+            owner_key_hash = (
+                _SUMMARY_TENANT.get() or current_owner_key_hash("local-user") or "local-user"
+            )
+            context = self.echo_runtime.build_context(
+                channel="context_summary",
+                owner_key_hash=owner_key_hash,
+                session_id="background-summary",
+            )
+        response = await self.echo_runtime.execute_model_effect(
+            ModelEffect(messages=tuple(summary_messages), model=None),
+            context,
+        )
         if isinstance(response.content, str):
             return response.content
         return ""
+
+    async def _memory_extraction_model_chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tenant_id: str = "local",
+        run_id: str = "memory:background",
+        model: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.2,
+        max_tokens: int | None = None,
+    ) -> ChatResponse:
+        """Execute organizer model work through the authoritative Echo runtime."""
+        budget = self._new_echo_model_budget()
+
+        def _reserve_attempt() -> None:
+            budget.reserve_attempt(messages, tools)
+
+        def _reserve_completion(completion_tokens: int) -> None:
+            budget.reserve_completion(completion_tokens)
+
+        session_id = run_id.removeprefix("memory:") or "background"
+        context = self.echo_runtime.build_context(
+            channel="memory_extraction",
+            owner_key_hash=tenant_id,
+            session_id=session_id,
+            run_id=run_id,
+            capabilities=(),
+        )
+        completion_limit = budget.remaining_completion_tokens()
+        if max_tokens is not None:
+            completion_limit = min(completion_limit, max_tokens)
+        return await self.echo_runtime.execute_model_effect(
+            ModelEffect(
+                messages=tuple(messages),
+                model=model,
+                tools_schema=tuple(tools or ()),
+                temperature=temperature,
+                max_tokens=completion_limit,
+                before_model_attempt=_reserve_attempt,
+                completion_budget_callback=_reserve_completion,
+            ),
+            context,
+        )
+
+    async def authorized_model_chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tenant_id: str = "local",
+        run_id: str = "background",
+        session_id: str = "",
+        model: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        attachment_manifest: tuple[dict[str, Any], ...] = (),
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        budget_callback: Callable[[], None] | None = None,
+        completion_budget_callback: Callable[[int], None] | None = None,
+        model_budget: EchoModelBudget | None = None,
+    ) -> ChatResponse:
+        """Track every public background model call through graceful shutdown."""
+        if self._shutdown_requested:
+            raise RuntimeError("JSAgent is shutting down")
+        task = asyncio.current_task()
+        if task is not None:
+            self._background_model_tasks.add(task)
+        try:
+            return await self._authorized_model_chat_impl(
+                messages,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                session_id=session_id,
+                model=model,
+                tools=tools,
+                attachment_manifest=attachment_manifest,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                budget_callback=budget_callback,
+                completion_budget_callback=completion_budget_callback,
+                model_budget=model_budget,
+            )
+        finally:
+            if task is not None:
+                self._background_model_tasks.discard(task)
+
+    async def _authorized_model_chat_impl(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tenant_id: str = "local",
+        run_id: str = "background",
+        session_id: str = "",
+        model: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        attachment_manifest: tuple[dict[str, Any], ...] = (),
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        budget_callback: Callable[[], None] | None = None,
+        completion_budget_callback: Callable[[int], None] | None = None,
+        model_budget: EchoModelBudget | None = None,
+    ) -> ChatResponse:
+        """Call the model through Echo's safety ledger."""
+
+        effective_budget = model_budget
+        if budget_callback is None and effective_budget is None:
+            effective_budget = self._new_echo_model_budget(model=model)
+
+        def _reserve_attempt(
+            call_messages: list[ChatMessage],
+            call_tools: list[dict[str, Any]] | None,
+        ) -> None:
+            if budget_callback is not None:
+                budget_callback()
+            elif effective_budget is not None:
+                effective_budget.reserve_attempt(call_messages, call_tools)
+
+        def _reserve_completion(response: ChatResponse) -> None:
+            completion_tokens = int(response.usage.get("completion_tokens", 0) or 0)
+            if completion_budget_callback is not None:
+                completion_budget_callback(completion_tokens)
+            elif effective_budget is not None:
+                effective_budget.reserve_completion(completion_tokens)
+
+        completion_limit = max_tokens
+        if effective_budget is not None:
+            budget_limit = effective_budget.remaining_completion_tokens()
+            completion_limit = (
+                budget_limit if completion_limit is None else min(completion_limit, budget_limit)
+            )
+        if completion_limit is not None and completion_limit <= 0:
+            raise EchoBudgetExceededError("Echo budget exceeded: completion_tokens_exceeded")
+
+        if _router_supports_model_gate_callbacks(self.router):
+
+            async def _before(
+                decision: Any, call_messages: list[ChatMessage], call_tools: Any
+            ) -> Any:
+                _reserve_attempt(call_messages, call_tools)
+                return await claim_to_thread(
+                    lambda: _authorize_echo_model_call(
+                        self,
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        provider_id=str(getattr(decision, "provider_name", "")),
+                        model_id=str(getattr(decision, "model", model or "default")),
+                        messages=call_messages,
+                        tools_schema=call_tools,
+                        attachments_manifest=attachment_manifest,
+                    ),
+                    on_cancel=lambda context: _finish_echo_model_call(
+                        self,
+                        context,
+                        assistant_text="model authorization cancelled",
+                        status="cancelled",
+                        token_totals={},
+                    ),
+                    executor=self._echo_durable_executor,
+                )
+
+            async def _after(
+                context: Any,
+                response: ChatResponse | None,
+                error: BaseException | None,
+            ) -> None:
+                claimed_context = cast("DurableClaim[Any]", context)
+                if response is None:
+                    terminal_status = _model_terminal_status(error)
+                    await durable_to_thread(
+                        lambda: _finish_echo_model_call(
+                            self,
+                            claimed_context.value,
+                            assistant_text=str(error) if error else "",
+                            status=terminal_status,
+                            token_totals={},
+                        ),
+                        claim=claimed_context,
+                    )
+                    return
+                try:
+                    _reserve_completion(response)
+                except BaseException as exc:
+                    error_text = str(exc)
+                    await durable_to_thread(
+                        lambda: _finish_echo_model_call(
+                            self,
+                            claimed_context.value,
+                            assistant_text=error_text,
+                            status="failed",
+                            token_totals={},
+                        ),
+                        claim=claimed_context,
+                    )
+                    raise
+                await durable_to_thread(
+                    lambda: _finish_echo_model_call(
+                        self,
+                        claimed_context.value,
+                        assistant_text=response.content,
+                        status="completed",
+                        token_totals={
+                            "input": int(response.usage.get("prompt_tokens", 0) or 0),
+                            "output": int(response.usage.get("completion_tokens", 0) or 0),
+                        },
+                        token_source=response.usage_source,
+                    ),
+                    claim=claimed_context,
+                )
+
+            _bind = getattr(self.router, "bind_echo_callbacks", None)
+            if _bind is not None:
+                raise RuntimeError(
+                    "router exposes a rebindable callback API; refusing to run "
+                    "the Echo model gate against an unforgeable-permit-less router"
+                )
+
+            def _permit_grant(
+                decision: Any,
+                call_messages: list[ChatMessage],
+                call_tools: Any,
+            ) -> Any:
+                return self._model_permit_issuer.issue(
+                    provider_name=str(getattr(decision, "provider_name", "")),
+                    model=str(getattr(decision, "model", model or "default")),
+                    messages=call_messages,
+                    tools=call_tools,
+                    owner_key_hash=tenant_id,
+                    session_id=session_id,
+                    run_id=run_id,
+                )
+
+            return await self.router.chat(
+                messages=messages,
+                model=model,
+                tools=tools,
+                temperature=temperature,
+                max_tokens=completion_limit,
+                before_model_call=_before,
+                after_model_call=_after,
+                permit_grant=_permit_grant,
+            )
+
+        from js.echo.ledger.service import EchoUnavailableError
+
+        raise EchoUnavailableError(
+            "Echo on-mode requires model gate callbacks and runtime permit support"
+        )
+
+    def _token_counter_for_model(self, model: str | None) -> TokenCounter:
+        provider_name: str | None = None
+        resolved_model = model or "auto"
+        if model is not None:
+            get_binding = getattr(self.router, "get_model_binding", None)
+            if callable(get_binding):
+                binding = get_binding(model)
+                if binding is not None:
+                    provider_name, model_config = binding
+                    resolved_model = model_config.id
+        cache_key = (provider_name or "auto", resolved_model)
+        with self._model_token_counter_lock:
+            cached = self._model_token_counters.get(cache_key)
+            if cached is not None:
+                return cached
+            counter = model_token_counter(
+                provider_name=provider_name,
+                model=None if model is None else resolved_model,
+            )
+            self._model_token_counters[cache_key] = counter
+            return counter
+
+    def _new_echo_model_budget(self, *, model: str | None = None) -> EchoModelBudget:
+        budget = self.settings.echo_budget
+        token_counter = self._token_counter_for_model(model)
+        return EchoModelBudget(
+            limits=BudgetLimits(
+                max_prompt_tokens=budget.max_prompt_tokens,
+                max_completion_tokens=budget.max_completion_tokens,
+                max_tool_calls=budget.max_tool_calls,
+                max_journal_appends=budget.max_journal_appends,
+                max_elapsed_ms=budget.max_elapsed_ms,
+            ),
+            estimate_prompt_tokens=lambda messages, tools: self.compressor.estimate_tokens(
+                list(messages),
+                tools=list(tools) if tools is not None else None,
+                token_counter=token_counter,
+            ),
+            token_unit_id=token_counter.token_unit_id,
+        )
 
     def _setup_search(self) -> Any:
         from js.search.engines import BingEngine, DuckDuckGoEngine, SearchManager, TavilyEngine
@@ -308,17 +780,15 @@ class JSAgent(
             self.logger.warning("Failed to register fleet collaboration tool", exc_info=True)
 
     def _init_plugins(self) -> None:
-        """Discover and auto-enable builtin plugins."""
+        """Expose release-shipped plugin metadata without importing plugin code."""
         try:
             from js.plugins.manager import PluginManager
 
             self.plugins = PluginManager(self, self.settings)
             self.plugins.discover()
-            for p in self.plugins.list_plugins():
-                if p.manifest.id.startswith("builtin-") or p.manifest.categories == ["demo"]:
-                    self.plugins.enable(p.manifest.id)
             self.logger.info(
-                f"Plugin system initialized: {len(self.plugins.list_plugins())} plugins discovered"
+                "Plugin metadata initialized: "
+                f"{len(self.plugins.list_plugins())} release-shipped plugins discovered"
             )
         except Exception as e:
             self.logger.warning(f"Plugin init failed: {e}")
@@ -366,9 +836,19 @@ class JSAgent(
         """
         self._fleet_getter = getter
 
+    def set_active_model_publisher(self, publisher: Any) -> None:
+        """Publish an Echo-authorized model switch to the active channel state."""
+        if not callable(publisher):
+            raise TypeError("active model publisher must be callable")
+        self._active_model_publisher = publisher
+
     def start_background_tasks(self) -> None:
         """Start background scheduling loops."""
-        self._dream_scheduler.start()
+        if self.settings.features.daemon_enabled:
+            self._dream_scheduler.start()
+            from js.daemon.core import build_default_daemon
+
+            self._daemon = build_default_daemon(self.settings, agent=self)
         if self._governor is None:
             from js.runtime.governor import ResourceGovernor
 
@@ -395,6 +875,15 @@ class JSAgent(
         Returns an execution report dict for the API layer.
         """
         import time
+
+        if not self.settings.features.evolution_enabled:
+            return {
+                "profile_update": {"ok": True, "skipped": True, "error": None},
+                "memory_extraction": {"ok": True, "skipped": True, "error": None},
+                "dreaming": {"ok": True, "skipped": True, "error": None},
+                "skill_evolution": {"ok": True, "skipped": True, "error": None, "evolved": []},
+                "elapsed_seconds": 0.0,
+            }
 
         start = time.perf_counter()
         self.logger.info("Starting evolution cycle")
@@ -497,40 +986,12 @@ class JSAgent(
             self._memory_bootstrapped = True
 
     async def _auto_update_profiles(self, conversation_buffer: list[dict[str, Any]]) -> None:
-        """Use LLM to analyze recent conversation and update USER.md + IDENTITY.md."""
-        try:
-            current_user = self.memory.read_memory_file("user")
-            current_identity = self.memory.read_memory_file("identity")
-        except Exception as e:
-            self.logger.warning(f"Failed to read profile files: {e}", exc_info=True)
-            return
-
-        transcript = "\n\n".join(
-            f"User: {turn['user']}\nAssistant: {turn['assistant']}" for turn in conversation_buffer
-        )
-
-        prompt = (
-            "You are an archive curator. Based on the recent conversation, "
-            "update the two profile files below.\n\n"
-            f"Current USER.md:\n{current_user}\n\n"
-            f"Current IDENTITY.md:\n{current_identity}\n\n"
-            f"Recent conversation:\n{transcript}\n\n"
-            "Update rules:\n"
-            "- USER.md: Extract new facts about the user (name, preferences, projects, habits). "
-            "Add or modify entries. Do not remove existing facts unless contradicted.\n"
-            "- IDENTITY.md: Reflect any evolution in the AI's self-understanding based on "
-            "how the conversation went. Update tone, capabilities, or relationship notes.\n"
-            "- Return ONLY the two files in this exact format:\n\n"
-            "===USER===\n"
-            "(updated USER.md content)\n"
-            "===IDENTITY===\n"
-            "(updated IDENTITY.md content)"
-        )
-
-        messages = [
-            ChatMessage(role="system", content="You are a precise archive curator."),
-            ChatMessage(role="user", content=prompt),
-        ]
+        """Update profile files independently for every owner in the buffer."""
+        owner_turns: dict[str | None, list[dict[str, Any]]] = {}
+        for turn in conversation_buffer:
+            raw_owner = turn.get("owner_key_hash")
+            owner = str(raw_owner) if raw_owner else None
+            owner_turns.setdefault(owner, []).append(turn)
 
         def _parse_profile_update(text: str) -> tuple[str | None, str | None]:
             """Robustly extract USER and IDENTITY sections from LLM output."""
@@ -542,17 +1003,82 @@ class JSAgent(
             identity_content = text[identity_start + len("===IDENTITY===") :].strip()
             return user_content, identity_content
 
-        try:
-            resp = await self.router.chat(messages, temperature=0.3)
-            content = resp.content or ""
-            user_content, identity_content = _parse_profile_update(content)
-            if user_content:
-                self.memory.write_memory_file("user", user_content)
-            if identity_content:
-                self.memory.write_memory_file("identity", identity_content)
-            self.logger.info("Auto-updated memory files from conversation")
-        except Exception as e:
-            self.logger.warning(f"Auto-profile update failed: {e}", exc_info=True)
+        for owner, turns in owner_turns.items():
+            try:
+                current_user = self.memory.read_memory_file("user", owner_key_hash=owner)
+                current_identity = self.memory.read_memory_file("identity", owner_key_hash=owner)
+                transcript = "\n\n".join(
+                    f"User: {turn['user']}\nAssistant: {turn['assistant']}" for turn in turns
+                )
+                prompt = (
+                    "You are an archive curator. Based on the recent conversation, "
+                    "update the two profile files below.\n\n"
+                    f"Current USER.md:\n{current_user}\n\n"
+                    f"Current IDENTITY.md:\n{current_identity}\n\n"
+                    f"Recent conversation:\n{transcript}\n\n"
+                    "Update rules:\n"
+                    "- USER.md: Extract new facts about the user (name, preferences, projects, habits). "
+                    "Add or modify entries. Do not remove existing facts unless contradicted.\n"
+                    "- IDENTITY.md: Reflect any evolution in the AI's self-understanding based on "
+                    "how the conversation went. Update tone, capabilities, or relationship notes.\n"
+                    "- Return ONLY the two files in this exact format:\n\n"
+                    "===USER===\n"
+                    "(updated USER.md content)\n"
+                    "===IDENTITY===\n"
+                    "(updated IDENTITY.md content)"
+                )
+                messages = [
+                    ChatMessage(role="system", content="You are a precise archive curator."),
+                    ChatMessage(role="user", content=prompt),
+                ]
+                session_id = next(
+                    (str(turn["session_id"]) for turn in turns if turn.get("session_id")),
+                    "profile-update",
+                )
+                owner_key_hash = owner or "local"
+                model_budget = self._new_echo_model_budget()
+
+                def _reserve_profile_attempt(
+                    budget: EchoModelBudget = model_budget,
+                    effect_messages: tuple[ChatMessage, ...] = tuple(messages),
+                ) -> None:
+                    budget.reserve_attempt(effect_messages, None)
+
+                def _reserve_profile_completion(
+                    completion_tokens: int,
+                    budget: EchoModelBudget = model_budget,
+                ) -> None:
+                    budget.reserve_completion(completion_tokens)
+
+                runtime_context = self.echo_runtime.build_context(
+                    channel="profile_update",
+                    owner_key_hash=owner_key_hash,
+                    session_id=session_id,
+                    run_id=f"profile:{session_id}:{uuid.uuid4()}",
+                    capabilities=(),
+                )
+                resp = await self.echo_runtime.execute_model_effect(
+                    ModelEffect(
+                        messages=tuple(messages),
+                        temperature=0.3,
+                        max_tokens=model_budget.remaining_completion_tokens(),
+                        before_model_attempt=_reserve_profile_attempt,
+                        completion_budget_callback=_reserve_profile_completion,
+                    ),
+                    runtime_context,
+                )
+                content = resp.content or ""
+                user_content, identity_content = _parse_profile_update(content)
+                if user_content:
+                    self.memory.write_memory_file("user", user_content, owner_key_hash=owner)
+                if identity_content:
+                    self.memory.write_memory_file(
+                        "identity", identity_content, owner_key_hash=owner
+                    )
+                self.logger.info("Auto-updated owner-scoped memory files")
+            except Exception as e:
+                self.logger.warning(f"Auto-profile update failed: {e}", exc_info=True)
+                raise
 
     async def _run_skill_evolution(self) -> list[str]:
         """Evolve underperforming skills using LLM-powered rewriting.
@@ -560,18 +1086,26 @@ class JSAgent(
         Returns list of skill IDs that were evolved.
         """
         evolved: list[str] = []
-        if not self.evolver:
+        if not self.evolver or self.skills is None:
             return evolved
-        for skill_id, spec in self.skills.get_all().items():
-            if not self.evolver.should_evolve(skill_id):
-                continue
+        skills = self.skills.get_all()
+        batch_check = getattr(type(self.evolver), "should_evolve_many", None)
+        if callable(batch_check):
+            due = await asyncio.to_thread(
+                self.evolver.should_evolve_many,
+                tuple(skills),
+            )
+        else:
+            due = {skill_id for skill_id in skills if self.evolver.should_evolve(skill_id)}
+        for skill_id in due:
+            spec = skills[skill_id]
             await self._run_skill_evolution_for(skill_id, spec)
             evolved.append(skill_id)
         return evolved
 
     async def _run_skill_evolution_for(self, skill_id: str, spec: Any | None = None) -> None:
         """Evolve a single skill in the background."""
-        if not self.evolver:
+        if not self.evolver or self.skills is None:
             return
         if spec is None:
             spec = self.skills.get_all().get(skill_id)
@@ -579,24 +1113,50 @@ class JSAgent(
                 return
         self.logger.info(f"Triggering auto-evolution for skill {skill_id}")
         try:
+            model_budget = self._new_echo_model_budget()
+            runtime_context = self.echo_runtime.build_context(
+                channel="skill_evolution",
+                owner_key_hash="local",
+                session_id=skill_id,
+                run_id=f"skill-evolution:{skill_id}",
+                capabilities=(),
+            )
 
             async def _llm_caller(prompt: str) -> str:
                 messages = [
                     ChatMessage(role="system", content="You are an expert code optimizer."),
                     ChatMessage(role="user", content=prompt),
                 ]
-                resp = await self.router.chat(messages, temperature=0.3)
+
+                def _reserve_skill_attempt() -> None:
+                    model_budget.reserve_attempt(messages, None)
+
+                def _reserve_skill_completion(completion_tokens: int) -> None:
+                    model_budget.reserve_completion(completion_tokens)
+
+                resp = await self.echo_runtime.execute_model_effect(
+                    ModelEffect(
+                        messages=tuple(messages),
+                        temperature=0.3,
+                        max_tokens=model_budget.remaining_completion_tokens(),
+                        before_model_attempt=_reserve_skill_attempt,
+                        completion_budget_callback=_reserve_skill_completion,
+                    ),
+                    runtime_context,
+                )
                 return resp.content or ""
 
             variant = await self.evolver.evolve_skill(
                 skill_id=skill_id,
                 current_code=getattr(spec, "full_content", ""),
                 llm_caller=_llm_caller,
+                propagate_llm_errors=True,
             )
             if variant:
                 self.logger.info(f"Evolved skill {skill_id}: new variant {variant.id}")
         except Exception as e:
             self.logger.warning(f"Evolution failed for {skill_id}: {e}")
+            raise
 
     async def close(self) -> None:
         """Clean up resources: HTTP clients, DB connections, etc."""
@@ -604,7 +1164,39 @@ class JSAgent(
         self._shutdown_requested = True
         for event, _run_id, _ in self._cancel_tokens.values():
             event.set()
+        current_task = asyncio.current_task()
+        active_tasks: set[asyncio.Task[Any]] = set()
+        cancellable_tasks: set[asyncio.Task[Any]] = set()
+        for partition_key, (task, run_id, _owner) in list(self._active_run_tasks.items()):
+            if task is current_task or task.done():
+                continue
+            active_tasks.add(task)
+            cancel_entry = self._cancel_tokens.get(partition_key)
+            if cancel_entry is not None and cancel_entry[1] == run_id:
+                cancellable_tasks.add(task)
+        for task in cancellable_tasks:
+            task.cancel()
+        for task in tuple(self._background_model_tasks):
+            if task is current_task or task.done():
+                continue
+            active_tasks.add(task)
+            task.cancel()
+        runtime = getattr(self, "echo_runtime", None)
+        for task in tuple(getattr(runtime, "active_turn_tasks", ())):
+            if task is current_task or task.done():
+                continue
+            active_tasks.add(task)
+        if active_tasks:
+            await asyncio.gather(*active_tasks, return_exceptions=True)
+        governor = self._governor
         self.stop_background_tasks()
+        if governor is not None and hasattr(governor, "wait_stopped"):
+            try:
+                wait_result = governor.wait_stopped()
+                if asyncio.iscoroutine(wait_result):
+                    await wait_result
+            except Exception as e:
+                self.logger.warning(f"Failed to stop resource governor: {e}")
         resources = [
             ("router", getattr(self, "router", None)),
             ("search", getattr(self, "search", None)),
@@ -614,6 +1206,7 @@ class JSAgent(
             ("audit", getattr(self, "audit", None)),
             ("skills", getattr(self, "skills", None)),
             ("promotion_store", getattr(self, "promotion_store", None)),
+            ("echo_safety_service", getattr(self, "echo_safety_service", None)),
         ]
         for name, obj in resources:
             if obj is None:
@@ -625,12 +1218,22 @@ class JSAgent(
                         await result
             except Exception as e:
                 self.logger.warning(f"Failed to close {name}: {e}")
+        self._echo_durable_executor.shutdown(wait=True)
 
     async def _run_dreaming(self) -> None:
         """Background task for memory consolidation with LLM insight generation."""
         try:
+            model_budget = self._new_echo_model_budget()
 
-            async def summarizer(content: str) -> str:
+            async def summarizer(content: str, owner_key_hash: str | None) -> str:
+                if owner_key_hash == "__legacy_local__":
+                    tenant_id = "local"
+                elif owner_key_hash:
+                    tenant_id = owner_key_hash
+                else:
+                    raise ValueError(
+                        "Refusing to summarize authenticated dream content without an owner"
+                    )
                 messages = [
                     ChatMessage(
                         role="system",
@@ -642,10 +1245,36 @@ class JSAgent(
                     ),
                     ChatMessage(role="user", content=content),
                 ]
-                resp = await self.router.chat(messages, temperature=0.3)
+                runtime_context = self.echo_runtime.build_context(
+                    channel="dreaming",
+                    owner_key_hash=tenant_id,
+                    session_id="dreaming",
+                    run_id=f"dreaming:{tenant_id}",
+                    capabilities=(),
+                )
+
+                def _reserve_dream_attempt() -> None:
+                    model_budget.reserve_attempt(messages, None)
+
+                def _reserve_dream_completion(completion_tokens: int) -> None:
+                    model_budget.reserve_completion(completion_tokens)
+
+                resp = await self.echo_runtime.execute_model_effect(
+                    ModelEffect(
+                        messages=tuple(messages),
+                        temperature=0.3,
+                        max_tokens=model_budget.remaining_completion_tokens(),
+                        before_model_attempt=_reserve_dream_attempt,
+                        completion_budget_callback=_reserve_dream_completion,
+                    ),
+                    runtime_context,
+                )
                 return resp.content or ""
 
-            report = await self.memory.dream(llm_summarizer=summarizer)
+            report = await self.memory.dream(
+                llm_summarizer=summarizer,
+                propagate_summarizer_errors=True,
+            )
             if report and report.get("phases"):
                 self.logger.info(
                     "Memory dreaming completed",
@@ -653,3 +1282,4 @@ class JSAgent(
                 )
         except Exception as e:
             self.logger.debug(f"Background dreaming failed: {e}")
+            raise

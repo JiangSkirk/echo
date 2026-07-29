@@ -1,0 +1,45 @@
+{
+  "scenario": "api_chat_success",
+  "kind": "api_chat",
+  "input": {
+    "method": "POST",
+    "path": "/api/chat",
+    "headers": {
+      "Origin": "http://localhost"
+    },
+    "body": {
+      "message": "hello",
+      "session_id": "00000000-0000-0000-0000-000000000001"
+    },
+    "frames_in": []
+  },
+  "expected": {
+    "status": 200,
+    "headers": {
+      "content-length": "155",
+      "content-type": "application/json"
+    },
+    "body": {
+      "response": "Hi there",
+      "session_id": "00000000-0000-0000-0000-000000000001",
+      "turns": 1,
+      "tokens": {
+        "input": 10,
+        "output": 5
+      },
+      "cost": 0.000123,
+      "status": "completed"
+    },
+    "frames_out": []
+  },
+  "mock": {
+    "provider": "scripted",
+    "scripted_chunks": [
+      {
+        "role": "assistant",
+        "content": "Hi there"
+      }
+    ]
+  },
+  "notes": "single-turn happy path; assistant text fixed; auth disabled."
+}

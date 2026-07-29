@@ -1,0 +1,39 @@
+{
+  "scenario": "api_chat_empty",
+  "kind": "api_chat",
+  "input": {
+    "method": "POST",
+    "path": "/api/chat",
+    "headers": {
+      "Origin": "http://localhost"
+    },
+    "body": {
+      "message": ""
+    },
+    "frames_in": []
+  },
+  "expected": {
+    "status": 200,
+    "headers": {
+      "content-length": "141",
+      "content-type": "application/json"
+    },
+    "body": {
+      "response": "",
+      "session_id": "00000000-0000-0000-0000-000000000001",
+      "turns": 1,
+      "tokens": {
+        "input": 0,
+        "output": 0
+      },
+      "cost": 0.0,
+      "status": "completed"
+    },
+    "frames_out": []
+  },
+  "mock": {
+    "provider": "scripted",
+    "scripted_chunks": []
+  },
+  "notes": "empty message still yields 200; matches tests/web/test_chat_router.py::test_chat_empty_message."
+}

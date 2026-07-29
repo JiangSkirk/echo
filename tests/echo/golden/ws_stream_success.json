@@ -1,0 +1,75 @@
+{
+  "scenario": "ws_stream_success",
+  "kind": "ws",
+  "input": {
+    "body": null,
+    "frames_in": [
+      {
+        "content": "hi",
+        "session_id": "00000000-0000-0000-0000-000000000001",
+        "type": "stream"
+      }
+    ],
+    "headers": {
+      "Origin": "http://localhost"
+    },
+    "method": null,
+    "path": "/ws"
+  },
+  "expected": {
+    "body": null,
+    "frames_out": [
+      {
+        "content": "streaming...",
+        "type": "status"
+      },
+      {
+        "content": "He",
+        "provisional": true,
+        "type": "token"
+      },
+      {
+        "content": "ll",
+        "provisional": true,
+        "type": "token"
+      },
+      {
+        "content": "o",
+        "provisional": true,
+        "type": "token"
+      },
+      {
+        "type": "usage",
+        "usage": {
+          "completion_tokens": 5,
+          "prompt_tokens": 10,
+          "total_tokens": 15
+        }
+      },
+      {
+        "compression": {},
+        "cost": 0.000123,
+        "session_id": "00000000-0000-0000-0000-000000000001",
+        "status": "completed",
+        "terminal": true,
+        "tokens": {
+          "input": 10,
+          "output": 5
+        },
+        "turns": 1,
+        "type": "done"
+      }
+    ],
+    "headers": {},
+    "status": 101
+  },
+  "mock": {
+    "provider": "scripted",
+    "scripted_chunks": [
+      "He",
+      "ll",
+      "o"
+    ]
+  },
+  "notes": "token streaming via stream_callback; usage via event_callback; done frame at end."
+}

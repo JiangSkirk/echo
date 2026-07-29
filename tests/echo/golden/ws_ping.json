@@ -1,0 +1,32 @@
+{
+  "scenario": "ws_ping",
+  "kind": "ws",
+  "input": {
+    "method": null,
+    "path": "/ws",
+    "headers": {
+      "Origin": "http://localhost"
+    },
+    "body": null,
+    "frames_in": [
+      {
+        "type": "ping"
+      }
+    ]
+  },
+  "expected": {
+    "status": 101,
+    "headers": {},
+    "body": null,
+    "frames_out": [
+      {
+        "type": "pong"
+      }
+    ]
+  },
+  "mock": {
+    "provider": "scripted",
+    "scripted_chunks": []
+  },
+  "notes": "heartbeat round-trip; agent.run never called."
+}

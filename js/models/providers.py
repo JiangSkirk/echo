@@ -7,7 +7,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, NoReturn
 
 import httpx
 from openai import AsyncOpenAI
@@ -35,12 +35,44 @@ except Exception:
 
 
 def _redact_key(key: str | None) -> str:
-    """Redact an API key for safe logging."""
-    if not key:
-        return "<not-set>"
-    if len(key) <= 8:
-        return "***"
-    return key[:4] + "****" + key[-4:]
+    from js.models.capability import redact_api_key
+
+    return redact_api_key(key)
+
+
+def _sanitize_provider_exc(
+    exc: BaseException,
+    *,
+    api_key: str | None,
+    query_param_name: str | None = None,
+) -> str:
+    from js.models.capability import SafeProviderError, sanitize_provider_error
+
+    if isinstance(exc, SafeProviderError):
+        return str(exc)
+    return sanitize_provider_error(
+        str(exc),
+        api_key=api_key,
+        query_param_name=query_param_name,
+    )
+
+
+def _raise_as_safe_provider_error(
+    exc: BaseException,
+    *,
+    api_key: str | None,
+    query_param_name: str | None = None,
+    retryable: bool | None = None,
+) -> NoReturn:
+    """Convert *exc* at the provider adapter exit and raise :class:`SafeProviderError`."""
+    from js.models.capability import raise_safe_provider_error
+
+    raise_safe_provider_error(
+        exc,
+        api_key=api_key,
+        query_param_name=query_param_name,
+        retryable=is_retryable_provider_error(exc) if retryable is None else retryable,
+    )
 
 
 def _is_local_provider(base_url: str) -> bool:
@@ -50,8 +82,12 @@ def _is_local_provider(base_url: str) -> bool:
     return any(h in base_url for h in ("127.0.0.1", "localhost", "0.0.0.0", "::1"))
 
 
-def _is_retryable_exception(exc: BaseException) -> bool:
+def is_retryable_provider_error(exc: BaseException) -> bool:
     """Retry on network errors, protocol errors, timeouts, 5xx, and 429 rate limits."""
+    from js.models.capability import SafeProviderError
+
+    if isinstance(exc, SafeProviderError):
+        return bool(exc.retryable)
     if isinstance(
         exc,
         (
@@ -89,6 +125,12 @@ class ChatResponse:
     usage: dict[str, int]
     finish_reason: str
     reasoning_content: str = ""
+    usage_source: Literal[
+        "provider_actual",
+        "tokenizer",
+        "estimated",
+        "unavailable",
+    ] = "unavailable"
 
 
 class ModelProvider(ABC):
@@ -146,7 +188,39 @@ class ModelProvider(ABC):
                     yield StreamEvent(kind="text_delta", text=token, model=model)
             yield StreamEvent(kind="done", finish_reason="stop", model=model)
         except Exception as exc:
-            yield StreamEvent(kind="error", error=str(exc), model=model)
+            from js.models.capability import SafeProviderError, safe_provider_error
+
+            config = getattr(self, "config", None)
+            api_key = getattr(config, "api_key", None)
+            query_param_name = getattr(config, "query_param_name", None)
+            safe = (
+                exc
+                if isinstance(exc, SafeProviderError)
+                else safe_provider_error(
+                    exc,
+                    api_key=api_key,
+                    query_param_name=query_param_name,
+                    retryable=is_retryable_provider_error(exc),
+                )
+            )
+            # Even a pre-built SafeProviderError may be legacy/custom — re-scrub.
+            if isinstance(safe, SafeProviderError) and (api_key or query_param_name):
+                from js.models.capability import sanitize_provider_error
+
+                safe = SafeProviderError(
+                    sanitize_provider_error(
+                        str(safe),
+                        api_key=api_key,
+                        query_param_name=query_param_name,
+                    ),
+                    retryable=safe.retryable,
+                )
+            yield StreamEvent(
+                kind="error",
+                error=str(safe),
+                model=model,
+                meta={"retryable": is_retryable_provider_error(safe)},
+            )
 
     @abstractmethod
     async def health_check(self) -> bool: ...
@@ -241,6 +315,7 @@ class OpenAICompatibleProvider(ModelProvider):
         self._health_status = False
         self._health_lock = asyncio.Lock()
         self._last_stream_usage: dict[str, int] | None = None
+        self._stream_options_supported = True
 
         # Transport layer (Hermes v0.14 architecture)
         self._transport: Any = None
@@ -308,11 +383,6 @@ class OpenAICompatibleProvider(ModelProvider):
                     self._SEMAPHORES[key] = asyncio.Semaphore(limit)
         return self._SEMAPHORES[key]
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=20),
-        retry=retry_if_exception(_is_retryable_exception),
-    )
     async def chat(
         self,
         messages: list[ChatMessage],
@@ -407,8 +477,32 @@ class OpenAICompatibleProvider(ModelProvider):
                         usage=usage,
                         finish_reason=choice.finish_reason or "stop",
                         reasoning_content=getattr(message, "reasoning_content", "") or "",
+                        usage_source=("provider_actual" if response.usage else "unavailable"),
                     )
                 except Exception as e:
+                    # Convert at the boundary before metrics/logging so a metrics
+                    # secondary failure cannot attach the raw provider exception
+                    # as ``__context__`` into logs / exc_info consumers.
+                    from js.models.capability import (
+                        reraise_safe_provider_error,
+                        safe_provider_error,
+                    )
+
+                    mapped: BaseException = e
+                    if isinstance(e, RuntimeError) and (
+                        "generator didn't stop after throw()" in str(e)
+                        or "generator didn't stop after athrow()" in str(e)
+                    ):
+                        mapped = RuntimeError(
+                            f"Connection to {self.config.name} was interrupted. "
+                            "The remote server may have closed the connection unexpectedly."
+                        )
+                    safe_error = safe_provider_error(
+                        mapped,
+                        api_key=self.config.api_key,
+                        query_param_name=getattr(self.config, "query_param_name", None),
+                        retryable=is_retryable_provider_error(mapped),
+                    )
                     latency = time.perf_counter() - start
                     try:
                         get_metrics().model_latency_seconds.labels(
@@ -418,25 +512,24 @@ class OpenAICompatibleProvider(ModelProvider):
                             model=model, provider=self.config.name
                         ).inc()
                     except Exception:
-                        logger.warning("Suppressed error", exc_info=True)
-                    # Map cryptic async-generator protocol errors to something
-                    # users can understand. These usually come from httpx/openai
-                    # internals when a connection is cancelled or closed
-                    # unexpectedly.
-                    if isinstance(e, RuntimeError) and (
-                        "generator didn't stop after throw()" in str(e)
-                        or "generator didn't stop after athrow()" in str(e)
-                    ):
-                        raise RuntimeError(
-                            f"Connection to {self.config.name} was interrupted. "
-                            "The remote server may have closed the connection unexpectedly."
-                        ) from e
-                    raise
+                        logger.warning(
+                            "Suppressed metrics error after provider failure",
+                            exc_info=False,
+                        )
+                    reraise_safe_provider_error(safe_error)
 
         try:
             return await self.circuit.execute(_do_chat())  # type: ignore[no-any-return]
-        except Exception:
-            raise
+        except Exception as exc:
+            from js.models.capability import SafeProviderError
+
+            if isinstance(exc, SafeProviderError):
+                raise
+            _raise_as_safe_provider_error(
+                exc,
+                api_key=self.config.api_key,
+                query_param_name=getattr(self.config, "query_param_name", None),
+            )
 
     async def chat_stream(
         self,
@@ -463,71 +556,53 @@ class OpenAICompatibleProvider(ModelProvider):
 
         # Try to request usage in the final stream chunk (OpenAI-compatible).
         # Some providers don't support stream_options; we fallback gracefully.
-        stream_options_supported = True
-        kwargs["stream_options"] = {"include_usage": True}
+        stream_options_supported = bool(getattr(self, "_stream_options_supported", True))
+        if stream_options_supported:
+            kwargs["stream_options"] = {"include_usage": True}
 
         self._last_stream_usage = None
 
-        # Retry wrapper for stream initialization
-        last_error: BaseException | None = None
-        max_retries = getattr(self.config, "max_retries", 3)
-        for attempt in range(max_retries):
-            try:
-                # Use ``async with`` so the stream is closed cleanly even if
-                # the async-for loop is cancelled or interrupted. This helps
-                # avoid "generator didn't stop after throw()" errors from
-                # httpx/openai internals.
-                sem = await self._semaphore()
-                async with sem:
-                    stream = await self.client.chat.completions.create(**kwargs)
-                async with stream as stream_ctx:
-                    async for chunk in stream_ctx:
-                        # Capture usage from the final chunk when available
-                        if getattr(chunk, "usage", None):
-                            self._last_stream_usage = {
-                                "prompt_tokens": chunk.usage.prompt_tokens or 0,
-                                "completion_tokens": chunk.usage.completion_tokens or 0,
-                                "total_tokens": chunk.usage.total_tokens or 0,
-                                "cached_tokens": 0,
-                            }
-                            # Some providers include cached token details in stream usage
-                            details = getattr(chunk.usage, "prompt_tokens_details", None)
-                            if details:
-                                self._last_stream_usage["cached_tokens"] = (
-                                    getattr(details, "cached_tokens", 0) or 0
-                                )
-                        if chunk.choices and chunk.choices[0].delta.content:
-                            yield chunk.choices[0].delta.content
-                await self.circuit.record_success()
-                return
-            except Exception as e:
-                # If the provider rejected stream_options, retry without it once
-                if stream_options_supported and attempt == 0 and "stream_options" in str(e):
-                    stream_options_supported = False
-                    kwargs.pop("stream_options", None)
-                    self._last_stream_usage = None
-                    continue
-                # Map cryptic async-generator protocol errors
-                if isinstance(e, RuntimeError) and (
-                    "generator didn't stop after throw()" in str(e)
-                    or "generator didn't stop after athrow()" in str(e)
-                ):
-                    last_error = RuntimeError(
-                        f"Connection to {self.config.name} was interrupted. "
-                        "The remote server may have closed the connection unexpectedly."
-                    )
-                    break
-                last_error = e
-                if not _is_retryable_exception(e):
-                    break
-                if attempt < max_retries - 1:
-                    wait = min(2**attempt, 30)
-                    logger.warning(
-                        f"Stream retry {attempt + 1} for {self.config.name} after {wait}s: {e}"
-                    )
-                    await asyncio.sleep(wait)
-        await self.circuit.record_failure()
-        raise last_error or RuntimeError(f"Stream failed for {self.config.name}")
+        try:
+            # Use ``async with`` so the stream is closed cleanly even if the
+            # async-for loop is cancelled or interrupted.
+            sem = await self._semaphore()
+            async with sem:
+                stream = await self.client.chat.completions.create(**kwargs)
+            async with stream as stream_ctx:
+                async for chunk in stream_ctx:
+                    if getattr(chunk, "usage", None):
+                        self._last_stream_usage = {
+                            "prompt_tokens": chunk.usage.prompt_tokens or 0,
+                            "completion_tokens": chunk.usage.completion_tokens or 0,
+                            "total_tokens": chunk.usage.total_tokens or 0,
+                            "cached_tokens": 0,
+                        }
+                        details = getattr(chunk.usage, "prompt_tokens_details", None)
+                        if details:
+                            self._last_stream_usage["cached_tokens"] = (
+                                getattr(details, "cached_tokens", 0) or 0
+                            )
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        yield chunk.choices[0].delta.content
+            await self.circuit.record_success()
+            return
+        except Exception as exc:
+            if stream_options_supported and "stream_options" in str(exc):
+                self._stream_options_supported = False
+            if isinstance(exc, RuntimeError) and (
+                "generator didn't stop after throw()" in str(exc)
+                or "generator didn't stop after athrow()" in str(exc)
+            ):
+                exc = RuntimeError(
+                    f"Connection to {self.config.name} was interrupted. "
+                    "The remote server may have closed the connection unexpectedly."
+                )
+            await self.circuit.record_failure()
+            _raise_as_safe_provider_error(
+                exc,
+                api_key=self.config.api_key,
+                query_param_name=getattr(self.config, "query_param_name", None),
+            )
 
     async def chat_stream_events(
         self,
@@ -571,63 +646,64 @@ class OpenAICompatibleProvider(ModelProvider):
         if max_tokens:
             kwargs["max_tokens"] = max_tokens
 
-        stream_options_supported = True
-        last_error: BaseException | None = None
-        max_retries = getattr(self.config, "max_retries", 3)
+        stream_options_supported = bool(getattr(self, "_stream_options_supported", True))
+        if not stream_options_supported:
+            kwargs.pop("stream_options", None)
         done_emitted = False
-        for attempt in range(max_retries):
-            try:
-                sem = await self._semaphore()
-                async with sem:
-                    stream = await self.client.chat.completions.create(**kwargs)
-                async with stream as stream_ctx:
-                    async for chunk in stream_ctx:
-                        for ev in parse_openai_chunk(chunk):
-                            ev.provider = self.config.name
-                            if not ev.model:
-                                ev.model = model
-                            if ev.kind == "done":
-                                done_emitted = True
-                            yield ev
-                await self.circuit.record_success()
-                if not done_emitted:
-                    yield StreamEvent(
-                        kind="done",
-                        finish_reason="stop",
-                        provider=self.config.name,
-                        model=model,
-                    )
-                return
-            except Exception as e:
-                if stream_options_supported and attempt == 0 and "stream_options" in str(e):
-                    stream_options_supported = False
-                    kwargs.pop("stream_options", None)
-                    continue
-                if isinstance(e, RuntimeError) and (
-                    "generator didn't stop after throw()" in str(e)
-                    or "generator didn't stop after athrow()" in str(e)
-                ):
-                    last_error = RuntimeError(
-                        f"Connection to {self.config.name} was interrupted. "
-                        "The remote server may have closed the connection unexpectedly."
-                    )
-                    break
-                last_error = e
-                if not _is_retryable_exception(e):
-                    break
-                if attempt < max_retries - 1:
-                    wait = min(2**attempt, 30)
-                    logger.warning(
-                        f"Event-stream retry {attempt + 1} for {self.config.name} after {wait}s: {e}"
-                    )
-                    await asyncio.sleep(wait)
-        await self.circuit.record_failure()
-        yield StreamEvent(
-            kind="error",
-            error=str(last_error or f"Stream failed for {self.config.name}"),
-            provider=self.config.name,
-            model=model,
-        )
+        try:
+            sem = await self._semaphore()
+            async with sem:
+                stream = await self.client.chat.completions.create(**kwargs)
+            async with stream as stream_ctx:
+                async for chunk in stream_ctx:
+                    for ev in parse_openai_chunk(chunk):
+                        ev.provider = self.config.name
+                        if not ev.model:
+                            ev.model = model
+                        if ev.kind == "done":
+                            done_emitted = True
+                        yield ev
+            await self.circuit.record_success()
+            if not done_emitted:
+                yield StreamEvent(
+                    kind="done",
+                    finish_reason="stop",
+                    provider=self.config.name,
+                    model=model,
+                )
+            return
+        except Exception as exc:
+            from js.models.capability import safe_provider_error
+
+            compatibility_retry = stream_options_supported and "stream_options" in str(exc)
+            if compatibility_retry:
+                self._stream_options_supported = False
+            if isinstance(exc, RuntimeError) and (
+                "generator didn't stop after throw()" in str(exc)
+                or "generator didn't stop after athrow()" in str(exc)
+            ):
+                exc = RuntimeError(
+                    f"Connection to {self.config.name} was interrupted. "
+                    "The remote server may have closed the connection unexpectedly."
+                )
+            await self.circuit.record_failure()
+            # First exit: convert to SafeProviderError so stream consumers only
+            # see scrubbed text (not a raw credential-bearing SDK exception).
+            safe = safe_provider_error(
+                exc,
+                api_key=self.config.api_key,
+                query_param_name=getattr(self.config, "query_param_name", None),
+                retryable=compatibility_retry or is_retryable_provider_error(exc),
+            )
+            yield StreamEvent(
+                kind="error",
+                error=str(safe),
+                provider=self.config.name,
+                model=model,
+                meta={
+                    "retryable": safe.retryable,
+                },
+            )
 
     async def health_check(self) -> bool:
         # Fast path: return cached result without lock
@@ -668,7 +744,7 @@ class OpenAICompatibleProvider(ModelProvider):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=10),
-        retry=retry_if_exception(_is_retryable_exception),
+        retry=retry_if_exception(is_retryable_provider_error),
     )
     async def embed(
         self,

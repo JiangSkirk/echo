@@ -1,0 +1,29 @@
+{
+  "scenario": "api_chat_auth_required",
+  "kind": "api_chat",
+  "input": {
+    "method": "POST",
+    "path": "/api/chat",
+    "headers": {},
+    "body": {
+      "message": "hello"
+    },
+    "frames_in": []
+  },
+  "expected": {
+    "status": 403,
+    "headers": {
+      "content-length": "62",
+      "content-type": "application/json"
+    },
+    "body": {
+      "detail": "Origin header required for browser-based requests"
+    },
+    "frames_out": []
+  },
+  "mock": {
+    "provider": "scripted",
+    "scripted_chunks": []
+  },
+  "notes": "no Origin + no X-API-Key → check_origin rejects with 403; mimics browser pre-auth state."
+}

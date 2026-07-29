@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import re
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -54,6 +56,16 @@ class ModelProviderConfig(BaseModel):
     )
     models: list[ModelConfig] = Field(default_factory=list)
 
+    @field_validator("name")
+    @classmethod
+    def validate_provider_name_chars(cls, value: str) -> str:
+        from js.web.ids import InvalidRuntimeIdError, validate_provider_name
+
+        try:
+            return validate_provider_name(value)
+        except InvalidRuntimeIdError as exc:
+            raise ValueError(str(exc)) from exc
+
     @model_validator(mode="after")
     def resolve_api_key(self) -> ModelProviderConfig:
         if self.api_key_env and not self.api_key:
@@ -73,6 +85,20 @@ class ModelConfig(BaseModel):
     supports_tools: bool = True
     cost_input: float = Field(default=0.0, ge=0.0)
     cost_output: float = Field(default=0.0, ge=0.0)
+
+    @field_validator("id", "provider")
+    @classmethod
+    def validate_ids(cls, value: str, info: ValidationInfo) -> str:
+        from js.web.ids import InvalidRuntimeIdError, validate_runtime_id
+
+        label = "model id" if info.field_name == "id" else "provider name"
+        if info.field_name == "provider" and value == "":
+            return value
+        try:
+            return validate_runtime_id(value, label=label)
+        except InvalidRuntimeIdError as exc:
+            raise ValueError(str(exc)) from exc
+
     # --- v0.1.6 capability fields (all default-on for backward compat) ---
     supports_streaming: bool = Field(
         default=True,
@@ -112,6 +138,101 @@ class ToolLimits(BaseModel):
         ge=1000,
         description="Max chars returned by a single tool call before reference truncation",
     )
+    csv_read_max_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1024,
+        description="Maximum CSV file size accepted by csv_read before streaming parse",
+    )
+    csv_read_max_rows: int = Field(default=10_000, ge=1)
+    csv_read_max_columns: int = Field(default=256, ge=1)
+    csv_read_max_field_chars: int = Field(default=10_000, ge=1)
+    csv_read_max_cells: int = Field(default=500_000, ge=1)
+    code_search_max_pattern_chars: int = Field(default=256, ge=1)
+    code_search_max_files: int = Field(default=2_000, ge=1)
+    code_search_max_bytes: int = Field(default=20 * 1024 * 1024, ge=1024)
+    code_search_max_line_chars: int = Field(default=8_192, ge=64)
+    code_search_regex_timeout_seconds: float = Field(default=2.0, ge=0.1)
+    # NOTE (F-09): ``find`` and ``awk`` were removed from the default
+    # allowlist — both carry trivial command-execution / file-write bypasses
+    # (find -exec/-delete, awk system()/getline/pipes).  Operators can
+    # re-enable them explicitly; argument-level deny rules in
+    # ``js.tools.shell`` still constrain them when re-enabled.
+    shell_command_allowlist: list[str] = Field(
+        default_factory=lambda: [
+            "basename",
+            "cat",
+            "cut",
+            "date",
+            "diff",
+            "dirname",
+            "du",
+            "echo",
+            "false",
+            "git",
+            "grep",
+            "head",
+            "jq",
+            "ls",
+            "mkdir",
+            "mv",
+            "printf",
+            "pwd",
+            "rg",
+            "sed",
+            "sort",
+            "stat",
+            "tail",
+            "tar",
+            "test",
+            "touch",
+            "tr",
+            "true",
+            "uniq",
+            "wc",
+        ],
+        description="Exact bare executable names permitted by the shell tool",
+    )
+
+    @field_validator("shell_command_allowlist")
+    @classmethod
+    def validate_shell_command_allowlist(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for raw in values:
+            name = raw.strip()
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,63}", name) is None:
+                raise ValueError("shell_command_allowlist entries must be bare executable names")
+            if name not in normalized:
+                normalized.append(name)
+        if not normalized:
+            raise ValueError("shell_command_allowlist must not be empty")
+        return normalized
+
+
+class EchoBudgetConfig(BaseModel):
+    """Hard per-run limits enforced by Echo's live BudgetClock."""
+
+    max_prompt_tokens: int = Field(default=200_000, ge=1)
+    max_completion_tokens: int = Field(default=32_768, ge=1)
+    max_tool_calls: int = Field(default=32, ge=0)
+    max_journal_appends: int = Field(default=128, ge=1)
+    max_elapsed_ms: int = Field(default=900_000, ge=1_000)
+
+
+class EchoLedgerConfig(BaseModel):
+    """Bounded retention policy for Echo's durable file journals."""
+
+    retain_records: int = Field(default=2_048, ge=1)
+    trigger_records: int = Field(default=4_096, ge=2)
+    max_archives: int = Field(default=1, ge=1)
+    max_open_effects_per_tenant: int = Field(default=1_024, ge=1)
+    max_session_partitions_per_owner: int = Field(default=64, ge=2)
+    max_retired_session_receipts_per_owner: int = Field(default=256, ge=1)
+
+    @model_validator(mode="after")
+    def validate_trigger_exceeds_retention(self) -> EchoLedgerConfig:
+        if self.trigger_records <= self.retain_records:
+            raise ValueError("trigger_records must be greater than retain_records")
+        return self
 
 
 class SecurityConfig(BaseModel):
@@ -171,11 +292,62 @@ class SecurityConfig(BaseModel):
         ),
         description="Allow model discovery to reach private-network (RFC1918) hosts",
     )
+    network_enabled: bool = Field(
+        default=False,
+        description="Permit Echo tool network leases; disabled by default",
+    )
+    # F-14: shell/python are excluded from Echo's always-on core tool schema.
+    # They re-join the core subset only when the operator explicitly opts in.
+    echo_exec_tools: bool = Field(
+        default=False,
+        description="Advertise shell/python in Echo's core tool schema subset",
+    )
+    network_allowlist: list[str] = Field(
+        default_factory=list,
+        description="Exact public DNS hosts permitted for Echo network tools",
+    )
+    upload_owner_max_bytes: int = Field(default=2 * 1024 * 1024 * 1024, ge=1024)
+    upload_owner_max_files: int = Field(default=5_000, ge=1)
+    upload_session_max_bytes: int = Field(default=512 * 1024 * 1024, ge=1024)
+    upload_session_max_files: int = Field(default=1_000, ge=1)
+    upload_min_free_disk_bytes: int = Field(default=256 * 1024 * 1024, ge=0)
 
     @field_validator("protected_paths")
     @classmethod
     def validate_paths(cls, v: list[str]) -> list[str]:
         return [os.path.expanduser(p) for p in v]
+
+    @field_validator("network_allowlist")
+    @classmethod
+    def validate_network_allowlist(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for raw in values:
+            host = raw.strip().lower().rstrip(".")
+            if not host or "\x00" in host or "://" in host or "/" in host or "*" in host:
+                raise ValueError("network_allowlist entries must be exact DNS hostnames")
+            if host == "localhost" or host.endswith(".localhost"):
+                raise ValueError("network_allowlist cannot grant localhost")
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                try:
+                    host = host.encode("idna").decode("ascii")
+                except UnicodeError as exc:
+                    raise ValueError("network_allowlist hostname is invalid") from exc
+                if (
+                    re.fullmatch(
+                        r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*"
+                        r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?",
+                        host,
+                    )
+                    is None
+                ):
+                    raise ValueError("network_allowlist hostname is invalid") from None
+            else:
+                raise ValueError("network_allowlist entries must be DNS hostnames, not IPs")
+            if host not in normalized:
+                normalized.append(host)
+        return normalized
 
 
 class MemoryConfig(BaseModel):
@@ -228,8 +400,30 @@ class PipelineConfig(BaseModel):
     sources: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
+class AgentFeatureConfig(BaseModel):
+    """Feature gates for product variants built on the JSAgent core."""
+
+    plugins_enabled: bool = True
+    skills_enabled: bool = True
+    skill_tools_enabled: bool = True
+    # Opt-in only: never auto-scan ~/.hermes/skills on isolated/privacy-safe starts.
+    hermes_skills_enabled: bool = False
+    evolution_enabled: bool = True
+    pipeline_enabled: bool = True
+    daemon_enabled: bool = True
+
+
 # Module-level cache for parsed config files: path -> (mtime, instance)
 _settings_file_cache: dict[Path, tuple[float, JSSettings]] = {}
+
+
+def _normalise_echo_engine(value: str) -> str:
+    normalised = (value or "on").strip().lower()
+    if normalised != "on":
+        raise ValueError(
+            f"Echo is the only supported architecture; echo_engine must be 'on', got {value!r}"
+        )
+    return normalised
 
 
 class JSSettings(BaseSettings):
@@ -252,13 +446,39 @@ class JSSettings(BaseSettings):
     models: list[ModelConfig] = Field(default_factory=list)
     providers: list[ModelProviderConfig] = Field(default_factory=list)
     tools: ToolLimits = Field(default_factory=ToolLimits)
+    echo_budget: EchoBudgetConfig = Field(default_factory=EchoBudgetConfig)
+    echo_ledger: EchoLedgerConfig = Field(default_factory=EchoLedgerConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
+    features: AgentFeatureConfig = Field(default_factory=AgentFeatureConfig)
     search_configured: bool = False
     first_run_completed: bool = False
     desktop_control_enabled: bool = False
+    mcp_manifest: Path | None = Field(
+        default=None,
+        description="Optional Echo-controlled MCP manifest path",
+    )
+
+    # Echo engine mode. Echo is the only supported runtime architecture.
+    # The model/tool adapters remain available under Echo's gates because they
+    # perform the actual provider and tool calls; old off/shadow rollout modes
+    # are intentionally removed.
+    # Set via env var ``JS_ECHO_ENGINE`` (auto-bound by ``env_prefix="JS_"``).
+    # Type is plain ``str`` + validator (rather than ``Literal``) because
+    # ``from __future__ import annotations`` defers evaluation and confuses
+    # Pydantic's forward-ref resolution for ``Literal[...]`` strings.
+    echo_engine: str = Field(
+        default="on",
+        description="Echo engine mode: on",
+    )
+
+    @field_validator("echo_engine")
+    @classmethod
+    def validate_echo_engine(cls, v: str) -> str:
+        """Reject removed rollout/rollback modes and unknown values."""
+        return _normalise_echo_engine(v)
 
     @model_validator(mode="after")
     def ensure_directories(self) -> JSSettings:
@@ -283,6 +503,28 @@ class JSSettings(BaseSettings):
         self.providers = unique
         return self
 
+    def apply_runtime_engine_env(self) -> None:
+        """Let runtime env vars confirm Echo-only mode.
+
+        Removed rollout values such as ``off`` and ``shadow`` fail closed so
+        old architecture paths cannot be re-enabled by environment variables.
+        """
+        echo_raw = os.getenv("JS_ECHO_ENGINE")
+        if echo_raw is None:
+            return
+
+        self.echo_engine = _normalise_echo_engine(echo_raw)
+        self.__pydantic_fields_set__.add("echo_engine")
+
+    def with_runtime_engine_env(self) -> JSSettings:
+        if os.getenv("JS_ECHO_ENGINE") is None:
+            return self
+        runtime = self.model_copy(deep=True)
+        if hasattr(self, "_config_path"):
+            runtime._config_path = self._config_path  # type: ignore[attr-defined]
+        runtime.apply_runtime_engine_env()
+        return runtime
+
     def get_provider(self, name: str) -> ModelProviderConfig | None:
         for p in self.providers:
             if p.name == name:
@@ -296,20 +538,30 @@ class JSSettings(BaseSettings):
         return None
 
     @classmethod
-    def from_file(cls, path: Path | str | None = None) -> JSSettings:
+    def from_file(
+        cls,
+        path: Path | str | None = None,
+        *,
+        allow_hermes_merge: bool | None = None,
+    ) -> JSSettings:
         """Load settings from file, or create defaults.
 
         Priority:
         1. Explicit *path* argument
         2. JS_CONFIG_PATH environment variable
         3. Default locations (~/.config/js/config.{yaml,toml})
-        4. Hermes config fallback (~/.hermes/config.yaml)
+        4. Hermes config fallback (~/.hermes/config.yaml) — only when
+           ``allow_hermes_merge`` is true (default-compat mode).
 
         Parsed instances are cached by file mtime to avoid repeated I/O.
         """
+        env_path = os.getenv("JS_CONFIG_PATH")
+        if allow_hermes_merge is None:
+            allow_hermes_merge = path is None and not env_path
+
         if path:
             p = Path(path).expanduser().resolve()
-        elif env_path := os.getenv("JS_CONFIG_PATH"):
+        elif env_path:
             p = Path(env_path).expanduser().resolve()
         else:
             p = None
@@ -329,7 +581,7 @@ class JSSettings(BaseSettings):
                     mtime, cached = _settings_file_cache[p]
                     try:
                         if p.stat().st_mtime == mtime:
-                            return cached
+                            return cached.with_runtime_engine_env()
                     except Exception:
                         pass
                 import yaml
@@ -343,7 +595,7 @@ class JSSettings(BaseSettings):
                     mtime, cached = _settings_file_cache[p]
                     try:
                         if p.stat().st_mtime == mtime:
-                            return cached
+                            return cached.with_runtime_engine_env()
                     except Exception:
                         pass
                 import tomllib
@@ -359,16 +611,15 @@ class JSSettings(BaseSettings):
                 Path.home() / ".config" / "js" / "config.toml",
             ]:
                 if candidate.exists():
-                    instance = cls.from_file(candidate)
-                    config_path = candidate
-                    break
+                    return cls.from_file(candidate, allow_hermes_merge=True)
 
         if instance is None:
             instance = cls()
             config_path = Path.home() / ".config" / "js" / "config.yaml"
 
         instance._config_path = config_path  # type: ignore[attr-defined]
-        instance._merge_hermes()
+        if allow_hermes_merge:
+            instance._merge_hermes()
 
         # Cache by mtime
         if config_path is not None and config_path.exists():
@@ -377,7 +628,7 @@ class JSSettings(BaseSettings):
             except Exception:
                 pass
 
-        return instance
+        return instance.with_runtime_engine_env()
 
     def _merge_hermes(self) -> None:
         """Overlay Hermes config (~/.hermes/config.yaml) when JS config is default."""
@@ -491,29 +742,14 @@ class JSSettings(BaseSettings):
         else:
             target = Path.home() / ".config" / "js" / "config.yaml"
 
-        target = target.expanduser().resolve()
-        target.parent.mkdir(parents=True, exist_ok=True)
-        import yaml
-
         # Build the new data dict
         new_data = self.model_dump(mode="json", exclude={"providers": {"__all__": {"api_key"}}})
-
-        # Field-restricted merge mode: update only specified fields
-        if fields and target.exists():
-            try:
-                with open(target) as f:
-                    existing = yaml.safe_load(f) or {}
-                for key in fields:
-                    if key in new_data:
-                        existing[key] = new_data[key]
-                new_data = existing
-            except Exception:
-                pass  # If read fails, fall back to full overwrite
 
         # Defensive: strip any lingering api_key values from providers before writing
         for provider in new_data.get("providers", []):
             if isinstance(provider, dict):
                 provider.pop("api_key", None)
 
-        with open(target, "w") as f:
-            yaml.safe_dump(new_data, f, default_flow_style=False, sort_keys=False)
+        from js.utils.atomic_config import save_yaml_config
+
+        save_yaml_config(target, new_data, fields=fields)

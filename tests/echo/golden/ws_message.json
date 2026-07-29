@@ -1,0 +1,55 @@
+{
+  "scenario": "ws_message",
+  "kind": "ws",
+  "input": {
+    "method": null,
+    "path": "/ws",
+    "headers": {
+      "Origin": "http://localhost"
+    },
+    "body": null,
+    "frames_in": [
+      {
+        "type": "message",
+        "content": "hi",
+        "session_id": "00000000-0000-0000-0000-000000000001"
+      }
+    ]
+  },
+  "expected": {
+    "status": 101,
+    "headers": {},
+    "body": null,
+    "frames_out": [
+      {
+        "type": "status",
+        "content": "thinking..."
+      },
+      {
+        "type": "response",
+        "terminal": true,
+        "content": "Hi there",
+        "session_id": "00000000-0000-0000-0000-000000000001",
+        "turns": 1,
+        "tokens": {
+          "input": 10,
+          "output": 5
+        },
+        "cost": 0.000123,
+        "status": "completed",
+        "compression": {},
+        "model": "mock-model"
+      }
+    ]
+  },
+  "mock": {
+    "provider": "scripted",
+    "scripted_chunks": [
+      {
+        "role": "assistant",
+        "content": "Hi there"
+      }
+    ]
+  },
+  "notes": "single-frame message → status('thinking...') + response(assistant_msg)."
+}

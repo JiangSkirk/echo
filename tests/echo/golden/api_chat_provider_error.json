@@ -1,0 +1,32 @@
+{
+  "scenario": "api_chat_provider_error",
+  "kind": "api_chat",
+  "input": {
+    "method": "POST",
+    "path": "/api/chat",
+    "headers": {
+      "Origin": "http://localhost"
+    },
+    "body": {
+      "message": "hello"
+    },
+    "frames_in": []
+  },
+  "expected": {
+    "status": 500,
+    "headers": {
+      "content-length": "127",
+      "content-type": "application/json"
+    },
+    "body": {
+      "detail": "处理你的请求时出错了，请稍后重试；如果反复出现，请联系管理员查看服务器日志。"
+    },
+    "frames_out": []
+  },
+  "mock": {
+    "provider": "scripted",
+    "scripted_chunks": [],
+    "raise": "RuntimeError('boom')"
+  },
+  "notes": "agent.run raises RuntimeError → humanize_error wraps to 500 with generic Chinese detail; never leaks 'boom'."
+}

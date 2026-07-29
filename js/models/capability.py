@@ -29,10 +29,11 @@ construct providers. Callers compose ``probe_provider()`` with their own
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
-from typing import Any
-from urllib.parse import urlparse
+from typing import Any, NoReturn
+from urllib.parse import quote, urlparse
 
 from js.config import ModelConfig
 from js.utils.log import get_logger
@@ -43,6 +44,85 @@ logger = get_logger("js.models.capability")
 # ---------------------------------------------------------------------------
 # Key redaction
 # ---------------------------------------------------------------------------
+
+
+class SafeProviderError(RuntimeError):
+    """Provider-boundary error whose message is safe to log, store, or return.
+
+    Constructed only after scrubbing credentials from the original exception
+    text. Never chains ``__cause__`` / ``__context__`` to the raw provider
+    exception, so ``exc_info`` / traceback consumers cannot recover secrets
+    via cause links. Downstream layers (router, Echo, ledger, HTTP/WS/UI)
+    must consume this type (or its message) instead of raw SDK/httpx errors.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = bool(retryable)
+        # Belt-and-suspenders: clear any accidental cause/context wiring.
+        self.__cause__ = None
+        self.__context__ = None
+        self.__suppress_context__ = True
+
+
+def safe_provider_error(
+    exc: BaseException,
+    *,
+    api_key: str | None,
+    query_param_name: str | None = None,
+    retryable: bool = False,
+) -> SafeProviderError:
+    """Build a :class:`SafeProviderError` from *exc* without chaining causes.
+
+    If *exc* is already a :class:`SafeProviderError`, returns it unchanged
+    (preserving its retryable flag unless a caller-supplied ``retryable`` is
+    True and the existing flag is False — callers should pass the computed
+    retryability of the *original* exception before conversion).
+    """
+    if isinstance(exc, SafeProviderError):
+        if retryable and not exc.retryable:
+            return SafeProviderError(str(exc), retryable=True)
+        return exc
+    message = sanitize_provider_error(
+        str(exc),
+        api_key=api_key,
+        query_param_name=query_param_name,
+    )
+    return SafeProviderError(message, retryable=retryable)
+
+
+def reraise_safe_provider_error(err: SafeProviderError) -> NoReturn:
+    """Re-raise *err* after detaching any secret-bearing cause/context links."""
+    try:
+        raise err from None
+    finally:
+        err.__cause__ = None
+        err.__context__ = None
+        err.__suppress_context__ = True
+
+
+def raise_safe_provider_error(
+    exc: BaseException,
+    *,
+    api_key: str | None,
+    query_param_name: str | None = None,
+    retryable: bool = False,
+) -> NoReturn:
+    """Raise a :class:`SafeProviderError` derived from *exc* with no cause chain.
+
+    This is the canonical first-exit conversion at the provider adapter
+    boundary. ``raise ... from None`` alone still attaches the original
+    exception as ``__context__``; we clear cause/context in ``finally`` so
+    introspecting the raised error cannot recover credentials.
+    """
+    reraise_safe_provider_error(
+        safe_provider_error(
+            exc,
+            api_key=api_key,
+            query_param_name=query_param_name,
+            retryable=retryable,
+        )
+    )
 
 
 def redact_api_key(key: str | None) -> str:
@@ -65,6 +145,81 @@ def redact_api_key(key: str | None) -> str:
     return f"{key[:4]}****{key[-4:]}"
 
 
+def _percent_hex_pattern(encoded: str) -> str:
+    """Turn ``%2F`` into a regex fragment with case-insensitive hex digits."""
+    out: list[str] = []
+    i = 0
+    while i < len(encoded):
+        if encoded[i] == "%" and i + 2 < len(encoded):
+            h1, h2 = encoded[i + 1], encoded[i + 2]
+            out.append(
+                f"%[{re.escape(h1.upper())}{re.escape(h1.lower())}]"
+                f"[{re.escape(h2.upper())}{re.escape(h2.lower())}]"
+            )
+            i += 3
+        else:
+            out.append(re.escape(encoded[i]))
+            i += 1
+    return "".join(out)
+
+
+def _percent_insensitive_char_pattern(char: str) -> str:
+    """Regex fragment matching *char* literally or percent-encoded (hex case-insensitive)."""
+    literal = re.escape(char)
+    alts = [literal]
+    if char == " ":
+        alts.append(r"\+")
+    hex_form = f"%{ord(char):02X}"
+    if hex_form.lower() != char.lower():
+        alts.append(_percent_hex_pattern(hex_form))
+    encoded = quote(char, safe="")
+    if encoded not in {char, hex_form}:
+        alts.append(_percent_hex_pattern(encoded))
+    return f"(?:{'|'.join(dict.fromkeys(alts))})"
+
+
+def _percent_insensitive_pattern(secret: str) -> re.Pattern[str]:
+    """Build a regex where each ``%HH`` triplet matches hex case-insensitively."""
+    return re.compile("".join(_percent_insensitive_char_pattern(ch) for ch in secret))
+
+
+def _secret_encoding_forms(secret: str) -> list[str]:
+    """Known transport encodings of *secret* (not exhaustive string enumeration)."""
+    from urllib.parse import quote_plus
+
+    forms = [secret, quote(secret, safe=""), quote_plus(secret)]
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for form in forms:
+        for variant in (form, form.upper(), form.lower()):
+            if variant not in seen:
+                seen.add(variant)
+                expanded.append(variant)
+    return expanded
+
+
+def _scrub_secret_regex(text: str, secret: str, replacement: str) -> str:
+    if not secret or not text:
+        return text
+    cleaned = text
+    for form in _secret_encoding_forms(secret):
+        cleaned = _percent_insensitive_pattern(form).sub(replacement, cleaned)
+    return cleaned
+
+
+def _scrub_query_param_assignments(text: str, param: str, redacted: str) -> str:
+    """Clear the entire configured query-param value (``=`` or ``%3D`` / ``%3d``)."""
+    if not param or not text:
+        return text
+    # Callable replacement avoids ``\\1`` + digit-leading redactions being parsed
+    # as high backreference groups (e.g. redaction ``1234****3456``).
+    return re.sub(
+        rf"({re.escape(param)}(?:=|%3[Dd]))([^&\s#]*)",
+        lambda match: match.group(1) + redacted,
+        text,
+    )
+
+
 def _scrub_key_from_text(text: str, key: str | None) -> str:
     """Defensive scrub: replace verbatim API key occurrences in arbitrary text.
 
@@ -73,7 +228,37 @@ def _scrub_key_from_text(text: str, key: str | None) -> str:
     """
     if not key or not text:
         return text or ""
-    return text.replace(key, redact_api_key(key))
+    return _scrub_secret_regex(text, key, redact_api_key(key))
+
+
+def sanitize_provider_error(
+    text: str,
+    *,
+    api_key: str | None,
+    query_param_name: str | None = None,
+) -> str:
+    """Single provider-boundary sanitizer for secrets in exception / URL text.
+
+    Scrubs the exact secret and percent-encoded forms (``%HH`` hex is matched
+    case-insensitively; unencoded text stays case-sensitive), plus named
+    query-param assignments such as ``key=<secret>`` without assuming an
+    ``sk-`` prefix.
+    """
+    if not text:
+        return ""
+    cleaned = text
+    redacted = redact_api_key(api_key) if api_key else "***"
+    if api_key:
+        cleaned = _scrub_secret_regex(cleaned, api_key, redacted)
+        for prefix in ("Bearer ", "bearer "):
+            bearer_pat = re.compile(
+                rf"{re.escape(prefix)}{_percent_insensitive_pattern(api_key).pattern}"
+            )
+            cleaned = bearer_pat.sub(f"{prefix}{redacted}", cleaned)
+    param = (query_param_name or "").strip()
+    if param and api_key:
+        cleaned = _scrub_query_param_assignments(cleaned, param, redacted)
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +645,12 @@ def _infer_context_window(model_id: str) -> int:
 
 __all__ = [
     "ProbeResult",
+    "SafeProviderError",
     "infer_capabilities_from_id",
     "probe_provider",
+    "raise_safe_provider_error",
     "redact_api_key",
+    "reraise_safe_provider_error",
+    "safe_provider_error",
+    "sanitize_provider_error",
 ]

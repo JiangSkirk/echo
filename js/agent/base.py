@@ -22,6 +22,10 @@ if TYPE_CHECKING:
     from js.compression.compressor import CompressionConfig, ContextCompressor
     from js.compression.feedback import CompressionFeedback
     from js.config import JSSettings
+    from js.echo.durable_thread import EchoDurableExecutor
+    from js.echo.ledger.service import EchoSafetyService
+    from js.echo.turn_context import RuntimeContext
+    from js.echo.turn_runtime import EchoRuntime
     from js.evolution.learner import SelfLearner
     from js.evolution.metacognition import MetacognitionLoop
     from js.evolution.optimizer import PromptOptimizer
@@ -101,7 +105,10 @@ Search vs Fetch: Prefer web_search for finding information; use browser_fetch on
         settings: JSSettings
         logger: Any
         _role: str | None
+        _echo_durable_executor: EchoDurableExecutor
+        echo_runtime: EchoRuntime
         router: ModelRouter
+        echo_safety_service: EchoSafetyService
         provider_manager: ProviderManager
         guard: BehaviorGuard
         audit: AuditLogger
@@ -127,7 +134,13 @@ Search vs Fetch: Prefer web_search for finding information; use browser_fetch on
         approvals: ApprovalQueue
         defense_strategies: Any
         _cancel_tokens: dict[str, tuple[asyncio.Event, str, str | None]]
+        _active_run_tasks: dict[
+            str,
+            tuple[asyncio.Task[Any], str, str | None],
+        ]
+        _background_model_tasks: set[asyncio.Task[Any]]
         _shutdown_requested: bool
+        _last_skill_evolution_check_monotonic: float | None
         _system_message_cache: TTLCache[tuple[str, str, str], str]
         _degraded: bool
         degraded_reason: str
@@ -144,7 +157,6 @@ Search vs Fetch: Prefer web_search for finding information; use browser_fetch on
         _desktop_tools: Any | None
         _browser_tool: Any
         _webbridge_tool: Any
-        _last_system_variant_id: str
 
         # --- Cross-module methods (defined in mixins / core; stubbed for typing) ---
         async def _check_degraded(self) -> None: ...
@@ -158,6 +170,9 @@ Search vs Fetch: Prefer web_search for finding information; use browser_fetch on
             run_id: str,
             user_input: str,
             progress_callback: Callable[[str, ToolResult], Awaitable[None]] | None = None,
+            *,
+            allowed_tools: set[str] | None = None,
+            owner_key_hash: str | None = None,
         ) -> tuple[ChatMessage, ToolResult]: ...
         def _build_system_message(
             self,
@@ -167,12 +182,22 @@ Search vs Fetch: Prefer web_search for finding information; use browser_fetch on
             model: str | None = None,
         ) -> str: ...
         def _build_vision_content(
-            self, user_input: str, attachments: list[str], supports_vision: bool
+            self,
+            user_input: str,
+            attachments: list[str],
+            supports_vision: bool,
+            session_id: str | None = None,
         ) -> str | list[dict[str, Any]]: ...
-        async def _build_attachment_context(self, attachments: list[str]) -> str: ...
+        async def _build_attachment_context(
+            self, attachments: list[str], session_id: str | None = None
+        ) -> str: ...
         def _format_messages_for_summary(self, messages: list[ChatMessage]) -> str: ...
         async def _summarize_context(
-            self, messages: list[ChatMessage], identifiers: list[str] | None = None
+            self,
+            messages: list[ChatMessage],
+            identifiers: list[str] | None = None,
+            *,
+            runtime_context: RuntimeContext | None = None,
         ) -> str: ...
         async def _finalize_run(
             self,
@@ -195,6 +220,8 @@ Search vs Fetch: Prefer web_search for finding information; use browser_fetch on
             _resume_state: AgentState | None = None,
             stream_callback: Callable[[str], Awaitable[None]] | None = None,
             progress_callback: Callable[[str, ToolResult], Awaitable[None]] | None = None,
+            event_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+            disable_tools: bool = False,
         ) -> AgentState: ...
         async def _do_run(
             self,
@@ -205,4 +232,6 @@ Search vs Fetch: Prefer web_search for finding information; use browser_fetch on
             _resume_state: AgentState | None = None,
             stream_callback: Callable[[str], Awaitable[None]] | None = None,
             progress_callback: Callable[[str, ToolResult], Awaitable[None]] | None = None,
+            event_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+            disable_tools: bool = False,
         ) -> AgentState: ...

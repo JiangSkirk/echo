@@ -1,0 +1,50 @@
+{
+  "scenario": "ws_stream_error",
+  "kind": "ws",
+  "input": {
+    "body": null,
+    "frames_in": [
+      {
+        "content": "hi",
+        "session_id": "00000000-0000-0000-0000-000000000001",
+        "type": "stream"
+      }
+    ],
+    "headers": {
+      "Origin": "http://localhost"
+    },
+    "method": null,
+    "path": "/ws"
+  },
+  "expected": {
+    "body": null,
+    "frames_out": [
+      {
+        "content": "streaming...",
+        "type": "status"
+      },
+      {
+        "content": "\u8bf7\u6c42\u8fc7\u4e8e\u9891\u7e41\u6216\u989d\u5ea6\u5df2\u7528\u5c3d\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5\u3002",
+        "cost": 0.0,
+        "model": "mock-model",
+        "session_id": "00000000-0000-0000-0000-000000000001",
+        "terminal": true,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "turns": 1,
+        "type": "error"
+      }
+    ],
+    "headers": {},
+    "status": 101
+  },
+  "mock": {
+    "provider": "scripted",
+    "scripted_chunks": [],
+    "state_error_message": "rate limit exceeded",
+    "state_status": "error"
+  },
+  "notes": "state.status='error' \u2192 status('streaming...') + error frame with humanized Chinese detail."
+}

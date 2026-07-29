@@ -104,6 +104,7 @@ class ChatCompletionsTransport(BaseTransport):
             },
             finish_reason=choice.finish_reason or "stop",
             reasoning_content=getattr(msg, "reasoning_content", "") or "",
+            usage_source="provider_actual" if usage else "unavailable",
         )
 
     def parse_stream_chunk(self, chunk: Any) -> str | None:
@@ -196,6 +197,7 @@ class AnthropicTransport(BaseTransport):
             },
             finish_reason="stop",
             reasoning_content=reasoning,
+            usage_source="provider_actual" if usage else "unavailable",
         )
 
     def parse_stream_chunk(self, chunk: Any) -> str | None:
@@ -291,6 +293,7 @@ class BedrockTransport(BaseTransport):
             },
             finish_reason="stop",
             reasoning_content="",
+            usage_source="provider_actual" if usage else "unavailable",
         )
 
     def parse_stream_chunk(self, chunk: Any) -> str | None:

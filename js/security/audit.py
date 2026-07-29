@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import sqlite3
 import threading
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from js.utils.db import db_connection
+
+_DEFAULT_MAX_ENTRIES = 5_000
 
 
 class AuditEventType(StrEnum):
@@ -28,6 +31,7 @@ class AuditEventType(StrEnum):
     USER_MESSAGE = "user_message"
     AGENT_MESSAGE = "agent_message"
     DELEGATION = "delegation"
+    CANCELLED = "cancelled"
     ERROR = "error"
     SKILL_PROMOTION = "skill_promotion"
     SKILL_PROMOTION_GATE = "skill_promotion_gate"
@@ -46,13 +50,15 @@ class AuditEvent:
 
 
 class AuditLogger:
-    """Audit logger with hash-chain integrity detection.
+    """Audit logger with HMAC-SHA256 hash-chain integrity.
 
     Audit log payloads are encrypted at rest using the same Fernet key
-    managed by SecretManager.  The hash chain detects accidental tampering
-    or truncation, but it is NOT a cryptographic HMAC: an attacker with
-    database write access can recompute the chain and forge history.
-    For forensic-grade integrity, migrate to HMAC-SHA256 (see TECH_DEBT.md).
+    managed by SecretManager.  The hash chain is authenticated with
+    HMAC-SHA256 using a key derived from the SecretManager master secret, so
+    an attacker with only database write access cannot recompute the chain
+    to forge or rewrite history.  Chain verification fails closed: any
+    record whose MAC does not verify (including legacy plain-SHA256 records)
+    marks the chain as invalid.
     """
 
     def __init__(self, state_dir: Path, retention_days: int = 90) -> None:
@@ -61,6 +67,7 @@ class AuditLogger:
         self.retention_days = retention_days
         self._lock = threading.RLock()
         self._last_hash: str = "0" * 64
+        self._chain_mac_key: bytes = self._secrets.derive_mac_key("audit-hash-chain")
         self._init_db()
 
     @property
@@ -99,13 +106,45 @@ class AuditLogger:
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(timestamp)
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS audit_chain_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    anchor_log_id INTEGER,
+                    anchor_prev_checksum TEXT NOT NULL,
+                    chain_tip TEXT NOT NULL
+                )
+            """)
+            state = conn.execute(
+                "SELECT anchor_log_id, anchor_prev_checksum, chain_tip "
+                "FROM audit_chain_state WHERE id = 1"
+            ).fetchone()
+            if state is None:
+                # Migrate existing SQLite databases by anchoring the current
+                # retained chain exactly once. Future prefix deletions must be
+                # performed through prune(), which updates this state atomically.
+                first_row = conn.execute(
+                    "SELECT id, prev_checksum FROM audit_log ORDER BY id ASC LIMIT 1"
+                ).fetchone()
+                last_row = conn.execute(
+                    "SELECT checksum FROM audit_log ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                conn.execute(
+                    """
+                    INSERT INTO audit_chain_state
+                    (id, anchor_log_id, anchor_prev_checksum, chain_tip)
+                    VALUES (1, ?, ?, ?)
+                    """,
+                    (
+                        first_row[0] if first_row else None,
+                        first_row[1] if first_row else "0" * 64,
+                        last_row[0] if last_row else "0" * 64,
+                    ),
+                )
             conn.commit()
-            # Load last hash for chain continuity
-            row = conn.execute("SELECT checksum FROM audit_log ORDER BY id DESC LIMIT 1").fetchone()
-            if row:
-                self._last_hash = row[0]
-            else:
-                self._last_hash = "0" * 64
+            # The persisted tip is authoritative across restarts and pruning.
+            self._last_hash = conn.execute(
+                "SELECT chain_tip FROM audit_chain_state WHERE id = 1"
+            ).fetchone()[0]
 
     def log(
         self,
@@ -130,7 +169,7 @@ class AuditLogger:
             # the hash-chain input are identical ASCII strings.
             _stored = payload.decode("ascii")
             data = f"{self._last_hash}:{timestamp}:{event_type.value}:{session_id}:{run_id}:{actor}:{action}:{_stored}"
-            checksum = hashlib.sha256(data.encode()).hexdigest()
+            checksum = hmac.new(self._chain_mac_key, data.encode(), hashlib.sha256).hexdigest()
 
             event = AuditEvent(
                 timestamp=timestamp,
@@ -144,7 +183,7 @@ class AuditLogger:
             )
 
             with db_connection(self.db_path) as conn:
-                conn.execute(
+                cursor = conn.execute(
                     """
                     INSERT INTO audit_log
                     (timestamp, event_type, session_id, run_id, actor, action, details, checksum, prev_checksum)
@@ -162,6 +201,19 @@ class AuditLogger:
                         self._last_hash,
                     ),
                 )
+                state = conn.execute(
+                    "SELECT anchor_log_id FROM audit_chain_state WHERE id = 1"
+                ).fetchone()
+                if state[0] is None:
+                    conn.execute(
+                        """
+                        UPDATE audit_chain_state
+                        SET anchor_log_id = ?, anchor_prev_checksum = ?
+                        WHERE id = 1
+                        """,
+                        (cursor.lastrowid, self._last_hash),
+                    )
+                conn.execute("UPDATE audit_chain_state SET chain_tip = ? WHERE id = 1", (checksum,))
                 conn.commit()
 
             self._last_hash = checksum
@@ -221,48 +273,86 @@ class AuditLogger:
     def verify_chain(self) -> tuple[bool, int]:
         """Verify the integrity of the audit chain. Returns (valid, first_invalid_id).
 
-        Uses the first row's prev_checksum as the genesis hash so that
-        verification survives pruning.  When the chain has never been
-        pruned, the first row's prev_checksum will be the chain genesis
-        (``\"0\" * 64``).  After pruning, the oldest remaining row's
-        prev_checksum points to a now-deleted predecessor, and verification
-        correctly validates continuity from that point forward.
+        The persisted prune anchor prevents an arbitrary prefix deletion from
+        becoming a new genesis, while the persisted tip detects truncation.
         """
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("SELECT * FROM audit_log ORDER BY id ASC").fetchall()
+            state = conn.execute(
+                "SELECT anchor_log_id, anchor_prev_checksum, chain_tip "
+                "FROM audit_chain_state WHERE id = 1"
+            ).fetchone()
 
+        if state["anchor_log_id"] is None:
+            return (not rows, rows[0]["id"] if rows else 0)
         if not rows:
-            return True, 0
+            return False, state["anchor_log_id"]
+        if (
+            rows[0]["id"] != state["anchor_log_id"]
+            or rows[0]["prev_checksum"] != state["anchor_prev_checksum"]
+        ):
+            return False, rows[0]["id"]
 
-        # Use the first row's prev_checksum as the genesis — this handles
-        # both pristine chains (genesis = "0"*64) and pruned chains (where
-        # the first remaining row's prev_checksum points to a deleted predecessor).
-        prev_hash = rows[0]["prev_checksum"]
+        prev_hash = state["anchor_prev_checksum"]
         for row in rows:
             payload = row["details"]
+            if row["prev_checksum"] != prev_hash:
+                return False, row["id"]
             data = f"{prev_hash}:{row['timestamp']}:{row['event_type']}:{row['session_id']}:{row['run_id']}:{row['actor']}:{row['action']}:{payload}"
-            expected = hashlib.sha256(data.encode()).hexdigest()
-            if expected != row["checksum"]:
+            expected = hmac.new(self._chain_mac_key, data.encode(), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(expected, str(row["checksum"])):
                 return False, row["id"]
             prev_hash = row["checksum"]
 
+        if prev_hash != state["chain_tip"]:
+            return False, rows[-1]["id"]
         return True, 0
 
-    def prune(self) -> int:
-        """Remove entries older than retention_days.
+    def prune(self, max_entries: int = _DEFAULT_MAX_ENTRIES) -> int:
+        """Remove expired entries and retain at most ``max_entries`` rows.
 
-        After pruning, re-anchor the hash chain from the newest remaining record
-        so that verify_chain() continues to work.
+        A successful deletion atomically records the oldest retained log row as
+        the new authorized anchor and preserves the current chain tip.
         """
+        if max_entries < 0:
+            raise ValueError("max_entries must be non-negative")
         cutoff = time.time() - (self.retention_days * 86400)
-        with db_connection(self.db_path) as conn:
-            cursor = conn.execute("DELETE FROM audit_log WHERE timestamp < ?", (cutoff,))
+        with self._lock, db_connection(self.db_path) as conn:
+            changes_before = conn.total_changes
+            conn.execute("DELETE FROM audit_log WHERE timestamp < ?", (cutoff,))
+            conn.execute(
+                """
+                DELETE FROM audit_log
+                WHERE id IN (
+                    SELECT id
+                    FROM audit_log
+                    ORDER BY id DESC
+                    LIMIT -1 OFFSET ?
+                )
+                """,
+                (max_entries,),
+            )
+            deleted = conn.total_changes - changes_before
+            if deleted:
+                first_row = conn.execute(
+                    "SELECT id, prev_checksum FROM audit_log ORDER BY id ASC LIMIT 1"
+                ).fetchone()
+                last_row = conn.execute(
+                    "SELECT checksum FROM audit_log ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                self._last_hash = last_row[0] if last_row else "0" * 64
+                conn.execute(
+                    """
+                    UPDATE audit_chain_state
+                    SET anchor_log_id = ?, anchor_prev_checksum = ?, chain_tip = ?
+                    WHERE id = 1
+                    """,
+                    (
+                        first_row[0] if first_row else None,
+                        first_row[1] if first_row else "0" * 64,
+                        self._last_hash,
+                    ),
+                )
             conn.commit()
-            # Re-anchor chain: the oldest remaining record becomes the new genesis
-            row = conn.execute("SELECT checksum FROM audit_log ORDER BY id ASC LIMIT 1").fetchone()
-            if row:
-                self._last_hash = row[0]
-            else:
-                self._last_hash = "0" * 64
-            return cursor.rowcount
+            return deleted

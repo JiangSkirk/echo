@@ -1,0 +1,34 @@
+{
+  "scenario": "api_chat_413",
+  "kind": "api_chat",
+  "input": {
+    "method": "POST",
+    "path": "/api/chat",
+    "headers": {
+      "Origin": "http://localhost"
+    },
+    "body": {
+      "_oversized_payload": {
+        "char": "A",
+        "repeat": 266240
+      }
+    },
+    "frames_in": []
+  },
+  "expected": {
+    "status": 413,
+    "headers": {
+      "content-length": "65",
+      "content-type": "application/json"
+    },
+    "body": {
+      "detail": "Request payload too large: 266255 bytes (max 262144)"
+    },
+    "frames_out": []
+  },
+  "mock": {
+    "provider": "scripted",
+    "scripted_chunks": []
+  },
+  "notes": "payload > 256 KiB rejected with HTTPException(413); agent.run not invoked."
+}

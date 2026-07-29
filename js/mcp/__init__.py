@@ -1,6 +1,8 @@
-"""MCP (Model Context Protocol) integration."""
+"""Echo-controlled Model Context Protocol schema integration."""
 
-from js.mcp.client import MCPClient
-from js.mcp.tools import MCPToolAdapter
+from js.mcp.controlled import ControlledMCPConnector, load_mcp_manifest
 
-__all__ = ["MCPClient", "MCPToolAdapter"]
+__all__ = [
+    "ControlledMCPConnector",
+    "load_mcp_manifest",
+]
