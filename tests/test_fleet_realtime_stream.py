@@ -15,9 +15,10 @@ Also covered:
 
 * Dedup: when the post-scan loop sees the same reasoning / tool-call that
   was already streamed live, it does NOT re-emit (UI doesn't see doubles).
-* No-stream turn (worker.agent.run does not invoke the live callbacks at
-  all) still surfaces reasoning / tool_calls via the post-scan path —
-  backward-compat with the pre-PR fleet behaviour.
+* No-stream turn (``run_echo_turn`` / ``echo_runtime.run_agent_turn`` does not
+  invoke the live callbacks at all) still surfaces reasoning / tool_calls
+  via the post-scan path — backward-compat with the pre-PR fleet behaviour.
+* Channel / owner / session lineage is passed through ``run_echo_turn``.
 
 The fleet is built via ``AgentFleet.__new__`` so we don't have to spin up
 settings, state dirs, or a full JSAgent. Only the attributes
@@ -27,11 +28,15 @@ settings, state dirs, or a full JSAgent. Only the attributes
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from js.agent.state import AgentState
+from js.echo.turn_context import RuntimeContext, reset_runtime_context, set_runtime_context
+from js.echo.turn_runtime import EchoRuntime, TurnRequest
 from js.models.providers import ChatMessage
 from js.orchestration.fleet import AgentFleet, AgentInstance, AgentRole, Task
 
@@ -44,8 +49,40 @@ def _make_fleet() -> AgentFleet:
     return fleet
 
 
+class _Pulse:
+    def observe(self, **_kwargs: Any) -> Any:
+        return SimpleNamespace(admitted=True)
+
+
+class _ScriptedLoop:
+    def __init__(self, agent: _ScriptedAgent, request: TurnRequest) -> None:
+        self._agent = agent
+        self._request = request
+
+    async def execute(self) -> AgentState:
+        request = self._request
+        runtime = self._agent.echo_runtime
+        runtime.calls.append(  # type: ignore[attr-defined]
+            {
+                "message": request.message,
+                "channel": request.context.channel,
+                "owner_key_hash": request.context.owner_key_hash,
+                "session_id": request.context.session_id,
+                "model": request.model,
+                "attachments": list(request.attachments),
+            }
+        )
+        return await self._agent._drive(
+            request.message,
+            model=request.model,
+            progress_callback=request.progress_callback,
+            stream_callback=request.stream_callback,
+            event_callback=request.event_callback,
+        )
+
+
 class _ScriptedAgent:
-    """Fake ``JSAgent`` whose ``run`` drives the PR-4.3 callback contract."""
+    """Fake ``JSAgent`` whose ``echo_runtime.run_agent_turn`` drives callbacks."""
 
     def __init__(
         self,
@@ -53,14 +90,32 @@ class _ScriptedAgent:
         tokens: list[str] | None = None,
         events: list[dict[str, Any]] | None = None,
         final_message: str = "ok",
+        final_status: str = "completed",
         messages: list[ChatMessage] | None = None,
     ) -> None:
         self._tokens = tokens or []
         self._events = events or []
         self._final = final_message
+        self._status = final_status
         self._extra_messages = messages or []
+        self.settings = SimpleNamespace(
+            workspace=Path("/tmp"),
+            state_dir=Path("/tmp"),
+            echo_engine="on",
+            product_id="js-agent",
+        )
+        self.registry = SimpleNamespace(list_tools=lambda: [])
+        self._current_allowed_tools: set[str] = set()
+        self._lane_executor = None
+        self._shutdown_requested = False
+        self.echo_runtime = EchoRuntime(
+            self,
+            pulse_runtime=_Pulse(),
+            turn_loop_factory=lambda agent, request: _ScriptedLoop(agent, request),
+        )
+        self.echo_runtime.calls = []  # type: ignore[attr-defined]
 
-    async def run(
+    async def _drive(
         self,
         prompt: str,
         *,
@@ -69,6 +124,7 @@ class _ScriptedAgent:
         stream_callback: Any = None,
         event_callback: Any = None,
     ) -> AgentState:
+        del prompt, model, progress_callback  # unused in scripted path
         # Live deltas first
         for t in self._tokens:
             if stream_callback is not None:
@@ -83,16 +139,24 @@ class _ScriptedAgent:
         msgs.append(ChatMessage(role="assistant", content=self._final))
         state = AgentState(session_id="s1", run_id="r1")
         state.messages = msgs
-        state.status = "completed"
+        state.status = self._status
         return state
 
 
-def _worker(agent: _ScriptedAgent, name: str = "w1") -> AgentInstance:
+def _worker(
+    agent: _ScriptedAgent,
+    name: str = "w1",
+    *,
+    product_id: str = "js-agent",
+    owner_key_hash: str = "fleet-local",
+) -> AgentInstance:
     return AgentInstance(
         id=f"a-{name}",
         name=name,
         role=AgentRole("worker"),
         agent=agent,  # type: ignore[arg-type]
+        product_id=product_id,
+        owner_key_hash=owner_key_hash,
         model="m1",
     )
 
@@ -103,6 +167,66 @@ def _task(desc: str = "do thing") -> Task:
 
 @pytest.mark.asyncio
 class TestFleetRealtimeEvents:
+    async def test_worker_stream_events_reach_only_matching_owner_subscription(self) -> None:
+        fleet = _make_fleet()
+        received_a: list[dict[str, Any]] = []
+        received_b: list[dict[str, Any]] = []
+
+        async def collect_a(event: dict[str, Any]) -> None:
+            received_a.append(event)
+
+        async def collect_b(event: dict[str, Any]) -> None:
+            received_b.append(event)
+
+        fleet.on_event(collect_a, product_id="js-agent", owner_key_hash="owner-a")
+        fleet.on_event(collect_b, product_id="js-agent", owner_key_hash="owner-b")
+        agent = _ScriptedAgent(
+            tokens=["result-a"],
+            events=[
+                {"kind": "thinking_delta", "text": "thinking-a"},
+                {
+                    "kind": "tool_call_delta",
+                    "tool_call": {
+                        "id": "call-a",
+                        "name": "search",
+                        "arguments_delta": "{}",
+                    },
+                },
+            ],
+            final_message="result-a",
+        )
+        parent = RuntimeContext(
+            product_id="js-agent",
+            channel="api_chat",
+            owner_key_hash="owner-a",
+            session_id="session-a",
+            run_id="run-a",
+            role="local-user",
+            profile="default",
+            capabilities=(),
+            workspace=Path("/tmp"),
+            state_dir=Path("/tmp"),
+        )
+        token = set_runtime_context(parent)
+        try:
+            await fleet._execute_single(
+                _task("owner-a task"),
+                _worker(agent, owner_key_hash="owner-a"),
+            )
+        finally:
+            reset_runtime_context(token)
+
+        event_types = {event["type"] for event in received_a}
+        assert {
+            "agent_start",
+            "agent_token",
+            "agent_thinking",
+            "agent_tool_call",
+            "agent_done",
+        } <= event_types
+        assert received_b == []
+        assert all("owner_key_hash" not in event for event in received_a)
+
     async def test_live_text_tokens_emit_agent_token_frames(self) -> None:
         fleet = _make_fleet()
         received: list[dict[str, Any]] = []
@@ -320,3 +444,178 @@ class TestFleetRealtimeEvents:
         # All new live channels are present somewhere in between.
         assert "agent_token" in kinds
         assert "agent_usage" in kinds
+
+    async def test_cancelled_worker_preserves_cancelled_terminal_status(self) -> None:
+        fleet = _make_fleet()
+        received: list[dict[str, Any]] = []
+
+        async def collect(event: dict[str, Any]) -> None:
+            received.append(event)
+
+        fleet.on_event(collect)
+        task = _task("cancelled synthetic task")
+        agent = _ScriptedAgent(final_message="", final_status="cancelled")
+
+        await fleet._execute_single(task, _worker(agent))
+
+        assert task.status == "cancelled"
+        assert task.result == "Task was cancelled"
+        done = [event for event in received if event["type"] == "agent_done"]
+        assert done[-1]["status"] == "cancelled"
+
+    async def test_cancelling_fleet_coroutine_records_cancelled_terminal(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fleet = _make_fleet()
+        received: list[dict[str, Any]] = []
+        started = asyncio.Event()
+
+        async def collect(event: dict[str, Any]) -> None:
+            received.append(event)
+
+        async def block_turn(*_args: Any, **_kwargs: Any) -> AgentState:
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        monkeypatch.setattr("js.orchestration.fleet.run_echo_turn", block_turn)
+        fleet.on_event(collect)
+        task = _task("cancelled coroutine task")
+        execution = asyncio.create_task(
+            fleet._execute_single(task, _worker(_ScriptedAgent()))
+        )
+        await started.wait()
+        execution.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await execution
+
+        assert task.status == "cancelled"
+        assert task.result == "Task was cancelled"
+        done = [event for event in received if event["type"] == "agent_done"]
+        assert done[-1]["status"] == "cancelled"
+
+    async def test_worker_defaults_channel_owner_session_lineage(self) -> None:
+        """Without parent runtime context, worker uses fleet defaults."""
+        fleet = _make_fleet()
+        agent = _ScriptedAgent(tokens=["x"], final_message="x")
+        await fleet._execute_single(_task("lineage default"), _worker(agent))
+
+        assert len(agent.echo_runtime.calls) == 1
+        call = agent.echo_runtime.calls[0]
+        assert call["channel"] == "fleet_worker"
+        assert call["owner_key_hash"] == "fleet-local"
+        assert call["session_id"]
+        assert call["model"] == "m1"
+        assert call["message"] == "lineage default"
+
+    async def test_worker_inherits_parent_owner_and_session(self) -> None:
+        """When a parent Echo context is bound, fleet reuses its lineage."""
+        fleet = _make_fleet()
+        agent = _ScriptedAgent(tokens=["y"], final_message="y")
+        parent = RuntimeContext(
+            product_id="js-agent",
+            channel="api_chat",
+            owner_key_hash="owner-from-parent",
+            session_id="session-from-parent",
+            run_id="run-parent",
+            role="local-user",
+            profile="default",
+            capabilities=(),
+            workspace=Path("/tmp"),
+            state_dir=Path("/tmp"),
+        )
+        token = set_runtime_context(parent)
+        try:
+            await fleet._execute_single(
+                _task("lineage inherit"),
+                _worker(agent, owner_key_hash="owner-from-parent"),
+            )
+        finally:
+            reset_runtime_context(token)
+
+        assert len(agent.echo_runtime.calls) == 1
+        call = agent.echo_runtime.calls[0]
+        assert call["channel"] == "fleet_worker"
+        assert call["owner_key_hash"] == "owner-from-parent"
+        assert call["session_id"] == "session-from-parent"
+
+    async def test_worker_rejects_mismatched_owner_lineage(self) -> None:
+        fleet = _make_fleet()
+        agent = _ScriptedAgent(final_message="must not run")
+        parent = RuntimeContext(
+            product_id="js-agent",
+            channel="api_chat",
+            owner_key_hash="owner-b",
+            session_id="session-b",
+            run_id="run-b",
+            role="local-user",
+            profile="default",
+            capabilities=(),
+            workspace=Path("/tmp"),
+            state_dir=Path("/tmp"),
+        )
+        token = set_runtime_context(parent)
+        try:
+            _task_id, result = await fleet._execute_single(
+                _task("cross-owner"),
+                _worker(agent, owner_key_hash="owner-a"),
+            )
+        finally:
+            reset_runtime_context(token)
+
+        assert result == "Fleet task failed safely"
+        assert "owner-a" not in result
+        assert "owner-b" not in result
+        assert agent.echo_runtime.calls == []
+
+    async def test_coordinator_uses_fleet_coordinator_channel(self) -> None:
+        """Manager/reviewer one-offs go through fleet_coordinator channel."""
+        fleet = _make_fleet()
+        agent = _ScriptedAgent(final_message="coord-ok")
+        text = await fleet._run_agent(_worker(agent, name="mgr"), "synthesize")
+        assert text == "coord-ok"
+        assert len(agent.echo_runtime.calls) == 1
+        call = agent.echo_runtime.calls[0]
+        assert call["channel"] == "fleet_coordinator"
+        assert call["owner_key_hash"] == "fleet-local"
+        assert call["model"] == "m1"
+        assert call["message"] == "synthesize"
+
+    async def test_run_parallel_parent_cancel_cancels_all_children(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """D-fix: 父任务取消必须级联取消所有子任务，零 pending Task."""
+        fleet = _make_fleet()
+        started = asyncio.Event()
+
+        async def block_turn(*_args: Any, **_kwargs: Any) -> AgentState:
+            started.set()
+            await asyncio.Event().wait()  # block forever
+            raise AssertionError("unreachable")
+
+        monkeypatch.setattr("js.orchestration.fleet.run_echo_turn", block_turn)
+
+        tasks = [_task("t1"), _task("t2")]
+        tasks[0].id = "t1"
+        tasks[1].id = "t2"
+        workers = [
+            _worker(_ScriptedAgent(), name="w1"),
+            _worker(_ScriptedAgent(), name="w2"),
+        ]
+
+        parallel_exec = asyncio.create_task(
+            fleet._run_parallel(tasks, workers)
+        )
+        await started.wait()
+
+        # Cancel parent
+        parallel_exec.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await parallel_exec
+
+        # Both child tasks must be cancelled (not still running)
+        assert tasks[0].status == "cancelled", f"t1 应为 cancelled, got {tasks[0].status}"
+        assert tasks[1].status == "cancelled", f"t2 应为 cancelled, got {tasks[1].status}"

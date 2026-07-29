@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from js.agent.tool_executor import CONTROL_MEMORY_MUTATE_TOOL, CONTROL_SETUP_STATE_TOOL
 from js.config import DefenseMode
 from js.models.cloud_providers import DEEPSEEK_PRESET, build_provider_config
+from js.models.providers import ChatMessage
+from js.tools.registry import ToolResult
 from js.web import server as web_server
 from js.web.server import create_app
 
@@ -24,6 +29,7 @@ def client(tmp_path: Path) -> TestClient:
     mock_agent.settings.security.defense_mode = DefenseMode.ENFORCE
     mock_agent.settings.security.api_key_required = False
     mock_agent.settings.default_model = "test/model"
+    mock_agent.settings.product_id = "js-agent"
     mock_agent.settings.first_run_completed = False
     mock_provider = MagicMock()
     mock_provider.name = "test"
@@ -46,6 +52,142 @@ def client(tmp_path: Path) -> TestClient:
     mock_agent.provider_manager.get_all.return_value = []
     mock_agent.provider_manager.add = MagicMock()
     mock_agent.provider_manager.remove = MagicMock()
+    setup_context = MagicMock(capabilities=(CONTROL_SETUP_STATE_TOOL,))
+    setup_context.product_id = "js-agent"
+    setup_context.session_id = "test-control"
+    mock_agent.echo_runtime.build_context.return_value = setup_context
+    mock_agent.take_setup_admin_key.return_value = None
+    memory_payloads: dict[str, tuple[str, str, str, dict[str, Any]]] = {}
+    memory_results: dict[str, tuple[str, str, str, dict[str, Any]]] = {}
+    memory_sequence = 0
+
+    def stage_memory_payload(
+        owner: str,
+        payload: dict[str, Any],
+        *,
+        product_id: str = "",
+        session_id: str = "",
+    ) -> str:
+        nonlocal memory_sequence
+        assert product_id == "js-agent"
+        assert session_id == "test-control"
+        memory_sequence += 1
+        reference = f"memory-payload-{memory_sequence}"
+        memory_payloads[reference] = (owner, product_id, session_id, dict(payload))
+        return reference
+
+    def discard_memory_payload(
+        reference: str,
+        owner: str,
+        *,
+        product_id: str = "",
+        session_id: str = "",
+    ) -> None:
+        entry = memory_payloads.get(reference)
+        if entry is not None and entry[:3] == (owner, product_id, session_id):
+            memory_payloads.pop(reference, None)
+
+    def take_memory_result(
+        reference: str,
+        owner: str,
+        *,
+        product_id: str = "",
+        session_id: str = "",
+    ) -> dict[str, Any] | None:
+        entry = memory_results.get(reference)
+        if entry is None or entry[:3] != (owner, product_id, session_id):
+            return None
+        memory_results.pop(reference, None)
+        return dict(entry[3])
+
+    mock_agent.stage_memory_mutation_payload = MagicMock(side_effect=stage_memory_payload)
+    mock_agent.discard_memory_mutation_payload = MagicMock(
+        side_effect=discard_memory_payload
+    )
+    mock_agent.take_memory_mutation_result = MagicMock(side_effect=take_memory_result)
+
+    async def execute_control_effect(effect: Any, context: Any) -> tuple[Any, ToolResult]:
+        arguments = json.loads(effect.arguments_json)
+        if effect.tool_name == CONTROL_SETUP_STATE_TOOL:
+            action = arguments["action"]
+            mock_agent.settings.first_run_completed = action == "complete"
+            return (
+                ChatMessage(role="tool", content="updated", name=effect.tool_name),
+                ToolResult(
+                    success=True,
+                    output="updated",
+                    metadata={
+                        "first_run_completed": mock_agent.settings.first_run_completed,
+                    },
+                ),
+            )
+
+        assert effect.tool_name == CONTROL_MEMORY_MUTATE_TOOL
+        payload_ref = arguments["payload_ref"]
+        owner, product_id, session_id, payload = memory_payloads.pop(payload_ref)
+        assert product_id == context.product_id
+        assert session_id == context.session_id
+        action = arguments["action"]
+        if action == "semantic_delete":
+            assert mock_agent.memory.delete_semantic(
+                payload["memory_id"], source="user", owner_key_hash=owner
+            )
+            response = {"success": True}
+        elif action == "semantic_update":
+            assert mock_agent.memory.update_semantic(
+                payload["memory_id"],
+                payload["value"],
+                category=payload.get("category"),
+                source="user",
+                memory_path=payload.get("memory_path"),
+                entity_type=payload.get("entity_type"),
+                entity_name=payload.get("entity_name"),
+                parent_id=payload.get("parent_id"),
+                relation_type=payload.get("relation_type"),
+                owner_key_hash=owner,
+            )
+            response = {"success": True}
+        elif action == "organize":
+            buffer = mock_agent._dream_scheduler.snapshot_buffer()
+            if buffer:
+                report = await mock_agent._extract_memories(buffer)
+                response = {"success": True, "turns": len(buffer), **report}
+            else:
+                response = {
+                    "success": True,
+                    "turns": 0,
+                    "proposed": 0,
+                    "auto_applied": 0,
+                    "pending": 0,
+                    "skipped": "no recent conversation",
+                }
+        elif action == "proposal_approve":
+            response = mock_agent.memory.approve_proposal(
+                payload["proposal_id"],
+                owner_key_hash=owner,
+                overrides=payload.get("overrides"),
+            )
+        else:
+            raise AssertionError(f"unsupported memory control action: {action}")
+        result_ref = f"memory-result-{payload_ref}"
+        memory_results[result_ref] = (
+            owner,
+            product_id,
+            session_id,
+            dict(response),
+        )
+        return (
+            ChatMessage(role="tool", content="completed", name=effect.tool_name),
+            ToolResult(
+                success=True,
+                output="completed",
+                metadata={"result_ref": result_ref},
+            ),
+        )
+
+    mock_agent.echo_runtime.execute_tool_effect = AsyncMock(
+        side_effect=execute_control_effect
+    )
 
     mock_memory = MagicMock()
     mock_memory.get_context_string.return_value = ""
@@ -95,6 +237,12 @@ class TestSetupWizard:
         resp = client.get("/api/setup/first-start")
         assert resp.json()["first_run_completed"] is True
 
+        agent = web_server._agent
+        effect, context = agent.echo_runtime.execute_tool_effect.await_args.args
+        assert effect.tool_name == CONTROL_SETUP_STATE_TOOL
+        assert effect.allowed_tools == (CONTROL_SETUP_STATE_TOOL,)
+        assert context.capabilities == (CONTROL_SETUP_STATE_TOOL,)
+
 
 class TestModelSwitch:
     def test_models_returns_active_model(self, client: TestClient) -> None:
@@ -104,7 +252,34 @@ class TestModelSwitch:
         assert "active_model" in data
         assert data["active_model"] == ""
 
-    def test_switch_model_success(self, client: TestClient) -> None:
+    def test_switch_model_success(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        agent = web_server._agent
+        runtime_context = MagicMock(capabilities=("control_model_switch",))
+        agent.echo_runtime.build_context.return_value = runtime_context
+
+        async def execute_model_switch(effect: Any, _context: Any) -> tuple[Any, ToolResult]:
+            from js.web.deps import set_active_model
+
+            set_active_model("test/model-a")
+            return (
+                ChatMessage(role="tool", content="switched", name=effect.tool_name),
+                ToolResult(
+                    success=True,
+                    output="switched",
+                    metadata={"model_id": "test/model-a"},
+                ),
+            )
+
+        agent.echo_runtime.execute_tool_effect = AsyncMock(side_effect=execute_model_switch)
+        monkeypatch.setattr(
+            web_server,
+            "_save_active_model",
+            MagicMock(side_effect=AssertionError("raw active-model write bypass")),
+        )
         resp = client.post("/api/models/switch", json={"model_id": "test/model-a"})
         assert resp.status_code == 200
         data = resp.json()
@@ -113,16 +288,25 @@ class TestModelSwitch:
 
         resp = client.get("/api/models")
         assert resp.json()["active_model"] == "test/model-a"
+        effect, context = agent.echo_runtime.execute_tool_effect.await_args.args
+        assert effect.tool_name == "control_model_switch"
+        assert effect.allowed_tools == ("control_model_switch",)
+        assert effect.arguments_json == '{"model_id":"test/model-a"}'
+        assert context is runtime_context
 
     def test_switch_model_missing_id(self, client: TestClient) -> None:
         resp = client.post("/api/models/switch", json={})
+        assert resp.status_code == 400
+
+    def test_switch_model_rejects_non_string_id(self, client: TestClient) -> None:
+        resp = client.post("/api/models/switch", json={"model_id": ["test/model-a"]})
         assert resp.status_code == 400
 
     def test_switch_model_invalid_id(self, client: TestClient) -> None:
         resp = client.post("/api/models/switch", json={"model_id": "invalid/model"})
         assert resp.status_code == 400
 
-    def test_models_refreshes_lmstudio_models(
+    def test_models_get_does_not_probe_or_mutate_local_provider_models(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         agent = web_server._agent
@@ -136,25 +320,65 @@ class TestModelSwitch:
                 ]
             }
         )
-        monkeypatch.setattr(web_server.ProviderManager, "discover_models", discover)
+        monkeypatch.setattr(
+            "js.models.provider_manager.ProviderManager.discover_models",
+            discover,
+        )
+        health_check = AsyncMock(return_value=True)
+        cached_provider = MagicMock(
+            _last_health_check=0.0,
+            _health_status=False,
+            health_check=health_check,
+        )
+        agent.router._providers = {"lmstudio": cached_provider}
 
         resp = client.get("/api/models")
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["providers"][0]["models"][0]["id"] == "loaded-model"
-        assert agent.settings.providers[0].default_model == "loaded-model"
-        agent.router.add_provider.assert_called()
+        assert data["providers"][0]["models"][0]["id"] == "model-a"
+        discover.assert_not_awaited()
+        health_check.assert_not_awaited()
+        agent.router.add_provider.assert_not_called()
 
 
 class TestProviderConnect:
+    def test_lan_scan_is_fail_closed_without_an_echo_network_effect(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        discovery = MagicMock(side_effect=AssertionError("LAN scanner must not start"))
+        monkeypatch.setattr("js.models.discovery.LocalModelDiscovery", discovery)
+
+        response = client.post("/api/providers/scan-lan", json={})
+
+        assert response.status_code == 409
+        assert "disabled" in response.text.lower()
+        discovery.assert_not_called()
+
     def test_connect_provider_sets_model_provider(self, client: TestClient) -> None:
+        agent = web_server._agent
+        agent.stage_provider_discovery_key.return_value = "provider-key-ref"
+        agent.echo_runtime.build_context.return_value = MagicMock(
+            capabilities=("control_provider_mutate",)
+        )
+        agent.echo_runtime.execute_tool_effect = AsyncMock(
+            return_value=(
+                ChatMessage(role="tool", content="saved", name="control_provider_mutate"),
+                ToolResult(
+                    success=True,
+                    output="saved",
+                    metadata={"provider": "custom", "models_added": 1},
+                ),
+            )
+        )
         resp = client.post(
             "/api/providers/connect",
             json={
                 "name": "custom",
                 "base_url": "http://127.0.0.1:1234/v1",
-                "api_key": "",
+                "api_key": "connect-super-secret",
                 "models": [{"id": "model-x", "name": "Model X"}],
             },
         )
@@ -164,12 +388,14 @@ class TestProviderConnect:
         assert data["success"] is True
         assert data["provider"] == "custom"
 
-        agent = web_server._agent
-        saved_cfg = agent.provider_manager.add.call_args.args[0]
-        assert saved_cfg.name == "custom"
-        assert saved_cfg.models[0].id == "model-x"
-        assert saved_cfg.models[0].provider == "custom"
-        agent.router.add_provider.assert_called_once()
+        agent.provider_manager.add.assert_not_called()
+        agent.router.add_provider.assert_not_called()
+        agent.echo_runtime.execute_tool_effect.assert_awaited_once()
+        effect, _context = agent.echo_runtime.execute_tool_effect.await_args.args
+        assert effect.tool_name == "control_provider_mutate"
+        assert "provider-key-ref" in effect.arguments_json
+        assert "connect-super-secret" not in effect.arguments_json
+        assert '"provider":"custom"' in effect.arguments_json
 
     def test_cloud_provider_preset_sets_model_provider(self) -> None:
         cfg = build_provider_config(DEEPSEEK_PRESET, "test-key")

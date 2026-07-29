@@ -218,6 +218,8 @@ class TestAgentCore:
         ])
         state = await agent.run("Loop")
         assert state.turn_count == 3
+        assert state.status == "error"
+        assert "maximum turn limit" in state.error_message.lower()
 
 
 # =============================================================================
@@ -657,7 +659,11 @@ class TestEndToEndWorkflow:
         assert len(events) >= 2
 
         # Memory should have session history
-        msgs = await asyncio.to_thread(agent.memory.get_session_messages, session_id)
+        msgs = await asyncio.to_thread(
+            agent.memory.get_session_messages,
+            session_id,
+            "local-user",
+        )
         assert len(msgs) >= 4  # user, assistant, user, assistant
 
     @pytest.mark.asyncio

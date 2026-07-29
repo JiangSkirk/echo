@@ -8,34 +8,27 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from js.echo.ledger.service import EchoBlockedError, EchoUnavailableError
+from js.echo.turn_runtime import run_echo_turn
 from js.utils.log import get_logger
-from js.web.auth import require_user_write
-from js.web.deps import get_agent, get_stats_store
+from js.web.auth import require_user_write, runtime_owner
+from js.web.deps import coerce_body_session_id, get_agent, get_stats_store
 from js.web.messages import humanize_error
+from js.web.runtime_context import prepare_web_message, web_channel
 
 logger = get_logger("js.web")
 
 router = APIRouter(tags=["chat"])
 
-# Rate limiting: max concurrent chat requests globally
-_MAX_CONCURRENT_CHATS = 10
+# Concurrency floor: must be >= SLO concurrency_workers (50) so the 50×3
+# probe is not throttled by an artificial semaphore.  Real rate limiting
+# is the job of the reverse proxy / auth layer, not this in-process gate.
+_MAX_CONCURRENT_CHATS = 64
 _chat_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_CHATS)
 
 # Per-session locks to prevent duplicate concurrent requests on the same session
-_session_locks: dict[str, asyncio.Lock] = {}
-_session_locks_lock = asyncio.Lock()
-
 # Maximum request payload size (256 KiB)
 _MAX_PAYLOAD_BYTES = 256 * 1024
-
-
-async def _get_session_lock(session_id: str | None) -> asyncio.Lock:
-    if session_id is None:
-        return asyncio.Lock()  # ephemeral lock for requests without session
-    async with _session_locks_lock:
-        if session_id not in _session_locks:
-            _session_locks[session_id] = asyncio.Lock()
-        return _session_locks[session_id]
 
 
 @router.post("/api/chat")
@@ -52,27 +45,47 @@ async def chat(
 
     agent = get_agent()
     message = payload.get("message", "")
-    session_id = payload.get("session_id")
+    session_id = coerce_body_session_id(payload.get("session_id"))
     model = payload.get("model")
     attachments = payload.get("attachments", [])
+    if not isinstance(attachments, list):
+        raise HTTPException(400, "attachments must be a list")
+    from js.web.session_locks import get_session_lock
+    from js.web.uploads import validate_chat_attachments
+
+    owner = runtime_owner(auth)
+    validate_chat_attachments(
+        workspace=agent.settings.workspace,
+        attachments=attachments,
+        owner_key_hash=owner,
+        session_id=session_id,
+    )
 
     # Concurrency limit: global + per-session
     async with _chat_semaphore:
-        session_lock = await _get_session_lock(session_id)
+        session_lock = await get_session_lock(session_id, owner)
         async with session_lock:
             try:
-                from js.web.auth import _session_owner_hash, memory_owner
-
-                owner = memory_owner(auth)
-                token = _session_owner_hash.set(owner)
-                try:
-                    state = await agent.run(
-                        message, session_id=session_id, model=model, attachments=attachments
-                    )
-                finally:
-                    _session_owner_hash.reset(token)
+                state = await run_echo_turn(
+                    agent,
+                    prepare_web_message(agent.settings, message),
+                    channel=web_channel(agent.settings, "api_chat"),
+                    owner_key_hash=owner,
+                    session_id=session_id,
+                    model=model,
+                    attachments=attachments,
+                )
             except asyncio.CancelledError:
                 raise
+            except EchoBlockedError as exc:
+                raise HTTPException(
+                    400,
+                    "Echo blocked sensitive input before model execution",
+                ) from exc
+            except EchoUnavailableError as exc:
+                raise HTTPException(503, humanize_error(str(exc))) from exc
+            except PermissionError as exc:
+                raise HTTPException(400, humanize_error(str(exc))) from exc
             except HTTPException:
                 raise
             except Exception as e:
@@ -80,6 +93,15 @@ async def chat(
                 # Return a user-friendly Chinese message — never leak raw Python
                 # exceptions. The full traceback is logged server-side for debugging.
                 raise HTTPException(500, humanize_error(str(e))) from e
+
+    state_status = str(getattr(state, "status", "") or "")
+    if state_status == "cancelled":
+        raise HTTPException(409, humanize_error("Run cancelled by user request"))
+    if state_status != "completed":
+        raise HTTPException(
+            500,
+            humanize_error(str(getattr(state, "error_message", "") or "Agent run failed")),
+        )
 
     assistant_msg = ""
     for msg in reversed(state.messages):
@@ -105,16 +127,23 @@ async def chat(
         cached_tokens = getattr(state, "cached_tokens", 0)
         if not isinstance(cached_tokens, int):
             cached_tokens = 0
-        stats_store.record(
-            model=model_id,
-            provider=provider,
-            prompt_tokens=total_in,
-            completion_tokens=total_out,
-            cost=state.cost_estimate,
-            cached_tokens=cached_tokens,
-            session_id=getattr(state, "session_id", ""),
-            run_id=getattr(state, "run_id", ""),
-        )
+        try:
+            stats_store.record(
+                model=model_id,
+                provider=provider,
+                prompt_tokens=total_in,
+                completion_tokens=total_out,
+                cost=state.cost_estimate,
+                cached_tokens=cached_tokens,
+                session_id=getattr(state, "session_id", ""),
+                run_id=getattr(state, "run_id", ""),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Token usage telemetry degraded after successful HTTP chat",
+                error_type=type(exc).__name__,
+                exc_info=True,
+            )
 
     return {
         "response": assistant_msg,

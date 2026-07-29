@@ -204,10 +204,13 @@ def start_span(
                     except Exception:
                         logger.warning("Operation failed", exc_info=True)
             yield span
-    except Exception:
+    except Exception as exc:
         # Failing open: log but **never** suppress the original exception.
         # Using ``yield`` inside an ``except`` block of a @contextmanager
         # generator triggers ``RuntimeError: generator didn't stop after
         # throw()`` — we must re-raise instead.
-        logger.warning("Span cleanup failed", exc_info=True)
+        if isinstance(exc, PermissionError):
+            logger.debug("Span exited with expected permission error: %s", type(exc).__name__)
+        else:
+            logger.warning("Span cleanup failed", exc_info=True)
         raise

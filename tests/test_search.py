@@ -1,5 +1,8 @@
 """Tests for search engines."""
 
+from unittest.mock import AsyncMock
+
+import httpx
 import pytest
 
 from js.search.engines import DuckDuckGoEngine, SearchManager, SearchResult
@@ -32,6 +35,34 @@ class TestDuckDuckGoEngine:
             pytest.skip("DuckDuckGo unavailable in this environment")
         finally:
             await engine.close()
+
+    @pytest.mark.asyncio
+    async def test_fixed_search_endpoint_is_resolved_and_connection_pinned(
+        self,
+        engine: DuckDuckGoEngine,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        resolved_urls: list[str] = []
+
+        def resolve(url: str, **_kwargs):
+            resolved_urls.append(url)
+            return ["93.184.216.34"]
+
+        response = httpx.Response(
+            200,
+            text="<html></html>",
+            request=httpx.Request("GET", "https://lite.duckduckgo.com/lite/"),
+        )
+        monkeypatch.setattr("js.search.engines.resolve_and_validate", resolve)
+        monkeypatch.setattr("js.search.engines.asyncio.sleep", AsyncMock())
+        monkeypatch.setattr("httpx.AsyncClient.get", AsyncMock(return_value=response))
+
+        try:
+            await engine._search_via_lite("echo", 1)
+        finally:
+            await engine.close()
+
+        assert resolved_urls == ["https://lite.duckduckgo.com/lite/"]
 
     def test_parse_html_standard_layout(self, engine: DuckDuckGoEngine) -> None:
         html = """

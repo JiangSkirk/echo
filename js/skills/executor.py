@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import shlex
 import sys
@@ -109,9 +108,17 @@ async def _execute_code(
     if warnings:
         logger.info(f"Runtime security warnings for {spec.id}: {warnings}")
 
-    env = os.environ.copy()
-    env["JS_SKILL_ARGS"] = json.dumps(args)
-    env["JS_SKILL_WORKSPACE"] = str(workspace)
+    if sandbox is None or not sandbox.strict_isolation:
+        return {
+            "success": False,
+            "error": "CODE skill execution requires a strict OS sandbox",
+            "security_blocked": True,
+        }
+
+    env = {
+        "JS_SKILL_ARGS": json.dumps(args),
+        "JS_SKILL_WORKSPACE": str(workspace),
+    }
 
     # Hermes bridge: inject HERMES_HOME and adapt CLI args
     is_hermes = spec.id.startswith("hermes:")
@@ -123,22 +130,22 @@ async def _execute_code(
     is_python = spec.entry.endswith(".py")
     is_shell = spec.entry.endswith(".sh") or spec.entry.endswith(".bash")
 
-    python_exe = sys.executable
+    python_exe = str(Path(sys.executable).resolve())
     if spec.path:
         venv_python = spec.path / ".venv" / "bin" / "python"
         if sys.platform == "win32":
             venv_python = spec.path / ".venv" / "Scripts" / "python.exe"
         if venv_python.exists():
-            python_exe = str(venv_python)
+            python_exe = str(venv_python.resolve())
 
     if is_python:
-        cmd = [python_exe, str(entry_path)]
+        cmd = [python_exe, str(entry_path.resolve())]
     elif is_shell:
         import shutil
         shell = shutil.which("bash") or shutil.which("sh") or shutil.which("cmd")
         if not shell:
             return {"success": False, "error": "No shell interpreter found (bash/sh/cmd)"}
-        cmd = [shell, str(entry_path)]
+        cmd = [str(Path(shell).resolve()), str(entry_path.resolve())]
         for k, v in args.items():
             env[f"JS_ARG_{k.upper()}"] = str(v)
     else:
@@ -148,72 +155,39 @@ async def _execute_code(
     if is_hermes and (is_python or is_shell):
         cmd.extend(_build_hermes_cli_args(args))
 
-    # Use sandbox if available — all CODE skills should run sandboxed
-    if sandbox:
-        try:
-            result = await sandbox.execute(
-                cmd,
-                cwd=str(spec.path),
-                env=env,
-                timeout=spec.timeout_seconds,
-                network_allowed=False,
-                fs_restricted=True,
-            )
-            return {
-                "success": result.returncode == 0,
-                "output": result.stdout,
-                "error": result.stderr,
-                "duration_ms": result.duration_ms,
-                "killed": result.killed,
-                "oom_killed": result.oom_killed,
-            }
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            return {"success": False, "error": f"Sandbox execution failed: {e}"}
-
-    # Direct execution (for trusted/builtin skills or when no sandbox)
-    proc: asyncio.subprocess.Process | None = None
+    # Executable skills have no direct-host fallback.  A missing or unavailable
+    # isolation backend is a security error, including for builtin skills.
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
+        result = await sandbox.execute(
+            cmd,
             cwd=str(spec.path),
+            env=env,
+            timeout=spec.timeout_seconds,
+            network_allowed=False,
+            fs_restricted=True,
+            read_only_paths=[spec.path],
         )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(),
-                timeout=spec.timeout_seconds,
-            )
-        except TimeoutError:
-            if proc:
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except ProcessLookupError:
-                    pass
-            return {
-                "success": False,
-                "error": f"Skill timed out after {spec.timeout_seconds}s",
-                "output": "",
-            }
         return {
-            "success": proc.returncode == 0,
-            "output": stdout.decode("utf-8", errors="replace"),
-            "error": stderr.decode("utf-8", errors="replace"),
+            "success": result.returncode == 0,
+            "output": result.stdout,
+            "error": result.stderr,
+            "duration_ms": result.duration_ms,
+            "killed": result.killed,
+            "oom_killed": result.oom_killed,
         }
     except asyncio.CancelledError:
-        if proc:
-            try:
-                proc.kill()
-                await proc.wait()
-            except ProcessLookupError:
-                pass
         raise
-    except Exception as e:
-        return {"success": False, "error": f"Execution failed: {e}"}
+    except Exception as exc:
+        logger.warning(
+            "Sandbox execution failed for %s: %s",
+            spec.id,
+            type(exc).__name__,
+        )
+        return {
+            "success": False,
+            "error": "Sandbox execution failed safely",
+            "security_blocked": True,
+        }
 
 
 def _substitute_hermes_vars(content: str, spec: SkillSpec, args: dict[str, Any]) -> str:
@@ -307,8 +281,13 @@ async def _execute_prompt(
             return {"success": True, "output": result, "skill_applied": spec.id}
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            return {"success": False, "error": f"LLM application failed: {e}"}
+        except Exception as exc:
+            logger.warning(
+                "LLM application failed for %s: %s",
+                spec.id,
+                type(exc).__name__,
+            )
+            return {"success": False, "error": "LLM application failed safely"}
 
     # Without LLM caller, return the skill content for manual use
     return {
@@ -378,12 +357,17 @@ async def _execute_workflow(
                 any_failed = True
                 results.append(step_result)
                 break
-            except Exception as e:
-                step_result.update({"status": "error", "error": str(e)})
+            except Exception as exc:
+                logger.warning(
+                    "Workflow prompt step failed for %s: %s",
+                    spec.id,
+                    type(exc).__name__,
+                )
+                step_result.update({"status": "error", "error": "Workflow step failed safely"})
                 any_failed = True
         elif step_type == "shell":
             try:
-                if sandbox:
+                if sandbox is not None and sandbox.strict_isolation:
                     # Use the sandbox for shell steps when available.
                     # This provides filesystem isolation, network blocking,
                     # memory limits, and timeout enforcement.
@@ -391,6 +375,8 @@ async def _execute_workflow(
                         ["sh", "-c", step_input],
                         cwd=str(workspace),
                         timeout=spec.timeout_seconds,
+                        network_allowed=False,
+                        fs_restricted=True,
                     )
                     step_result.update({
                         "status": "success" if result_obj.returncode == 0 and not result_obj.killed else "error",
@@ -401,45 +387,24 @@ async def _execute_workflow(
                     if result_obj.returncode != 0 or result_obj.killed:
                         any_failed = True
                 else:
-                    # Legacy direct execution (no sandbox available).
-                    # Use shell=True equivalent via sh -c so pipes, redirects, etc. work
-                    proc = await asyncio.create_subprocess_exec(
-                        "sh", "-c", step_input,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=str(workspace),
-                    )
-                    try:
-                        stdout, stderr = await asyncio.wait_for(
-                            proc.communicate(),
-                            timeout=spec.timeout_seconds,
-                        )
-                        step_result.update({
-                            "status": "success" if proc.returncode == 0 else "error",
-                            "output": stdout.decode("utf-8", errors="replace"),
-                            "error": stderr.decode("utf-8", errors="replace") if stderr else None,
-                            "returncode": proc.returncode,
-                        })
-                        if proc.returncode != 0:
-                            any_failed = True
-                    except TimeoutError:
-                        try:
-                            proc.kill()
-                            await proc.wait()
-                        except ProcessLookupError:
-                            pass
-                        step_result.update({
-                            "status": "error",
-                            "error": f"Step timed out after {spec.timeout_seconds}s",
-                        })
-                        any_failed = True
+                    step_result.update({
+                        "status": "error",
+                        "error": "Workflow shell step requires an OS sandbox",
+                        "security_blocked": True,
+                    })
+                    any_failed = True
             except asyncio.CancelledError:
                 step_result.update({"status": "cancelled"})
                 any_failed = True
                 results.append(step_result)
                 break
-            except Exception as e:
-                step_result.update({"status": "error", "error": str(e)})
+            except Exception as exc:
+                logger.warning(
+                    "Workflow sandbox step failed for %s: %s",
+                    spec.id,
+                    type(exc).__name__,
+                )
+                step_result.update({"status": "error", "error": "Workflow step failed safely"})
                 any_failed = True
         elif step_type == "skill":
             # Reference another skill by ID
@@ -455,8 +420,15 @@ async def _execute_workflow(
                     })
                     if not sub_result.get("success"):
                         any_failed = True
-                except Exception as e:
-                    step_result.update({"status": "error", "error": str(e)})
+                except Exception as exc:
+                    logger.warning(
+                        "Workflow child skill failed for %s: %s",
+                        spec.id,
+                        type(exc).__name__,
+                    )
+                    step_result.update(
+                        {"status": "error", "error": "Workflow step failed safely"}
+                    )
                     any_failed = True
             elif sub_skill_id:
                 step_result.update({
@@ -542,14 +514,19 @@ async def _execute_meta(
                 })
                 if not sub_result.get("success"):
                     any_failed = True
-            except Exception as e:
+            except Exception as exc:
+                logger.warning(
+                    "Meta child skill failed for %s: %s",
+                    spec.id,
+                    type(exc).__name__,
+                )
                 results.append({
                     "step": i,
                     "type": "skill",
                     "skill_id": sub_skill_id,
                     "args": step_args,
                     "status": "error",
-                    "error": str(e),
+                    "error": "Meta skill step failed safely",
                 })
                 any_failed = True
         else:

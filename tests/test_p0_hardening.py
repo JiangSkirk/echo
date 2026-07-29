@@ -26,7 +26,8 @@ class TestSymlinkProtection:
         with pytest.raises(ValueError, match="Symlinks"):
             ft._resolve(str(link), follow_symlinks=False)
 
-    def test_read_allows_symlink(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_read_rejects_symlink(self, tmp_path: Path) -> None:
         from js.config import ToolLimits
         from js.tools.files import FileTools
         ws = tmp_path / "ws"
@@ -36,8 +37,9 @@ class TestSymlinkProtection:
         target.write_text("data")
         link = ws / "link.txt"
         link.symlink_to(target)
-        resolved = ft._resolve(str(link))
-        assert resolved == target.resolve()
+        result = await ft.read(str(link))
+        assert result.success is False
+        assert "symlink" in result.error.lower()
 
     def test_workspace_escape_rejected(self, tmp_path: Path) -> None:
         from js.config import ToolLimits

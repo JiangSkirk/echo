@@ -14,10 +14,9 @@ class TestLocalModelDiscovery:
         return LocalModelDiscovery(timeout=1.0)
 
     @pytest.mark.asyncio
-    async def test_discover_all_no_servers(self, discovery: LocalModelDiscovery) -> None:
-        results = await discovery.discover_all()
-        # Should return empty since no local servers are running in test env
-        assert isinstance(results, list)
+    async def test_raw_discover_all_is_disabled(self, discovery: LocalModelDiscovery) -> None:
+        with pytest.raises(RuntimeError, match="Echo"):
+            await discovery.discover_all()
         await discovery.close()
 
     def test_infer_context_window(self, discovery: LocalModelDiscovery) -> None:
@@ -41,6 +40,6 @@ class TestLocalModelDiscovery:
         settings.state_dir = tmp_path / "state"
         settings.workspace.mkdir(parents=True, exist_ok=True)
         settings.state_dir.mkdir(parents=True, exist_ok=True)
-        updated = await discovery.apply_to_settings(settings)
-        assert isinstance(updated.providers, list)
+        with pytest.raises(RuntimeError, match="Echo"):
+            await discovery.apply_to_settings(settings)
         await discovery.close()

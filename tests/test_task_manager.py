@@ -77,6 +77,19 @@ class TestTaskManagerLifecycle:
         assert manager.get(task_id, owner_key_hash="owner-a") is not None
         assert manager.delete(task_id, owner_key_hash="owner-a") is True
 
+    def test_local_task_is_not_visible_or_mutable_to_named_owner(
+        self,
+        manager: TaskManager,
+    ) -> None:
+        task_id = manager.register(name="Local Task", type="chat")
+
+        assert manager.get(task_id, owner_key_hash="owner-a") is None
+        assert manager.pause(task_id, owner_key_hash="owner-a") is False
+        assert manager.resume(task_id, owner_key_hash="owner-a") is False
+        assert manager.delete(task_id, owner_key_hash="owner-a") is False
+        assert manager.list(owner_key_hash="owner-a") == []
+        assert manager.get(task_id, owner_key_hash="local-user") is not None
+
     def test_delete_task(self, manager: TaskManager) -> None:
         task_id = manager.register(name="Delete Task", type="chat")
         ok = manager.delete(task_id)

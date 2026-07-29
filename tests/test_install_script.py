@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
 INSTALL_SCRIPT = Path(__file__).parent.parent / "scripts" / "install.sh"
+
+
+def _dry_run_env() -> dict[str, str]:
+    # DRY_RUN now validates uv + uv.lock; keep a PATH that can resolve uv.
+    path = os.environ.get("PATH", "/usr/bin:/bin")
+    return {
+        "DRY_RUN": "1",
+        "PATH": path,
+        "HOME": "/tmp/js-agent-test-home",
+    }
 
 
 class TestInstallScript:
@@ -26,25 +37,27 @@ class TestInstallScript:
 
     def test_dry_run(self) -> None:
         """Running with DRY_RUN=1 should complete without errors."""
-        env = {"DRY_RUN": "1", "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp/js-agent-test-home"}
         result = subprocess.run(
             ["bash", str(INSTALL_SCRIPT)],
             capture_output=True,
             text=True,
-            env=env,
+            env=_dry_run_env(),
             cwd=str(INSTALL_SCRIPT.parent.parent),
         )
         assert result.returncode == 0, f"Dry run failed: {result.stderr}\nstdout: {result.stdout}"
-        assert "干运行模式" in result.stdout or "dry run" in result.stdout.lower() or "所有前置检查通过" in result.stdout
+        assert (
+            "干运行模式" in result.stdout
+            or "dry run" in result.stdout.lower()
+            or "所有前置检查通过" in result.stdout
+        )
 
     def test_detects_python(self) -> None:
         """Script should detect Python 3.12+ in dry-run mode."""
-        env = {"DRY_RUN": "1", "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp/js-agent-test-home"}
         result = subprocess.run(
             ["bash", str(INSTALL_SCRIPT)],
             capture_output=True,
             text=True,
-            env=env,
+            env=_dry_run_env(),
             cwd=str(INSTALL_SCRIPT.parent.parent),
         )
         assert result.returncode == 0
@@ -54,12 +67,11 @@ class TestInstallScript:
 
     def test_output_contains_key_steps(self) -> None:
         """Dry run output should mention key installation steps."""
-        env = {"DRY_RUN": "1", "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp/js-agent-test-home"}
         result = subprocess.run(
             ["bash", str(INSTALL_SCRIPT)],
             capture_output=True,
             text=True,
-            env=env,
+            env=_dry_run_env(),
             cwd=str(INSTALL_SCRIPT.parent.parent),
         )
         output = result.stdout

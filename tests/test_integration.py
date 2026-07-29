@@ -12,6 +12,7 @@ import pytest
 
 from js.agent import JSAgent
 from js.config import JSSettings
+from js.models.permit import ModelPermitIssuer
 from js.models.providers import ChatMessage, ChatResponse, ModelProvider
 from js.models.router import ModelRouter
 
@@ -72,10 +73,16 @@ class MockModelProvider(ModelProvider):
 class MockRouter(ModelRouter):
     """Router that uses a MockProvider without config file."""
 
-    def __init__(self, provider: MockModelProvider) -> None:
+    def __init__(
+        self,
+        provider: MockModelProvider,
+        *,
+        permit_verifier: ModelPermitIssuer,
+    ) -> None:
         self.settings = JSSettings()
         self._providers: dict[str, ModelProvider] = {"mock": provider}
         self._model_map = {}
+        self._permit_verifier = permit_verifier
 
     async def select_model(self, task_complexity: str = "medium", preferred: str | None = None) -> Any:
         from js.models.router import RoutingDecision
@@ -86,9 +93,35 @@ class MockRouter(ModelRouter):
             reason="mock",
         )
 
-    async def chat(self, messages: list[ChatMessage], model: str | None = None, tools: list[dict[str, Any]] | None = None, temperature: float = 0.7) -> ChatResponse:
-        provider = self._providers["mock"]
-        return await provider.chat(messages=messages, model=model or "gpt", tools=tools, temperature=temperature)
+    async def chat(
+        self,
+        messages: list[ChatMessage],
+        model: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        before_model_call: Any = None,
+        after_model_call: Any = None,
+        permit_grant: Any = None,
+    ) -> ChatResponse:
+        if before_model_call is None or after_model_call is None or permit_grant is None:
+            raise RuntimeError("test router requires Echo model callbacks and a permit grant")
+        decision = await self.select_model(preferred=model)
+        self._consume_model_permit(permit_grant, decision, messages, tools)
+        context = await before_model_call(decision, messages, tools)
+        try:
+            response = await decision.provider.chat(
+                messages=messages,
+                model=decision.model,
+                tools=tools,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        except BaseException as exc:
+            await after_model_call(context, None, exc)
+            raise
+        await after_model_call(context, response, None)
+        return response
 
 
 @pytest.fixture
@@ -104,8 +137,10 @@ def agent(tmp_path: Path, mock_provider: MockModelProvider) -> JSAgent:
         max_turns=10,
     )
     agent = JSAgent(settings)
-    # Inject mock router
-    agent.router = MockRouter(mock_provider)
+    agent.router = MockRouter(
+        mock_provider,
+        permit_verifier=agent._model_permit_issuer,
+    )
     return agent
 
 
@@ -201,7 +236,8 @@ class TestAgentIntegration:
         state = await agent.run("Infinite loop test")
 
         assert state.turn_count == 3
-        assert state.status in ("completed", "running")
+        assert state.status == "error"
+        assert "maximum turn limit" in state.error_message.lower()
 
     @pytest.mark.asyncio
     async def test_memory_and_audit_persistence(self, agent: JSAgent, mock_provider: MockModelProvider) -> None:

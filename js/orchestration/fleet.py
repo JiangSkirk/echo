@@ -3,17 +3,50 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import hashlib
+import inspect
+import re
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from js.agent import JSAgent
 from js.config import JSSettings
+from js.echo.turn_context import (
+    RuntimeContext,
+    current_owner_key_hash,
+    current_runtime_context,
+)
+from js.echo.turn_runtime import run_echo_turn
+from js.orchestration.fleet_history import SecureFleetHistoryStore
 from js.utils.log import get_logger
 
 logger = get_logger("js.orchestration")
+
+_FLEET_OWNER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "echo_fleet_owner", default=None
+)
+_FLEET_SESSION: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "echo_fleet_session", default=None
+)
+_FLEET_PRODUCT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "echo_fleet_product", default=None
+)
+_SAFE_FLEET_SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_SAFE_FLEET_ROLE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
+_FLEET_MODES = frozenset({"auto", "debate", "sequential", "manager"})
+_MAX_FLEET_TASK_CHARS = 20_000
+_MAX_FLEET_SUBTASK_CHARS = 2_000
+_LOCAL_FLEET_OWNER = "fleet-local"
+
+
+class FleetCapacityError(RuntimeError):
+    """Raised when no owner-safe Fleet worker can be allocated."""
 
 
 class AgentRole(StrEnum):
@@ -25,6 +58,8 @@ class AgentRole(StrEnum):
     @classmethod
     def from_value(cls, value: str) -> AgentRole:
         """Create or return a role by string value."""
+        if not isinstance(value, str) or not _SAFE_FLEET_ROLE_RE.fullmatch(value):
+            raise ValueError("invalid fleet role")
         try:
             return cls(value)
         except ValueError:
@@ -41,6 +76,8 @@ class AgentInstance:
     name: str
     role: AgentRole
     agent: JSAgent
+    product_id: str = "js-agent"
+    owner_key_hash: str = _LOCAL_FLEET_OWNER
     model: str | None = None
     status: str = "idle"  # idle, busy, error
     current_task: str | None = None
@@ -57,10 +94,17 @@ class Task:
     priority: int = 5
     deps: list[str] = field(default_factory=list)
     result: str | None = None
-    status: str = "pending"  # pending, running, done, failed
+    status: str = "pending"  # pending, running, done, failed, cancelled
     assigned_to: str | None = None
     group_id: str | None = None
     conversation_log: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class FleetEventSubscription:
+    callback: Callable[[dict[str, Any]], Awaitable[None]]
+    product_id: str
+    owner_key_hash: str
 
 
 class AgentFleet:
@@ -76,6 +120,9 @@ class AgentFleet:
         agent_config: dict[str, str] | None = None,
         max_workers: int = 4,
         skills: Any | None = None,
+        inherit_skills: bool = True,
+        worker_configurer: Callable[[JSAgent, AgentRole, RuntimeContext | None], None]
+        | None = None,
     ) -> None:
         self.settings = settings
         self.agent_config = agent_config or {}
@@ -83,28 +130,137 @@ class AgentFleet:
         self._lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(max_workers)
         self._max_workers = max_workers
-        self._skills_source = skills  # parent agent's SkillManager
-        from collections.abc import Awaitable, Callable
+        self._worker_close_timeout = 5.0
+        self._inherit_skills = inherit_skills
+        self._skills_source = skills if inherit_skills else None  # parent agent's SkillManager
+        self._worker_configurer = worker_configurer
         from threading import Lock as TLock
 
         self._spawn_lock = TLock()
-        self._event_callbacks: list[Callable[[dict[str, Any]], Awaitable[None]]] = []
+        self._event_callbacks: list[FleetEventSubscription] = []
         # State dirs
         self._fleet_dir = settings.state_dir / "fleet"
         self._fleet_dir.mkdir(parents=True, exist_ok=True)
         self._history_dir = self._fleet_dir / "history"
-        self._history_dir.mkdir(parents=True, exist_ok=True)
+        self._history_store = SecureFleetHistoryStore(self._history_dir)
+
+    @staticmethod
+    def _partition_slug(kind: str, value: str) -> str:
+        payload = f"{kind}:{len(value)}:{value}".encode()
+        return hashlib.sha256(payload).hexdigest()[:24]
+
+    def _resolve_scope(
+        self,
+        *,
+        owner_key_hash: str | None = None,
+        product_id: str | None = None,
+        allow_local_direct: bool = False,
+    ) -> tuple[str, str]:
+        parent = current_runtime_context()
+        inherited_owner = _FLEET_OWNER.get()
+        inherited_product = _FLEET_PRODUCT.get()
+        if parent is not None:
+            if owner_key_hash and owner_key_hash != parent.owner_key_hash:
+                raise PermissionError("Fleet owner cannot exceed the parent runtime context")
+            if inherited_owner and inherited_owner != parent.owner_key_hash:
+                raise PermissionError("Fleet owner lineage does not match the parent context")
+            if product_id and product_id != parent.product_id:
+                raise PermissionError("Fleet product cannot exceed the parent runtime context")
+            if inherited_product and inherited_product != parent.product_id:
+                raise PermissionError("Fleet product lineage does not match the parent context")
+
+        owner = owner_key_hash or inherited_owner
+        if owner is None and parent is not None:
+            owner = parent.owner_key_hash
+        if owner is None and parent is None:
+            owner = current_owner_key_hash()
+        if not owner:
+            if not allow_local_direct or parent is not None:
+                raise RuntimeError("Fleet owner context is required")
+            owner = _LOCAL_FLEET_OWNER
+
+        product = product_id or inherited_product
+        if product is None and parent is not None:
+            product = parent.product_id
+        if product is None:
+            product = str(getattr(getattr(self, "settings", None), "product_id", "js-agent"))
+        if not product:
+            raise RuntimeError("Fleet product context is required")
+        return product, owner
+
+    @staticmethod
+    async def _close_instance(instance: AgentInstance) -> None:
+        close = getattr(instance.agent, "close", None)
+        if not callable(close):
+            return
+        result = close()
+        if inspect.isawaitable(result):
+            await result
+
+    def _execution_scope(self, instance: AgentInstance) -> tuple[str, str]:
+        parent = current_runtime_context()
+        owner = _FLEET_OWNER.get()
+        if owner is None and parent is not None:
+            owner = parent.owner_key_hash
+        if owner is None and parent is None:
+            owner = current_owner_key_hash()
+        if owner is None and instance.owner_key_hash == _LOCAL_FLEET_OWNER:
+            owner = _LOCAL_FLEET_OWNER
+        if not owner:
+            raise RuntimeError("Fleet worker execution requires owner lineage")
+
+        product = _FLEET_PRODUCT.get()
+        if product is None and parent is not None:
+            product = parent.product_id
+        if product is None and instance.owner_key_hash == _LOCAL_FLEET_OWNER:
+            product = instance.product_id
+        if not product:
+            raise RuntimeError("Fleet worker execution requires product lineage")
+        if (instance.product_id, instance.owner_key_hash) != (product, owner):
+            raise RuntimeError("Fleet worker lineage does not match the active product/owner")
+        return product, owner
 
     # ------------------------------------------------------------------ #
     # Event callbacks (backward compat for websocket dashboard)
     # ------------------------------------------------------------------ #
 
-    def on_event(self, callback: Any) -> None:
-        self._event_callbacks.append(callback)
+    def on_event(
+        self,
+        callback: Callable[[dict[str, Any]], Awaitable[None]],
+        *,
+        product_id: str | None = None,
+        owner_key_hash: str | None = None,
+    ) -> FleetEventSubscription:
+        product, owner = self._resolve_scope(
+            product_id=product_id,
+            owner_key_hash=owner_key_hash,
+            allow_local_direct=True,
+        )
+        subscription = FleetEventSubscription(
+            callback=callback,
+            product_id=product,
+            owner_key_hash=owner,
+        )
+        self._event_callbacks.append(subscription)
+        return subscription
 
-    def off_event(self, callback: Any) -> None:
-        if callback in self._event_callbacks:
-            self._event_callbacks.remove(callback)
+    def off_event(
+        self,
+        subscription_or_callback: FleetEventSubscription
+        | Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> None:
+        if isinstance(subscription_or_callback, FleetEventSubscription):
+            self._event_callbacks = [
+                subscription
+                for subscription in self._event_callbacks
+                if subscription is not subscription_or_callback
+            ]
+            return
+        self._event_callbacks = [
+            subscription
+            for subscription in self._event_callbacks
+            if subscription.callback is not subscription_or_callback
+        ]
 
     def update_agent_config(self, config: dict[str, str]) -> None:
         """Update the role-to-model mapping for future spawned agents."""
@@ -113,10 +269,29 @@ class AgentFleet:
         with self._spawn_lock:
             self.agents.clear()
 
-    async def _emit(self, event: dict[str, Any]) -> None:
-        for cb in self._event_callbacks[:]:
+    async def _emit(
+        self,
+        event: dict[str, Any],
+        *,
+        product_id: str | None = None,
+        owner_key_hash: str | None = None,
+    ) -> None:
+        product, owner = self._resolve_scope(
+            product_id=product_id,
+            owner_key_hash=owner_key_hash,
+            allow_local_direct=True,
+        )
+        subscriptions = [
+            subscription
+            for subscription in self._event_callbacks[:]
+            if subscription.product_id == product and subscription.owner_key_hash == owner
+        ]
+        public_event = {
+            key: value for key, value in event.items() if key not in {"owner", "owner_key_hash"}
+        }
+        for subscription in subscriptions:
             try:
-                await cb(event)
+                await subscription.callback(dict(public_event))
             except Exception:
                 pass
 
@@ -126,13 +301,160 @@ class AgentFleet:
 
     _MAX_SUBTASKS = 20
 
+    @classmethod
+    def _validate_collaboration_request(
+        cls,
+        main_task: str,
+        subtasks: list[str] | None,
+        session_id: str | None,
+        role_mapping: dict[int | str, str] | None,
+        mode: str,
+    ) -> tuple[
+        str,
+        list[str] | None,
+        str | None,
+        dict[int, str] | None,
+        str,
+    ]:
+        if not isinstance(main_task, str):
+            raise TypeError("fleet task must be a string")
+        normalized_task = main_task.strip()
+        if not normalized_task or len(normalized_task) > _MAX_FLEET_TASK_CHARS:
+            raise ValueError("fleet task is empty or exceeds the size limit")
+
+        normalized_subtasks: list[str] | None = None
+        if subtasks is not None:
+            if not isinstance(subtasks, list):
+                raise TypeError("fleet subtasks must be a list")
+            if not subtasks or len(subtasks) > cls._MAX_SUBTASKS:
+                raise ValueError("fleet subtask count is invalid")
+            normalized_subtasks = []
+            for subtask in subtasks:
+                if not isinstance(subtask, str):
+                    raise TypeError("fleet subtasks must contain only strings")
+                normalized = subtask.strip()
+                if not normalized or len(normalized) > _MAX_FLEET_SUBTASK_CHARS:
+                    raise ValueError("fleet subtask is empty or exceeds the size limit")
+                normalized_subtasks.append(normalized)
+
+        if session_id is not None and (
+            not isinstance(session_id, str)
+            or not _SAFE_FLEET_SESSION_RE.fullmatch(session_id)
+        ):
+            raise ValueError("invalid fleet session id")
+
+        if not isinstance(mode, str) or mode not in _FLEET_MODES:
+            raise ValueError("invalid fleet collaboration mode")
+
+        normalized_roles: dict[int, str] | None = None
+        if role_mapping is not None:
+            if not isinstance(role_mapping, dict):
+                raise TypeError("fleet role_mapping must be an object")
+            if len(role_mapping) > cls._MAX_SUBTASKS:
+                raise ValueError("fleet role mapping exceeds the size limit")
+            normalized_roles = {}
+            max_index = (
+                len(normalized_subtasks)
+                if normalized_subtasks is not None
+                else cls._MAX_SUBTASKS
+            )
+            for raw_index, raw_role in role_mapping.items():
+                if isinstance(raw_index, bool):
+                    raise ValueError("invalid fleet role index")
+                if isinstance(raw_index, int):
+                    index = raw_index
+                elif isinstance(raw_index, str) and raw_index.isascii() and raw_index.isdigit():
+                    index = int(raw_index)
+                else:
+                    raise ValueError("invalid fleet role index")
+                if index < 0 or index >= max_index or index in normalized_roles:
+                    raise ValueError("invalid or duplicated fleet role index")
+                if not isinstance(raw_role, str) or not _SAFE_FLEET_ROLE_RE.fullmatch(
+                    raw_role
+                ):
+                    raise ValueError("invalid fleet role")
+                normalized_roles[index] = raw_role
+
+        return (
+            normalized_task,
+            normalized_subtasks,
+            session_id,
+            normalized_roles,
+            mode,
+        )
+
     async def collaborate(
         self,
         main_task: str,
         subtasks: list[str] | None = None,
         session_id: str | None = None,
-        role_mapping: dict[int, str] | None = None,
+        role_mapping: dict[int | str, str] | None = None,
         mode: str = "auto",
+        owner_key_hash: str | None = None,
+    ) -> dict[str, Any]:
+        (
+            normalized_task,
+            normalized_subtasks,
+            normalized_session_id,
+            normalized_role_mapping,
+            normalized_mode,
+        ) = self._validate_collaboration_request(
+            main_task,
+            subtasks,
+            session_id,
+            role_mapping,
+            mode,
+        )
+        parent_context = current_runtime_context()
+        inherited_owner = current_owner_key_hash()
+        if parent_context is not None:
+            if owner_key_hash and owner_key_hash != parent_context.owner_key_hash:
+                raise PermissionError("Fleet owner cannot exceed the parent runtime context")
+            if inherited_owner and inherited_owner != parent_context.owner_key_hash:
+                raise PermissionError("Fleet owner lineage does not match the parent context")
+            if not parent_context.owner_key_hash:
+                raise RuntimeError("Fleet owner context is required")
+            owner = parent_context.owner_key_hash
+        elif owner_key_hash:
+            owner = owner_key_hash
+        elif inherited_owner:
+            owner = inherited_owner
+        else:
+            owner = _LOCAL_FLEET_OWNER
+        product = (
+            parent_context.product_id
+            if parent_context is not None
+            else str(getattr(self.settings, "product_id", "js-agent"))
+        )
+        if not product:
+            raise RuntimeError("Fleet product context is required")
+        resolved_session = normalized_session_id or str(uuid.uuid4())
+        owner_token = _FLEET_OWNER.set(owner)
+        product_token = _FLEET_PRODUCT.set(product)
+        session_token = _FLEET_SESSION.set(resolved_session)
+        try:
+            return await self._collaborate_scoped(
+                normalized_task,
+                subtasks=normalized_subtasks,
+                session_id=resolved_session,
+                role_mapping=normalized_role_mapping,
+                mode=normalized_mode,
+                owner_key_hash=owner,
+            )
+        finally:
+            _FLEET_SESSION.reset(session_token)
+            _FLEET_PRODUCT.reset(product_token)
+            _FLEET_OWNER.reset(owner_token)
+
+    async def _collaborate_scoped(
+        self,
+        main_task: str,
+        *,
+        subtasks: list[str] | None,
+        session_id: str,
+        role_mapping: dict[int, str] | None,
+        mode: str,
+        owner_key_hash: str,
     ) -> dict[str, Any]:
         """Execute a task with an auto-formed team.
 
@@ -148,17 +470,10 @@ class AgentFleet:
         Returns:
             {"session_id": str, "final": str, "subtasks": dict[str, str], "review": str | None}
         """
-        sid = session_id or str(uuid.uuid4())
+        sid = session_id
+        if not _SAFE_FLEET_SESSION_RE.fullmatch(sid):
+            raise ValueError("invalid fleet session id")
         group_id = str(uuid.uuid4())
-
-        # Enforce subtask count limit to prevent resource exhaustion
-        if subtasks and len(subtasks) > self._MAX_SUBTASKS:
-            logger.warning(
-                "Truncating %d subtasks to %d (max)",
-                len(subtasks),
-                self._MAX_SUBTASKS,
-            )
-            subtasks = subtasks[: self._MAX_SUBTASKS]
 
         logger.info(f"Fleet collaborate mode={mode}: {main_task[:60]}")
         await self._emit(
@@ -183,12 +498,14 @@ class AgentFleet:
             result = await self._collaborate_manager(
                 sid, group_id, main_task, subtasks, role_mapping
             )
-        else:
+        elif mode == "auto":
             result = await self._collaborate_auto(sid, group_id, main_task, subtasks, role_mapping)
+        else:
+            raise ValueError("invalid fleet collaboration mode")
 
         # Save history and emit result
         descs = list(result.get("subtasks", {}).keys()) or [main_task]
-        await self._save_history(sid, main_task, descs, result)
+        await self._save_history(sid, main_task, descs, result, owner_key_hash=owner_key_hash)
         await self._emit({"type": "collaborate_result", **result})
         logger.info(
             f"Fleet done mode={mode}: {main_task[:60]} -> {len(result.get('final', ''))} chars"
@@ -231,8 +548,6 @@ class AgentFleet:
                 if role_val not in role_agents:
                     role_agents[role_val] = await self._acquire_agent(role_val, group_id)
                 agents_used.append(role_agents[role_val])
-
-            unique_agents = list({a.id: a for a in agents_used}.values())
 
             tasks = [
                 Task(
@@ -318,7 +633,7 @@ class AgentFleet:
                 "mode": "auto",
             }
         finally:
-            for a in unique_agents:
+            for a in {worker.id: worker for worker in agents_used}.values():
                 a.status = "idle"
                 a.current_task = None
                 a.last_active_at = time.time()
@@ -373,8 +688,6 @@ class AgentFleet:
                     )
                 )
 
-            unique_agents = list({a.id: a for a in agents_used}.values())
-
             await self._emit(
                 {
                     "type": "collaborate_progress",
@@ -427,7 +740,7 @@ class AgentFleet:
                 "mode": "debate",
             }
         finally:
-            for a in unique_agents:
+            for a in {worker.id: worker for worker in agents_used}.values():
                 a.status = "idle"
                 a.current_task = None
                 a.last_active_at = time.time()
@@ -653,26 +966,68 @@ class AgentFleet:
     async def _acquire_agent(self, role_value: str, _group_id: str) -> AgentInstance:
         """Get an idle agent of the given role, or spawn a new one."""
         role = AgentRole.from_value(role_value)
+        product_id, owner_key_hash = self._resolve_scope()
         async with self._lock:
-            # Re-use idle agent of same role
+            # Reuse only an idle worker from the exact product/owner boundary.
             for a in self.agents.values():
-                if a.status == "idle" and a.role.value == role.value:
+                if (
+                    a.status == "idle"
+                    and a.role.value == role.value
+                    and a.product_id == product_id
+                    and a.owner_key_hash == owner_key_hash
+                ):
+                    self._apply_worker_envelope(a)
                     a.status = "busy"
                     a.last_active_at = time.time()
                     return a
-            # Spawn new agent if pool allows
             if len(self.agents) < self._max_workers:
-                return self._spawn_agent(role.value, role)
-        # Pool full — wait for any idle agent
-        for _ in range(60):
-            async with self._lock:
-                for a in self.agents.values():
-                    if a.status == "idle":
-                        a.status = "busy"
-                        a.last_active_at = time.time()
-                        return a
-            await asyncio.sleep(1)
-        raise RuntimeError(f"No agent available for role '{role_value}'")
+                spawned = self._spawn_agent(
+                    role.value,
+                    role,
+                    product_id=product_id,
+                    owner_key_hash=owner_key_hash,
+                )
+                spawned.status = "busy"
+                return spawned
+
+            idle = sorted(
+                (a for a in self.agents.values() if a.status == "idle"),
+                key=lambda a: (
+                    a.owner_key_hash == owner_key_hash and a.product_id == product_id,
+                    a.last_active_at,
+                ),
+            )
+            if not idle:
+                raise FleetCapacityError(
+                    f"Fleet capacity exhausted for product '{product_id}'; all workers are busy"
+                )
+
+            victim = idle[0]
+            self.agents.pop(victim.id, None)
+            try:
+                await asyncio.wait_for(
+                    self._close_instance(victim),
+                    timeout=self._worker_close_timeout,
+                )
+            except Exception as e:
+                victim.status = "error"
+                self.agents[victim.id] = victim
+                logger.warning(
+                    "Fleet worker %s could not be closed for safe replacement",
+                    victim.id,
+                    exc_info=True,
+                )
+                raise FleetCapacityError(
+                    "Fleet capacity is unavailable because an idle worker could not be closed"
+                ) from e
+            spawned = self._spawn_agent(
+                role.value,
+                role,
+                product_id=product_id,
+                owner_key_hash=owner_key_hash,
+            )
+            spawned.status = "busy"
+            return spawned
 
     def _spawn(self, name: str, role: AgentRole) -> AgentInstance:
         """Backward compat alias for _spawn_agent."""
@@ -823,17 +1178,40 @@ class AgentFleet:
             "【工作态度】认真负责、追求专业、团队协作。发挥你的专长，为整体目标贡献力量。"
         )
 
-    def _spawn_agent(self, name: str, role: AgentRole) -> AgentInstance:
+    def _spawn_agent(
+        self,
+        name: str,
+        role: AgentRole,
+        *,
+        product_id: str | None = None,
+        owner_key_hash: str | None = None,
+    ) -> AgentInstance:
         from js.utils.ids import agent_id as _det_agent_id
 
+        product_id, owner_key_hash = self._resolve_scope(
+            product_id=product_id,
+            owner_key_hash=owner_key_hash,
+            allow_local_direct=True,
+        )
         model = self.agent_config.get(role.value)
-        agent_id = _det_agent_id(name, role.value, model)
-        role_settings = self._role_settings(agent_id)
+        product_slug = self._partition_slug("product", product_id)
+        owner_slug = self._partition_slug("owner", owner_key_hash)
+        scoped_name = f"{product_slug}:{owner_slug}:{name}"
+        agent_id = _det_agent_id(scoped_name, role.value, model)
+        role_settings = self._role_settings(
+            agent_id,
+            product_id=product_id,
+            owner_key_hash=owner_key_hash,
+        )
         agent = JSAgent(role_settings)
-        agent._role = role.value
 
-        # Copy skills from parent agent so fleet workers can use all skills
-        if self._skills_source is not None:
+        if self._worker_configurer is not None:
+            self._worker_configurer(agent, role, current_runtime_context())
+
+        self._apply_worker_envelope_to_agent(agent, product_id=product_id)
+
+        # Copy skills from parent agent so fleet workers can use all skills.
+        if self._inherit_skills and self._skills_source is not None:
             try:
                 for spec in self._skills_source.get_all().values():
                     agent.skills.register_auto_skill(spec)
@@ -849,29 +1227,104 @@ class AgentFleet:
             "\n\n你是协作团队的一员。你有独立的工作空间。"
             "不要浪费时间浏览目录结构，直接开始执行任务。"
             "创建新文件时请确保路径正确。保持简洁。"
-            "你可以调用所有已注册的技能工具来完成任务。"
             "注意：如果用户只是简单问候或提问，不需要调用任何工具，直接礼貌回答即可。"
         )
+        if self._inherit_skills and self._skills_source is not None:
+            fleet_hint += "你可以调用所有已注册的技能工具来完成任务。"
         agent.SYSTEM_PROMPT = agent.SYSTEM_PROMPT + fleet_hint
         instance = AgentInstance(
             id=agent_id,
             name=name,
             role=role,
             agent=agent,
+            product_id=product_id,
+            owner_key_hash=owner_key_hash,
             model=model,
+            capabilities=self._effective_worker_capabilities(agent),
         )
         with self._spawn_lock:
             self.agents[agent_id] = instance
         logger.info(f"Spawned {name} ({role.value}) id={agent_id} persona={len(persona)} chars")
         return instance
 
-    def _role_settings(self, agent_id: str) -> JSSettings:
+    @staticmethod
+    def _effective_worker_capabilities(agent: Any) -> list[str]:
+        ceiling = frozenset(getattr(agent, "_echo_capability_ceiling", ()))
+        registry = getattr(agent, "registry", None)
+        list_tools = getattr(registry, "list_tools", None)
+        if not callable(list_tools):
+            return sorted(ceiling)
+        registered = {
+            str(tool.name)
+            for tool in list_tools()
+            if isinstance(getattr(tool, "name", None), str) and tool.name
+        }
+        return sorted(registered & set(ceiling))
+
+    def _apply_worker_envelope(self, instance: AgentInstance) -> None:
+        self._apply_worker_envelope_to_agent(
+            instance.agent,
+            product_id=instance.product_id,
+        )
+        instance.capabilities = self._effective_worker_capabilities(instance.agent)
+
+    @staticmethod
+    def _apply_worker_envelope_to_agent(agent: Any, *, product_id: str) -> None:
+        """Bind a Fleet worker to the active parent's non-expanding envelope."""
+        parent = current_runtime_context()
+        if parent is None:
+            object.__setattr__(agent, "_role", "local-user")
+            object.__setattr__(
+                agent,
+                "_work_profile",
+                str(getattr(getattr(agent, "settings", None), "work_profile", "default")),
+            )
+            object.__setattr__(agent, "_echo_capability_ceiling", frozenset())
+            object.__setattr__(agent, "_echo_network_allowlist_ceiling", frozenset())
+            object.__setattr__(agent, "_echo_role_ceiling", "local-user")
+            object.__setattr__(
+                agent,
+                "_echo_profile_ceiling",
+                str(getattr(agent, "_work_profile", "default")),
+            )
+            object.__setattr__(agent, "_echo_deadline_ceiling_ms", None)
+            object.__setattr__(agent, "_echo_cancel_token", None)
+            return
+        if parent.product_id != product_id:
+            raise PermissionError("Fleet worker product does not match its parent context")
+
+        capabilities = frozenset(parent.capabilities) - {"fleet_collaborate"}
+        object.__setattr__(agent, "_fleet_parent_context", parent)
+        object.__setattr__(agent, "_role", parent.role)
+        object.__setattr__(agent, "_work_profile", parent.profile)
+        object.__setattr__(agent, "_echo_role_ceiling", parent.role)
+        object.__setattr__(agent, "_echo_profile_ceiling", parent.profile)
+        object.__setattr__(agent, "_echo_capability_ceiling", capabilities)
+        object.__setattr__(
+            agent,
+            "_echo_network_allowlist_ceiling",
+            frozenset(parent.network_allowlist),
+        )
+        object.__setattr__(agent, "_echo_deadline_ceiling_ms", parent.deadline_ms)
+        object.__setattr__(agent, "_echo_cancel_token", parent.cancel_token)
+
+    def _role_settings(
+        self,
+        agent_id: str,
+        *,
+        product_id: str,
+        owner_key_hash: str,
+    ) -> JSSettings:
         from copy import deepcopy
 
         settings = deepcopy(self.settings)
-        settings.state_dir = self._fleet_dir / agent_id
+        object.__setattr__(settings, "product_id", product_id)
+        product_slug = self._partition_slug("product", product_id)
+        owner_slug = self._partition_slug("owner", owner_key_hash)
+        partition = Path(product_slug) / owner_slug / agent_id
+        settings.state_dir = self._fleet_dir / partition
         settings.state_dir.mkdir(parents=True, exist_ok=True)
-        settings.workspace = settings.workspace / "fleet" / agent_id
+        settings.workspace = settings.workspace / "fleet" / partition
         settings.workspace.mkdir(parents=True, exist_ok=True)
         # Inherit parent's defense mode but enforce a minimum floor of OBSERVE.
         # If the parent is OFF (completely unguarded), fleet children must
@@ -888,19 +1341,36 @@ class AgentFleet:
         tasks: list[Task],
         workers: list[AgentInstance],
     ) -> dict[str, str]:
-        """Run tasks in parallel, assigning one worker per task."""
-        coros: list[asyncio.Task[tuple[str, str]]] = []
+        """Run tasks in parallel, assigning one worker per task.
+
+        Uses structured concurrency: if the parent is cancelled, all child
+        tasks are cancelled and drained before re-raising.
+        """
+        child_tasks: list[asyncio.Task[tuple[str, str]]] = []
         for t, w in zip(tasks, workers, strict=False):
             w.current_task = t.id
             w.task_description = t.description
             t.status = "running"
             t.assigned_to = w.id
-            coros.append(asyncio.create_task(self._execute_single(t, w)))
+            child_tasks.append(asyncio.create_task(self._execute_single(t, w)))
 
         results: dict[str, str] = {}
-        for coro in asyncio.as_completed(coros):
-            task_id, result = await coro
-            results[task_id] = result
+        try:
+            for coro in asyncio.as_completed(child_tasks):
+                task_id, result = await coro
+                results[task_id] = result
+        except BaseException:
+            # Parent cancelled or error: cancel all still-running children
+            for ct in child_tasks:
+                if not ct.done():
+                    ct.cancel()
+            # Drain all children, collecting exceptions (don't re-raise child errors)
+            for ct in child_tasks:
+                try:
+                    await ct
+                except BaseException:
+                    pass
+            raise
 
         return results
 
@@ -921,6 +1391,7 @@ class AgentFleet:
             agent_done        — task complete
         """
         timeout = 600.0
+        task.status = "running"
         await self._emit(
             {
                 "type": "agent_start",
@@ -931,6 +1402,20 @@ class AgentFleet:
                 "task_description": task.description,
             }
         )
+
+        async def emit_done() -> None:
+            await self._emit(
+                {
+                    "type": "agent_done",
+                    "agent_id": worker.id,
+                    "agent_name": worker.name,
+                    "agent_role": worker.role.value,
+                    "task_id": task.id,
+                    "task_description": task.description,
+                    "result": task.result or "",
+                    "status": task.status,
+                }
+            )
 
         # Progress callback — streams tool calls in real time
         async def _progress_cb(tool_name: str, result: Any) -> None:
@@ -1048,10 +1533,19 @@ class AgentFleet:
                 )
 
         try:
+            parent_ctx = current_runtime_context()
+            _product_id, owner = self._execution_scope(worker)
+            session_id = _FLEET_SESSION.get() or (
+                parent_ctx.session_id if parent_ctx is not None else None
+            )
             async with self._semaphore:
                 state = await asyncio.wait_for(
-                    worker.agent.run(
+                    run_echo_turn(
+                        worker.agent,
                         override_prompt or task.description,
+                        channel="fleet_worker",
+                        owner_key_hash=owner,
+                        session_id=session_id or None,
                         model=worker.model,
                         progress_callback=_progress_cb,
                         stream_callback=_stream_cb,
@@ -1150,7 +1644,7 @@ class AgentFleet:
                 if not task.result:
                     task.result = state.error_message or "Unknown error"
             elif state.status == "cancelled":
-                task.status = "failed"
+                task.status = "cancelled"
                 if not task.result:
                     task.result = "Task was cancelled"
             else:
@@ -1158,32 +1652,39 @@ class AgentFleet:
                 task.status = "done" if task.result else "failed"
                 if not task.result:
                     task.result = f"Agent finished with status '{state.status}' but no output"
+        except asyncio.CancelledError:
+            task.status = "cancelled"
+            if not task.result:
+                task.result = "Task was cancelled"
+            await emit_done()
+            raise
         except TimeoutError:
             task.status = "failed"
             task.result = f"Task timed out after {timeout}s"
-            logger.error(f"Task {task.id} timed out")
+            logger.error("Fleet task %s timed out", task.id)
         except Exception as e:
             task.status = "failed"
-            task.result = str(e)
-            logger.error(f"Task {task.id} failed: {e}")
-        await self._emit(
-            {
-                "type": "agent_done",
-                "agent_id": worker.id,
-                "agent_name": worker.name,
-                "agent_role": worker.role.value,
-                "task_id": task.id,
-                "task_description": task.description,
-                "result": task.result or "",
-                "status": task.status,
-            }
-        )
+            task.result = "Fleet task failed safely"
+            logger.error("Fleet task %s failed: %s", task.id, type(e).__name__)
+        await emit_done()
         return task.id, task.result or ""
 
     async def _run_agent(self, agent: AgentInstance, prompt: str, timeout: float = 300.0) -> str:
         """Run a one-off prompt on an agent and return the response."""
+        parent_ctx = current_runtime_context()
+        _product_id, owner = self._execution_scope(agent)
+        session_id = _FLEET_SESSION.get() or (
+            parent_ctx.session_id if parent_ctx is not None else None
+        )
         state = await asyncio.wait_for(
-            agent.agent.run(prompt, model=agent.model),
+            run_echo_turn(
+                agent.agent,
+                prompt,
+                channel="fleet_coordinator",
+                owner_key_hash=owner,
+                session_id=session_id or None,
+                model=agent.model,
+            ),
             timeout=timeout,
         )
         for msg in reversed(state.messages):
@@ -1266,7 +1767,11 @@ class AgentFleet:
     # Status (for observability — read-only)
     # ------------------------------------------------------------------ #
 
-    def get_status(self) -> dict[str, Any]:
+    def get_status(self, owner_key_hash: str | None = None) -> dict[str, Any]:
+        product_id, owner = self._resolve_scope(
+            owner_key_hash=owner_key_hash,
+            allow_local_direct=True,
+        )
         return {
             "agents": [
                 {
@@ -1274,9 +1779,10 @@ class AgentFleet:
                     "name": a.name,
                     "role": a.role.value,
                     "status": a.status,
-                    "task": a.task_description[:80] if a.task_description else None,
+                    "task_id": a.current_task,
                 }
                 for a in self.agents.values()
+                if a.product_id == product_id and a.owner_key_hash == owner
             ],
         }
 
@@ -1290,10 +1796,14 @@ class AgentFleet:
         main_task: str,
         subtasks: list[str],
         result: dict[str, Any],
+        *,
+        owner_key_hash: str | None = None,
     ) -> None:
         """Persist a collaboration session to disk."""
-        import json as _json
-
+        product_id, owner = self._resolve_scope(
+            owner_key_hash=owner_key_hash,
+            allow_local_direct=True,
+        )
         record = {
             "session_id": session_id,
             "main_task": main_task,
@@ -1302,8 +1812,9 @@ class AgentFleet:
             "review": result.get("review"),
             "subtask_results": result.get("subtasks", {}),
             "created_at": time.time(),
+            "product_id": product_id,
+            "owner_key_hash": owner,
         }
-        path = self._history_dir / f"{session_id}.json"
         # Sanitize secrets before persisting to disk
         try:
             from js.security.secrets import SecretManager
@@ -1317,70 +1828,164 @@ class AgentFleet:
         except Exception:
             pass
         await asyncio.to_thread(
-            path.write_text, _json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
+            self._history_store.write,
+            self._partition_slug("product", product_id),
+            self._partition_slug("owner", owner),
+            session_id,
+            record,
         )
-        # Rotate: keep only the most recent 200 history files
-        try:
-            files = sorted(
-                self._history_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True
+
+    @staticmethod
+    def _validated_history_record(
+        data: dict[str, Any],
+        *,
+        session_id: str | None,
+        product_id: str,
+        owner: str,
+    ) -> dict[str, Any] | None:
+        raw_session_id = data.get("session_id")
+        main_task = data.get("main_task")
+        subtasks = data.get("subtasks")
+        final = data.get("final")
+        review = data.get("review")
+        created_at = data.get("created_at")
+        if (
+            not isinstance(raw_session_id, str)
+            or not _SAFE_FLEET_SESSION_RE.fullmatch(raw_session_id)
+            or (session_id is not None and raw_session_id != session_id)
+            or data.get("product_id") != product_id
+            or data.get("owner_key_hash") != owner
+            or not isinstance(main_task, str)
+            or len(main_task) > _MAX_FLEET_TASK_CHARS
+            or not isinstance(subtasks, list)
+            or len(subtasks) > AgentFleet._MAX_SUBTASKS
+            or any(
+                not isinstance(subtask, str)
+                or not subtask
+                or len(subtask) > _MAX_FLEET_SUBTASK_CHARS
+                for subtask in subtasks
             )
-            for old in files[200:]:
-                old.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-    def list_history(self, limit: int = 50) -> list[dict[str, Any]]:
-        """List recent collaboration sessions, newest first."""
-        import json as _json
-
-        entries: list[dict[str, Any]] = []
-        for path in sorted(
-            self._history_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+            or not isinstance(final, str)
+            or len(final) > 8_000_000
+            or (review is not None and not isinstance(review, str))
+            or (isinstance(review, str) and len(review) > 8_000_000)
+            or isinstance(created_at, bool)
+            or not isinstance(created_at, int | float)
         ):
-            try:
-                data = _json.loads(path.read_text(encoding="utf-8"))
-                entries.append(
-                    {
-                        "session_id": data["session_id"],
-                        "main_task": data["main_task"],
-                        "subtask_count": len(data.get("subtasks", [])),
-                        "created_at": data.get("created_at", 0),
-                        "has_review": data.get("review") is not None,
-                    }
-                )
-            except Exception:
+            return None
+        return dict(data)
+
+    def list_history(
+        self, limit: int = 50, owner_key_hash: str | None = None
+    ) -> list[dict[str, Any]]:
+        """List recent collaboration sessions, newest first."""
+        entries: list[dict[str, Any]] = []
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            return entries
+        limit = min(limit, 200)
+        product_id, owner = self._resolve_scope(
+            owner_key_hash=owner_key_hash,
+            allow_local_direct=True,
+        )
+        records = self._history_store.list_records(
+            self._partition_slug("product", product_id),
+            self._partition_slug("owner", owner),
+        )
+        for raw_data in records:
+            data = self._validated_history_record(
+                raw_data,
+                session_id=None,
+                product_id=product_id,
+                owner=owner,
+            )
+            if data is None:
                 continue
+            entries.append(
+                {
+                    "session_id": data["session_id"],
+                    "main_task": data["main_task"],
+                    "subtask_count": len(data["subtasks"]),
+                    "created_at": data["created_at"],
+                    "has_review": data.get("review") is not None,
+                }
+            )
             if len(entries) >= limit:
                 break
         return entries
 
-    def get_session(self, session_id: str) -> dict[str, Any] | None:
+    def get_session(
+        self, session_id: str, owner_key_hash: str | None = None
+    ) -> dict[str, Any] | None:
         """Get full details of a collaboration session."""
-        import json as _json
-
-        path = self._history_dir / f"{session_id}.json"
-        if not path.exists():
+        product_id, owner = self._resolve_scope(
+            owner_key_hash=owner_key_hash,
+            allow_local_direct=True,
+        )
+        if not isinstance(session_id, str) or not _SAFE_FLEET_SESSION_RE.fullmatch(session_id):
             return None
-        try:
-            data: dict[str, Any] = _json.loads(path.read_text(encoding="utf-8"))
-            return data
-        except Exception:
+        data = self._history_store.read(
+            self._partition_slug("product", product_id),
+            self._partition_slug("owner", owner),
+            session_id,
+        )
+        if data is None:
             return None
+        return self._validated_history_record(
+            data,
+            session_id=session_id,
+            product_id=product_id,
+            owner=owner,
+        )
 
-    def delete_session(self, session_id: str) -> bool:
+    def delete_session(self, session_id: str, owner_key_hash: str | None = None) -> bool:
         """Delete a collaboration session from disk."""
-        path = self._history_dir / f"{session_id}.json"
-        if not path.exists():
+        product_id, owner = self._resolve_scope(
+            owner_key_hash=owner_key_hash,
+            allow_local_direct=True,
+        )
+        if not isinstance(session_id, str) or not _SAFE_FLEET_SESSION_RE.fullmatch(session_id):
             return False
-        try:
-            path.unlink()
-            return True
-        except Exception:
-            return False
+        return self._history_store.delete(
+            self._partition_slug("product", product_id),
+            self._partition_slug("owner", owner),
+            session_id,
+            expected_product_id=product_id,
+            expected_owner=owner,
+        )
 
-    async def continue_session(self, session_id: str, follow_up: str) -> dict[str, Any]:
+    def _history_scope_dir(self, product_id: str, owner_key_hash: str) -> Path:
+        return (
+            self._history_dir
+            / self._partition_slug("product", product_id)
+            / self._partition_slug("owner", owner_key_hash)
+        )
+
+    def _history_path(
+        self,
+        session_id: str,
+        *,
+        product_id: str,
+        owner_key_hash: str,
+        create_parent: bool = False,
+    ) -> Path:
+        if not _SAFE_FLEET_SESSION_RE.fullmatch(session_id):
+            raise ValueError("invalid fleet session id")
+        parent = self._history_scope_dir(product_id, owner_key_hash)
+        if create_parent:
+            self._history_store.ensure_scope(
+                self._partition_slug("product", product_id),
+                self._partition_slug("owner", owner_key_hash),
+            )
+        return parent / f"{session_id}.json"
+
+    async def continue_session(
+        self,
+        session_id: str,
+        follow_up: str,
+        owner_key_hash: str | None = None,
+    ) -> dict[str, Any]:
         """Continue a previous collaboration session with a follow-up task."""
-        prev = self.get_session(session_id)
+        prev = self.get_session(session_id, owner_key_hash=owner_key_hash)
         if prev is None:
             raise ValueError(f"Session {session_id} not found")
 
@@ -1391,7 +1996,10 @@ class AgentFleet:
         # Use same subtask structure or auto-decompose
         prev_subtasks = prev.get("subtasks", [])
         return await self.collaborate(
-            main_task=context, subtasks=prev_subtasks or None, session_id=session_id
+            main_task=context,
+            subtasks=prev_subtasks or None,
+            session_id=session_id,
+            owner_key_hash=owner_key_hash,
         )
 
     def get_agent_config(self) -> dict[str, str]:

@@ -357,11 +357,17 @@ class NativeDesktopBackend:
                     shift_down = _CGEventCreateKeyboardEvent(None, 56, True)  # 56 = left shift
                     _CGEventPost(_kCGHIDEventTap, shift_down)
                 _CGEventPost(_kCGHIDEventTap, event_down)
+                # F-15: always post the matching key-up; a key held down
+                # leaves the target app with stuck-modifier/repeat state.
+                event_up = _CGEventCreateKeyboardEvent(None, keycode, False)
+                _CGEventPost(_kCGHIDEventTap, event_up)
                 if flags:
                     shift_up = _CGEventCreateKeyboardEvent(None, 56, False)
                     _CGEventPost(_kCGHIDEventTap, shift_up)
             else:
                 _CGEventPost(_kCGHIDEventTap, event_down)
+                event_up = _CGEventCreateKeyboardEvent(None, keycode, False)
+                _CGEventPost(_kCGHIDEventTap, event_up)
             time.sleep(0.005)
 
         return {"action": "type_text", "length": len(text)}

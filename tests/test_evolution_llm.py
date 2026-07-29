@@ -1,6 +1,8 @@
 """Tests for LLM-powered evolution core."""
 
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -42,6 +44,22 @@ class TestSkillEvolverLLM:
         result = await evolver.generate_improved_code("s1", "def main(): pass", "fix it", fake_llm)
         assert "def main" in result
 
+    @pytest.mark.asyncio
+    async def test_generate_improved_code_propagates_llm_failure_when_requested(
+        self, evolver: SkillEvolver
+    ) -> None:
+        async def failing_llm(prompt: str) -> str:
+            raise RuntimeError("provider unavailable")
+
+        with pytest.raises(RuntimeError, match="provider unavailable"):
+            await evolver.generate_improved_code(
+                "s1",
+                "def main(): pass",
+                "fix it",
+                failing_llm,
+                propagate_llm_errors=True,
+            )
+
     def test_should_evolve_low_success(self, evolver: SkillEvolver) -> None:
         v = evolver.create_variant("s1", "code", "prompt", [])
         for _ in range(10):
@@ -53,6 +71,34 @@ class TestSkillEvolverLLM:
         for _ in range(10):
             evolver.record_result(v.id, True, 0.9)
         assert not evolver.should_evolve("s1")
+
+    def test_should_evolve_many_uses_one_database_connection(
+        self,
+        evolver: SkillEvolver,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import js.skills.evolver as evolver_module
+
+        low = evolver.create_variant("low", "code", "prompt", [])
+        high = evolver.create_variant("high", "code", "prompt", [])
+        for _ in range(10):
+            evolver.record_result(low.id, False, 0.1)
+            evolver.record_result(high.id, True, 0.9)
+
+        original_connection = evolver_module.db_connection
+        connection_count = 0
+
+        @contextmanager
+        def counting_connection(*args: Any, **kwargs: Any):
+            nonlocal connection_count
+            connection_count += 1
+            with original_connection(*args, **kwargs) as conn:
+                yield conn
+
+        monkeypatch.setattr(evolver_module, "db_connection", counting_connection)
+
+        assert evolver.should_evolve_many(["low", "high", "missing"]) == {"low"}
+        assert connection_count == 1
 
     def test_evolution_report(self, evolver: SkillEvolver) -> None:
         v = evolver.create_variant("s1", "code", "prompt", [])

@@ -19,6 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from js.config import DefenseMode
+from js.security.sandbox import SandboxResult
 from js.web import server as web_server
 from js.web.auth import AuthManager
 from js.web.server import create_app
@@ -138,8 +139,32 @@ class TestSandboxCWDLock:
     """Sandbox cwd must be locked to workspace."""
 
     @pytest.mark.asyncio
+    async def test_relative_cwd_is_resolved_inside_workspace(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """ShellTool must pass an absolute workspace-contained cwd to the sandbox."""
+        from js.config import SecurityConfig, ToolLimits
+        from js.security.guard import BehaviorGuard
+        from js.tools.shell import ShellTool
+
+        guard = BehaviorGuard(SecurityConfig(), tmp_path)
+        tool = ShellTool(tmp_path, ToolLimits(), guard)
+        captured: dict[str, str] = {}
+
+        async def execute_stub(command: str, **kwargs: Any) -> SandboxResult:
+            captured["cwd"] = kwargs["cwd"]
+            return SandboxResult(0, "", "", 0)
+
+        monkeypatch.setattr(tool.executor, "execute", execute_stub)
+
+        result = await tool.execute("pwd", cwd="nested")
+
+        assert result.success
+        assert captured["cwd"] == str((tmp_path / "nested").resolve())
+
+    @pytest.mark.asyncio
     async def test_external_cwd_canary_fails(self) -> None:
-        """Attempting to read a canary file outside workspace must fail."""
+        """External cwd is rejected with a stable, diagnostic error."""
         from js.config import SecurityConfig, ToolLimits
         from js.security.guard import BehaviorGuard
         from js.tools.shell import ShellTool
@@ -152,20 +177,51 @@ class TestSandboxCWDLock:
         canary = Path(tempfile.mkdtemp()) / "canary.txt"
         canary.write_text("SECRET")
 
-        # Try to cat the canary file using absolute path in command
-        result = await tool.execute(f"cat {canary}")
-        if not result.success and "sandbox-exec" in result.error:
-            pytest.skip("macOS sandbox-exec is unavailable in this runner")
-        # sandbox-exec fs profile denies reads outside workspace, so this should fail
-        # If sandbox-exec is unavailable, the command may succeed — skip in that case
-        if result.success:
-            pytest.skip("Sandbox isolation unavailable — cannot test external cwd lock")
+        result = await tool.execute("pwd", cwd=str(canary.parent))
         assert not result.success
+        assert result.error == (
+            f"Sandbox cwd denied: workspace={ws.resolve()} cwd={canary.parent}"
+        )
 
-        # Try via traversal — ShellTool rejects this before sandbox even runs
-        result2 = await tool.execute("cat ../canary.txt", cwd="sub")
+        # Traversal in cwd resolves outside the workspace and receives the same error shape.
+        result2 = await tool.execute("pwd", cwd="../outside")
         assert not result2.success
-        assert "cwd" in result2.error.lower() or "workspace" in result2.error.lower()
+        assert result2.error == (
+            f"Sandbox cwd denied: workspace={ws.resolve()} cwd=../outside"
+        )
+
+    @pytest.mark.asyncio
+    async def test_shell_rejects_executables_outside_explicit_allowlist_before_spawn(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from js.config import SecurityConfig, ToolLimits
+        from js.security.guard import BehaviorGuard
+        from js.tools.shell import ShellTool
+
+        tool = ShellTool(
+            tmp_path,
+            ToolLimits(shell_command_allowlist=["echo"]),
+            BehaviorGuard(SecurityConfig(), tmp_path),
+        )
+        spawned = False
+
+        async def execute_stub(command: str, **kwargs: Any) -> SandboxResult:
+            nonlocal spawned
+            spawned = True
+            return SandboxResult(0, "", "", 0)
+
+        monkeypatch.setattr(tool.executor, "execute", execute_stub)
+
+        denied = await tool.execute("curl https://example.com")
+        assert spawned is False
+        allowed = await tool.execute("echo safe")
+
+        assert denied.success is False
+        assert "allowlist" in denied.error.lower()
+        assert allowed.success is True
+        assert spawned is True
 
 
 class TestWebBridgeObfuscation:
@@ -273,9 +329,17 @@ class TestChatRateLimiting:
     def test_1mb_payload_rejected(self, client: TestClient) -> None:
         """A 1 MB payload must return 413, not crash the server."""
         huge_message = "x" * (1024 * 1024)
+        # Guests are read-only; authenticate so the request reaches the payload check.
+        from js.web.auth import AuthManager
+
+        key = AuthManager(web_server._settings.state_dir).create_key("user", role="user")
         resp = client.post(
             "/api/chat",
-            headers={"Host": "localhost", "Origin": "http://localhost"},
+            headers={
+                "Host": "localhost",
+                "Origin": "http://localhost",
+                "X-API-Key": key,
+            },
             json={"message": huge_message},
         )
         assert resp.status_code == 413, f"Expected 413 for oversized payload, got {resp.status_code}"

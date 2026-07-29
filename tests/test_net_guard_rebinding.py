@@ -278,3 +278,47 @@ class TestDNSRebindingDefense:
             assert "transport" in call_kwargs
             transport = call_kwargs["transport"]
             assert hasattr(transport, "_pool") or isinstance(transport, MagicMock)
+
+    @pytest.mark.asyncio
+    async def test_provider_manager_pins_lmstudio_context_probe(self) -> None:
+        """The LM Studio v0 metadata probe must share the validated pinned transport."""
+        from js.models.provider_manager import ProviderManager
+
+        with (
+            patch(
+                "js.security.net_guard.resolve_and_validate",
+                return_value=["127.0.0.1"],
+            ),
+            patch("js.security.net_guard.PinnedTransport") as transport_class,
+            patch("httpx.AsyncClient") as client_class,
+        ):
+            transport = MagicMock()
+            transport_class.return_value = transport
+            client = AsyncMock()
+            client_class.return_value = client
+            client.__aenter__ = AsyncMock(return_value=client)
+            client.__aexit__ = AsyncMock(return_value=None)
+
+            v0_response = MagicMock(status_code=200)
+            v0_response.json.return_value = {
+                "data": [
+                    {"id": "model-a", "state": "loaded", "max_context_length": 8192}
+                ]
+            }
+            v1_response = MagicMock(status_code=200)
+            v1_response.json.return_value = {"data": [{"id": "model-a"}]}
+            v1_response.raise_for_status = MagicMock()
+            client.get = AsyncMock(side_effect=[v0_response, v1_response])
+
+            result = await ProviderManager.discover_models(
+                "http://127.0.0.1:1234/v1",
+                api_key="test-key",
+            )
+
+            assert result["models"][0]["context_window"] == 8192
+            client_class.assert_called_once()
+            assert client_class.call_args.kwargs["transport"] is transport
+            assert [call.args[0] for call in client.get.await_args_list] == [
+                "http://127.0.0.1:1234/api/v0/models",
+                "http://127.0.0.1:1234/v1/models",
+            ]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,160 @@ class TestSandboxExecution:
         result = await sandbox.execute(["python3", "-c", "import sys; sys.stderr.write('error!')"])
         assert result.returncode == 0
         assert "error!" in result.stderr
+
+    def test_subprocess_environment_drops_host_secrets_and_loader_injection(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setenv("HOME", "/Users/private-person")
+        monkeypatch.setenv("OPENAI_API_KEY", "must-not-cross-boundary")
+        monkeypatch.setenv("LD_PRELOAD", "/tmp/evil.so")
+        sandbox = SandboxExecutor(workspace=tmp_path)
+
+        env = sandbox._build_env(
+            {
+                "OPENAI_API_KEY": "explicit-leak",
+                "LD_PRELOAD": "/tmp/evil.so",
+                "LANG": "C",
+            }
+        )
+
+        # HOME is a sandbox-private directory (never the workspace root and
+        # never the host HOME) so host dotfiles cannot leak across the boundary.
+        assert env["HOME"] == str(tmp_path.resolve() / ".echo-tmp" / "home")
+        assert env["PWD"] == str(tmp_path.resolve())
+        assert env["LANG"] == "C"
+        assert "OPENAI_API_KEY" not in env
+        assert "LD_PRELOAD" not in env
+        assert "/Users/private-person" not in repr(env)
+
+    @pytest.mark.asyncio
+    async def test_fs_restricted_blocks_absolute_reads_outside_workspace(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        sandbox = SandboxExecutor(
+            workspace=tmp_path,
+            timeout=5.0,
+            max_memory_mb=512,
+            strict_isolation=True,
+        )
+
+        result = await sandbox.execute("cat /etc/hosts", fs_restricted=True)
+
+        assert result.returncode != 0
+        assert "outside workspace" in result.stderr.lower()
+
+    @pytest.mark.asyncio
+    async def test_fs_restricted_blocks_absolute_writes_outside_workspace(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        sandbox = SandboxExecutor(
+            workspace=tmp_path,
+            timeout=5.0,
+            max_memory_mb=512,
+            strict_isolation=True,
+        )
+        outside = tmp_path.parent / "echo-sandbox-outside.txt"
+        if outside.exists():
+            outside.unlink()
+
+        result = await sandbox.execute(f"touch {outside}", fs_restricted=True)
+
+        assert result.returncode != 0
+        assert "outside workspace" in result.stderr.lower()
+        assert not outside.exists()
+
+    @pytest.mark.asyncio
+    async def test_fs_restricted_blocks_scripted_writes_outside_workspace(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        sandbox = SandboxExecutor(
+            workspace=tmp_path,
+            timeout=5.0,
+            max_memory_mb=512,
+            strict_isolation=True,
+        )
+        outside = tmp_path.parent / "echo-sandbox-scripted.txt"
+        if outside.exists():
+            outside.unlink()
+
+        result = await sandbox.execute(
+            f"python3 -c \"open('{outside}', 'w').write('x')\"",
+            fs_restricted=True,
+        )
+
+        assert result.returncode != 0
+        assert "outside workspace" in result.stderr.lower()
+        assert not outside.exists()
+
+    @pytest.mark.asyncio
+    async def test_fs_restricted_executes_read_only_skill_source(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        skill_dir = tmp_path / "installed-skill"
+        skill_dir.mkdir()
+        script = skill_dir / "main.py"
+        script.write_text("print('isolated-skill-ok')\n")
+        sandbox = SandboxExecutor(
+            workspace=workspace,
+            timeout=5.0,
+            max_memory_mb=512,
+            strict_isolation=True,
+        )
+        if not sandbox.filesystem_isolation_available():
+            pytest.skip("OS filesystem isolation backend unavailable")
+
+        result = await sandbox.execute(
+            [str(Path(sys.executable).resolve()), str(script.resolve())],
+            cwd=str(skill_dir),
+            network_allowed=False,
+            fs_restricted=True,
+            read_only_paths=[skill_dir],
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "isolated-skill-ok"
+
+    @pytest.mark.asyncio
+    async def test_read_only_skill_source_cannot_be_modified(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        skill_dir = tmp_path / "installed-skill"
+        skill_dir.mkdir()
+        script = skill_dir / "main.py"
+        script.write_text(
+            "from pathlib import Path\n"
+            "Path(__file__).with_name('tampered.txt').write_text('bad')\n"
+        )
+        sandbox = SandboxExecutor(
+            workspace=workspace,
+            timeout=5.0,
+            max_memory_mb=512,
+            strict_isolation=True,
+        )
+        if not sandbox.filesystem_isolation_available():
+            pytest.skip("OS filesystem isolation backend unavailable")
+
+        result = await sandbox.execute(
+            [str(Path(sys.executable).resolve()), str(script.resolve())],
+            cwd=str(skill_dir),
+            network_allowed=False,
+            fs_restricted=True,
+            read_only_paths=[skill_dir],
+        )
+
+        assert result.returncode != 0
+        assert not (skill_dir / "tampered.txt").exists()
 
 
 class TestSandboxNetworkIsolation:

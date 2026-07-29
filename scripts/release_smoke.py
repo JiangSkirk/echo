@@ -22,11 +22,29 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
-CHECKS = ("package", "web", "model", "skills", "dream", "evolution", "fleet")
+from js.echo.ledger.release_gates import (
+    ReleaseSourceIntegrityError,
+    validate_release_source_integrity,
+)
+from js.echo.slo_contract import SLO_CONTRACT
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CHECKS = (
+    "package",
+    "web",
+    "model",
+    "skills",
+    "dream",
+    "evolution",
+    "fleet",
+    "work",
+    "echo",
+    "echo_ledger",
+)
 _LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -54,7 +72,9 @@ def _write_config(base: Path) -> Path:
         "models": [],
         "security": {
             "defense_mode": "enforce",
-            "api_key_required": False,
+            # F-01 semantics: auth-off now means anonymous=guest (read-only).
+            # Require API keys so bootstrap hands out the one-time admin key.
+            "api_key_required": True,
         },
     }
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
@@ -68,6 +88,10 @@ def _env(base: Path) -> dict[str, str]:
     env["NO_PROXY"] = "127.0.0.1,localhost"
     env["no_proxy"] = "127.0.0.1,localhost"
     env["PYTHONUNBUFFERED"] = "1"
+    env.pop("JS_ECHO_ENGINE", None)
+    # Host-derived loopback Origin checks must not inherit a stale allowlist
+    # left in the parent process by parallel pytest fixtures.
+    env.pop("JS_ALLOWED_ORIGINS", None)
     return env
 
 
@@ -118,13 +142,19 @@ def _request_json(
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise SmokeError(f"HTTP {exc.code} 请求失败: {url}\n{_short(detail)}") from exc
-    return json.loads(raw)
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise SmokeError(f"HTTP 响应不是 JSON object: {url}")
+    return {str(key): value for key, value in payload.items()}
 
 
 def _request_text(url: str, *, timeout: float = 8.0) -> str:
     try:
         with _LOCAL_OPENER.open(url, timeout=timeout) as resp:
-            return resp.read().decode("utf-8", errors="replace")
+            raw = resp.read()
+            if not isinstance(raw, bytes):
+                raise SmokeError(f"HTTP 响应不是 bytes: {url}")
+            return raw.decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise SmokeError(f"HTTP {exc.code} 请求失败: {url}\n{_short(detail)}") from exc
@@ -195,11 +225,34 @@ def check_web_and_model(base: Path) -> None:
         )
         try:
             _wait_for_server(base_url, proc, log_path)
-            status = _request_json(f"{base_url}/api/status")
+            # F-01 semantics: anonymous requests are read-only guests.  When
+            # api_key_required=true the server mints a one-time bootstrap admin
+            # key for the local operator (0600, state dir); use it for all
+            # subsequent admin calls instead of unauthenticated bootstrap.
+            key_file = base / "state" / "bootstrap_admin_key.txt"
+            admin_key = ""
+            for _ in range(20):
+                if key_file.is_file():
+                    admin_key = key_file.read_text(encoding="utf-8").strip()
+                    if admin_key:
+                        break
+                time.sleep(0.25)
+            if not admin_key:
+                raise SmokeError("服务器未生成 bootstrap 管理员密钥 (bootstrap_admin_key.txt)")
+            admin_headers = {"Origin": base_url, "x-api-key": admin_key}
+            status = _request_json(f"{base_url}/api/status", extra_headers=admin_headers)
             if "state_dir" not in status:
                 raise SmokeError(f"/api/status 返回异常: {status}")
+            echo_status = status.get("echo") or {}
+            if (
+                echo_status.get("mode") != "on"
+                or echo_status.get("default_architecture") is not True
+                or echo_status.get("ledger_mode") != "on"
+                or echo_status.get("architecture_state") != "primary_healthy"
+            ):
+                raise SmokeError(f"Echo primary 状态异常: {echo_status}")
 
-            skills = _request_json(f"{base_url}/api/skills")
+            skills = _request_json(f"{base_url}/api/skills", extra_headers=admin_headers)
             if not isinstance(skills.get("skills"), list):
                 raise SmokeError(f"/api/skills 返回异常: {skills}")
             skill_ids = {item.get("id") for item in skills["skills"] if isinstance(item, dict)}
@@ -207,7 +260,9 @@ def check_web_and_model(base: Path) -> None:
             if missing_skills:
                 raise SmokeError(f"内置技能未正确加载: {sorted(missing_skills)}")
 
-            presets = _request_json(f"{base_url}/api/providers/cloud-presets")
+            presets = _request_json(
+                f"{base_url}/api/providers/cloud-presets", extra_headers=admin_headers
+            )
             if not presets.get("presets"):
                 raise SmokeError("云模型预设为空，普通用户无法一键选择常见 Provider。")
 
@@ -221,7 +276,7 @@ def check_web_and_model(base: Path) -> None:
                     "base_url": f"http://127.0.0.1:{_free_port()}/v1",
                     "models": [{"id": model_id, "name": "Smoke Model"}],
                 },
-                extra_headers={"Origin": base_url},
+                extra_headers=admin_headers,
             )
             if connect.get("provider") != provider_name or connect.get("models_added") != 1:
                 raise SmokeError(f"Provider 添加返回异常: {connect}")
@@ -230,12 +285,12 @@ def check_web_and_model(base: Path) -> None:
                 f"{base_url}/api/models/switch",
                 method="POST",
                 body={"model_id": f"{provider_name}/{model_id}"},
-                extra_headers={"Origin": base_url},
+                extra_headers=admin_headers,
             )
             if not switch.get("success"):
                 raise SmokeError(f"模型切换失败: {switch}")
 
-            models = _request_json(f"{base_url}/api/models")
+            models = _request_json(f"{base_url}/api/models", extra_headers=admin_headers)
             if models.get("active_model") != f"{provider_name}/{model_id}":
                 raise SmokeError(f"模型切换未生效: {models}")
         finally:
@@ -367,10 +422,38 @@ async def check_dream(base: Path) -> None:
 
 
 class _StaticRouter:
-    def get_model_config(self, model: str = "") -> Any:
-        from js.config import ModelConfig
+    def __init__(self) -> None:
+        from js.config import JSSettings, ModelConfig
+        from js.models.providers import ModelProvider
 
-        return ModelConfig(id=model or "mock", name="Mock", provider="mock")
+        model = ModelConfig(id="mock", name="Mock", provider="mock")
+        self.settings = JSSettings(providers=[], models=[])
+        self._providers: dict[str, ModelProvider] = {"mock": cast("ModelProvider", self)}
+        self._model_map = {
+            "mock": ("mock", model),
+            "mock/mock": ("mock", model),
+        }
+        self._permit_verifier: Any = None
+
+    async def select_model(
+        self, _task_complexity: str = "medium", preferred: str | None = None
+    ) -> Any:
+        from js.models.providers import ModelProvider
+        from js.models.router import RoutingDecision
+
+        return RoutingDecision(
+            provider=cast("ModelProvider", self),
+            model=preferred or "mock",
+            provider_name="mock",
+            reason="release smoke",
+        )
+
+    def get_model_config(self, model: str = "") -> Any:
+        binding = self.get_model_binding(model or "mock")
+        return binding[1] if binding is not None else None
+
+    def get_model_binding(self, model: str) -> tuple[str, Any] | None:
+        return self._model_map.get(model)
 
     def is_local_model(self, model: str | None = None) -> bool:
         return False
@@ -385,26 +468,55 @@ class _StaticRouter:
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        before_model_call: Callable[..., Any] | None = None,
+        after_model_call: Callable[..., Any] | None = None,
+        permit_grant: Callable[..., Any] | None = None,
     ) -> Any:
         from js.models.providers import ChatResponse
 
-        prompt = messages[-1].content if messages else ""
-        if isinstance(prompt, list):
-            prompt = str(prompt)
-        if "===USER===" in str(prompt) or "USER.md" in str(prompt):
-            content = (
-                "===USER===\n"
-                "# USER\n"
-                "- 测试用户正在验证发布烟测\n"
-                "===IDENTITY===\n"
-                "# IDENTITY\n"
-                "- 测试助手运行正常"
-            )
-        else:
-            content = f"release smoke completed: {str(prompt)[:120]}"
-        return ChatResponse(
-            content=content, model=model or "mock", tool_calls=[], usage={}, finish_reason="stop"
+        del temperature, max_tokens
+        if before_model_call is None or after_model_call is None or permit_grant is None:
+            raise RuntimeError("release smoke router requires model callbacks and permit grant")
+        decision = await self.select_model(preferred=model)
+        self._permit_verifier.verify_and_consume(
+            permit_grant(decision, messages, tools),
+            provider_name=decision.provider_name,
+            model=decision.model,
+            messages=messages,
+            tools=tools,
         )
+        context = await before_model_call(decision, messages, tools)
+        response: ChatResponse | None = None
+        error: BaseException | None = None
+        try:
+            prompt = messages[-1].content if messages else ""
+            if isinstance(prompt, list):
+                prompt = str(prompt)
+            if "===USER===" in str(prompt) or "USER.md" in str(prompt):
+                content = (
+                    "===USER===\n"
+                    "# USER\n"
+                    "- 测试用户正在验证发布烟测\n"
+                    "===IDENTITY===\n"
+                    "# IDENTITY\n"
+                    "- 测试助手运行正常"
+                )
+            else:
+                content = f"release smoke completed: {str(prompt)[:120]}"
+            response = ChatResponse(
+                content=content,
+                model=decision.model,
+                tool_calls=[],
+                usage={},
+                finish_reason="stop",
+            )
+            return response
+        except BaseException as exc:  # noqa: BLE001 - finalize exact failure
+            error = exc
+            response = None
+            raise
+        finally:
+            await after_model_call(context, response, error)
 
     async def chat_stream(
         self,
@@ -415,6 +527,56 @@ class _StaticRouter:
         max_tokens: int | None = None,
     ) -> Any:
         yield "ok"
+
+    async def chat_stream_events(
+        self,
+        messages: list[Any],
+        model: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        before_model_call: Callable[..., Any] | None = None,
+        after_model_call: Callable[..., Any] | None = None,
+        permit_grant: Callable[..., Any] | None = None,
+    ) -> Any:
+        del max_tokens
+        from js.models.providers import ChatResponse
+        from js.models.stream_events import StreamEvent
+
+        if before_model_call is None or after_model_call is None or permit_grant is None:
+            raise RuntimeError(
+                "release smoke stream requires Echo model callbacks and permit grant"
+            )
+        decision = await self.select_model(preferred=model)
+        # Consume the runtime permit exactly like the production router gate.
+        self._permit_verifier.verify_and_consume(
+            permit_grant(decision, messages, tools),
+            provider_name=decision.provider_name,
+            model=decision.model,
+            messages=messages,
+            tools=tools,
+        )
+        context = await before_model_call(decision, messages, tools)
+        response: ChatResponse | None = None
+        error: BaseException | None = None
+        try:
+            usage = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            response = ChatResponse(
+                content="ok",
+                model=decision.model,
+                tool_calls=[],
+                usage=usage,
+                finish_reason="stop",
+            )
+            yield StreamEvent(kind="text_delta", text="ok", model=decision.model)
+            yield StreamEvent(kind="usage", usage=usage, model=decision.model)
+            yield StreamEvent(kind="done", finish_reason="stop", model=decision.model)
+        except BaseException as exc:  # noqa: BLE001 - finalize exact failure
+            error = exc
+            response = None
+            raise
+        finally:
+            await after_model_call(context, response, error)
 
     async def close(self) -> None:
         return None
@@ -432,7 +594,9 @@ async def check_evolution(base: Path) -> None:
         max_turns=3,
     )
     agent = JSAgent(settings)
-    agent.router = _StaticRouter()  # type: ignore[assignment]
+    _static = _StaticRouter()
+    _static._permit_verifier = agent._model_permit_issuer
+    agent.router = _static  # type: ignore[assignment]
     agent.memory.store(
         "install-test",
         "用户想测试自主进化、梦境记忆和安装稳定性",
@@ -459,10 +623,24 @@ async def check_fleet(base: Path) -> None:
     from js.orchestration.fleet import AgentFleet, AgentInstance, AgentRole
 
     class SmokeFleet(AgentFleet):
-        def _spawn_agent(self, name: str, role: AgentRole) -> AgentInstance:
-            inst = super()._spawn_agent(name, role)
+        def _spawn_agent(
+            self,
+            name: str,
+            role: AgentRole,
+            *,
+            product_id: str | None = None,
+            owner_key_hash: str | None = None,
+        ) -> AgentInstance:
+            inst = super()._spawn_agent(
+                name,
+                role,
+                product_id=product_id,
+                owner_key_hash=owner_key_hash,
+            )
             inst.model = "mock"
-            inst.agent.router = _StaticRouter()  # type: ignore[assignment]
+            _static = _StaticRouter()
+            _static._permit_verifier = inst.agent._model_permit_issuer
+            inst.agent.router = _static  # type: ignore[assignment]
             return inst
 
     settings = JSSettings(
@@ -470,7 +648,6 @@ async def check_fleet(base: Path) -> None:
         state_dir=base / "state",
         providers=[],
         models=[],
-        auto_delegate=False,
         max_turns=3,
     )
     fleet = SmokeFleet(settings, max_workers=4)
@@ -481,8 +658,113 @@ async def check_fleet(base: Path) -> None:
     )
     for inst in list(fleet.agents.values()):
         await inst.agent.close()
-    if not result.get("final") or len(result.get("subtasks", {})) != 2:
+    subtasks = result.get("subtasks", {})
+    failed_subtasks = {
+        name: output
+        for name, output in subtasks.items()
+        if not output or "error:" in str(output).lower() or "failed:" in str(output).lower()
+    }
+    if not result.get("final") or len(subtasks) != 2 or failed_subtasks:
         raise SmokeError(f"多 agent 协作汇总失败: {result}")
+
+
+def check_echo_ledger(base: Path) -> None:
+    from js.config import JSSettings
+    from js.echo.ledger.release_gates import verify_release_readiness
+    from js.echo.ledger.sandbox_backend import EchoSandboxBackend
+    from js.echo.ledger.security_matrix import run_security_matrix
+    from js.echo.ledger.service import EchoSafetyService
+
+    matrix = run_security_matrix()
+    if not matrix.ok or matrix.total != 25:
+        raise SmokeError(
+            f"Echo internal safety ledger 25 项安全矩阵失败: total={matrix.total} failed={matrix.failed}"
+        )
+
+    probe = EchoSandboxBackend(workspace=base / "workspace").probe()
+    if not probe.real_process_backend:
+        raise SmokeError(f"Echo internal safety ledger sandbox backend 不是真实进程后端: {probe}")
+
+    readiness = verify_release_readiness(
+        Path.cwd(),
+        require_audit_reports=False,
+        require_live_acceptance=False,
+    )
+    if not readiness.internal_ready:
+        raise SmokeError(f"Echo 内部门禁未通过: {readiness.internal_blockers}")
+    if "security_matrix_25" not in readiness.passed:
+        raise SmokeError("Echo release gate 没有记录 security_matrix_25。")
+    if "real_sandbox_backend" not in readiness.passed:
+        raise SmokeError("Echo release gate 没有记录 real_sandbox_backend。")
+    if "echo_ip_boundary" not in readiness.passed:
+        raise SmokeError("Echo 自研/IP 边界门禁未通过。")
+
+    service = EchoSafetyService.from_settings(JSSettings(state_dir=base / "state"))
+    for index in range(8):
+        service.record_chat_turn(
+            tenant_id="smoke-owner",
+            run_id=f"smoke-run-{index}",
+            user_text=f"hello {index}",
+            assistant_text="ok",
+            status="completed",
+            token_totals={"input": 1, "output": 1},
+        )
+    journal_p95 = service.health().journal_append_p95_ms
+    if journal_p95 is None or journal_p95 > SLO_CONTRACT.journal_append_p95_ms:
+        raise SmokeError(f"Echo internal safety ledger journal append SLO 失败: p95={journal_p95}")
+
+
+def check_echo(base: Path) -> None:
+    env = _env(base)
+    baseline = (
+        Path(__file__).resolve().parents[1] / "docs" / "security" / "ECHO_BASELINE_65CC545.json"
+    )
+    if not baseline.is_file():
+        raise SmokeError(f"Echo detached baseline evidence missing: {baseline}")
+    _run([sys.executable, "scripts/echo_smoke.py"], env=env, timeout=120)
+    _run(
+        [
+            sys.executable,
+            "scripts/echo_architecture_benchmark.py",
+            "--iterations",
+            "50",
+            "--warmup",
+            "10",
+            "--enforce-slo",
+            "--baseline",
+            str(baseline),
+            "--output",
+            str(base / "echo-slo-benchmark.json"),
+        ],
+        env=env,
+        timeout=180,
+    )
+
+
+def check_work(base: Path) -> None:
+    env = _env(base)
+    _run(
+        [
+            sys.executable,
+            "scripts/js_work_echo_smoke.py",
+            "--turns",
+            "3",
+            "--state-dir",
+            str(base / "home"),
+        ],
+        env=env,
+        timeout=180,
+    )
+
+
+def check_stable_release_gate(root: Path) -> None:
+    from js.echo.ledger.release_gates import verify_release_readiness
+
+    readiness = verify_release_readiness(root)
+    if readiness.stable_ready:
+        return
+    blockers = (*readiness.internal_blockers, *readiness.external_blockers)
+    raise SmokeError("stable release blockers: " + ", ".join(blockers or ("stable_ready_false",)))
 
 
 async def _run_async_check(name: str, func: Callable[[Path], Any], root: Path) -> None:
@@ -493,7 +775,7 @@ async def _run_async_check(name: str, func: Callable[[Path], Any], root: Path) -
         await result
 
 
-async def run_checks(selected: list[str], keep_temp: bool) -> int:
+async def run_checks(selected: list[str], keep_temp: bool, *, stable: bool = False) -> int:
     if "all" in selected:
         selected = list(CHECKS)
 
@@ -505,6 +787,9 @@ async def run_checks(selected: list[str], keep_temp: bool) -> int:
         "dream": check_dream,
         "evolution": check_evolution,
         "fleet": check_fleet,
+        "work": check_work,
+        "echo": check_echo,
+        "echo_ledger": check_echo_ledger,
     }
 
     temp_dir: tempfile.TemporaryDirectory[str] | None = None
@@ -547,9 +832,23 @@ async def run_checks(selected: list[str], keep_temp: bool) -> int:
                 if name == "web":
                     completed_web = True
 
+        if stable:
+            print("\n[检查] stable-release-gate")
+            try:
+                check_stable_release_gate(Path.cwd())
+            except SmokeError as exc:
+                print("  [失败] stable-release-gate")
+                print(str(exc))
+                return 1
+            else:
+                print("  [OK] stable-release-gate")
+
         if keep_temp:
             print(f"\n临时目录保留: {root}")
         print("\n发布烟测通过。")
+        from js.echo.ledger.release_gates import format_release_result_line
+
+        print(format_release_result_line(gate="release_smoke", ok=True))
         return 0
     finally:
         if temp_dir is not None:
@@ -563,6 +862,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--keep-temp", action="store_true", help="Keep temporary test files after failure."
     )
     parser.add_argument(
+        "--stable",
+        action="store_true",
+        help="Also require external stable-release evidence, SBOM, and license scan.",
+    )
+    parser.add_argument(
         "--checks",
         nargs="+",
         choices=("all", *CHECKS),
@@ -574,8 +878,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
+    try:
+        validate_release_source_integrity(REPO_ROOT)
+    except ReleaseSourceIntegrityError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     selected = ["all"] if args.all else args.checks
-    return asyncio.run(run_checks(selected, keep_temp=args.keep_temp))
+    return asyncio.run(run_checks(selected, keep_temp=args.keep_temp, stable=args.stable))
 
 
 if __name__ == "__main__":

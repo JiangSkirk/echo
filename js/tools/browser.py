@@ -41,6 +41,7 @@ class BrowserTool:
                     ToolParam("url", "string", "URL to fetch"),
                     ToolParam("max_chars", "integer", "Max characters to return", required=False),
                 ],
+                read_only=True,
             ),
         ]
 

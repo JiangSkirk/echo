@@ -270,8 +270,7 @@ class TestModelSwitchingSingleSession:
         tokens = []
         async for token in agent.chat_stream("Hello", session_id="sess-stream", model="cloud/cloud-gpt"):
             tokens.append(token)
-        assert len(tokens) == 1
-        assert "Cloud stream: cloud-gpt" in tokens[0]
+        assert "Cloud stream: cloud-gpt" in "".join(tokens)
         assert cloud_provider.models_used == ["cloud-gpt"]
 
     async def test_streaming_switches_to_local_model(self, agent: JSAgent, cloud_provider: MockCloudProvider, local_provider: MockLocalProvider) -> None:
@@ -284,8 +283,8 @@ class TestModelSwitchingSingleSession:
         async for token in agent.chat_stream("Hello", session_id="sess-stream-2", model="local/local-llm"):
             local_tokens.append(token)
 
-        assert "Cloud stream: cloud-gpt" in cloud_tokens[0]
-        assert "Local stream: local-llm" in local_tokens[0]
+        assert "Cloud stream: cloud-gpt" in "".join(cloud_tokens)
+        assert "Local stream: local-llm" in "".join(local_tokens)
         assert cloud_provider.models_used == ["cloud-gpt"]
         assert local_provider.models_used == ["local-llm"]
 
@@ -611,11 +610,14 @@ class TestPluginsWithBothModels:
         health = await agent.router.health_check()
         assert health.get("local") is True
 
-    async def test_dashboard_plugin_tools_registered(self, agent: JSAgent) -> None:
-        """Dashboard plugin tools should be tracked by plugin manager."""
-        tools = agent.plugins.get_all_tools()
-        names = {t.name for t in tools}
-        assert "system_dashboard" in names
+    async def test_dashboard_plugin_is_metadata_only(self, agent: JSAgent) -> None:
+        """Release plugins are discoverable without importing executable code."""
+        records = {record.manifest.id: record for record in agent.plugins.list_plugins()}
+
+        assert "example-dashboard" in records
+        assert records["example-dashboard"].instance is None
+        assert agent.plugins.get_all_tools() == []
+        assert agent.registry.get("system_dashboard") is None
 
     async def test_skill_tools_available_with_cloud_model(self, agent: JSAgent, cloud_provider: MockCloudProvider) -> None:
         """Skill tools should be callable with cloud model."""

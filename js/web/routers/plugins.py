@@ -6,6 +6,10 @@ from js.web.auth import require_admin, require_auth_dep
 from js.web.deps import get_agent
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"])
+_PLUGIN_MUTATION_DISABLED = (
+    "Runtime Python plugin mutation is disabled; only release-shipped plugin "
+    "metadata may be inspected"
+)
 
 
 @router.get("/")
@@ -20,55 +24,25 @@ async def list_plugins(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict
 
 @router.post("/{plugin_id}/enable")
 async def enable_plugin(plugin_id: str, auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
-    agent = get_agent()
-    pm = getattr(agent, "plugins", None)
-    if not pm:
-        raise HTTPException(503, "Plugin system not initialized")
-    if pm.enable(plugin_id):
-        return {"success": True, "plugin_id": plugin_id, "status": "enabled"}
-    raise HTTPException(400, f"Failed to enable plugin: {plugin_id}")
+    del plugin_id, auth
+    raise HTTPException(409, _PLUGIN_MUTATION_DISABLED)
 
 
 @router.post("/{plugin_id}/disable")
 async def disable_plugin(plugin_id: str, auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
-    agent = get_agent()
-    pm = getattr(agent, "plugins", None)
-    if not pm:
-        raise HTTPException(503, "Plugin system not initialized")
-    if pm.disable(plugin_id):
-        return {"success": True, "plugin_id": plugin_id, "status": "disabled"}
-    raise HTTPException(400, f"Failed to disable plugin: {plugin_id}")
+    del plugin_id, auth
+    raise HTTPException(409, _PLUGIN_MUTATION_DISABLED)
 
 
 @router.post("/install")
 async def install_plugin(body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
-    """Install a plugin from a remote URL.
-
-    Body: {"url": "https://example.com/plugin.zip", "sha256": "optional-hash"}
-    Supports .zip and .tar.gz archives. HTTPS only.
-    """
-    agent = get_agent()
-    pm = getattr(agent, "plugins", None)
-    if not pm:
-        raise HTTPException(503, "Plugin system not initialized")
-    url = (body.get("url") or "").strip()
-    if not url:
-        raise HTTPException(400, "url is required")
-    expected_hash = (body.get("sha256") or "").strip() or None
-    result = pm.install_from_url(url, expected_hash=expected_hash)
-    if not result.get("success"):
-        raise HTTPException(400, result.get("message", "Install failed"))
-    return dict(result)
+    """Fail closed until an Echo-wrapped, sandboxed plugin runtime exists."""
+    del body, auth
+    raise HTTPException(409, _PLUGIN_MUTATION_DISABLED)
 
 
 @router.delete("/{plugin_id}")
 async def uninstall_plugin(plugin_id: str, auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
-    """Uninstall a plugin and remove its files."""
-    agent = get_agent()
-    pm = getattr(agent, "plugins", None)
-    if not pm:
-        raise HTTPException(503, "Plugin system not initialized")
-    result = pm.uninstall(plugin_id)
-    if not result.get("success"):
-        raise HTTPException(400, result.get("message", "Uninstall failed"))
-    return dict(result)
+    """Fail closed; release-shipped plugin files are immutable at runtime."""
+    del plugin_id, auth
+    raise HTTPException(409, _PLUGIN_MUTATION_DISABLED)

@@ -33,6 +33,57 @@ from .types import (
 logger = logging.getLogger("js.tools.desktop.controller")
 
 
+def _escape_applescript_string(value: str) -> str:
+    """Escape a value for safe interpolation into an AppleScript string literal.
+
+    Order matters: backslashes first, then double quotes, so an attacker
+    cannot use ``\\"`` to smuggle a literal quote past the quote escaping.
+    Control characters (newlines, carriage returns, etc.) can terminate the
+    AppleScript statement regardless of escaping, so they are rejected
+    outright (fail-closed).
+    """
+    for ch in value:
+        codepoint = ord(ch)
+        if codepoint < 0x20 or codepoint == 0x7F:
+            raise ValueError(
+                "app_name/window_title contains control characters "
+                "(newline/CR/control) — rejected"
+            )
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+# cliclick `kp:` key names (documented set) plus single ASCII letters/digits.
+_CLICLICK_ALLOWED_KEYS = frozenset(
+    {
+        "return", "tab", "space", "delete", "fwd-delete", "esc", "escape",
+        "home", "end", "page-up", "page-down",
+        "arrow-up", "arrow-down", "arrow-left", "arrow-right",
+        "up", "down", "left", "right",
+    }
+    | {f"f{i}" for i in range(1, 17)}
+    | set("abcdefghijklmnopqrstuvwxyz0123456789")
+)
+
+
+def _validate_cliclick_key(key: str) -> str:
+    """Allow only known cliclick key names (fail-closed for anything else)."""
+    normalized = key.strip().lower()
+    if normalized not in _CLICLICK_ALLOWED_KEYS:
+        raise ValueError(f"key not in cliclick whitelist: {key!r}")
+    return normalized
+
+
+def _validate_cliclick_type_text(text: str) -> str:
+    """Reject control characters before handing text to the cliclick fallback."""
+    for ch in text:
+        codepoint = ord(ch)
+        if codepoint < 0x20 or codepoint == 0x7F:
+            raise ValueError(
+                "type_text contains control characters — rejected for cliclick fallback"
+            )
+    return text
+
+
 class DesktopController:
     """Low-level desktop control via macOS system utilities.
 
@@ -199,6 +250,9 @@ class DesktopController:
             return self._native.type_text(text)
         except Exception:
             if not self._cliclick_path: raise
+            # F-15: whitelist-validate before handing text to cliclick —
+            # control characters could inject additional cliclick commands.
+            text = _validate_cliclick_type_text(text)
             escaped = text.replace("\\", "\\\\").replace(":", "\\:")
             subprocess.run([self._cliclick_path, f"t:{escaped}"], capture_output=True, text=True, timeout=10)
             return {"action": "type_text", "length": len(text)}
@@ -210,6 +264,10 @@ class DesktopController:
             return self._native.key_press(key, mods)
         except Exception:
             if not self._cliclick_path: raise
+            # F-15: whitelist-validate the key before handing it to cliclick —
+            # an unvalidated key string could inject extra cliclick actions
+            # (e.g. "kp:return;m:0,0" style command chaining).
+            key = _validate_cliclick_key(key)
             mod_str = "-".join(m.value for m in modifiers) + "-" if modifiers else ""
             subprocess.run([self._cliclick_path, f"kp:{mod_str}{key}"], capture_output=True, text=True, timeout=5)
             return {"action": "key_press", "key": key,
@@ -252,7 +310,7 @@ class DesktopController:
         if not app_name:
             raise ValueError("app_name is required for this action")
 
-        app_name_safe = app_name.replace('"', '\\"')
+        app_name_safe = _escape_applescript_string(app_name)
 
         if action == AppAction.OPEN:
             script = f'tell application "{app_name_safe}" to activate'
@@ -337,11 +395,11 @@ class DesktopController:
         if not app_name:
             raise ValueError("app_name is required for this action")
 
-        app_safe = app_name.replace('"', '\\"')
+        app_safe = _escape_applescript_string(app_name)
 
         if action == WindowAction.ACTIVATE:
             if window_title:
-                title_safe = window_title.replace('"', '\\"')
+                title_safe = _escape_applescript_string(window_title)
                 script = f'''
                     tell application "System Events"
                         tell process "{app_safe}"
@@ -391,7 +449,7 @@ class DesktopController:
     def _list_windows(self, app_name: str | None = None) -> dict[str, list[WindowInfo]]:
         """List windows. If app_name is given, list only that app's windows."""
         if app_name:
-            app_safe = app_name.replace('"', '\\"')
+            app_safe = _escape_applescript_string(app_name)
             script = f'''
                 tell application "System Events"
                     tell process "{app_safe}"

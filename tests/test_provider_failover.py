@@ -11,12 +11,16 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from js.agent import JSAgent
 from js.config import JSSettings, ModelConfig
+from js.models.permit import ModelPermitIssuer
 from js.models.providers import ChatMessage, ChatResponse, ModelProvider
 from js.models.router import ModelRouter
 
@@ -69,6 +73,7 @@ class ToggleableMockProvider(ModelProvider):
     ) -> AsyncIterator[str]:
         async def _gen() -> AsyncIterator[str]:
             yield f"Stream from {self.name}"
+
         return _gen()
 
     async def health_check(self) -> bool:
@@ -78,13 +83,69 @@ class ToggleableMockProvider(ModelProvider):
         pass
 
 
+def _echo_model_hooks(
+    router: ModelRouter,
+) -> tuple[Any, Any, Any, list[tuple[str, str, str | None]]]:
+    calls: list[tuple[str, str, str | None]] = []
+
+    async def _before(decision: Any, _messages: Any, _tools: Any) -> str:
+        calls.append(("before", decision.provider_name, None))
+        return decision.provider_name
+
+    async def _after(
+        context: Any,
+        response: ChatResponse | None,
+        error: BaseException | None,
+    ) -> None:
+        calls.append(
+            (
+                "after",
+                str(context),
+                response.content if error is None and response else type(error).__name__,
+            )
+        )
+
+    issuer = router._permit_verifier
+    assert isinstance(issuer, ModelPermitIssuer)
+
+    def _grant(decision: Any, messages: list[ChatMessage], tools: Any) -> Any:
+        return issuer.issue(
+            provider_name=decision.provider_name,
+            model=decision.model,
+            messages=messages,
+            tools=tools,
+            owner_key_hash="owner",
+            session_id="session",
+            run_id="run",
+        )
+
+    return _before, _after, _grant, calls
+
+
 class TestRouterFailover:
     """Test ModelRouter fallback logic between multiple providers."""
 
     @pytest.fixture
     def router(self) -> ModelRouter:
         settings = JSSettings()
-        return ModelRouter(settings)
+        return ModelRouter(settings, permit_verifier=ModelPermitIssuer())
+
+    @pytest.mark.asyncio
+    async def test_selection_uses_cached_health_without_raw_provider_probe(
+        self,
+        router: ModelRouter,
+    ) -> None:
+        provider = ToggleableMockProvider("primary", healthy=True)
+        probe = AsyncMock(side_effect=AssertionError("raw health probe is not authorized"))
+        provider.health_check = probe  # type: ignore[method-assign]
+        router.add_provider("primary", provider, [_TEST_MODEL])
+
+        decision = await router.select_model()
+        health = await router.health_check()
+
+        assert decision.provider_name == "primary"
+        assert health == {"primary": True}
+        probe.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_primary_healthy_uses_preferred(self, router: ModelRouter) -> None:
@@ -95,20 +156,85 @@ class TestRouterFailover:
         router.add_provider("primary", primary, [_TEST_MODEL])
         router.add_provider("backup", backup, [_TEST_MODEL])
 
-        primary.set_responses([
-            ChatResponse(
-                content="Primary OK",
-                tool_calls=[],
-                model="gpt",
-                usage={"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
-                finish_reason="stop",
-            ),
-        ])
+        primary.set_responses(
+            [
+                ChatResponse(
+                    content="Primary OK",
+                    tool_calls=[],
+                    model="gpt",
+                    usage={"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+                    finish_reason="stop",
+                ),
+            ]
+        )
 
-        resp = await router.chat([ChatMessage(role="user", content="hi")], model="primary/gpt-test")
+        before_model_call, after_model_call, permit_grant, hook_calls = _echo_model_hooks(router)
+        resp = await router.chat(
+            [ChatMessage(role="user", content="hi")],
+            model="primary/gpt-test",
+            before_model_call=before_model_call,
+            after_model_call=after_model_call,
+            permit_grant=permit_grant,
+        )
         assert "Primary OK" in (resp.content or "")
         assert len(primary.calls) == 1
         assert len(backup.calls) == 0
+        assert hook_calls == [("before", "primary", None), ("after", "primary", "Primary OK")]
+
+    @pytest.mark.asyncio
+    async def test_each_same_provider_transport_retry_gets_fresh_echo_gate(
+        self,
+        router: ModelRouter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        provider = ToggleableMockProvider("primary", healthy=True)
+        provider.config = SimpleNamespace(max_retries=3)  # type: ignore[attr-defined]
+        attempts = 0
+
+        async def flaky_chat(*_args: Any, **_kwargs: Any) -> ChatResponse:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise httpx.ConnectError("temporary transport failure")
+            return ChatResponse(
+                content="recovered",
+                tool_calls=[],
+                model="gpt-test",
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                finish_reason="stop",
+            )
+
+        async def no_wait(_delay: float) -> None:
+            return None
+
+        provider.chat = flaky_chat  # type: ignore[method-assign]
+        monkeypatch.setattr("js.models.router.asyncio.sleep", no_wait)
+        router.add_provider("primary", provider, [_TEST_MODEL])
+        before_model_call, after_model_call, permit_grant, hook_calls = _echo_model_hooks(router)
+
+        response = await router.chat(
+            [ChatMessage(role="user", content="hi")],
+            model="primary/gpt-test",
+            before_model_call=before_model_call,
+            after_model_call=after_model_call,
+            permit_grant=permit_grant,
+        )
+
+        assert response.content == "recovered"
+        assert attempts == 3
+        assert [call[0] for call in hook_calls] == [
+            "before",
+            "after",
+            "before",
+            "after",
+            "before",
+            "after",
+        ]
+        assert [call[2] for call in hook_calls if call[0] == "after"] == [
+            "SafeProviderError",
+            "SafeProviderError",
+            "recovered",
+        ]
 
     @pytest.mark.asyncio
     async def test_primary_unhealthy_fallback_to_backup(self, router: ModelRouter) -> None:
@@ -119,21 +245,32 @@ class TestRouterFailover:
         router.add_provider("primary", primary, [_TEST_MODEL])
         router.add_provider("backup", backup, [_TEST_MODEL])
 
-        backup.set_responses([
-            ChatResponse(
-                content="Backup OK",
-                tool_calls=[],
-                model="gpt",
-                usage={"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
-                finish_reason="stop",
-            ),
-        ])
+        backup.set_responses(
+            [
+                ChatResponse(
+                    content="Backup OK",
+                    tool_calls=[],
+                    model="gpt",
+                    usage={"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+                    finish_reason="stop",
+                ),
+            ]
+        )
 
-        resp = await router.chat([ChatMessage(role="user", content="hi")], model=None)
+        before_model_call, after_model_call, permit_grant, hook_calls = _echo_model_hooks(router)
+        resp = await router.chat(
+            [ChatMessage(role="user", content="hi")],
+            model=None,
+            before_model_call=before_model_call,
+            after_model_call=after_model_call,
+            permit_grant=permit_grant,
+        )
         assert "Backup OK" in (resp.content or "")
         # Primary may or may not have been called depending on select_model ordering;
         # the key assertion is that backup served the request.
         assert len(backup.calls) >= 1
+        assert ("before", "backup", None) in hook_calls
+        assert hook_calls[-1] == ("after", "backup", "Backup OK")
 
     @pytest.mark.asyncio
     async def test_all_unhealthy_raises_runtime_error(self, router: ModelRouter) -> None:
@@ -151,8 +288,22 @@ class TestRouterFailover:
         primary.chat = _fail  # type: ignore[method-assign]
         backup.chat = _fail  # type: ignore[method-assign]
 
+        before_model_call, after_model_call, permit_grant, hook_calls = _echo_model_hooks(router)
         with pytest.raises(RuntimeError, match="All providers failed"):
-            await router.chat([ChatMessage(role="user", content="hi")], model=None)
+            await router.chat(
+                [ChatMessage(role="user", content="hi")],
+                model=None,
+                before_model_call=before_model_call,
+                after_model_call=after_model_call,
+                permit_grant=permit_grant,
+            )
+
+        before_calls = [call for call in hook_calls if call[0] == "before"]
+        after_calls = [call for call in hook_calls if call[0] == "after"]
+        assert before_calls
+        assert len(after_calls) == len(before_calls)
+        # Router converts provider failures to SafeProviderError before after-hooks.
+        assert all(call[2] == "SafeProviderError" for call in after_calls)
 
 
 class TestDegradedMode:
@@ -205,19 +356,35 @@ class TestDegradedMode:
         from js.tools.registry import ToolParam, ToolSpec
 
         agent.registry.register(
-            ToolSpec(name="file_read", description="Read file", parameters=[ToolParam("path", "string", "Path")]),
+            ToolSpec(
+                name="file_read",
+                description="Read file",
+                parameters=[ToolParam("path", "string", "Path")],
+            ),
             lambda path: None,  # type: ignore[return-value]
         )
         agent.registry.register(
-            ToolSpec(name="web_search", description="Search web", parameters=[ToolParam("query", "string", "Query")]),
+            ToolSpec(
+                name="web_search",
+                description="Search web",
+                parameters=[ToolParam("query", "string", "Query")],
+            ),
             lambda query: None,  # type: ignore[return-value]
         )
         agent.registry.register(
-            ToolSpec(name="browser_fetch", description="Fetch URL", parameters=[ToolParam("url", "string", "URL")]),
+            ToolSpec(
+                name="browser_fetch",
+                description="Fetch URL",
+                parameters=[ToolParam("url", "string", "URL")],
+            ),
             lambda url: None,  # type: ignore[return-value]
         )
 
-        # Normal mode: all tools available
+        # Network tools are model-visible only under an explicit network policy.
+        agent.settings.security.network_enabled = True
+        agent.settings.security.network_allowlist = ("api.tavily.com",)
+
+        # Normal mode: explicitly enabled tools are available.
         agent._degraded = False
         schemas = agent._get_tools_schema()
         names = {s["function"]["name"] for s in schemas or []}

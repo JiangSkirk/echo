@@ -107,16 +107,10 @@ TEMPLATE_REGISTRY: dict[str, TaskTemplate] = {
             category="information",
         ),
         # Custom
-        TaskTemplate(
-            id="custom_shell",
-            name="自定义 Shell 命令",
-            description="定时执行任意 shell 命令并记录输出",
-            task_type="shell",
-            default_cron="0 * * * *",
-            default_payload={"command": "echo 'Hello from JS Agent cron'", "timeout": 60},
-            icon="🖥️",
-            category="custom",
-        ),
+        # NOTE: there is intentionally no public "custom_shell" template.
+        # Arbitrary scheduled shell commands are an admin-only capability:
+        # the daemon refuses to run task_type="shell" jobs that were not
+        # created with system_scope=True (see JSDaemon._cb_shell).
         TaskTemplate(
             id="custom_chat",
             name="自定义对话任务",

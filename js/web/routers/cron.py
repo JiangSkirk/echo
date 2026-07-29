@@ -2,15 +2,80 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from js.web.auth import require_admin, require_auth_dep
+from js.agent.tool_executor import CONTROL_CRON_MUTATE_TOOL
+from js.echo.effect_interpreter import ToolEffect
+from js.web.auth import memory_owner, require_admin_write, require_auth_dep
 from js.web.deps import get_agent
+from js.web.runtime_context import web_channel
 
 router = APIRouter(prefix="/api/cron", tags=["cron"])
+
+
+def _owner(auth: dict[str, Any]) -> str:
+    return memory_owner(auth) or "local-user"
+
+
+async def _mutate_cron(
+    action: str,
+    payload: dict[str, Any],
+    auth: dict[str, Any],
+) -> dict[str, Any]:
+    """Run one private cron mutation through Echo and consume its result."""
+    agent = get_agent()
+    owner = _owner(auth)
+    runtime = agent.echo_runtime
+    context = runtime.build_context(
+        channel=web_channel(agent.settings, f"cron_{action}"),
+        owner_key_hash=owner,
+        role=str(auth.get("role") or "admin"),
+        capabilities=(CONTROL_CRON_MUTATE_TOOL,),
+    )
+    payload_ref = agent.stage_cron_mutation_payload(
+        owner,
+        payload,
+        product_id=context.product_id,
+        session_id=context.session_id,
+    )
+    if not isinstance(payload_ref, str) or not payload_ref:
+        raise HTTPException(503, "Cron mutation admission is unavailable")
+    try:
+        _message, result = await runtime.execute_tool_effect(
+            ToolEffect.from_arguments(
+                CONTROL_CRON_MUTATE_TOOL,
+                {"action": action, "payload_ref": payload_ref},
+                user_input=f"Apply owner-bound scheduled-job action: {action}",
+                allowed_tools=(CONTROL_CRON_MUTATE_TOOL,),
+            ),
+            context,
+        )
+    finally:
+        agent.discard_cron_mutation_payload(
+            payload_ref,
+            owner,
+            product_id=context.product_id,
+            session_id=context.session_id,
+        )
+    if not result.success:
+        status_code = result.metadata.get("status_code", 500)
+        if not isinstance(status_code, int) or not 400 <= status_code <= 599:
+            status_code = 500
+        raise HTTPException(status_code, result.error or "Cron mutation failed")
+    result_ref = result.metadata.get("result_ref")
+    if not isinstance(result_ref, str) or not result_ref:
+        raise HTTPException(500, "Cron result handoff failed")
+    response = agent.take_cron_mutation_result(
+        result_ref,
+        owner,
+        product_id=context.product_id,
+        session_id=context.session_id,
+    )
+    if not isinstance(response, dict):
+        raise HTTPException(500, "Cron result handoff failed")
+    return response
 
 
 @router.get("/jobs")
@@ -20,7 +85,7 @@ async def cron_list_jobs(auth: dict[str, Any] = Depends(require_auth_dep)) -> di
     daemon = getattr(agent, "_daemon", None)
     if not daemon:
         return {"jobs": [], "running": False}
-    jobs = [j.to_dict() for j in daemon.list_jobs()]
+    jobs = [j.to_dict() for j in daemon.list_jobs(owner_key_hash=_owner(auth))]
     return {"jobs": jobs, "running": daemon.cron._running}
 
 
@@ -33,7 +98,7 @@ async def cron_get_job(
     daemon = getattr(agent, "_daemon", None)
     if not daemon:
         raise HTTPException(503, "Daemon not running")
-    job = daemon.get_job(job_id)
+    job = daemon.get_job(job_id, owner_key_hash=_owner(auth))
     if not job:
         raise HTTPException(404, f"Job not found: {job_id}")
     return {"job": job.to_dict()}
@@ -41,138 +106,40 @@ async def cron_get_job(
 
 @router.post("/jobs")
 async def cron_create_job(
-    payload: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)
+    payload: dict[str, Any], auth: dict[str, Any] = Depends(require_admin_write)
 ) -> dict[str, Any]:
     """Create a new scheduled job."""
-    from js.cron.engine import CronExpression, ScheduledJob
-    from js.cron.nlp import parse_natural_language
-    from js.cron.templates import get_template
-
-    agent = get_agent()
-    daemon = getattr(agent, "_daemon", None)
-    if not daemon:
-        raise HTTPException(503, "Daemon not running. Start with 'js daemon' first.")
-
-    # Support template-based creation
-    template_id = payload.get("template_id")
-    if template_id:
-        template = get_template(template_id)
-        if not template:
-            raise HTTPException(400, f"Unknown template: {template_id}")
-        job = ScheduledJob(
-            name=payload.get("name", template.name),
-            description=payload.get("description", template.description),
-            cron_expr=payload.get("cron_expr", template.default_cron),
-            task_type=template.task_type,
-            payload={**template.default_payload, **payload.get("payload", {})},
-        )
-    else:
-        # Raw creation
-        cron_expr = payload.get("cron_expr", "")
-        # Try natural language parsing if no cron expression
-        if not cron_expr:
-            nl = payload.get("natural_language", "")
-            parsed = parse_natural_language(nl) if nl else None
-            if parsed:
-                cron_expr = parsed["cron_expr"]
-            else:
-                raise HTTPException(400, "Provide cron_expr, natural_language, or template_id")
-        # Validate cron
-        try:
-            CronExpression(cron_expr)
-        except ValueError as e:
-            raise HTTPException(400, f"Invalid cron expression: {e}") from e
-        job = ScheduledJob(
-            name=payload.get("name", "Untitled Job"),
-            description=payload.get("description", ""),
-            cron_expr=cron_expr,
-            task_type=payload.get("task_type", "custom"),
-            payload=payload.get("payload", {}),
-            schedule_summary=payload.get("schedule_summary", ""),
-            notify_on_success=payload.get("notify_on_success", False),
-            notify_on_failure=payload.get("notify_on_failure", True),
-        )
-
-    daemon.add_job(job)
-    return {"success": True, "job": job.to_dict()}
+    return await _mutate_cron("create", payload, auth)
 
 
 @router.put("/jobs/{job_id}")
 async def cron_update_job(
-    job_id: str, payload: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)
+    job_id: str,
+    payload: dict[str, Any],
+    auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Update an existing job."""
-    from js.cron.engine import CronExpression
-
-    agent = get_agent()
-    daemon = getattr(agent, "_daemon", None)
-    if not daemon:
-        raise HTTPException(503, "Daemon not running")
-    job = daemon.get_job(job_id)
-    if not job:
-        raise HTTPException(404, f"Job not found: {job_id}")
-
-    if "name" in payload:
-        job.name = payload["name"]
-    if "description" in payload:
-        job.description = payload["description"]
-    if "cron_expr" in payload:
-        try:
-            CronExpression(payload["cron_expr"])
-        except ValueError as e:
-            raise HTTPException(400, f"Invalid cron expression: {e}") from e
-        job.cron_expr = payload["cron_expr"]
-        # Recalculate next run
-        cron = CronExpression(job.cron_expr)
-        job.next_run_at = cron.next_run()
-    if "enabled" in payload:
-        job.enabled = payload["enabled"]
-    if "task_type" in payload:
-        job.task_type = payload["task_type"]
-    if "payload" in payload:
-        job.payload = payload["payload"]
-    if "notify_on_success" in payload:
-        job.notify_on_success = payload["notify_on_success"]
-    if "notify_on_failure" in payload:
-        job.notify_on_failure = payload["notify_on_failure"]
-    job.updated_at = time.time()
-    daemon._persist_job(job)
-    return {"success": True, "job": job.to_dict()}
+    return await _mutate_cron(
+        "update",
+        {"job_id": job_id, "changes": payload},
+        auth,
+    )
 
 
 @router.delete("/jobs/{job_id}")
 async def cron_delete_job(
-    job_id: str, auth: dict[str, Any] = Depends(require_admin)
+    job_id: str, auth: dict[str, Any] = Depends(require_admin_write)
 ) -> dict[str, Any]:
     """Delete a scheduled job."""
-    agent = get_agent()
-    daemon = getattr(agent, "_daemon", None)
-    if not daemon:
-        raise HTTPException(503, "Daemon not running")
-    if daemon.remove_job(job_id):
-        return {"success": True}
-    raise HTTPException(404, f"Job not found: {job_id}")
+    return await _mutate_cron("delete", {"job_id": job_id}, auth)
 
 
 @router.post("/jobs/{job_id}/run")
 async def cron_run_job_now(
-    job_id: str, auth: dict[str, Any] = Depends(require_admin)
+    job_id: str, auth: dict[str, Any] = Depends(require_admin_write)
 ) -> dict[str, Any]:
     """Manually trigger a job immediately."""
-    agent = get_agent()
-    daemon = getattr(agent, "_daemon", None)
-    if not daemon:
-        raise HTTPException(503, "Daemon not running")
-    try:
-        result = await daemon.cron.run_job_now(job_id)
-        return {
-            "success": result.success,
-            "duration_ms": result.duration_ms,
-            "output": result.output,
-            "error": result.error,
-        }
-    except ValueError as e:
-        raise HTTPException(404, str(e)) from e
+    return await _mutate_cron("run", {"job_id": job_id}, auth)
 
 
 @router.get("/history")
@@ -187,7 +154,12 @@ async def cron_history(
     daemon = getattr(agent, "_daemon", None)
     if not daemon:
         return {"history": [], "total": 0}
-    history = daemon.store.get_history(job_id=job_id, limit=limit, offset=offset)
+    history = daemon.store.get_history(
+        job_id=job_id,
+        limit=limit,
+        offset=offset,
+        owner_key_hash=_owner(auth),
+    )
     return {
         "history": [
             {
@@ -195,8 +167,11 @@ async def cron_history(
                 "run_at": h.run_at,
                 "duration_ms": h.duration_ms,
                 "success": h.success,
+                "status": h.status,
                 "output": h.output,
                 "error": h.error,
+                "output_truncated": h.output_truncated,
+                "error_truncated": h.error_truncated,
             }
             for h in history
         ],
@@ -212,7 +187,7 @@ async def cron_stats(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[s
     if not daemon:
         return {"running": False}
     stats: dict[str, Any] = daemon.store.get_stats()
-    jobs = daemon.list_jobs()
+    jobs = daemon.list_jobs(owner_key_hash=_owner(auth))
     stats["running"] = daemon.cron._running
     stats["jobs"] = [j.to_dict() for j in jobs]
     return stats

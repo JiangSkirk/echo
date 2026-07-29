@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -103,7 +104,9 @@ class RLTrainer:
                 else:
                     action = self._random_action(obs)
 
-                step_result = self.env.step(action)
+                # Environment steps may run untrusted tests.  Keep their
+                # synchronous sandbox bridge off the event-loop thread.
+                step_result = await asyncio.to_thread(self.env.step, action)
                 self.recorder.record_step(obs, action, step_result)
 
                 total_reward += step_result.reward

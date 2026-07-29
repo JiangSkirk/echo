@@ -47,10 +47,6 @@ RISK_PATTERNS = {
     ),
 }
 
-TRUSTED_AUTHORS = {"JS Team", "hermes-agent", "openclaw"}
-TRUSTED_LICENSES = {"MIT", "Apache-2.0", "BSD-3-Clause", "GPL-3.0"}
-
-
 @dataclass
 class ScanResult:
     """Result of a skill security scan."""
@@ -65,7 +61,7 @@ class ScanResult:
 def scan_skill(spec: SkillSpec) -> ScanResult:
     """Scan a skill for security risks and determine trust level.
 
-    Fail-open: if scan itself crashes, return community-level result.
+    Fail-closed: if the scan itself crashes, the skill is quarantined.
     """
     start = time.time()
     risk_flags: list[str] = []
@@ -96,9 +92,13 @@ def scan_skill(spec: SkillSpec) -> ScanResult:
         # Determine trust level based on heuristics
         trust = _assess_trust(spec, risk_flags)
 
-    except Exception as e:
-        logger.warning(f"Skill scan failed for {spec.id}: {e}")
-        trust = TrustLevel.COMMUNITY
+    except Exception:
+        logger.warning(
+            "Skill scan failed for %s — failing closed to QUARANTINE",
+            spec.id,
+            exc_info=True,
+        )
+        trust = TrustLevel.QUARANTINE
 
     return ScanResult(
         skill_id=spec.id,
@@ -161,14 +161,11 @@ def _assess_trust(spec: SkillSpec, risk_flags: list[str]) -> TrustLevel:
     if len(risk_flags) >= 1:
         return TrustLevel.COMMUNITY
 
-    # Trusted author + trusted license = trusted
-    if spec.author in TRUSTED_AUTHORS and spec.license in TRUSTED_LICENSES:
-        return TrustLevel.TRUSTED
-
-    # No risks + from known source = trusted
-    if not risk_flags and spec.trust_level == TrustLevel.TRUSTED:
-        return TrustLevel.TRUSTED
-
+    # No heuristic path may grant TRUSTED: self-declared YAML fields
+    # (`author`, `license`, `trust_level`) are forgeable by definition.
+    # TRUSTED is only reachable via a valid Ed25519 signature (above) or
+    # explicit human promotion through the promotion flow.  A clean scan
+    # therefore caps out at COMMUNITY.
     return TrustLevel.COMMUNITY
 
 

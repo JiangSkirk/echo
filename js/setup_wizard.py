@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from js.config import JSSettings
-from js.models.discovery import LocalModelDiscovery
+from js.echo.effect_interpreter import ToolEffect
 from js.search.engines import DuckDuckGoEngine, SearchManager, TavilyEngine
 from js.utils.log import get_logger
 
@@ -45,6 +46,7 @@ class SetupWizard:
             ("Finishing up", self._embedding_hint),
         ]
 
+        failed_steps: list[str] = []
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -57,7 +59,18 @@ class SetupWizard:
                     progress.update(task, description=f"[green]✓ {desc}[/green]")
                 except Exception as e:
                     progress.update(task, description=f"[red]✗ {desc}: {e}[/red]")
-                    logger.warning(f"Setup step '{desc}' failed: {e}")
+                    logger.error(f"Setup step '{desc}' failed: {e}")
+                    failed_steps.append(desc)
+
+        if failed_steps:
+            console.print(Panel(
+                f"[red]Setup failed: {', '.join(failed_steps)}[/red]\n\n"
+                "Configuration may be incomplete. Re-run setup after fixing "
+                "the errors above.",
+                title="Setup Failed",
+                border_style="red",
+            ))
+            raise SystemExit(1)
 
         console.print(Panel(
             "[green]Setup complete![/green]\n\n"
@@ -75,19 +88,82 @@ class SetupWizard:
         (self.settings.state_dir / "skills").mkdir(exist_ok=True)
 
     async def _detect_models(self, non_interactive: bool = False, **_kwargs: Any) -> None:
-        """Probe local providers and configure only the default chat model.
+        """Probe two exact local endpoints through the Echo control boundary.
 
         Does NOT auto-save all discovered models — only the provider endpoint
         and a single default_model chosen by the user (or first loaded model
         in non-interactive mode). Embedding models are left for manual config.
         """
+        from js.agent import JSAgent
         from js.config import ModelConfig, ModelProviderConfig
 
-        discovery = LocalModelDiscovery(timeout=5.0)
+        agent = JSAgent(self.settings)
+        discovered: list[tuple[str, str, str, list[dict[str, Any]]]] = []
         try:
-            discovered = await discovery.discover_all()
+            for provider_type, base_url, api_key in (
+                ("lmstudio", "http://127.0.0.1:1234/v1", "lm-studio"),
+                ("ollama", "http://127.0.0.1:11434/v1", "ollama"),
+            ):
+                owner = "local-setup-admin"
+                session_id = f"setup-provider-{secrets.token_hex(16)}"
+                product_id = str(getattr(agent.settings, "product_id", "js-agent"))
+                api_key_ref = agent.stage_provider_discovery_key(
+                    api_key,
+                    owner_key_hash=owner,
+                    product_id=product_id,
+                    session_id=session_id,
+                )
+                if not api_key_ref:
+                    logger.error("Provider credential admission is unavailable")
+                    continue
+                arguments = {
+                    "base_url": base_url,
+                    "api_key_ref": api_key_ref,
+                    "allow_private": False,
+                }
+                context = agent.echo_runtime.build_context(
+                    channel="cli_setup_provider_discover",
+                    owner_key_hash=owner,
+                    session_id=session_id,
+                    role="admin",
+                    capabilities=("control_provider_discover",),
+                    control_arguments=arguments,
+                )
+                try:
+                    _message, result = await agent.echo_runtime.execute_tool_effect(
+                        ToolEffect.from_arguments(
+                            "control_provider_discover",
+                            arguments,
+                            user_input=(
+                                "Setup wizard exact local provider discovery: "
+                                f"{provider_type}"
+                            ),
+                            allowed_tools=("control_provider_discover",),
+                        ),
+                        context,
+                    )
+                finally:
+                    agent.discard_provider_discovery_key(
+                        api_key_ref,
+                        owner_key_hash=owner,
+                        product_id=product_id,
+                        session_id=session_id,
+                    )
+                models = result.metadata.get("models", [])
+                if result.success and isinstance(models, list):
+                    valid_models = [
+                        model
+                        for model in models
+                        if isinstance(model, dict)
+                        and isinstance(model.get("id"), str)
+                        and bool(model["id"].strip())
+                    ]
+                    if valid_models:
+                        discovered.append(
+                            (provider_type, base_url, api_key, valid_models)
+                        )
         finally:
-            await discovery.close()
+            await agent.close()
 
         if not discovered:
             console.print(
@@ -99,35 +175,48 @@ class SetupWizard:
         existing_names = {p.name for p in self.settings.providers}
         existing_urls = {p.base_url for p in self.settings.providers}
 
-        for d in discovered:
-            if d.base_url in existing_urls or d.provider_type in existing_names:
+        for provider_type, base_url, api_key, models in discovered:
+            if base_url in existing_urls or provider_type in existing_names:
                 continue
 
             # Pick default: first non-embedding model, or first model if all are embedding
-            chat_models = [m for m in d.models if "embed" not in m.id.lower()]
-            default_models = chat_models if chat_models else d.models
-            default_model = default_models[0].id if default_models else ""
+            model_ids = [str(model["id"]).strip() for model in models]
+            chat_models = [model_id for model_id in model_ids if "embed" not in model_id.lower()]
+            default_models = chat_models if chat_models else model_ids
+            default_model = default_models[0] if default_models else ""
 
             if not non_interactive and len(default_models) > 1:
-                choices = [m.id for m in default_models]
+                choices = list(default_models)
                 default_model = click.prompt(
-                    f"Select default model for {d.provider_type}",
+                    f"Select default model for {provider_type}",
                     type=click.Choice(choices),
                     default=choices[0],
                 )
 
             cfg = ModelProviderConfig(
-                name=d.provider_type,
-                base_url=d.base_url,
-                api_key="lm-studio" if d.provider_type == "lmstudio" else "ollama",
+                name=provider_type,
+                base_url=base_url,
+                api_key=api_key,
                 timeout=120.0,
                 max_retries=3,
                 default_model=default_model,
-                models=[ModelConfig(id=default_model, name=default_model, provider=d.provider_type)],
+                models=[
+                    ModelConfig(
+                        id=default_model,
+                        name=default_model,
+                        provider=provider_type,
+                    )
+                ],
             )
             self.settings.providers.append(cfg)
-            self.settings.models.append(ModelConfig(id=default_model, name=default_model, provider=d.provider_type))
-            console.print(f"  [green]+ {d.provider_type}[/green] → {default_model}")
+            self.settings.models.append(
+                ModelConfig(
+                    id=default_model,
+                    name=default_model,
+                    provider=provider_type,
+                )
+            )
+            console.print(f"  [green]+ {provider_type}[/green] → {default_model}")
 
     async def _configure_search(self, non_interactive: bool = False, **_kwargs: Any) -> None:
         # Always enable DuckDuckGo (free, no API key)

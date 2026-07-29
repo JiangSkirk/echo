@@ -79,11 +79,9 @@ def test_enable_plugin_success() -> None:
     with patch("js.web.routers.plugins.get_agent", return_value=agent):
         resp = client.post("/api/plugins/example-dashboard/enable")
 
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["success"] is True
-    assert data["status"] == "enabled"
-    agent.plugins.enable.assert_called_once_with("example-dashboard")
+    assert resp.status_code == 409
+    assert "disabled" in resp.json()["detail"].lower()
+    agent.plugins.enable.assert_not_called()
 
 
 def test_enable_plugin_failure() -> None:
@@ -96,7 +94,8 @@ def test_enable_plugin_failure() -> None:
     with patch("js.web.routers.plugins.get_agent", return_value=agent):
         resp = client.post("/api/plugins/example-dashboard/enable")
 
-    assert resp.status_code == 400
+    assert resp.status_code == 409
+    pm.enable.assert_not_called()
 
 
 def test_enable_plugin_no_pm() -> None:
@@ -107,7 +106,7 @@ def test_enable_plugin_no_pm() -> None:
     with patch("js.web.routers.plugins.get_agent", return_value=agent):
         resp = client.post("/api/plugins/example-dashboard/enable")
 
-    assert resp.status_code == 503
+    assert resp.status_code == 409
 
 
 def test_disable_plugin_success() -> None:
@@ -118,11 +117,9 @@ def test_disable_plugin_success() -> None:
     with patch("js.web.routers.plugins.get_agent", return_value=agent):
         resp = client.post("/api/plugins/example-dashboard/disable")
 
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["success"] is True
-    assert data["status"] == "disabled"
-    agent.plugins.disable.assert_called_once_with("example-dashboard")
+    assert resp.status_code == 409
+    assert "disabled" in resp.json()["detail"].lower()
+    agent.plugins.disable.assert_not_called()
 
 
 def test_disable_plugin_failure() -> None:
@@ -135,7 +132,8 @@ def test_disable_plugin_failure() -> None:
     with patch("js.web.routers.plugins.get_agent", return_value=agent):
         resp = client.post("/api/plugins/example-dashboard/disable")
 
-    assert resp.status_code == 400
+    assert resp.status_code == 409
+    pm.disable.assert_not_called()
 
 
 def test_disable_plugin_no_pm() -> None:
@@ -146,4 +144,31 @@ def test_disable_plugin_no_pm() -> None:
     with patch("js.web.routers.plugins.get_agent", return_value=agent):
         resp = client.post("/api/plugins/example-dashboard/disable")
 
-    assert resp.status_code == 503
+    assert resp.status_code == 409
+
+
+def test_remote_plugin_install_is_fail_closed_without_manager_call() -> None:
+    agent = MagicMock()
+    agent.plugins = _make_plugin_manager()
+
+    client = _make_client()
+    with patch("js.web.routers.plugins.get_agent", return_value=agent):
+        resp = client.post(
+            "/api/plugins/install",
+            json={"url": "https://example.com/plugin.zip"},
+        )
+
+    assert resp.status_code == 409
+    agent.plugins.install_from_url.assert_not_called()
+
+
+def test_plugin_uninstall_is_fail_closed_without_manager_call() -> None:
+    agent = MagicMock()
+    agent.plugins = _make_plugin_manager()
+
+    client = _make_client()
+    with patch("js.web.routers.plugins.get_agent", return_value=agent):
+        resp = client.delete("/api/plugins/example-dashboard")
+
+    assert resp.status_code == 409
+    agent.plugins.uninstall.assert_not_called()

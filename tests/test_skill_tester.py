@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -80,6 +82,79 @@ class TestGenerateMetaTests:
 
 
 class TestRunSkillTests:
+    @pytest.mark.asyncio
+    async def test_runs_tests_only_through_strict_sandbox(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        path = create_skill(tmp_path, "sandboxed", "Sandboxed", "Desc", SkillType.PROMPT)
+        generate_tests(path)
+        host_spawn = AsyncMock(side_effect=AssertionError("raw host spawn must not run"))
+        monkeypatch.setattr("asyncio.create_subprocess_exec", host_spawn)
+        sandbox = SimpleNamespace(
+            workspace=path.resolve(),
+            strict_isolation=True,
+            network_isolation_available=lambda: True,
+            filesystem_isolation_available=lambda: True,
+            execute=AsyncMock(
+                return_value=SimpleNamespace(
+                    returncode=0,
+                    stdout="1 passed",
+                    stderr="",
+                )
+            ),
+        )
+
+        report = await run_skill_tests(path, sandbox=sandbox)
+
+        assert report.passed is True
+        sandbox.execute.assert_awaited_once()
+        host_spawn.assert_not_awaited()
+        assert sandbox.execute.await_args.kwargs["network_allowed"] is False
+        assert sandbox.execute.await_args.kwargs["fs_restricted"] is True
+
+    @pytest.mark.asyncio
+    async def test_skill_tests_fail_closed_for_non_strict_sandbox(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        path = create_skill(tmp_path, "not-strict", "Not Strict", "Desc", SkillType.PROMPT)
+        generate_tests(path)
+        host_spawn = AsyncMock(side_effect=AssertionError("raw host spawn must not run"))
+        monkeypatch.setattr("asyncio.create_subprocess_exec", host_spawn)
+        sandbox = SimpleNamespace(
+            workspace=path.resolve(),
+            strict_isolation=False,
+            network_isolation_available=lambda: True,
+            filesystem_isolation_available=lambda: True,
+        )
+
+        report = await run_skill_tests(path, sandbox=sandbox)
+
+        assert report.passed is False
+        assert "strict OS sandbox" in report.results[-1].error
+        host_spawn.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skill_test_generation_error_is_sanitized(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        path = create_skill(tmp_path, "generation-error", "Generation Error", "Desc", SkillType.PROMPT)
+        private_detail = "/Users/private/.config/provider-key secret-token"
+        monkeypatch.setattr(
+            "js.skills.tester.generate_tests",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError(private_detail)),
+        )
+
+        report = await run_skill_tests(path)
+
+        assert report.results[-1].error == "Failed to generate skill tests safely"
+        assert private_detail not in str(report.to_dict())
+
     @pytest.mark.asyncio
     async def test_runs_generated_code_tests(self, tmp_path: Path) -> None:
         path = create_skill(tmp_path, "run-code", "Run Code", "Desc", SkillType.CODE)

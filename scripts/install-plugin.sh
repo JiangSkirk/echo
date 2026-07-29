@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # JS Agent Plugin Installer
-# Usage: curl -fsSL https://your-domain.com/install-plugin.sh | bash -s -- <plugin-url>
-#   or:  ./install-plugin.sh <plugin-url>
+# Usage (preferred):
+#   ./install-plugin.sh <plugin-url>
+# Do not pipe this script from the network into bash.
 
 set -e
 

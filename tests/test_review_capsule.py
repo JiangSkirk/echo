@@ -8,10 +8,10 @@ import pytest
 
 from js.agent.finalizer import FinalizerMixin
 from js.agent.state import AgentState
+from js.echo.turn_context import reset_current_owner_key_hash, set_current_owner_key_hash
 from js.models.providers import ChatMessage
 from js.persistence.review_store import ReviewStore
 from js.security.secrets import SecretManager
-from js.web.auth import _session_owner_hash
 
 
 class _DummyFinalizer(FinalizerMixin):
@@ -55,11 +55,11 @@ async def test_review_capsule_created(tmp_path):
     state.turn_count = 1
     state.status = "completed"
 
-    token = _session_owner_hash.set("owner_a")
+    token = set_current_owner_key_hash("owner_a")
     try:
         await finalizer._finalize_run(state, "s1", "r1", "hello", 0)
     finally:
-        _session_owner_hash.reset(token)
+        reset_current_owner_key_hash(token)
 
     capsule = finalizer.review_store.get("s1", "r1", "owner_a")
     assert capsule is not None
@@ -79,11 +79,11 @@ async def test_review_capsule_owner_isolation(tmp_path):
     state.messages = [ChatMessage(role="user", content="hi")]
     state.status = "completed"
 
-    token = _session_owner_hash.set("owner_a")
+    token = set_current_owner_key_hash("owner_a")
     try:
         await finalizer._finalize_run(state, "s2", "r2", "hi", 0)
     finally:
-        _session_owner_hash.reset(token)
+        reset_current_owner_key_hash(token)
 
     assert finalizer.review_store.get("s2", "r2", "owner_a") is not None
     assert finalizer.review_store.get("s2", "r2", "owner_b") is None
@@ -96,11 +96,11 @@ async def test_review_capsule_same_session_run_different_owners(tmp_path):
         state = AgentState(session_id="same", run_id="same_run")
         state.messages = [ChatMessage(role="user", content=f"hi {owner}")]
         state.status = "completed"
-        token = _session_owner_hash.set(owner)
+        token = set_current_owner_key_hash(owner)
         try:
             await finalizer._finalize_run(state, "same", "same_run", f"hi {owner}", 0)
         finally:
-            _session_owner_hash.reset(token)
+            reset_current_owner_key_hash(token)
 
     cap_a = finalizer.review_store.get("same", "same_run", "owner_a")
     cap_b = finalizer.review_store.get("same", "same_run", "owner_b")

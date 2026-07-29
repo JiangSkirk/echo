@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from js.security.sandbox import SandboxExecutor
 from js.skills.executor import execute_skill
 from js.skills.manager import SkillManager
 from js.skills.spec import SkillType
@@ -18,6 +19,11 @@ def manager(tmp_path: Path) -> SkillManager:
     """SkillManager with builtins loaded."""
     mgr = SkillManager(tmp_path / "skills", tmp_path / "state")
     return mgr
+
+
+@pytest.fixture
+def skill_sandbox(tmp_path: Path) -> SandboxExecutor:
+    return SandboxExecutor(tmp_path, strict_isolation=True)
 
 
 class TestFileSearchSkill:
@@ -37,7 +43,9 @@ class TestFileSearchSkill:
         assert entry.exists(), f"Entry file missing: {entry}"
 
     @pytest.mark.asyncio
-    async def test_file_search_by_name(self, file_search_spec, tmp_path: Path) -> None:
+    async def test_file_search_by_name(
+        self, file_search_spec, tmp_path: Path, skill_sandbox: SandboxExecutor
+    ) -> None:
         """Search files by name pattern relative to the skill workspace."""
         (tmp_path / "test_a.py").write_text("# a")
         (tmp_path / "test_b.py").write_text("# b")
@@ -47,6 +55,7 @@ class TestFileSearchSkill:
             spec=file_search_spec,
             args={"pattern": "*.py", "path": ".", "max_results": 10},
             workspace=tmp_path,
+            sandbox=skill_sandbox,
         )
         assert result["success"] is True
         out = json.loads(result["output"])
@@ -56,7 +65,9 @@ class TestFileSearchSkill:
         assert any("test_b.py" in p for p in paths)
 
     @pytest.mark.asyncio
-    async def test_file_search_by_content(self, file_search_spec, tmp_path: Path) -> None:
+    async def test_file_search_by_content(
+        self, file_search_spec, tmp_path: Path, skill_sandbox: SandboxExecutor
+    ) -> None:
         """Search files by content relative to the skill workspace."""
         (tmp_path / "foo.py").write_text("def hello(): pass\n")
         (tmp_path / "bar.py").write_text("def world(): pass\n")
@@ -65,6 +76,7 @@ class TestFileSearchSkill:
             spec=file_search_spec,
             args={"content": "hello", "path": ".", "max_results": 10},
             workspace=tmp_path,
+            sandbox=skill_sandbox,
         )
         assert result["success"] is True
         out = json.loads(result["output"])
@@ -72,12 +84,15 @@ class TestFileSearchSkill:
         assert any("foo.py" in r for r in out["results"])
 
     @pytest.mark.asyncio
-    async def test_file_search_no_results(self, file_search_spec, tmp_path: Path) -> None:
+    async def test_file_search_no_results(
+        self, file_search_spec, tmp_path: Path, skill_sandbox: SandboxExecutor
+    ) -> None:
         """Graceful handling when nothing matches — returns friendly message."""
         result = await execute_skill(
             spec=file_search_spec,
             args={"pattern": "*.nonexistent", "path": "."},
             workspace=tmp_path,
+            sandbox=skill_sandbox,
         )
         assert result["success"] is True
         out = json.loads(result["output"])
@@ -86,13 +101,17 @@ class TestFileSearchSkill:
 
     @pytest.mark.asyncio
     async def test_file_search_rejects_absolute_path(
-        self, file_search_spec, tmp_path: Path
+        self,
+        file_search_spec,
+        tmp_path: Path,
+        skill_sandbox: SandboxExecutor,
     ) -> None:
         """Absolute paths outside the workspace must be rejected."""
         result = await execute_skill(
             spec=file_search_spec,
             args={"pattern": "*.py", "path": "/etc"},
             workspace=tmp_path,
+            sandbox=skill_sandbox,
         )
         assert result["success"] is True
         out = json.loads(result["output"])
@@ -101,13 +120,17 @@ class TestFileSearchSkill:
 
     @pytest.mark.asyncio
     async def test_file_search_rejects_parent_traversal(
-        self, file_search_spec, tmp_path: Path
+        self,
+        file_search_spec,
+        tmp_path: Path,
+        skill_sandbox: SandboxExecutor,
     ) -> None:
         """Parent-directory traversal must be rejected."""
         result = await execute_skill(
             spec=file_search_spec,
             args={"pattern": "*.py", "path": ".."},
             workspace=tmp_path,
+            sandbox=skill_sandbox,
         )
         assert result["success"] is True
         out = json.loads(result["output"])
@@ -116,7 +139,10 @@ class TestFileSearchSkill:
 
     @pytest.mark.asyncio
     async def test_file_search_rejects_symlink_escape(
-        self, file_search_spec, tmp_path: Path
+        self,
+        file_search_spec,
+        tmp_path: Path,
+        skill_sandbox: SandboxExecutor,
     ) -> None:
         """Symlink escapes outside the workspace must be rejected."""
         outside = tmp_path / ".." / "outside_search"
@@ -130,6 +156,7 @@ class TestFileSearchSkill:
             spec=file_search_spec,
             args={"pattern": "*.txt", "path": "link_escape"},
             workspace=tmp_path,
+            sandbox=skill_sandbox,
         )
         assert result["success"] is True
         out = json.loads(result["output"])
@@ -138,7 +165,10 @@ class TestFileSearchSkill:
 
     @pytest.mark.asyncio
     async def test_file_search_content_skips_symlink_file_escape(
-        self, file_search_spec, tmp_path: Path
+        self,
+        file_search_spec,
+        tmp_path: Path,
+        skill_sandbox: SandboxExecutor,
     ) -> None:
         """Content search must not follow symlink files outside the workspace."""
         outside = tmp_path.parent / "outside_search_file"
@@ -152,6 +182,7 @@ class TestFileSearchSkill:
             spec=file_search_spec,
             args={"content": "outside-secret", "path": ".", "max_results": 10},
             workspace=tmp_path,
+            sandbox=skill_sandbox,
         )
         assert result["success"] is True
         out = json.loads(result["output"])
@@ -160,7 +191,10 @@ class TestFileSearchSkill:
 
     @pytest.mark.asyncio
     async def test_file_search_can_search_subdirectory(
-        self, file_search_spec, tmp_path: Path
+        self,
+        file_search_spec,
+        tmp_path: Path,
+        skill_sandbox: SandboxExecutor,
     ) -> None:
         """Searching a subdirectory inside the workspace must work."""
         subdir = tmp_path / "src"
@@ -171,6 +205,7 @@ class TestFileSearchSkill:
             spec=file_search_spec,
             args={"pattern": "*.py", "path": "src", "max_results": 10},
             workspace=tmp_path,
+            sandbox=skill_sandbox,
         )
         assert result["success"] is True
         out = json.loads(result["output"])

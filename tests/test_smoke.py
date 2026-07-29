@@ -10,8 +10,10 @@ These tests verify that the most common user workflows actually work:
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import FastAPI
 
 from js.config import JSSettings
 from js.skills.creator import create_skill
@@ -131,20 +133,36 @@ class TestWebServer:
     """Smoke-test the FastAPI web server."""
 
     @pytest.mark.asyncio
-    async def test_health_endpoint(self, tmp_path: Path) -> None:
+    async def test_health_endpoint(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
         """The /api/status endpoint responds when lifespan initializes the agent."""
-        import os
-
-        from js.web.server import create_app, lifespan
-
-        app = create_app()
-        # Prevent lifespan from loading real config; use temp dir
-        os.environ["JS_STATE_DIR"] = str(tmp_path)
-
         from httpx import ASGITransport, AsyncClient
 
+        from js.config import JSSettings
+        from js.web import server as web_server
+
+        settings = JSSettings(
+            workspace=tmp_path / "workspace",
+            state_dir=tmp_path / "state",
+            providers=[],
+            security={"api_key_required": False},
+        )
+        monkeypatch.setattr(
+            web_server.JSSettings,
+            "from_file",
+            classmethod(lambda _cls: settings),
+        )
+        monkeypatch.delenv("JS_STATE_DIR", raising=False)
+        monkeypatch.delenv("JS_WARM_START", raising=False)
+        app = web_server.create_app()
+
         transport = ASGITransport(app=app)
-        async with lifespan(app), AsyncClient(transport=transport, base_url="http://test") as client:
+        async with web_server.lifespan(app), AsyncClient(
+            transport=transport, base_url="http://test",
+        ) as client:
             response = await client.get("/api/status")
         assert response.status_code == 200
         data = response.json()
@@ -152,14 +170,16 @@ class TestWebServer:
         assert "max_turns" in data
 
     @pytest.mark.asyncio
-    async def test_api_chat_endpoint_exists(self, tmp_path: Path) -> None:
+    async def test_api_chat_endpoint_exists(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
         """The /api/chat endpoint is registered (may return 422 without body)."""
-        import os
-
         from js.web.server import create_app, lifespan
 
         app = create_app()
-        os.environ["JS_STATE_DIR"] = str(tmp_path)
+        monkeypatch.setenv("JS_STATE_DIR", str(tmp_path))
 
         from httpx import ASGITransport, AsyncClient
 
@@ -168,6 +188,151 @@ class TestWebServer:
             response = await client.post("/api/chat", json={})
         # Empty body should be 422 validation error, not 404
         assert response.status_code != 404
+
+    @pytest.mark.asyncio
+    async def test_lifespan_and_status_reuse_agent_echo_safety_service(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        from js.web import server as web_server
+        from js.web.deps import get_echo_safety_service
+
+        settings = JSSettings(
+            workspace=tmp_path / "workspace",
+            state_dir=tmp_path / "state",
+            providers=[],
+            security={"api_key_required": False},
+        )
+        monkeypatch.setattr(
+            web_server.JSSettings,
+            "from_file",
+            classmethod(lambda _cls: settings),
+        )
+        monkeypatch.delenv("JS_STATE_DIR", raising=False)
+        monkeypatch.delenv("JS_WARM_START", raising=False)
+
+        app = web_server.create_app()
+        transport = ASGITransport(app=app)
+        async with web_server.lifespan(app), AsyncClient(
+            transport=transport,
+            base_url="http://test",
+        ) as client:
+            runtime = app.state.web_runtime
+            authoritative = runtime.agent.echo_safety_service
+            authoritative.health = MagicMock(wraps=authoritative.health)
+
+            assert runtime.echo_safety_service is authoritative
+            assert web_server._echo_safety_service is authoritative
+            assert get_echo_safety_service(settings) is authoritative
+            response = await client.get("/api/status")
+
+        assert response.status_code == 200
+        authoritative.health.assert_called_once()
+
+    @pytest.mark.parametrize("fleet_timeout", [False, True], ids=["success", "timeout"])
+    @pytest.mark.asyncio
+    async def test_lifespan_closes_fleet_and_releases_agent_on_timeout(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        fleet_timeout: bool,
+    ) -> None:
+        from js.web import server as web_server
+
+        settings = JSSettings(
+            workspace=tmp_path / "workspace",
+            state_dir=tmp_path / "state",
+            providers=[],
+            security={"api_key_required": False},
+        )
+        events: list[str] = []
+        agent = MagicMock()
+        agent.settings = settings
+        agent.memory.enhanced.list_sessions.return_value = []
+        agent.memory.cleanup_empty_sessions.return_value = 0
+        agent.router._providers = {}
+        agent.router.get_model_config.return_value = None
+        agent.skills.load_hermes_async = AsyncMock(return_value=None)
+
+        async def close_agent() -> None:
+            events.append("agent")
+
+        async def close_fleet() -> None:
+            events.append("fleet")
+            if fleet_timeout:
+                raise TimeoutError("fleet close timed out")
+
+        agent.close = AsyncMock(side_effect=close_agent)
+        fleet = MagicMock()
+        fleet.close_all = AsyncMock(side_effect=close_fleet)
+        telemetry_logger = MagicMock()
+
+        monkeypatch.setattr(
+            web_server.JSSettings,
+            "from_file",
+            classmethod(lambda _cls: settings),
+        )
+        monkeypatch.setattr("js.agent.JSAgent", lambda _settings: agent)
+        monkeypatch.setattr(web_server, "logger", telemetry_logger)
+        monkeypatch.delenv("JS_WARM_START", raising=False)
+
+        app = FastAPI()
+        async with web_server.lifespan(app):
+            app.state.web_runtime.fleet = fleet
+
+        assert events == ["fleet", "agent"]
+        fleet.close_all.assert_awaited_once()
+        agent.close.assert_awaited_once()
+        assert app.state.web_runtime is None
+        if fleet_timeout:
+            assert any(
+                "fleet shutdown degraded" in call.args[0].lower()
+                for call in telemetry_logger.warning.call_args_list
+            )
+
+    @pytest.mark.asyncio
+    async def test_warm_start_does_not_probe_provider_outside_echo(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from js.web import server as web_server
+
+        settings = JSSettings(
+            workspace=tmp_path / "workspace",
+            state_dir=tmp_path / "state",
+            providers=[],
+            security={"api_key_required": False},
+        )
+        provider = MagicMock()
+        provider.health_check = AsyncMock(
+            side_effect=AssertionError("warm start provider probe bypassed Echo")
+        )
+        agent = MagicMock()
+        agent.settings = settings
+        agent.memory.enhanced.list_sessions.return_value = []
+        agent.memory.cleanup_empty_sessions.return_value = 0
+        agent.router._providers = {"test": provider}
+        agent.router.get_model_config.return_value = None
+        agent.skills.load_hermes_async = AsyncMock(return_value=None)
+        agent.close = AsyncMock(return_value=None)
+
+        monkeypatch.setattr(
+            web_server.JSSettings,
+            "from_file",
+            classmethod(lambda _cls: settings),
+        )
+        monkeypatch.setattr("js.agent.JSAgent", lambda _settings: agent)
+        monkeypatch.setenv("JS_WARM_START", "1")
+
+        app = FastAPI()
+        async with web_server.lifespan(app):
+            pass
+
+        provider.health_check.assert_not_awaited()
 
 
 class TestCLICommands:

@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from js.echo.context_tokenizer import TokenCounter, tiktoken_counter_factory
+from js.echo.model_budget import EchoBudgetExceededError
 from js.models.providers import ChatMessage
 from js.utils.log import get_logger
 
@@ -39,6 +41,7 @@ _SUMMARY_SYSTEM_PROMPT = (
 )
 
 _TOOL_OUTPUT_PRUNE_LEN = 200
+_SUMMARY_MESSAGE_NAME = "__js_context_compaction__"
 
 
 class CompressionLevel(StrEnum):
@@ -87,6 +90,7 @@ class CompressionResult:
     level: CompressionLevel
     original_tokens: int
     compressed_tokens: int
+    token_unit_id: str
     identifiers_found: list[str] = field(default_factory=list)
     identifiers_preserved: list[str] = field(default_factory=list)
     # Visibility fields for observability
@@ -109,10 +113,12 @@ class ContextCompressor:
         config: CompressionConfig | None = None,
         summarizer: Callable[[list[ChatMessage], list[str] | None], Awaitable[str]] | None = None,
         feedback: Any | None = None,
+        token_counter: TokenCounter | None = None,
     ) -> None:
         self.config = config or CompressionConfig()
         self._summarizer = summarizer
         self._feedback = feedback
+        self._token_counter = token_counter or tiktoken_counter_factory("cl100k_base")
         self._compression_restarts = 0
         self._apply_adaptive_adjustments()
 
@@ -134,28 +140,69 @@ class ContextCompressor:
         except Exception:
             logger.warning("Adaptive adjustment failed", exc_info=True)
 
-    def estimate_tokens(self, messages: list[ChatMessage], tools: list[dict[str, Any]] | None = None) -> int:
-        """Estimate token count for messages, optionally including tool schemas."""
-        total = 0
-        for msg in messages:
-            if isinstance(msg.content, str):
-                # Rough estimate: 1 token ~ 0.75 words ~ 4 chars
-                total += len(msg.content) // 4 + 20  # +20 per message overhead
-            elif isinstance(msg.content, list):
-                # Multimodal content
-                for part in msg.content:
-                    if isinstance(part, dict):
-                        if part.get("type") == "image_url":
-                            total += self.config.image_token_estimate
-                        elif "text" in part:
-                            total += len(part["text"]) // 4
-            if msg.tool_calls:
-                for tc in msg.tool_calls:
-                    total += len(str(tc)) // 4
-        if tools:
-            # Tool schema overhead: JSON-serialised schema + per-tool overhead
-            total += len(json.dumps(tools)) // 4 + 50 * len(tools)
-        return total
+    @property
+    def token_counter(self) -> TokenCounter:
+        return self._token_counter
+
+    def _resolve_token_counter(self, token_counter: TokenCounter | None) -> TokenCounter:
+        counter = token_counter or self._token_counter
+        unit = counter.token_unit_id
+        if not isinstance(unit, str) or not unit:
+            raise ValueError("token counter must expose a non-empty token_unit_id")
+        return counter
+
+    @staticmethod
+    def _message_token_payload(message: ChatMessage) -> tuple[dict[str, Any], int]:
+        image_tokens = 0
+        content: Any = message.content
+        if isinstance(content, list):
+            normalized_parts: list[Any] = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    image_tokens += 1
+                    normalized_parts.append({"type": "image_url"})
+                else:
+                    normalized_parts.append(part)
+            content = normalized_parts
+        return (
+            {
+                "role": message.role,
+                "content": content,
+                "tool_calls": message.tool_calls,
+                "tool_call_id": message.tool_call_id,
+                "name": message.name,
+                "reasoning_content": message.reasoning_content,
+            },
+            image_tokens,
+        )
+
+    def estimate_tokens(
+        self,
+        messages: list[ChatMessage],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        token_counter: TokenCounter | None = None,
+    ) -> int:
+        """Count the canonical prompt with one immutable, explicit token unit."""
+        counter = self._resolve_token_counter(token_counter)
+        token_unit_id = counter.token_unit_id
+        payload_messages: list[dict[str, Any]] = []
+        image_count = 0
+        for message in messages:
+            message_payload, message_image_count = self._message_token_payload(message)
+            payload_messages.append(message_payload)
+            image_count += message_image_count
+        canonical_payload = json.dumps(
+            {"messages": payload_messages, "tools": tools or []},
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        total = counter(canonical_payload) + image_count * self.config.image_token_estimate
+        if counter.token_unit_id != token_unit_id:
+            raise RuntimeError("token counter changed token_unit_id during one count")
+        return max(0, int(total))
 
     def _determine_level(self, estimated: int) -> CompressionLevel:
         """Determine compression level based on token usage."""
@@ -169,22 +216,37 @@ class ContextCompressor:
         return CompressionLevel.FULL
 
     async def compress(
-        self, messages: list[ChatMessage], tools: list[dict[str, Any]] | None = None
+        self,
+        messages: list[ChatMessage],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        token_counter: TokenCounter | None = None,
     ) -> CompressionResult:
         """Compress messages to fit within budget, accounting for tool schemas."""
-        estimated = self.estimate_tokens(messages, tools=tools)
+        counter = self._resolve_token_counter(token_counter)
+        token_unit_id = counter.token_unit_id
+        estimated = self.estimate_tokens(messages, tools=tools, token_counter=counter)
         level = self._determine_level(estimated)
         ratio = estimated / self.config.max_tokens if self.config.max_tokens > 0 else 0.0
+        protocol_safe_messages = self._flatten_units(self._conversation_units(messages))
 
         if level == CompressionLevel.NONE:
+            final_estimate = self.estimate_tokens(
+                protocol_safe_messages,
+                tools=tools,
+                token_counter=counter,
+            )
+            if final_estimate > self.config.max_tokens:
+                self._raise_budget_postcondition(final_estimate)
             # Reset counter when we are back within budget
             self._compression_restarts = 0
             logger.debug(f"Context {estimated} tokens within budget, no compression needed")
             return CompressionResult(
-                messages=list(messages),
+                messages=protocol_safe_messages,
                 level=level,
                 original_tokens=estimated,
-                compressed_tokens=estimated,
+                compressed_tokens=final_estimate,
+                token_unit_id=token_unit_id,
                 trigger_ratio=ratio,
             )
 
@@ -195,12 +257,18 @@ class ContextCompressor:
                 f"({self._compression_restarts} > {self.config.max_compression_restarts}). "
                 f"Using hard truncation instead of LLM summarisation."
             )
-            truncated = self._truncate_tail(messages)
+            truncated, final_estimate = self._truncate_tail(
+                protocol_safe_messages,
+                tools=tools,
+                original=messages,
+                token_counter=counter,
+            )
             return CompressionResult(
                 messages=truncated,
                 level=CompressionLevel.FULL,
                 original_tokens=estimated,
-                compressed_tokens=self.estimate_tokens(truncated),
+                compressed_tokens=final_estimate,
+                token_unit_id=token_unit_id,
                 trigger_ratio=ratio,
             )
 
@@ -213,9 +281,21 @@ class ContextCompressor:
 
         if level == CompressionLevel.GENTLE:
             # Gentle: only prune tool outputs, no summarization
-            result = self._prune_tool_outputs(messages)
-            pruned = sum(1 for o, r in zip(messages, result, strict=False) if o.content != r.content)
-            final_estimate = self.estimate_tokens(result)
+            result = self._prune_tool_outputs(protocol_safe_messages)
+            pruned = sum(
+                1
+                for original, replacement in zip(
+                    protocol_safe_messages,
+                    result,
+                    strict=True,
+                )
+                if original.content != replacement.content
+            )
+            final_estimate = self.estimate_tokens(
+                result,
+                tools=tools,
+                token_counter=counter,
+            )
             if final_estimate <= self.config.max_tokens:
                 # Successful gentle compression resets the counter
                 self._compression_restarts = 0
@@ -228,6 +308,7 @@ class ContextCompressor:
                     level=level,
                     original_tokens=estimated,
                     compressed_tokens=final_estimate,
+                    token_unit_id=token_unit_id,
                     identifiers_found=self._extract_identifiers(result) if self.config.preserve_identifiers else [],
                     trigger_ratio=ratio,
                     pruned_count=pruned,
@@ -237,7 +318,15 @@ class ContextCompressor:
             level = CompressionLevel.FULL
 
         # Full compression: split head/middle/tail, summarize middle
-        return await self._compress_full(messages, estimated, level, ratio)
+        return await self._compress_full(
+            protocol_safe_messages,
+            estimated,
+            level,
+            ratio,
+            tools=tools,
+            original=messages,
+            token_counter=counter,
+        )
 
     async def _compress_full(
         self,
@@ -245,18 +334,29 @@ class ContextCompressor:
         estimated: int,
         level: CompressionLevel,
         trigger_ratio: float = 0.0,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        original: list[ChatMessage] | None = None,
+        token_counter: TokenCounter,
     ) -> CompressionResult:
         """Full compression: split into head/middle/tail and summarize middle."""
         head, middle, tail = self._split_messages(messages)
+        original_messages = original if original is not None else messages
 
         if not middle:
             logger.warning("No compressible middle, returning truncated context")
-            truncated = self._truncate_tail(messages)
+            truncated, final_estimate = self._truncate_tail(
+                messages,
+                tools=tools,
+                original=original_messages,
+                token_counter=token_counter,
+            )
             return CompressionResult(
                 messages=truncated,
                 level=level,
                 original_tokens=estimated,
-                compressed_tokens=self.estimate_tokens(truncated),
+                compressed_tokens=final_estimate,
+                token_unit_id=token_counter.token_unit_id,
                 trigger_ratio=trigger_ratio,
                 head_count=len(head),
                 middle_count=0,
@@ -265,26 +365,46 @@ class ContextCompressor:
 
         # Extract and preserve identifiers
         identifiers: list[str] = []
+        compressible_middle = [message for message in middle if message.role != "system"]
         if self.config.preserve_identifiers:
-            identifiers = self._extract_identifiers(middle)
-            # Ensure tool_call/tool pairs are never split
-            middle = self._preserve_tool_pairs(middle)
+            identifiers = self._extract_identifiers(compressible_middle)
 
         # Prune tool outputs in middle before summarizing
-        pruned_middle = self._prune_tool_outputs(middle)
-        pruned = sum(1 for o, r in zip(middle, pruned_middle, strict=False) if o.content != r.content)
+        pruned_middle = self._prune_tool_outputs(compressible_middle)
+        pruned = sum(
+            1
+            for original_message, replacement in zip(
+                compressible_middle,
+                pruned_middle,
+                strict=True,
+            )
+            if original_message.content != replacement.content
+        )
 
         # Generate summary of middle
-        summary = await self._generate_summary(pruned_middle, identifiers)
+        summary = await self._generate_summary(
+            pruned_middle,
+            identifiers,
+            token_counter=token_counter,
+        )
 
-        # Build result: head + [summary message] + tail
+        # Build result without rewriting or selectively dropping system/security messages.
         result = list(head)
-        if summary:
-            result.append(ChatMessage(role="system", content=SUMMARY_PREFIX + summary))
+        result.extend(self._replace_middle_with_summary(middle, summary))
         result.extend(tail)
-        result = self._ensure_user_message_present(result, messages)
+        result = self._ensure_user_message_present(result, original_messages)
+        result = self._shrink_summary_to_budget(
+            result,
+            tools=tools,
+            token_counter=token_counter,
+        )
 
-        final_estimate = self.estimate_tokens(result)
+        result, final_estimate = self._fit_to_budget(
+            result,
+            original=original_messages,
+            tools=tools,
+            token_counter=token_counter,
+        )
         logger.info(
             f"Full compression: {estimated} -> {final_estimate} tokens "
             f"(head={len(head)}, middle={len(middle)}, tail={len(tail)}, "
@@ -296,6 +416,7 @@ class ContextCompressor:
             level=level,
             original_tokens=estimated,
             compressed_tokens=final_estimate,
+            token_unit_id=token_counter.token_unit_id,
             identifiers_found=identifiers,
             identifiers_preserved=identifiers,
             trigger_ratio=trigger_ratio,
@@ -309,16 +430,181 @@ class ContextCompressor:
     def _split_messages(
         self, messages: list[ChatMessage]
     ) -> tuple[list[ChatMessage], list[ChatMessage], list[ChatMessage]]:
-        """Split messages into head, compressible middle, and tail."""
-        if len(messages) <= self.config.protect_head_messages + self.config.protect_tail_turns * 2:
+        """Split protocol-complete conversation units into head, middle, and tail."""
+        units = self._conversation_units(messages)
+        total_messages = sum(len(unit) for unit in units)
+        head_target = max(0, self.config.protect_head_messages)
+        tail_target = max(0, self.config.protect_tail_turns * 2)
+        if total_messages <= head_target + tail_target:
             # Not enough messages to split meaningfully
-            return messages, [], []
+            return self._flatten_units(units), [], []
 
-        head = messages[: self.config.protect_head_messages]
-        tail = messages[-self.config.protect_tail_turns * 2 :]
-        middle = messages[self.config.protect_head_messages : -self.config.protect_tail_turns * 2]
+        head_units: list[list[ChatMessage]] = []
+        head_messages = 0
+        first_middle_unit = 0
+        while first_middle_unit < len(units) and head_messages < head_target:
+            unit = units[first_middle_unit]
+            head_units.append(unit)
+            head_messages += len(unit)
+            first_middle_unit += 1
+
+        tail_units_reversed: list[list[ChatMessage]] = []
+        tail_messages = 0
+        first_tail_unit = len(units)
+        while first_tail_unit > first_middle_unit and tail_messages < tail_target:
+            first_tail_unit -= 1
+            unit = units[first_tail_unit]
+            tail_units_reversed.append(unit)
+            tail_messages += len(unit)
+
+        head = self._flatten_units(head_units)
+        middle = self._flatten_units(units[first_middle_unit:first_tail_unit])
+        tail = self._flatten_units(list(reversed(tail_units_reversed)))
 
         return head, middle, tail
+
+    @staticmethod
+    def _flatten_units(units: list[list[ChatMessage]]) -> list[ChatMessage]:
+        return [message for unit in units for message in unit]
+
+    @staticmethod
+    def _tool_call_ids(message: ChatMessage) -> list[str] | None:
+        if not message.tool_calls:
+            return []
+        call_ids: list[str] = []
+        for call in message.tool_calls:
+            call_id = call.get("id") if isinstance(call, dict) else None
+            if not isinstance(call_id, str) or not call_id or call_id in call_ids:
+                return None
+            call_ids.append(call_id)
+        return call_ids
+
+    def _conversation_units(self, messages: list[ChatMessage]) -> list[list[ChatMessage]]:
+        """Return only complete provider-valid assistant/tool conversation units."""
+        units: list[list[ChatMessage]] = []
+        seen_call_ids: set[str] = set()
+        index = 0
+        invalid_tool_history = False
+        while index < len(messages):
+            message = messages[index]
+            if message.role == "tool":
+                invalid_tool_history = True
+                index += 1
+                continue
+
+            if message.role == "assistant" and message.tool_calls:
+                call_ids = self._tool_call_ids(message)
+                end = index + 1
+                tool_messages: list[ChatMessage] = []
+                while end < len(messages) and messages[end].role == "tool":
+                    tool_messages.append(messages[end])
+                    end += 1
+                result_ids = [tool_message.tool_call_id for tool_message in tool_messages]
+                if (
+                    call_ids is not None
+                    and result_ids == call_ids
+                    and not seen_call_ids.intersection(call_ids)
+                ):
+                    units.append([message, *tool_messages])
+                    seen_call_ids.update(call_ids)
+                else:
+                    invalid_tool_history = True
+                index = end
+                continue
+
+            units.append([message])
+            index += 1
+
+        if invalid_tool_history:
+            logger.warning("Discarded incomplete or duplicate assistant/tool history")
+        return units
+
+    def _replace_middle_with_summary(
+        self,
+        middle: list[ChatMessage],
+        summary: str,
+    ) -> list[ChatMessage]:
+        """Replace compressible middle units while retaining original system messages."""
+        replacement: list[ChatMessage] = []
+        summary_inserted = False
+        for unit in self._conversation_units(middle):
+            if any(message.role == "system" for message in unit):
+                replacement.extend(unit)
+            elif summary and not summary_inserted:
+                replacement.append(
+                    ChatMessage(
+                        role="system",
+                        content=SUMMARY_PREFIX + summary,
+                        name=_SUMMARY_MESSAGE_NAME,
+                    )
+                )
+                summary_inserted = True
+        return replacement
+
+    def _shrink_summary_to_budget(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        token_counter: TokenCounter | None = None,
+    ) -> list[ChatMessage]:
+        """Deterministically shorten the generated summary before dropping units."""
+        counter = self._resolve_token_counter(token_counter)
+        if (
+            self.estimate_tokens(messages, tools=tools, token_counter=counter)
+            <= self.config.max_tokens
+        ):
+            return messages
+        summary_index = next(
+            (
+                index
+                for index, message in enumerate(messages)
+                if message.role == "system"
+                and message.name == _SUMMARY_MESSAGE_NAME
+                and isinstance(message.content, str)
+                and message.content.startswith(SUMMARY_PREFIX)
+            ),
+            None,
+        )
+        if summary_index is None:
+            return messages
+
+        summary_message = messages[summary_index]
+        assert isinstance(summary_message.content, str)
+        summary = summary_message.content[len(SUMMARY_PREFIX) :]
+        best_length: int | None = None
+        lower = 0
+        upper = len(summary)
+        while lower <= upper:
+            candidate_length = (lower + upper) // 2
+            candidate = list(messages)
+            candidate[summary_index] = ChatMessage(
+                role="system",
+                content=SUMMARY_PREFIX + summary[:candidate_length],
+                name=_SUMMARY_MESSAGE_NAME,
+            )
+            if (
+                self.estimate_tokens(
+                    candidate,
+                    tools=tools,
+                    token_counter=counter,
+                )
+                <= self.config.max_tokens
+            ):
+                best_length = candidate_length
+                lower = candidate_length + 1
+            else:
+                upper = candidate_length - 1
+
+        if best_length is None:
+            return messages
+        result = list(messages)
+        result[summary_index] = ChatMessage(
+            role="system",
+            content=SUMMARY_PREFIX + summary[:best_length],
+            name=_SUMMARY_MESSAGE_NAME,
+        )
+        return result
 
     def _extract_identifiers(self, messages: list[ChatMessage]) -> list[str]:
         """Extract identifiers (UUIDs, paths, tool_call_ids) from messages."""
@@ -384,14 +670,18 @@ class ContextCompressor:
         return pruned
 
     async def _generate_summary(
-        self, messages: list[ChatMessage], identifiers: list[str] | None = None
+        self,
+        messages: list[ChatMessage],
+        identifiers: list[str] | None = None,
+        *,
+        token_counter: TokenCounter,
     ) -> str:
         """Generate a text summary of compressed messages.
 
         The summary budget is derived from summary_ratio × middle_section_budget
         to ensure summaries don't consume an excessive fraction of the context.
         """
-        middle_tokens = self.estimate_tokens(messages)
+        middle_tokens = self.estimate_tokens(messages, token_counter=token_counter)
         # summary_ratio (default 20%) caps the summary size relative to the
         # content being summarized, while summary_min/max provide absolute bounds.
         budget_tokens = int(
@@ -464,29 +754,122 @@ class ContextCompressor:
                 break
         return result
 
-    def _truncate_tail(self, messages: list[ChatMessage]) -> list[ChatMessage]:
-        """Fallback: truncate oldest messages from tail."""
-        # Keep system prompt + as many recent messages as fit
-        result = [messages[0]] if messages and messages[0].role == "system" else []
-        remaining_budget = self.config.max_tokens - self.estimate_tokens(result)
-
-        # Add from tail backwards
-        tail_messages: list[ChatMessage] = []
-        for msg in reversed(messages[len(result) :]):
-            msg_tokens = self.estimate_tokens([msg])
-            if msg_tokens <= remaining_budget:
-                tail_messages.insert(0, msg)
-                remaining_budget -= msg_tokens
-            else:
+    @staticmethod
+    def _required_message_ids(original: list[ChatMessage]) -> set[int]:
+        """Return system/security messages plus the latest user request."""
+        required = {id(message) for message in original if message.role == "system"}
+        for message in reversed(original):
+            if message.role == "user":
+                required.add(id(message))
                 break
+        return required
 
-        result.extend(tail_messages)
-        return self._ensure_user_message_present(result, messages)
+    def _raise_budget_postcondition(self, required_tokens: int) -> None:
+        logger.error(
+            "Context compression cannot satisfy token budget",
+            required_tokens=required_tokens,
+            max_tokens=self.config.max_tokens,
+        )
+        raise EchoBudgetExceededError(
+            "Echo budget exceeded: context_compression_postcondition "
+            f"(required={required_tokens}, max={self.config.max_tokens})"
+        )
 
-    def get_stats(self, original: list[ChatMessage], compressed: list[ChatMessage]) -> dict[str, Any]:
+    def _fit_to_budget(
+        self,
+        messages: list[ChatMessage],
+        *,
+        original: list[ChatMessage],
+        tools: list[dict[str, Any]] | None = None,
+        token_counter: TokenCounter,
+    ) -> tuple[list[ChatMessage], int]:
+        """Select whole protocol units while preserving security and the latest request."""
+        units = self._conversation_units(messages)
+        required_message_ids = self._required_message_ids(original)
+        selected: set[int] = set()
+        found_required_ids: set[int] = set()
+        for unit_index, unit in enumerate(units):
+            unit_ids = {id(message) for message in unit}
+            required_in_unit = unit_ids.intersection(required_message_ids)
+            if required_in_unit:
+                selected.add(unit_index)
+                found_required_ids.update(required_in_unit)
+
+        if found_required_ids != required_message_ids:
+            logger.error("Context compression lost a required system or user message")
+            self._raise_budget_postcondition(self.config.max_tokens + 1)
+
+        def selected_messages(indices: set[int]) -> list[ChatMessage]:
+            return [
+                message
+                for unit_index, unit in enumerate(units)
+                if unit_index in indices
+                for message in unit
+            ]
+
+        required_messages = selected_messages(selected)
+        required_tokens = self.estimate_tokens(
+            required_messages,
+            tools=tools,
+            token_counter=token_counter,
+        )
+        if required_tokens > self.config.max_tokens:
+            self._raise_budget_postcondition(required_tokens)
+
+        # Prefer the newest optional units. A generated summary is optional and
+        # is discarded before any original system/security message.
+        for unit_index in reversed(range(len(units))):
+            if unit_index in selected:
+                continue
+            candidate_indices = {*selected, unit_index}
+            candidate = selected_messages(candidate_indices)
+            if (
+                self.estimate_tokens(
+                    candidate,
+                    tools=tools,
+                    token_counter=token_counter,
+                )
+                <= self.config.max_tokens
+            ):
+                selected.add(unit_index)
+
+        result = selected_messages(selected)
+        final_estimate = self.estimate_tokens(
+            result,
+            tools=tools,
+            token_counter=token_counter,
+        )
+        if final_estimate > self.config.max_tokens:
+            self._raise_budget_postcondition(final_estimate)
+        return result, final_estimate
+
+    def _truncate_tail(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        original: list[ChatMessage] | None = None,
+        token_counter: TokenCounter,
+    ) -> tuple[list[ChatMessage], int]:
+        """Fallback: retain recent complete units within the hard token budget."""
+        return self._fit_to_budget(
+            messages,
+            original=original if original is not None else messages,
+            tools=tools,
+            token_counter=token_counter,
+        )
+
+    def get_stats(
+        self,
+        original: list[ChatMessage],
+        compressed: list[ChatMessage],
+        *,
+        token_counter: TokenCounter | None = None,
+    ) -> dict[str, Any]:
         """Return compression statistics."""
-        orig_tokens = self.estimate_tokens(original)
-        comp_tokens = self.estimate_tokens(compressed)
+        counter = self._resolve_token_counter(token_counter)
+        orig_tokens = self.estimate_tokens(original, token_counter=counter)
+        comp_tokens = self.estimate_tokens(compressed, token_counter=counter)
         return {
             "original_tokens": orig_tokens,
             "compressed_tokens": comp_tokens,
@@ -494,58 +877,103 @@ class ContextCompressor:
             "reduction_pct": round((1 - comp_tokens / orig_tokens) * 100, 1) if orig_tokens > 0 else 0,
             "original_messages": len(original),
             "compressed_messages": len(compressed),
+            "token_unit_id": counter.token_unit_id,
         }
 
-    def compress_sync(self, messages: list[ChatMessage]) -> CompressionResult:
+    def compress_sync(
+        self,
+        messages: list[ChatMessage],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        token_counter: TokenCounter | None = None,
+    ) -> CompressionResult:
         """Synchronous wrapper for compression (no LLM summarizer)."""
-        estimated = self.estimate_tokens(messages)
+        counter = self._resolve_token_counter(token_counter)
+        token_unit_id = counter.token_unit_id
+        estimated = self.estimate_tokens(messages, tools=tools, token_counter=counter)
         level = self._determine_level(estimated)
+        protocol_safe_messages = self._flatten_units(self._conversation_units(messages))
 
         if level == CompressionLevel.NONE:
+            final_estimate = self.estimate_tokens(
+                protocol_safe_messages,
+                tools=tools,
+                token_counter=counter,
+            )
+            if final_estimate > self.config.max_tokens:
+                self._raise_budget_postcondition(final_estimate)
             return CompressionResult(
-                messages=list(messages),
+                messages=protocol_safe_messages,
                 level=level,
                 original_tokens=estimated,
-                compressed_tokens=estimated,
+                compressed_tokens=final_estimate,
+                token_unit_id=token_unit_id,
             )
 
         if level == CompressionLevel.GENTLE:
-            result = self._prune_tool_outputs(messages)
-            final_estimate = self.estimate_tokens(result)
+            result = self._prune_tool_outputs(protocol_safe_messages)
+            final_estimate = self.estimate_tokens(
+                result,
+                tools=tools,
+                token_counter=counter,
+            )
             if final_estimate <= self.config.max_tokens:
                 return CompressionResult(
                     messages=result,
                     level=level,
                     original_tokens=estimated,
                     compressed_tokens=final_estimate,
+                    token_unit_id=token_unit_id,
                 )
             level = CompressionLevel.FULL
 
         # Full compression without async
-        head, middle, tail = self._split_messages(messages)
+        head, middle, tail = self._split_messages(protocol_safe_messages)
         if not middle:
-            truncated = self._truncate_tail(messages)
+            truncated, final_estimate = self._truncate_tail(
+                protocol_safe_messages,
+                tools=tools,
+                original=messages,
+                token_counter=counter,
+            )
             return CompressionResult(
                 messages=truncated,
                 level=level,
                 original_tokens=estimated,
-                compressed_tokens=self.estimate_tokens(truncated),
+                compressed_tokens=final_estimate,
+                token_unit_id=token_unit_id,
             )
 
-        identifiers = self._extract_identifiers(middle) if self.config.preserve_identifiers else []
-        pruned_middle = self._prune_tool_outputs(middle)
+        compressible_middle = [message for message in middle if message.role != "system"]
+        identifiers = (
+            self._extract_identifiers(compressible_middle)
+            if self.config.preserve_identifiers
+            else []
+        )
+        pruned_middle = self._prune_tool_outputs(compressible_middle)
         summary = self._fallback_summary(pruned_middle, identifiers)
 
         result = list(head)
-        if summary:
-            result.append(ChatMessage(role="system", content=SUMMARY_PREFIX + summary))
+        result.extend(self._replace_middle_with_summary(middle, summary))
         result.extend(tail)
-        final_estimate = self.estimate_tokens(result)
+        result = self._ensure_user_message_present(result, messages)
+        result = self._shrink_summary_to_budget(
+            result,
+            tools=tools,
+            token_counter=counter,
+        )
+        result, final_estimate = self._fit_to_budget(
+            result,
+            original=messages,
+            tools=tools,
+            token_counter=counter,
+        )
         return CompressionResult(
             messages=result,
             level=level,
             original_tokens=estimated,
             compressed_tokens=final_estimate,
+            token_unit_id=token_unit_id,
             identifiers_found=identifiers,
             identifiers_preserved=identifiers,
         )

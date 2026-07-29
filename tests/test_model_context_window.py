@@ -17,12 +17,13 @@ class TestLocalModelContextDetection:
     def discovery(self) -> LocalModelDiscovery:
         return LocalModelDiscovery(timeout=1.0)
 
-    @pytest.mark.asyncio
-    async def test_lmstudio_v0_api_context_parsing(self, discovery: LocalModelDiscovery) -> None:
-        """LM Studio v0 API max_context_length is correctly parsed."""
-        contexts = await discovery._lmstudio_context_lengths("http://127.0.0.1:1234/v1")
-        # When no server is running, returns empty dict; verifies it's a dict
-        assert isinstance(contexts, dict)
+    def test_local_discovery_exposes_no_raw_network_probe(
+        self,
+        discovery: LocalModelDiscovery,
+    ) -> None:
+        assert not hasattr(discovery, "_lmstudio_context_lengths")
+        assert not hasattr(discovery, "_ollama_context_lengths")
+        assert not hasattr(discovery, "_probe")
 
     def test_infer_with_lmstudio_override(self, discovery: LocalModelDiscovery) -> None:
         """When LM Studio v0 API provides context, it overrides name inference."""
@@ -140,15 +141,10 @@ class TestCloudModelDiscovery:
 class TestGenericLocalProvider:
     """Verify any OpenAI-compatible local endpoint is supported."""
 
-    @pytest.mark.asyncio
-    async def test_custom_port_discovery(self) -> None:
-        """Local servers on non-standard ports are discoverable."""
+    def test_lan_scanner_is_physically_absent(self) -> None:
+        """Broad LAN scanning cannot be reached through the compatibility class."""
         discovery = LocalModelDiscovery(timeout=0.5)
-        # We don't have a real server, but we verify the probe mechanism exists
-        # by testing scan_lan doesn't crash
-        results = await discovery.scan_lan(subnet_prefix="127.0")
-        assert isinstance(results, list)
-        await discovery.close()
+        assert not hasattr(discovery, "scan_lan")
 
     def test_infer_context_accurate_for_known_models(self) -> None:
         """Context inference covers major model families accurately."""

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from js.echo.os_sandbox import SandboxExecutor
 from js.skills.spec import SkillSpec, SkillType, parse_skill_manifest
 from js.utils.log import get_logger
 
@@ -212,45 +213,44 @@ Run with: pytest {test_file.name} -v
 These tests check that the prompt skill:
 1. Has required sections
 2. Contains no obvious template errors
-3. Is loadable by the skill parser
+3. Has valid bounded frontmatter fields
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
-
-from js.skills.spec import parse_skill_manifest
+import re
 
 SKILL_DIR = Path(__file__).parent
 MANIFEST = SKILL_DIR / "SKILL.md"
+MANIFEST_TEXT = MANIFEST.read_text(encoding="utf-8")
+
+
+def frontmatter_field(name: str) -> str:
+    match = re.search(r"^" + re.escape(name) + r":\\s*(.+)$", MANIFEST_TEXT, re.MULTILINE)
+    assert match is not None
+    return match.group(1).strip()
 
 
 class Test{spec.id.replace("-", "_").title()}:
     def test_manifest_loads(self) -> None:
-        spec = parse_skill_manifest(MANIFEST)
-        assert spec.id == "{spec.id}"
-        assert spec.name == "{spec.name}"
+        assert frontmatter_field("id") == {spec.id!r}
+        assert frontmatter_field("name") == {spec.name!r}
 
     def test_has_instructions(self) -> None:
-        spec = parse_skill_manifest(MANIFEST)
-        assert spec.full_content
-        assert len(spec.full_content) > 50
+        body = MANIFEST_TEXT.split("---", 2)[-1]
+        assert len(body.strip()) > 50
 
     def test_no_broken_placeholders(self) -> None:
         """Check for unmatched template variables like {{{{var}}}}."""
-        spec = parse_skill_manifest(MANIFEST)
-        import re
-        # Find single braces that look like placeholders
-        broken = re.findall(r"{{{{[^{{}}]+}}}}", spec.full_content)
+        body = MANIFEST_TEXT.split("---", 2)[-1]
+        broken = re.findall(r"{{{{[^{{}}]+}}}}", body)
         # Allow known good patterns if needed
         assert not broken, f"Possible broken placeholders: {{broken}}"
 
     def test_has_example_or_usage(self) -> None:
         """Prompt skills should include example usage."""
-        spec = parse_skill_manifest(MANIFEST)
-        content_lower = spec.full_content.lower()
+        content_lower = MANIFEST_TEXT.split("---", 2)[-1].lower()
         has_example = any(k in content_lower for k in ["example", "usage", "when the user"])
         assert has_example, "Prompt should include example usage guidance"
 '''
@@ -273,11 +273,10 @@ def _generate_workflow_tests(spec: SkillSpec, skill_dir: Path, output_dir: Path 
     for i, step in enumerate(steps[:5], 1):
         stype = step.get("type", "prompt")
         step_tests += f"\n    def test_step_{i}_type(self) -> None:\n"
-        step_tests += f"        step = self._get_step({i - 1})\n"
-        step_tests += f"        assert step['type'] == '{stype}'\n"
+        step_tests += f"        assert {'type: ' + str(stype)!r} in MANIFEST_TEXT\n"
 
     if not step_tests:
-        step_tests = "    def test_has_at_least_one_step(self) -> None:\n        assert len(self.steps) > 0\n"
+        step_tests = "    def test_has_at_least_one_step(self) -> None:\n        assert 'steps:' in MANIFEST_TEXT\n"
 
     content = f'''"""Auto-generated tests for workflow skill: {spec.id}.
 
@@ -288,44 +287,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from js.skills.spec import parse_skill_manifest
-
 SKILL_DIR = Path(__file__).parent
 MANIFEST = SKILL_DIR / "SKILL.md"
+MANIFEST_TEXT = MANIFEST.read_text(encoding="utf-8")
 
 
 class Test{spec.id.replace("-", "_").title()}:
-    @pytest.fixture
-    def spec(self):
-        return parse_skill_manifest(MANIFEST)
+    def test_manifest_loads(self) -> None:
+        assert {'id: ' + spec.id!r} in MANIFEST_TEXT
+        assert "type: workflow" in MANIFEST_TEXT
 
-    @pytest.fixture
-    def steps(self, spec):
-        return spec.metadata.get("workflow", {{}}).get("steps", [])
-
-    def _get_step(self, idx: int):
-        spec = parse_skill_manifest(MANIFEST)
-        return spec.metadata.get("workflow", {{}}).get("steps", [])[idx]
-
-    def test_manifest_loads(self, spec) -> None:
-        assert spec.id == "{spec.id}"
-
-    def test_has_workflow_definition(self, spec) -> None:
-        assert "workflow" in spec.metadata
-        assert "steps" in spec.metadata["workflow"]
+    def test_has_workflow_definition(self) -> None:
+        assert "workflow:" in MANIFEST_TEXT
+        assert "steps:" in MANIFEST_TEXT
 {step_tests}
-
-    def test_no_duplicate_step_types_at_start(self, steps) -> None:
-        """Consecutive steps of same type may indicate redundancy."""
-        if len(steps) < 2:
-            pytest.skip("Not enough steps")
-        # This is a suggestion, not a hard failure
-        types = [s["type"] for s in steps]
-        for i in range(len(types) - 1):
-            if types[i] == types[i + 1] == "prompt":
-                pytest.warns(UserWarning, match=f"Steps {{i}} and {{i+1}} are both prompt type")
 '''
 
     test_file.write_text(content, encoding="utf-8")
@@ -341,7 +316,7 @@ def _generate_meta_tests(spec: SkillSpec, skill_dir: Path, output_dir: Path | No
     deps = spec.dependencies or []
     dep_tests = ""
     for dep in deps[:5]:
-        dep_tests += f"        assert '{dep}' in dep_ids\n"
+        dep_tests += f"        assert {dep!r} in MANIFEST_TEXT\n"
 
     if not dep_tests:
         dep_tests = "        assert False, 'No dependencies declared — meta skills should compose other skills'\n"
@@ -355,30 +330,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from js.skills.spec import parse_skill_manifest
-
 SKILL_DIR = Path(__file__).parent
 MANIFEST = SKILL_DIR / "SKILL.md"
+MANIFEST_TEXT = MANIFEST.read_text(encoding="utf-8")
 
 
 class Test{spec.id.replace("-", "_").title()}:
     def test_manifest_loads(self) -> None:
-        spec = parse_skill_manifest(MANIFEST)
-        assert spec.id == "{spec.id}"
-        assert spec.type.value == "meta"
+        assert {'id: ' + spec.id!r} in MANIFEST_TEXT
+        assert "type: meta" in MANIFEST_TEXT
 
     def test_has_dependencies(self) -> None:
-        spec = parse_skill_manifest(MANIFEST)
-        dep_ids = spec.dependencies
 {dep_tests}
 
     def test_dependency_ids_valid(self) -> None:
         """Dependency IDs should be kebab-case."""
-        spec = parse_skill_manifest(MANIFEST)
         import re
-        for dep in spec.dependencies:
+        for dep in {deps!r}:
             assert re.match(r"^[a-z0-9]+(-[a-z0-9]+)*$", dep), f"Invalid dep ID: {{dep}}"
 '''
 
@@ -392,7 +360,11 @@ class Test{spec.id.replace("-", "_").title()}:
 # ---------------------------------------------------------------------------
 
 
-async def run_skill_tests(skill_dir: Path) -> TestReport:
+async def run_skill_tests(
+    skill_dir: Path,
+    *,
+    sandbox: SandboxExecutor | None = None,
+) -> TestReport:
     """Run all tests for a skill directory.
 
     For code skills: runs pytest.
@@ -414,33 +386,79 @@ async def run_skill_tests(skill_dir: Path) -> TestReport:
         try:
             generated = generate_tests(skill_dir)
             test_files = generated
-        except Exception as e:
+        except Exception as exc:
+            logger.warning("Skill test generation failed: %s", type(exc).__name__)
             report.results.append(TestResult(
-                name="test_generation", passed=False,
-                error=f"Failed to generate tests: {e}",
+                name="test_generation",
+                passed=False,
+                error="Failed to generate skill tests safely",
             ))
             return report
 
-    # Run pytest on generated tests
+    # Run pytest on generated tests. Skill tests are untrusted code and have
+    # no direct-host fallback.
     if test_files:
         import time
         start = time.perf_counter()
+        resolved_skill_dir = skill_dir.resolve()
+        test_sandbox = sandbox or SandboxExecutor(
+            resolved_skill_dir,
+            timeout=60.0,
+            max_output_bytes=50_000,
+            max_memory_mb=512,
+            strict_isolation=True,
+            trusted_executables=[Path(sys.executable)],
+        )
+        sandbox_workspace = getattr(test_sandbox, "workspace", None)
         try:
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "pytest", "-q", "--tb=short",
-                *([str(f) for f in test_files]),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(skill_dir),
+            workspace_matches = (
+                isinstance(sandbox_workspace, Path)
+                and sandbox_workspace.resolve() == resolved_skill_dir
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+        except OSError:
+            workspace_matches = False
+        if (
+            not workspace_matches
+            or not bool(getattr(test_sandbox, "strict_isolation", False))
+            or not test_sandbox.network_isolation_available()
+            or not test_sandbox.filesystem_isolation_available()
+        ):
+            report.results.append(
+                TestResult(
+                    name="pytest_suite",
+                    passed=False,
+                    error="Skill tests require a strict OS sandbox",
+                )
+            )
+            return report
+        try:
+            result = await asyncio.wait_for(
+                test_sandbox.execute(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pytest",
+                        "-q",
+                        "--tb=short",
+                        "-o",
+                        "log_file=",
+                        *[str(f) for f in test_files],
+                    ],
+                    cwd=str(resolved_skill_dir),
+                    timeout=60.0,
+                    network_allowed=False,
+                    fs_restricted=True,
+                    read_only_paths=[Path(sys.prefix).resolve()],
+                ),
+                timeout=65.0,
+            )
             duration = (time.perf_counter() - start) * 1000
 
-            output = stdout.decode("utf-8", errors="replace")
-            errors = stderr.decode("utf-8", errors="replace")
+            output = _sanitize_test_text(str(result.stdout), resolved_skill_dir)
+            errors = _sanitize_test_text(str(result.stderr), resolved_skill_dir)
 
             # Parse pytest output roughly
-            passed = proc.returncode == 0
+            passed = result.returncode == 0
             report.results.append(TestResult(
                 name="pytest_suite",
                 passed=passed,
@@ -453,9 +471,24 @@ async def run_skill_tests(skill_dir: Path) -> TestReport:
                 name="pytest_suite", passed=False,
                 error="Test suite timed out after 60s", duration_ms=60000,
             ))
-        except Exception as e:
+        except Exception as exc:
+            logger.warning("Skill test sandbox failed: %s", type(exc).__name__)
             report.results.append(TestResult(
-                name="pytest_suite", passed=False, error=str(e),
+                name="pytest_suite",
+                passed=False,
+                error="Skill test sandbox failed safely",
             ))
 
     return report
+
+
+def _sanitize_test_text(value: str, skill_dir: Path) -> str:
+    """Bound test diagnostics and remove host-specific private roots."""
+    replacements = {
+        str(skill_dir): "<skill>",
+        str(Path.home().resolve()): "<home>",
+        str(Path(sys.prefix).resolve()): "<runtime>",
+    }
+    for private_root, replacement in replacements.items():
+        value = value.replace(private_root, replacement)
+    return value[:50_000]

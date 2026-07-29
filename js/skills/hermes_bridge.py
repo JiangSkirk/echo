@@ -53,16 +53,22 @@ def _get_hermes_home() -> Path:
     """Return the Hermes home directory from env or default.
 
     Security: reject env values that escape the user's home directory.
+    Resolved at call time so isolated HOME / tests are honored.
     """
+    home = Path.home().resolve()
     env_home = os.environ.get("HERMES_HOME")
     if env_home:
         candidate = Path(env_home).resolve()
-        home = Path.home().resolve()
         if candidate != home and not str(candidate).startswith(str(home) + os.sep):
             logger.warning(f"HERMES_HOME {candidate} is outside home directory, using default")
-            return DEFAULT_HERMES_HOME
+            return home / ".hermes"
         return candidate
-    return DEFAULT_HERMES_HOME
+    return home / ".hermes"
+
+
+def hermes_skills_dir() -> Path:
+    """Return the Hermes skills directory resolved at call time."""
+    return _get_hermes_home() / "skills"
 
 
 def _load_hub_lock() -> dict[str, Any]:
@@ -73,7 +79,7 @@ def _load_hub_lock() -> dict[str, Any]:
             data: dict[str, Any] = json.loads(lock_path.read_text())
             return data
         except (json.JSONDecodeError, OSError):
-            logger.warning('Operation failed', exc_info=True)
+            logger.warning("Operation failed", exc_info=True)
     return {}
 
 
@@ -138,9 +144,9 @@ def _infer_parameters_from_script(script_path: Path) -> list[dict[str, Any]]:
     # Pattern 1: argparse add_argument calls
     # Matches: parser.add_argument("--name", ..., help="...", default=...)
     add_arg_pattern = re.compile(
-        r'add_argument\(\s*'
+        r"add_argument\(\s*"
         r'["\']((?:--|-)[\w-]+)["\']\s*'
-        r'(.*?)\)',
+        r"(.*?)\)",
         re.DOTALL,
     )
 
@@ -169,12 +175,12 @@ def _infer_parameters_from_script(script_path: Path) -> list[dict[str, Any]]:
             arg_type = "boolean"
 
         # Detect default
-        default_match = re.search(r'default\s*=\s*([^,\)]+)', arg_body)
+        default_match = re.search(r"default\s*=\s*([^,\)]+)", arg_body)
         default = None
         if default_match:
             default_str = default_match.group(1).strip()
             if default_str.startswith(("'", '"')):
-                default = default_str.strip('"\'')
+                default = default_str.strip("\"'")
             elif default_str == "True":
                 default = True
             elif default_str == "False":
@@ -187,11 +193,11 @@ def _infer_parameters_from_script(script_path: Path) -> list[dict[str, Any]]:
         description = help_match.group(1) if help_match else f"{param_name} parameter"
 
         # Detect choices/enum
-        choices_match = re.search(r'choices\s*=\s*\[([^\]]+)\]', arg_body)
+        choices_match = re.search(r"choices\s*=\s*\[([^\]]+)\]", arg_body)
         enum = None
         if choices_match:
             choices_str = choices_match.group(1)
-            enum = [c.strip().strip('"\'') for c in choices_str.split(",")]
+            enum = [c.strip().strip("\"'") for c in choices_str.split(",")]
 
         param: dict[str, Any] = {
             "name": param_name,
@@ -209,18 +215,21 @@ def _infer_parameters_from_script(script_path: Path) -> list[dict[str, Any]]:
     # Pattern 2: manual sys.argv parsing (positionals)
     # Look for common patterns like: unpacked_dir = Path(sys.argv[1])
     positional_pattern = re.compile(
-        r'(\w+)\s*=\s*(?:Path\()?sys\.argv\[(\d+)\]',
+        r"(\w+)\s*=\s*(?:Path\()?sys\.argv\[(\d+)\]",
     )
     for match in positional_pattern.finditer(content):
         var_name = match.group(1)
         idx = int(match.group(2))
         if idx >= 1 and not any(p["name"] == var_name for p in params):
-            params.insert(0, {
-                "name": var_name,
-                "type": "string",
-                "description": f"{var_name} (positional argument)",
-                "required": idx == 1,  # First positional is usually required
-            })
+            params.insert(
+                0,
+                {
+                    "name": var_name,
+                    "type": "string",
+                    "description": f"{var_name} (positional argument)",
+                    "required": idx == 1,  # First positional is usually required
+                },
+            )
 
     # Pattern 3: manual flag parsing (while loop over args)
     # Matches: if args[i] == "--flag" and i + 1 < len(args): var = args[i + 1]; i += 2
@@ -234,19 +243,21 @@ def _infer_parameters_from_script(script_path: Path) -> list[dict[str, Any]]:
         param_name = flag.lstrip("-").replace("-", "_")
         if not any(p["name"] == param_name for p in params):
             # Detect int() cast from the same line
-            line_end = content[match.end():match.end()+50]
+            line_end = content[match.end() : match.end() + 50]
             arg_type = "integer" if "int(" in line_end else "string"
-            params.append({
-                "name": param_name,
-                "type": arg_type,
-                "description": f"{param_name} parameter",
-                "required": False,
-            })
+            params.append(
+                {
+                    "name": param_name,
+                    "type": arg_type,
+                    "description": f"{param_name} parameter",
+                    "required": False,
+                }
+            )
 
     # Pattern 4: manual positional args in while/loop
     # Matches: positional.append(args[i]) followed by query = " ".join(positional)
     positional_collect_pattern = re.compile(
-        r'(\w+)\.append\(args\[i\]\)',
+        r"(\w+)\.append\(args\[i\]\)",
     )
     for match in positional_collect_pattern.finditer(content):
         list_name = match.group(1)
@@ -257,12 +268,15 @@ def _infer_parameters_from_script(script_path: Path) -> list[dict[str, Any]]:
         for jm in join_pattern.finditer(content):
             var_name = jm.group(1)
             if not any(p["name"] == var_name for p in params):
-                params.insert(0, {
-                    "name": var_name,
-                    "type": "string",
-                    "description": f"{var_name} (positional argument)",
-                    "required": False,
-                })
+                params.insert(
+                    0,
+                    {
+                        "name": var_name,
+                        "type": "string",
+                        "description": f"{var_name} (positional argument)",
+                        "required": False,
+                    },
+                )
 
     return params
 
@@ -321,12 +335,12 @@ def _post_process_hermes_spec(spec: SkillSpec, lock_data: dict[str, Any]) -> Ski
     if spec.category == "general" and spec.path:
         try:
             # Path: ~/.hermes/skills/<category>/<skill>/SKILL.md
-            rel = spec.path.relative_to(HERMES_SKILLS_DIR)
+            rel = spec.path.relative_to(hermes_skills_dir())
             parts = rel.parts
             if len(parts) >= 1:
                 spec.category = str(parts[0])
         except ValueError:
-            logger.warning('Operation failed', exc_info=True)
+            logger.warning("Operation failed", exc_info=True)
 
     # Ensure sub-directories are set (redundant with parse_skill_manifest but safe)
     if spec.path:
@@ -350,7 +364,7 @@ def _post_process_hermes_spec(spec: SkillSpec, lock_data: dict[str, Any]) -> Ski
     return spec
 
 
-def discover_hermes_skills(hermes_skills_dir: Path | None = None) -> list[Path]:
+def discover_hermes_skills(skills_root: Path | None = None) -> list[Path]:
     """Discover all Hermes skill manifests.
 
     Scans the Hermes skills directory recursively for SKILL.md files.
@@ -359,7 +373,7 @@ def discover_hermes_skills(hermes_skills_dir: Path | None = None) -> list[Path]:
     Returns:
         List of Path objects pointing to SKILL.md files.
     """
-    skills_dir = hermes_skills_dir or HERMES_SKILLS_DIR
+    skills_dir = skills_root if skills_root is not None else hermes_skills_dir()
     if not skills_dir.exists():
         logger.debug(f"Hermes skills directory not found: {skills_dir}")
         return []
@@ -414,7 +428,9 @@ def load_all_hermes_skills(
         try:
             spec = load_hermes_skill(manifest, lock_data)
             skills[spec.id] = spec
-            logger.debug(f"Loaded Hermes skill: {spec.id} (type={spec.type.value}, trust={spec.trust_level.value})")
+            logger.debug(
+                f"Loaded Hermes skill: {spec.id} (type={spec.type.value}, trust={spec.trust_level.value})"
+            )
         except Exception as e:
             logger.warning(f"Failed to load Hermes skill from {manifest}: {e}")
 
@@ -434,10 +450,11 @@ def hermes_skill_source_dir(skill_id: str) -> Path | None:
     """
     if not is_hermes_skill(skill_id):
         return None
-    name = skill_id[len(HERMES_ID_PREFIX):]
+    name = skill_id[len(HERMES_ID_PREFIX) :]
     # Try to find the skill directory (may be in a category subdir)
-    for path in HERMES_SKILLS_DIR.rglob(f"{name}/SKILL.md"):
-        if not any(part.startswith(".") for part in path.relative_to(HERMES_SKILLS_DIR).parts):
+    skills_root = hermes_skills_dir()
+    for path in skills_root.rglob(f"{name}/SKILL.md"):
+        if not any(part.startswith(".") for part in path.relative_to(skills_root).parts):
             return path.parent
     return None
 
@@ -445,6 +462,7 @@ def hermes_skill_source_dir(skill_id: str) -> Path | None:
 # ---------------------------------------------------------------------------
 # Health & diagnostics
 # ---------------------------------------------------------------------------
+
 
 class HermesBridgeStats:
     """Runtime statistics for the Hermes bridge."""
@@ -485,6 +503,7 @@ def get_bridge_stats() -> HermesBridgeStats:
 # Security bridge: optional enhanced scanning with Hermes's own guard
 # ---------------------------------------------------------------------------
 
+
 def _try_hermes_guard_scan(skill_path: Path) -> ScanResult | None:
     """Attempt to use Hermes's own skills_guard scanner if available.
 
@@ -504,9 +523,9 @@ def _try_hermes_guard_scan(skill_path: Path) -> ScanResult | None:
             skill_path.resolve().relative_to(skills_dir.resolve())
         except ValueError:
             logger.warning(
-                "Skill path %s is outside Hermes skills directory %s — "
-                "skipping Hermes guard scan",
-                skill_path, skills_dir,
+                "Skill path %s is outside Hermes skills directory %s — skipping Hermes guard scan",
+                skill_path,
+                skills_dir,
             )
             return None
 
@@ -526,6 +545,7 @@ def _try_hermes_guard_scan(skill_path: Path) -> ScanResult | None:
             "print('FLAGS:', '|'.join(flags))\n"
         )
         import subprocess
+
         proc = subprocess.run(
             [sys.executable, "-c", script, str(skill_path)],
             capture_output=True,
@@ -551,7 +571,7 @@ def _try_hermes_guard_scan(skill_path: Path) -> ScanResult | None:
                 trust_level=TrustLevel.TRUSTED if verdict == "safe" else TrustLevel.COMMUNITY,
             )
     except Exception:
-        logger.warning('Operation failed', exc_info=True)
+        logger.warning("Operation failed", exc_info=True)
     return None
 
 

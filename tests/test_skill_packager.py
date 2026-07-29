@@ -77,9 +77,13 @@ class TestPackageSkill:
 
 class TestSignAndVerify:
     def test_sign_and_verify(self, tmp_path: Path) -> None:
+        from js.security.signer import generate_signing_key
+
         path = create_skill(tmp_path, "sign-test", "Sign", "Desc", SkillType.PROMPT, instructions="OK")
         result = package_skill(path, tmp_path)
-        sig_path = sign_package(result.archive_path)
+        state_dir = tmp_path / "signing-state"
+        generate_signing_key(state_dir)
+        sig_path = sign_package(result.archive_path, state_dir)
         assert sig_path is not None
         assert sig_path.exists()
         assert verify_package(result.archive_path) is True

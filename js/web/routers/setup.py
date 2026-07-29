@@ -5,18 +5,50 @@ from __future__ import annotations
 import asyncio
 import sys
 import time
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from js.models.discovery import LocalModelDiscovery
+from js.agent.tool_executor import CONTROL_SETUP_STATE_TOOL
+from js.echo.effect_interpreter import ModelEffect, ToolEffect
 from js.models.providers import ChatMessage
 from js.utils.log import get_logger
-from js.web.auth import require_auth_dep, require_setup_auth
+from js.web.auth import memory_owner, require_auth_dep, require_setup_auth, runtime_owner
 from js.web.deps import get_agent, get_settings
 
 logger = get_logger("js.web.setup")
 router = APIRouter(tags=["setup"])
+
+
+async def _mutate_setup_state(
+    action: str,
+    auth: dict[str, Any],
+) -> tuple[dict[str, Any], Any]:
+    """Execute one setup mutation through the model-hidden Echo tool boundary."""
+    agent = get_agent()
+    runtime = agent.echo_runtime
+    context = runtime.build_context(
+        channel=f"setup_{action}",
+        owner_key_hash=runtime_owner(auth),
+        role=str(auth.get("role") or "setup"),
+        capabilities=(CONTROL_SETUP_STATE_TOOL,),
+    )
+    _message, result = await runtime.execute_tool_effect(
+        ToolEffect.from_arguments(
+            CONTROL_SETUP_STATE_TOOL,
+            {"action": action},
+            user_input=f"Apply setup state action: {action}",
+            allowed_tools=(CONTROL_SETUP_STATE_TOOL,),
+        ),
+        context,
+    )
+    if not result.success:
+        status_code = result.metadata.get("status_code", 500)
+        if not isinstance(status_code, int) or not 400 <= status_code <= 599:
+            status_code = 500
+        raise HTTPException(status_code, result.error or "Setup state update failed")
+    return dict(result.metadata), context
 
 
 @router.get("/api/setup/first-start")
@@ -31,23 +63,6 @@ async def setup_first_start(auth: dict[str, Any] = Depends(require_setup_auth)) 
         "has_configured_models": bool(settings.providers),
     }
 
-    # Probe local providers (lightweight, short timeout)
-    discovery = LocalModelDiscovery(timeout=3.0)
-    try:
-        discovered = await discovery.discover_all()
-        for d in discovered:
-            diagnostics["local_providers_detected"].append(
-                {
-                    "type": d.provider_type,
-                    "url": d.base_url,
-                    "models": len(d.models),
-                }
-            )
-    except Exception as e:
-        logger.debug(f"Local discovery failed during first-start check: {e}")
-    finally:
-        await discovery.close()
-
     return {
         "first_run_completed": settings.first_run_completed,
         "diagnostics": diagnostics,
@@ -56,33 +71,18 @@ async def setup_first_start(auth: dict[str, Any] = Depends(require_setup_auth)) 
 
 @router.post("/api/setup/complete")
 async def setup_complete(auth: dict[str, Any] = Depends(require_setup_auth)) -> dict[str, Any]:
-    from js.web.auth import AuthManager
-
-    settings = get_settings()
-    # Ensure a usable admin key exists BEFORE closing the bootstrap window, so
-    # completing setup can never leave a "first_run_completed but no admin key"
-    # state that locks the whole site behind 401.
-    admin_key: str | None = None
-    if settings.security.api_key_required:
-        admin_key = await asyncio.to_thread(
-            AuthManager(settings.state_dir).ensure_bootstrap_admin_key
-        )
-    settings.first_run_completed = True
-    try:
-        await asyncio.to_thread(settings.save, None, ["first_run_completed"])
-    except PermissionError:
-        try:
-            fallback = settings.state_dir / "config.yaml"
-            await asyncio.to_thread(settings.save, fallback, ["first_run_completed"])
-        except OSError as e:
-            raise HTTPException(
-                500,
-                f"无法保存配置：用户主目录和状态目录均不可写。{e}",
-            ) from e
-    except OSError as e:
-        raise HTTPException(500, f"无法保存配置：{e}") from e
+    metadata, context = await _mutate_setup_state("complete", auth)
     result: dict[str, Any] = {"success": True}
-    if admin_key:
+    key_reference = metadata.get("admin_key_ref")
+    if isinstance(key_reference, str) and key_reference:
+        admin_key = get_agent().take_setup_admin_key(
+            key_reference,
+            owner_key_hash=context.owner_key_hash,
+            product_id=context.product_id,
+            session_id=context.session_id,
+        )
+        if not admin_key:
+            raise HTTPException(500, "初始化凭据交接失败，请重试。")
         # Returned once so the browser can persist it (the bootstrap window is
         # now closed; subsequent requests must carry this key).
         result["admin_key"] = admin_key
@@ -116,17 +116,7 @@ async def setup_reset(auth: dict[str, Any] = Depends(require_setup_auth)) -> dic
             409,
             "已存在管理员密钥时无法重置首次运行状态。请先吊销所有管理员密钥再重试。",
         )
-    settings.first_run_completed = False
-    try:
-        await asyncio.to_thread(settings.save, None, ["first_run_completed"])
-    except PermissionError:
-        try:
-            fallback = settings.state_dir / "config.yaml"
-            await asyncio.to_thread(settings.save, fallback, ["first_run_completed"])
-        except OSError as e:
-            raise HTTPException(500, f"无法保存配置：{e}") from e
-    except OSError as e:
-        raise HTTPException(500, f"无法保存配置：{e}") from e
+    await _mutate_setup_state("reset", auth)
     return {"success": True}
 
 
@@ -179,14 +169,26 @@ async def test_model(
     # cap so reasoning models (gemma-4, deepseek-r1, etc.) have room to answer.
     start = time.time()
     try:
-        response = await asyncio.wait_for(
-            decision.provider.chat(
-                messages=[ChatMessage(role="user", content="Say exactly: OK")],
-                model=decision.model,
+        messages = [ChatMessage(role="user", content="Say exactly: OK")]
+        owner = memory_owner(auth) or "local-user"
+        runtime = agent.echo_runtime
+        runtime_context = runtime.build_context(
+            channel="setup_model_test",
+            owner_key_hash=owner,
+            session_id=f"setup-model:{uuid.uuid4()}",
+            run_id=str(uuid.uuid4()),
+            role=str(auth.get("role") or "setup"),
+            capabilities=(),
+        )
+        response_call = runtime.execute_model_effect(
+            ModelEffect(
+                messages=tuple(messages),
+                model=model_id,
                 temperature=0.7,
             ),
-            timeout=60.0,
+            runtime_context,
         )
+        response = await asyncio.wait_for(response_call, timeout=60.0)
         latency_ms = int((time.time() - start) * 1000)
         content = (response.content or "").strip()
         # Some models return empty content when reasoning takes all tokens.

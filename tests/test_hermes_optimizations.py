@@ -6,6 +6,7 @@ import asyncio
 import json
 from pathlib import Path
 
+from js.security.sandbox import SandboxExecutor
 from js.skills.executor import (
     _build_hermes_cli_args,
     _remap_hermes_tools,
@@ -15,6 +16,11 @@ from js.skills.hermes_bridge import (
     _infer_parameters_from_script,
 )
 from js.skills.spec import SkillSpec, SkillType
+
+
+def _strict_sandbox(workspace: Path) -> SandboxExecutor:
+    workspace.mkdir(parents=True, exist_ok=True)
+    return SandboxExecutor(workspace, strict_isolation=True)
 
 
 class TestHermesCliArgs:
@@ -155,8 +161,8 @@ unpacked_dir = Path(sys.argv[1])
 
 
 class TestHermesEnvInjection:
-    def test_hermes_home_injected_for_hermes_skills(self, tmp_path: Path):
-        """Verify HERMES_HOME is injected when executing Hermes CODE skills."""
+    def test_host_hermes_home_not_injected_into_code_skill(self, tmp_path: Path):
+        """Host-scoped Hermes paths must not cross the subprocess boundary."""
         skill_dir = tmp_path / "hermes_test_skill"
         skill_dir.mkdir()
         script = skill_dir / "main.py"
@@ -179,11 +185,13 @@ description: Test
             path=skill_dir,
         )
 
-        result = asyncio.run(execute_skill(spec, {}, tmp_path / "workspace"))
+        workspace = tmp_path / "workspace"
+        result = asyncio.run(
+            execute_skill(spec, {}, workspace, sandbox=_strict_sandbox(workspace))
+        )
         assert result["success"] is True
         output = json.loads(result["output"].strip())
-        assert output["hermes_home"] != "NOT_SET"
-        assert ".hermes" in output["hermes_home"]
+        assert output["hermes_home"] == "NOT_SET"
 
     def test_js_skill_args_still_present(self, tmp_path: Path):
         """Verify JS_SKILL_ARGS is still passed for all skills."""
@@ -203,7 +211,15 @@ print(json.dumps(args))
             path=skill_dir,
         )
 
-        result = asyncio.run(execute_skill(spec, {"foo": "bar"}, tmp_path / "workspace"))
+        workspace = tmp_path / "workspace"
+        result = asyncio.run(
+            execute_skill(
+                spec,
+                {"foo": "bar"},
+                workspace,
+                sandbox=_strict_sandbox(workspace),
+            )
+        )
         assert result["success"] is True
         output = json.loads(result["output"].strip())
         assert output["foo"] == "bar"
@@ -225,7 +241,15 @@ print(json.dumps({"argv": sys.argv}))
             path=skill_dir,
         )
 
-        result = asyncio.run(execute_skill(spec, {"query": "test", "max": 10}, tmp_path / "workspace"))
+        workspace = tmp_path / "workspace"
+        result = asyncio.run(
+            execute_skill(
+                spec,
+                {"query": "test", "max": 10},
+                workspace,
+                sandbox=_strict_sandbox(workspace),
+            )
+        )
         assert result["success"] is True
         output = json.loads(result["output"].strip())
         argv = output["argv"]
@@ -251,7 +275,15 @@ print(json.dumps({"argv": sys.argv}))
             path=skill_dir,
         )
 
-        result = asyncio.run(execute_skill(spec, {"query": "test"}, tmp_path / "workspace"))
+        workspace = tmp_path / "workspace"
+        result = asyncio.run(
+            execute_skill(
+                spec,
+                {"query": "test"},
+                workspace,
+                sandbox=_strict_sandbox(workspace),
+            )
+        )
         assert result["success"] is True
         output = json.loads(result["output"].strip())
         argv = output["argv"]

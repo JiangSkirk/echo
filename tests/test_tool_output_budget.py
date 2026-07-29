@@ -31,13 +31,25 @@ async def _echo_handler(content: str) -> ToolResult:
     return ToolResult(success=True, output=content)
 
 
-async def test_tool_registry_truncates_over_budget() -> None:
+async def test_tool_registry_truncates_over_budget(echo_tool_context: Any) -> None:
     registry = ToolRegistry(ToolLimits(tool_output_budget_chars=2000), _AllowGuard())
     registry.register(
         ToolSpec(name="echo", description="echo", parameters=[ToolParam("content", "string", "")]),
         _echo_handler,
     )
-    result = await registry.execute("run-1", "echo", {"content": "x" * 5000})
+    arguments = {"content": "x" * 5000}
+    result = await registry.execute(
+        "run-1",
+        "echo",
+        arguments,
+            execution_context=echo_tool_context(
+                run_id="run-1",
+                tool_name="echo",
+                arguments=arguments,
+                max_bytes=6_000,
+                registry=registry,
+            ),
+    )
     assert result.success is True
     assert len(result.output) <= 2000 + len(
         "\n... [output truncated: 5000 chars; use file_read with offset/limit to paginate]"
@@ -47,13 +59,24 @@ async def test_tool_registry_truncates_over_budget() -> None:
     assert result.metadata.get("original_len") == 5000
 
 
-async def test_tool_registry_keeps_output_within_budget() -> None:
+async def test_tool_registry_keeps_output_within_budget(echo_tool_context: Any) -> None:
     registry = ToolRegistry(ToolLimits(tool_output_budget_chars=2000), _AllowGuard())
     registry.register(
         ToolSpec(name="echo", description="echo", parameters=[ToolParam("content", "string", "")]),
         _echo_handler,
     )
-    result = await registry.execute("run-1", "echo", {"content": "short"})
+    arguments = {"content": "short"}
+    result = await registry.execute(
+        "run-1",
+        "echo",
+        arguments,
+            execution_context=echo_tool_context(
+                run_id="run-1",
+                tool_name="echo",
+                arguments=arguments,
+                registry=registry,
+            ),
+    )
     assert result.output == "short"
     assert result.metadata.get("truncated") is not True
 

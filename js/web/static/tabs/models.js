@@ -1,5 +1,5 @@
 import { state } from '../state/store.js';
-import { escapeHtml, showToast, showLoading, showError } from '../utils/dom.js';
+import { escapeHtml, showToast, showLoading, showError, el, onDataClick, sanitizeRuntimeId } from '../utils/dom.js';
 
 export function setCurrentModel(modelId) {
   state.selectedModel = modelId;
@@ -445,78 +445,145 @@ export async function loadModels() {
       }
     }
 
-    let html = '';
+    container.replaceChildren();
+    let rendered = false;
 
     if (data.providers && data.providers.length > 0) {
-      html += data.providers.map(p => {
+      for (const p of data.providers) {
+        const providerName = sanitizeRuntimeId(p.name);
+        if (!providerName) continue;
+        rendered = true;
+        const card = el('div', { className: 'bg-gray-900 border border-gray-800 rounded-xl p-4' });
+        const header = el('div', { className: 'flex items-center justify-between mb-3' });
+        header.appendChild(el('h3', { className: 'font-bold text-lg', text: providerName }));
+        const actions = el('div', { className: 'flex items-center gap-2' });
         const statusColor = p.healthy ? 'bg-green-900 text-green-400' : (p.has_key ? 'bg-red-900 text-red-400' : 'bg-yellow-900 text-yellow-400');
         const statusLabel = p.healthy ? '在线' : (p.has_key ? '离线' : '缺Key');
-        return `
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <div class="flex items-center justify-between mb-3">
-        <h3 class="font-bold text-lg">${escapeHtml(p.name)}</h3>
-        <div class="flex items-center gap-2">
-          <span class="text-xs px-2 py-1 rounded ${statusColor}">${statusLabel}</span>
-          <button onclick='updateProviderKey(${JSON.stringify(p.name)})' class="text-xs bg-blue-900/50 hover:bg-blue-900 text-blue-400 px-2 py-1 rounded transition" title="设置 API Key"><i class="fas fa-key"></i></button>
-          <button onclick='deleteProvider(${JSON.stringify(p.name)})' class="text-xs bg-red-900/50 hover:bg-red-900 text-red-400 px-2 py-1 rounded transition" title="删除"><i class="fas fa-trash"></i></button>
-        </div>
-      </div>
-      <p class="text-sm text-gray-400 mb-3">${escapeHtml(p.base_url)} ${p.health_error ? `<span class="text-red-400 text-xs ml-2">${escapeHtml(p.health_error)}</span>` : ''}</p>
-      <div class="space-y-2">
-        ${p.models.map(m => {
-          const fullId = `${p.name}/${m.id}`;
+        actions.appendChild(el('span', { className: `text-xs px-2 py-1 rounded ${statusColor}`, text: statusLabel }));
+        const keyBtn = el('button', {
+          className: 'text-xs bg-blue-900/50 hover:bg-blue-900 text-blue-400 px-2 py-1 rounded transition',
+          attrs: { type: 'button', title: '设置 API Key' },
+          dataset: { providerName },
+        });
+        keyBtn.appendChild(el('i', { className: 'fas fa-key' }));
+        onDataClick(keyBtn, 'providerName', (name) => updateProviderKey(name));
+        const delBtn = el('button', {
+          className: 'text-xs bg-red-900/50 hover:bg-red-900 text-red-400 px-2 py-1 rounded transition',
+          attrs: { type: 'button', title: '删除' },
+          dataset: { providerName },
+        });
+        delBtn.appendChild(el('i', { className: 'fas fa-trash' }));
+        onDataClick(delBtn, 'providerName', (name) => deleteProvider(name));
+        actions.appendChild(keyBtn);
+        actions.appendChild(delBtn);
+        header.appendChild(actions);
+        card.appendChild(header);
+
+        const urlLine = el('p', { className: 'text-sm text-gray-400 mb-3', text: String(p.base_url || '') });
+        if (p.health_error) {
+          urlLine.appendChild(document.createTextNode(' '));
+          urlLine.appendChild(el('span', {
+            className: 'text-red-400 text-xs ml-2',
+            text: String(p.health_error),
+          }));
+        }
+        card.appendChild(urlLine);
+
+        const modelList = el('div', { className: 'space-y-2' });
+        for (const m of (p.models || [])) {
+          const modelId = sanitizeRuntimeId(m.id);
+          if (!modelId) continue;
+          const fullId = sanitizeRuntimeId(`${providerName}/${modelId}`);
+          if (!fullId) continue;
           const isActive = state.selectedModel === fullId;
-          return `
-          <div class="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2 ${isActive ? 'ring-1 ring-blue-500' : ''}">
-            <div>
-              <span class="text-sm">${escapeHtml(m.name || m.id)}</span>
-              <span class="text-xs text-gray-500 font-mono ml-2">${escapeHtml(m.id)}</span>
-              <span class="text-xs text-gray-500 ml-2">${m.context_window ? m.context_window + ' tokens' : ''}</span>
-              ${isActive ? '<span class="text-xs bg-blue-900 text-blue-400 px-1.5 py-0.5 rounded ml-2">当前</span>' : ''}
-            </div>
-            <button onclick="switchModel(${JSON.stringify(fullId)})" class="text-xs ${isActive ? 'bg-gray-700 text-gray-400 cursor-default' : 'bg-blue-600 hover:bg-blue-700 text-white'} px-2 py-1 rounded transition">
-              ${isActive ? '使用中' : '切换'}
-            </button>
-          </div>
-          `;
-        }).join('')}
-      </div>
-    </div>
-    `;
-      }).join('');
+          const row = el('div', {
+            className: `flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2 ${isActive ? 'ring-1 ring-blue-500' : ''}`,
+          });
+          const info = el('div');
+          info.appendChild(el('span', { className: 'text-sm', text: m.name || modelId }));
+          info.appendChild(el('span', { className: 'text-xs text-gray-500 font-mono ml-2', text: modelId }));
+          if (m.context_window) {
+            info.appendChild(el('span', {
+              className: 'text-xs text-gray-500 ml-2',
+              text: `${m.context_window} tokens`,
+            }));
+          }
+          if (isActive) {
+            info.appendChild(el('span', {
+              className: 'text-xs bg-blue-900 text-blue-400 px-1.5 py-0.5 rounded ml-2',
+              text: '当前',
+            }));
+          }
+          row.appendChild(info);
+          const switchBtn = el('button', {
+            className: `text-xs ${isActive ? 'bg-gray-700 text-gray-400 cursor-default' : 'bg-blue-600 hover:bg-blue-700 text-white'} px-2 py-1 rounded transition`,
+            attrs: { type: 'button', disabled: isActive || null },
+            dataset: { modelId: fullId },
+            text: isActive ? '使用中' : '切换',
+          });
+          if (!isActive) {
+            onDataClick(switchBtn, 'modelId', (id) => switchModel(id));
+          }
+          row.appendChild(switchBtn);
+          modelList.appendChild(row);
+        }
+        card.appendChild(modelList);
+        container.appendChild(card);
+      }
     }
 
     if (data.presets && data.presets.length > 0) {
-      html += `<div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mt-4">
-      <h3 class="font-bold text-lg mb-3"><i class="fas fa-cloud text-blue-400 mr-2"></i>可添加的云模型</h3>
-      <p class="text-sm text-gray-400 mb-3">以下云模型尚未配置，选择后会提示您添加 API Key。</p>
-      <div class="space-y-4">
-        ${data.presets.map(preset => `
-          <div class="border border-gray-700/50 rounded-lg p-3">
-            <div class="flex items-center justify-between mb-2">
-              <span class="font-medium">${escapeHtml(preset.name)}</span>
-              <span class="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded">${escapeHtml(preset.api_key_env || 'API Key')}</span>
-            </div>
-            <p class="text-xs text-gray-500 mb-2">${escapeHtml(preset.description)}</p>
-            <div class="flex flex-wrap gap-2">
-              ${preset.models.map(m => `
-                <button onclick="switchModel('${escapeHtml(`${preset.id}/${m.id}`)}')" class="text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 px-2 py-1 rounded transition">
-                  ${escapeHtml(m.name || m.id)}
-                </button>
-              `).join('')}
-            </div>
-          </div>
-        `).join('')}
-      </div>
-    </div>`;
+      rendered = true;
+      const presetCard = el('div', { className: 'bg-gray-900 border border-gray-800 rounded-xl p-4 mt-4' });
+      const title = el('h3', { className: 'font-bold text-lg mb-3' });
+      title.appendChild(el('i', { className: 'fas fa-cloud text-blue-400 mr-2' }));
+      title.appendChild(document.createTextNode('可添加的云模型'));
+      presetCard.appendChild(title);
+      presetCard.appendChild(el('p', {
+        className: 'text-sm text-gray-400 mb-3',
+        text: '以下云模型尚未配置，选择后会提示您添加 API Key。',
+      }));
+      const list = el('div', { className: 'space-y-4' });
+      for (const preset of data.presets) {
+        const presetId = sanitizeRuntimeId(preset.id);
+        if (!presetId) continue;
+        const block = el('div', { className: 'border border-gray-700/50 rounded-lg p-3' });
+        const head = el('div', { className: 'flex items-center justify-between mb-2' });
+        head.appendChild(el('span', { className: 'font-medium', text: preset.name || presetId }));
+        head.appendChild(el('span', {
+          className: 'text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded',
+          text: preset.api_key_env || 'API Key',
+        }));
+        block.appendChild(head);
+        block.appendChild(el('p', {
+          className: 'text-xs text-gray-500 mb-2',
+          text: preset.description || '',
+        }));
+        const buttons = el('div', { className: 'flex flex-wrap gap-2' });
+        for (const m of (preset.models || [])) {
+          const modelId = sanitizeRuntimeId(m.id);
+          if (!modelId) continue;
+          const fullId = sanitizeRuntimeId(`${presetId}/${modelId}`);
+          if (!fullId) continue;
+          const btn = el('button', {
+            className: 'text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 px-2 py-1 rounded transition',
+            attrs: { type: 'button' },
+            dataset: { modelId: fullId },
+            text: m.name || modelId,
+          });
+          onDataClick(btn, 'modelId', (id) => switchModel(id));
+          buttons.appendChild(btn);
+        }
+        block.appendChild(buttons);
+        list.appendChild(block);
+      }
+      presetCard.appendChild(list);
+      container.appendChild(presetCard);
     }
 
-    if (!html) {
-      container.innerHTML = '<div class="text-gray-400">未配置模型 Provider</div>';
-      return;
+    if (!rendered) {
+      container.appendChild(el('div', { className: 'text-gray-400', text: '未配置模型 Provider' }));
     }
-
-    container.innerHTML = html;
   } catch (e) {
     showError('models-content', '加载模型失败: ' + e.message);
   }

@@ -16,6 +16,9 @@ logger = get_logger("js.optimizer")
 
 LLMCaller = Callable[[str], Awaitable[str]]
 
+_DEFAULT_MAX_RESULTS = 1_000
+_DEFAULT_MAX_VARIANTS_TOTAL = 1_000
+
 
 @dataclass
 class PromptVariant:
@@ -66,10 +69,7 @@ class PromptOptimizer:
                 CREATE INDEX IF NOT EXISTS idx_variants_context ON prompt_variants(context)
             """)
             # Migrate old tables missing mutation_type column
-            cols = {
-                row[1]
-                for row in conn.execute("PRAGMA table_info(prompt_variants)")
-            }
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(prompt_variants)")}
             if "mutation_type" not in cols:
                 conn.execute("ALTER TABLE prompt_variants ADD COLUMN mutation_type TEXT")
             conn.commit()
@@ -82,6 +82,7 @@ class PromptOptimizer:
     ) -> str:
         """Register a new prompt variant for testing."""
         import uuid
+
         variant_id = f"{context}_{uuid.uuid4().hex[:8]}"
         with db_connection(self.db_path) as conn:
             conn.execute(
@@ -94,7 +95,9 @@ class PromptOptimizer:
             conn.commit()
         return variant_id
 
-    def record_result(self, variant_id: str, success: bool, score: float, context: str = "") -> None:
+    def record_result(
+        self, variant_id: str, success: bool, score: float, context: str = ""
+    ) -> None:
         """Record the result of using a prompt variant."""
         with db_connection(self.db_path) as conn:
             conn.execute(
@@ -175,7 +178,9 @@ class PromptOptimizer:
 
         failure_context = ""
         if recent_failures:
-            failure_context = "\n## Recent Failures\n" + "\n".join(f"- {f}" for f in recent_failures[:5])
+            failure_context = "\n## Recent Failures\n" + "\n".join(
+                f"- {f}" for f in recent_failures[:5]
+            )
 
         prompt = (
             f"You are a prompt engineering expert. Improve the following prompt.\n\n"
@@ -207,13 +212,13 @@ class PromptOptimizer:
         variants: list[tuple[str, str]] = []
         for line in response.splitlines():
             if line.startswith("VARIANT") and "[" in line and "]" in line and ":" in line:
-                    bracket_start = line.index("[")
-                    bracket_end = line.index("]")
-                    colon_idx = line.index(":")
-                    mutation_type = line[bracket_start + 1:bracket_end].strip()
-                    prompt_text = line[colon_idx + 1:].strip()
-                    if prompt_text and len(prompt_text) > 20:
-                        variants.append((prompt_text, mutation_type))
+                bracket_start = line.index("[")
+                bracket_end = line.index("]")
+                colon_idx = line.index(":")
+                mutation_type = line[bracket_start + 1 : bracket_end].strip()
+                prompt_text = line[colon_idx + 1 :].strip()
+                if prompt_text and len(prompt_text) > 20:
+                    variants.append((prompt_text, mutation_type))
         return variants
 
     async def optimize_cycle(
@@ -254,3 +259,94 @@ class PromptOptimizer:
             "best_usage": best[3] if best else 0,
             "contexts": dict(contexts),
         }
+
+    def prune(
+        self,
+        *,
+        max_results: int = _DEFAULT_MAX_RESULTS,
+        max_variants_per_context: int = MAX_VARIANTS_PER_CONTEXT,
+        max_variants_total: int = _DEFAULT_MAX_VARIANTS_TOTAL,
+    ) -> int:
+        """Bound prompt experiments and recompute statistics from retained rows."""
+        limits = {
+            "max_results": max_results,
+            "max_variants_per_context": max_variants_per_context,
+            "max_variants_total": max_variants_total,
+        }
+        for name, value in limits.items():
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative")
+
+        with db_connection(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            changes_before = conn.total_changes
+            conn.execute(
+                """
+                CREATE TEMP TABLE prompt_variant_prune_candidates AS
+                WITH ranked AS (
+                    SELECT id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY context
+                               ORDER BY created_at DESC, id DESC
+                           ) AS context_rank
+                    FROM prompt_variants
+                )
+                SELECT id FROM ranked WHERE context_rank > ?
+                """,
+                (max_variants_per_context,),
+            )
+            conn.execute(
+                """
+                INSERT INTO prompt_variant_prune_candidates (id)
+                SELECT id FROM prompt_variants
+                WHERE id NOT IN (SELECT id FROM prompt_variant_prune_candidates)
+                ORDER BY created_at DESC, id DESC
+                LIMIT -1 OFFSET ?
+                """,
+                (max_variants_total,),
+            )
+            conn.execute(
+                """
+                DELETE FROM prompt_results
+                WHERE variant_id IN (SELECT id FROM prompt_variant_prune_candidates)
+                """
+            )
+            conn.execute(
+                """
+                DELETE FROM prompt_variants
+                WHERE id IN (SELECT id FROM prompt_variant_prune_candidates)
+                """
+            )
+            conn.execute(
+                """
+                DELETE FROM prompt_results
+                WHERE id IN (
+                    SELECT id FROM prompt_results
+                    ORDER BY used_at DESC, id DESC
+                    LIMIT -1 OFFSET ?
+                )
+                """,
+                (max_results,),
+            )
+            removed = conn.total_changes - changes_before
+            conn.execute(
+                """
+                UPDATE prompt_variants
+                SET success_rate = COALESCE(
+                        (SELECT AVG(success) FROM prompt_results
+                         WHERE variant_id = prompt_variants.id),
+                        1.0
+                    ),
+                    avg_score = COALESCE(
+                        (SELECT AVG(score) FROM prompt_results
+                         WHERE variant_id = prompt_variants.id),
+                        1.0
+                    ),
+                    usage_count = (
+                        SELECT COUNT(*) FROM prompt_results
+                        WHERE variant_id = prompt_variants.id
+                    )
+                """
+            )
+            conn.commit()
+            return removed

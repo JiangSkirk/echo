@@ -3,23 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import signal
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, Depends, Request
 
 from js import __version__
-from js.agent import JSAgent
-from js.config import JSSettings
 from js.utils.log import get_logger
 from js.web.auth import require_auth_dep
-from js.web.deps import get_agent, set_globals
+from js.web.deps import get_agent, get_echo_safety_service, get_stats_store
+from js.web.echo_status import echo_ledger_status, echo_status
 from js.web.messages import health_summary
-from js.web.stats_store import TokenStatsStore
 
 logger = get_logger("js.web")
 
@@ -27,98 +20,41 @@ router = APIRouter(tags=["system"])
 
 SERVER_VERSION = f"{__version__}+evolution"
 
-# Global state
-_agent: JSAgent | None = None
-_settings: JSSettings | None = None
-_stats_store: TokenStatsStore | None = None
-
-
-def _get_app_routes() -> list[dict[str, Any]]:
-    return []
-
-_TEMPLATE_DIR = Path(__file__).parent / "templates"
-_STATIC_DIR = Path(__file__).parent / "static"
-
-
-def set_app_routes(func: Callable[[], list[dict[str, Any]]]) -> None:
-    global _get_app_routes
-    _get_app_routes = func
-
-
-def _load_index_html() -> str:
-    path = _TEMPLATE_DIR / "index.html"
-    if path.exists():
-        return path.read_text(encoding="utf-8")
-    return "<h1>Template not found</h1>"
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
-    global _agent, _settings, _stats_store
-    _settings = JSSettings.from_file()
-    # Allow tests/CI to override state_dir without editing config files
-    if state_dir_env := os.getenv("JS_STATE_DIR"):
-        _settings.state_dir = Path(state_dir_env)
-        _settings.state_dir.mkdir(parents=True, exist_ok=True)
-    _agent = JSAgent(_settings)
-    _agent.start_background_tasks()
-    _stats_store = TokenStatsStore(_settings.state_dir)
-    # Sync shared deps so routers can access agent and stats store
-    set_globals(_agent, _settings, _stats_store)
-    # Clean up empty sessions on startup
-    try:
-        cleaned = _agent.memory.cleanup_empty_sessions()
-        if cleaned:
-            logger.info(f"Cleaned up {cleaned} empty sessions on startup")
-    except Exception:
-        logger.debug("Failed to clean up empty sessions", exc_info=True)
-    logger.info("Web UI agent initialized")
-
-    # SIGTERM handler for graceful shutdown
-    _shutdown_event = asyncio.Event()
-
-    def _handle_sigterm() -> None:
-        logger.info("SIGTERM received, initiating graceful shutdown")
-        _shutdown_event.set()
-
-    try:
-        loop = asyncio.get_running_loop()
-        try:
-            loop.add_signal_handler(signal.SIGTERM, _handle_sigterm)
-        except (NotImplementedError, ValueError, RuntimeError):
-            pass  # Windows, non-main thread, or already closed loop
-    except RuntimeError:
-        pass  # No running loop
-
-    try:
-        yield
-    finally:
-        try:
-            loop = asyncio.get_running_loop()
-            try:
-                loop.remove_signal_handler(signal.SIGTERM)
-            except (NotImplementedError, ValueError, RuntimeError):
-                pass
-        except RuntimeError:
-            pass
-        if _agent:
-            await _agent.close()
-        _agent = None
+_STATUS_HEALTH_VERIFY_CACHE_SECONDS = 30.0
 
 
 @router.get("/api/status")
 async def status(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
     agent = get_agent()
     await agent._check_degraded()
+    event_store = getattr(agent, "event_store", None)
+    try:
+        event_store_health = (
+            event_store.health()
+            if event_store is not None and hasattr(event_store, "health")
+            else {"ok": False, "last_error": "event store is unavailable"}
+        )
+    except Exception as exc:
+        event_store_health = {
+            "ok": False,
+            "last_error": f"{type(exc).__name__}: {exc}",
+        }
     # Presentation-layer Chinese health verdict for factory-floor users.
     # `degraded_reason` (English) is preserved below for developers/diagnostics.
-    providers_configured = any(
-        getattr(p, "models", None) for p in agent.settings.providers
+    providers_configured = any(getattr(p, "models", None) for p in agent.settings.providers)
+    summary = health_summary(degraded=agent.degraded, providers_configured=providers_configured)
+    echo_health = get_echo_safety_service(agent.settings).health(
+        max_verify_age_seconds=_STATUS_HEALTH_VERIFY_CACHE_SECONDS,
     )
-    summary = health_summary(
-        degraded=agent.degraded, providers_configured=providers_configured
+    product_id = str(getattr(agent.settings, "product_id", "js-agent"))
+    profile = str(
+        getattr(agent, "_work_profile", None)
+        or getattr(agent.settings, "work_profile", None)
+        or "default"
     )
     return {
+        "product_id": product_id,
+        "profile": profile,
         "workspace": str(agent.settings.workspace),
         "state_dir": str(agent.settings.state_dir),
         "max_turns": agent.settings.max_turns,
@@ -127,68 +63,26 @@ async def status(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, 
         "degraded_reason": agent.degraded_reason,
         "tool_stats": agent.registry.get_stats(),
         "secret_stats": agent.secrets.get_stats(),
+        "event_store": event_store_health,
+        "desktop_control_enabled": agent.settings.desktop_control_enabled,
+        "echo": echo_status(agent.settings, health=echo_health),
+        "echo_ledger": echo_ledger_status(echo_health),
+        "hermes_bridge": {
+            "enabled": bool(
+                getattr(getattr(agent, "skills", None), "hermes_skills_enabled", False)
+            ),
+            "opt_in": bool(getattr(getattr(agent, "skills", None), "hermes_skills_enabled", False)),
+            "skills_loaded": sum(
+                1
+                for s in (
+                    agent.skills.get_all().values()
+                    if getattr(agent, "skills", None) is not None
+                    else ()
+                )
+                if s.id.startswith("hermes:")
+            ),
+        },
         **summary,
-    }
-
-
-@router.get("/api/metrics/providers")
-async def provider_metrics(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-    """Return per-provider SLO metrics: health, latency percentiles, circuit state."""
-    agent = get_agent()
-    health = await agent.router.health_check()
-
-    # Pull Prometheus samples for provider metrics
-    from prometheus_client import REGISTRY
-
-    def _latency_stats(model: str, provider: str) -> dict[str, float]:
-        """Read P50/P95/P99 from histogram buckets (approximate)."""
-        stats = {"count": 0.0, "sum": 0.0, "p50": 0.0, "p95": 0.0, "p99": 0.0}
-        try:
-            for family in REGISTRY.collect():
-                if family.name == "model_latency_seconds":
-                    for sample in family.samples:
-                        if sample.labels.get("model") == model and sample.labels.get("provider") == provider:
-                            if sample.name.endswith("_count"):
-                                stats["count"] = sample.value
-                            elif sample.name.endswith("_sum"):
-                                stats["sum"] = sample.value
-                            elif sample.name.endswith("_bucket"):
-                                # Find buckets for p50/p95/p99 approximations
-                                le = sample.labels.get("le", "")
-                                if le not in ("+Inf", ""):
-                                    try:
-                                        bound = float(le)
-                                        if bound <= 0.5 and sample.value > 0:
-                                            stats["p50"] = bound
-                                        if bound <= 2.0 and sample.value > 0:
-                                            stats["p95"] = bound
-                                        if bound <= 5.0 and sample.value > 0:
-                                            stats["p99"] = bound
-                                    except ValueError:
-                                        logger.debug("Operation failed", exc_info=True)
-        except Exception:
-            logger.debug("Operation failed", exc_info=True)
-        return stats
-
-    providers: list[dict[str, Any]] = []
-    for p in agent.settings.providers:
-        for m in p.models:
-            lat = _latency_stats(m.id, p.name)
-            providers.append({
-                "name": p.name,
-                "model": m.id,
-                "healthy": health.get(p.name, False),
-                "latency_p50_ms": round(lat["p50"] * 1000, 1) if lat["p50"] else None,
-                "latency_p95_ms": round(lat["p95"] * 1000, 1) if lat["p95"] else None,
-                "latency_p99_ms": round(lat["p99"] * 1000, 1) if lat["p99"] else None,
-                "request_count": int(lat["count"]),
-            })
-
-    overall_healthy = any(p["healthy"] for p in providers)
-    return {
-        "overall_healthy": overall_healthy,
-        "degraded": agent.degraded,
-        "providers": providers,
     }
 
 
@@ -199,11 +93,41 @@ async def provider_metrics(auth: dict[str, Any] = Depends(require_auth_dep)) -> 
 # the in-app routes), silently dropping the owner check.
 
 
-@router.get("/api/diag")
-async def diag(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
-    """Diagnostic endpoint to verify server version, routes and subsystem health."""
+@router.get("/api/capabilities")
+async def capabilities(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+    """Authoritative product capability / navigation manifest."""
+    from js.web.capability_manifest import build_capability_manifest
+
     agent = get_agent()
-    routes = _get_app_routes()
+    return build_capability_manifest(agent.settings)
+
+
+@router.get("/api/appshell/prefs")
+async def appshell_prefs(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+    """Return chrome-level AppShell prefs (no secrets, no product memory)."""
+    from js.appshell.global_prefs import load_global_prefs
+
+    return load_global_prefs().as_dict()
+
+
+@router.get("/api/diag")
+async def diag(
+    request: Request,
+    auth: dict[str, Any] = Depends(require_auth_dep),
+) -> dict[str, Any]:
+    """Diagnostic endpoint to verify server version, routes and subsystem health."""
+    from js.web.runtime_context import current_web_runtime
+
+    runtime = current_web_runtime() or getattr(request.app.state, "web_runtime", None)
+    agent = runtime.agent if runtime is not None else get_agent()
+    http_methods = {"get", "post", "put", "patch", "delete", "options", "head"}
+    routes = [
+        {
+            "path": path,
+            "methods": [method.upper() for method in operations if method in http_methods],
+        }
+        for path, operations in request.app.openapi().get("paths", {}).items()
+    ]
     subsystems = {
         "metacognition": agent.metacognition is not None,
         "learner": agent.learner is not None,
@@ -214,19 +138,19 @@ async def diag(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, An
     }
     embedder_health = agent.memory.embedder.health()
 
-    # Hermes bridge stats
-    hermes_count: int = sum(
-        1 for s in agent.skills.get_all().values()
-        if s.id.startswith("hermes:")
-    )
+    # Hermes bridge stats (opt-in visibility)
+    skills = getattr(agent, "skills", None)
+    hermes_count = 0
+    hermes_opt_in = False
+    if skills is not None:
+        hermes_opt_in = bool(getattr(skills, "hermes_skills_enabled", False))
+        hermes_count = sum(1 for s in skills.get_all().values() if s.id.startswith("hermes:"))
 
     return {
         "version": SERVER_VERSION,
         "routes": sorted(routes, key=lambda x: x["path"]),
         "subsystems": subsystems,
-        "has_evolution_api": any(
-            r["path"] == "/api/evolution/run" for r in routes
-        ),
+        "has_evolution_api": any(r["path"] == "/api/evolution/run" for r in routes),
         "embedder": {
             "provider": embedder_health.provider,
             "active": embedder_health.active,
@@ -234,7 +158,8 @@ async def diag(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, An
             "failures": embedder_health.failure_count,
         },
         "hermes_bridge": {
-            "enabled": hermes_count > 0,
+            "enabled": hermes_opt_in,
+            "opt_in": hermes_opt_in,
             "skills_loaded": hermes_count,
         },
     }
@@ -265,13 +190,17 @@ async def dashboard(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[st
                     pass
                 # Get actual circuit state value (state is async method)
                 try:
-                    _state_val = await cb.state() if asyncio.iscoroutinefunction(cb.state) else cb.state
+                    _state_val = (
+                        await cb.state() if asyncio.iscoroutinefunction(cb.state) else cb.state
+                    )
                 except Exception:
-                    _state_val = getattr(cb, '_state', 'unknown')
+                    _state_val = getattr(cb, "_state", "unknown")
                 circuit_info = {
                     "state": _state_val.name if hasattr(_state_val, "name") else str(_state_val),
                     "failures": getattr(cb, "failure_count", getattr(cb, "_failures", 0)),
-                    "last_failure": getattr(cb, "last_failure_time", getattr(cb, "_last_failure_time", None)),
+                    "last_failure": getattr(
+                        cb, "last_failure_time", getattr(cb, "_last_failure_time", None)
+                    ),
                     "can_execute": can_exec,
                 }
         except Exception:
@@ -280,25 +209,30 @@ async def dashboard(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[st
         latency = {"p50_ms": None, "p95_ms": None, "p99_ms": None, "count": 0}
         try:
             from prometheus_client import REGISTRY
+
             for family in REGISTRY.collect():
                 if family.name == "model_latency_seconds":
                     for sample in family.samples:
-                        if sample.labels.get("provider") == p.name and sample.name.endswith("_count"):
+                        if sample.labels.get("provider") == p.name and sample.name.endswith(
+                            "_count"
+                        ):
                             latency["count"] = int(sample.value)
                         if sample.labels.get("provider") == p.name and sample.name.endswith("_sum"):
                             pass
         except Exception:
             pass
 
-        providers.append({
-            "name": p.name,
-            "base_url": p.base_url,
-            "healthy": prov_health,
-            "default_model": p.default_model,
-            "models_count": len(p.models),
-            "circuit": circuit_info,
-            "latency": latency,
-        })
+        providers.append(
+            {
+                "name": p.name,
+                "base_url": p.base_url,
+                "healthy": prov_health,
+                "default_model": p.default_model,
+                "models_count": len(p.models),
+                "circuit": circuit_info,
+                "latency": latency,
+            }
+        )
 
     # Active model
     active_model = ""
@@ -309,9 +243,10 @@ async def dashboard(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[st
 
     # Token stats (today + total)
     token_stats: dict[str, Any] = {"today": {}, "total": {}}
-    if _stats_store is not None:
+    stats_store = get_stats_store()
+    if stats_store is not None:
         try:
-            total = _stats_store.get_summary(days=30)
+            total = stats_store.get_summary(days=30)
             token_stats["total"] = {
                 "calls": total.get("total_calls", 0),
                 "prompt_tokens": total.get("total_prompt_tokens", 0),
@@ -357,7 +292,11 @@ async def dashboard(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[st
         all_skills = agent.skills.get_all()
         skill_counts["total"] = len(all_skills)
         skill_counts["hermes"] = sum(1 for s in all_skills.values() if s.id.startswith("hermes:"))
-        skill_counts["builtin"] = sum(1 for s in all_skills.values() if getattr(s, "trust_level", None) and getattr(s.trust_level, "value", "") == "builtin")
+        skill_counts["builtin"] = sum(
+            1
+            for s in all_skills.values()
+            if getattr(s, "trust_level", None) and getattr(s.trust_level, "value", "") == "builtin"
+        )
     except Exception:
         pass
 

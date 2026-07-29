@@ -46,11 +46,9 @@ class TestOfficeTools:
 
     @pytest.mark.asyncio
     async def test_csv_encoding_gbk(self, office: OfficeTools, tmp_path: Path) -> None:
-        """Write Chinese content with GBK encoding and read it back."""
-        result = await office.csv_write("chinese.csv", data='[["姓名","年龄"],["张三",30]]', encoding="utf-8")
-        assert result.success
-
-        result = await office.csv_read("chinese.csv", encoding="utf-8")
+        """Generic JS Agent keeps Python codec support for legacy Chinese CSVs."""
+        (tmp_path / "chinese.csv").write_bytes("姓名,年龄\n张三,30\n".encode("gbk"))
+        result = await office.csv_read("chinese.csv", encoding="gbk")
         assert result.success
         assert "张三" in result.output
 

@@ -18,8 +18,17 @@ def is_image(path: Path) -> bool:
     return path.suffix.lower() in SUPPORTED_IMAGE_SUFFIXES
 
 
+def _assert_image_size(path: Path) -> None:
+    size = path.stat().st_size
+    if size > MAX_IMAGE_SIZE:
+        raise ValueError(
+            f"Image too large: {size} bytes exceeds limit {MAX_IMAGE_SIZE} bytes"
+        )
+
+
 def encode_to_base64(path: Path) -> str:
     """Encode an image file to a base64 data URL."""
+    _assert_image_size(path)
     data = path.read_bytes()
     b64 = base64.b64encode(data).decode("ascii")
     mime = _guess_mime(path.suffix)
@@ -31,6 +40,19 @@ def create_image_message(path: Path) -> dict[str, Any]:
     return {
         "type": "image_url",
         "image_url": {"url": encode_to_base64(path)},
+    }
+
+
+def create_image_message_bytes(data: bytes, suffix: str) -> dict[str, Any]:
+    """Create an image part from bytes already admitted through Echo."""
+    if len(data) > MAX_IMAGE_SIZE:
+        raise ValueError(
+            f"Image too large: {len(data)} bytes exceeds limit {MAX_IMAGE_SIZE} bytes"
+        )
+    b64 = base64.b64encode(data).decode("ascii")
+    return {
+        "type": "image_url",
+        "image_url": {"url": f"data:{_guess_mime(suffix)};base64,{b64}"},
     }
 
 

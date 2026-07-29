@@ -144,7 +144,7 @@ class TestRepeatedFailureGuard:
 class TestToolResultCaching:
     """ToolRegistry result caching for idempotent tools."""
 
-    def test_cache_hit_returns_same_result(self):
+    def test_cache_hit_returns_same_result(self, echo_tool_context):
         guard = BehaviorGuard(MockSecurityConfig("enforce"), Path("/tmp/workspace"))
         registry = ToolRegistry(type("Limits", (), {"max_concurrent_tools": 10})(), guard)
 
@@ -155,13 +155,39 @@ class TestToolResultCaching:
         registry.register(spec, handler)
 
         # First call should execute
-        result1 = asyncio.run(registry.execute("run_1", "file_read", {"name": "world"}))
+        arguments = {"name": "world"}
+        result1 = asyncio.run(
+            registry.execute(
+                "run_1",
+                "file_read",
+                arguments,
+                execution_context=echo_tool_context(
+                    run_id="run_1",
+                    tool_name="file_read",
+                    arguments=arguments,
+                    registry=registry,
+                ),
+            )
+        )
         # Second call with same args should hit cache
-        result2 = asyncio.run(registry.execute("run_1", "file_read", {"name": "world"}))
+        result2 = asyncio.run(
+            registry.execute(
+                "run_1",
+                "file_read",
+                arguments,
+                execution_context=echo_tool_context(
+                    run_id="run_1",
+                    tool_name="file_read",
+                    arguments=arguments,
+                    registry=registry,
+                ),
+            )
+        )
+        assert result1.success is True
         assert result1.output == result2.output
         assert result1.success == result2.success
 
-    def test_cache_miss_for_different_args(self):
+    def test_cache_miss_for_different_args(self, echo_tool_context):
         guard = BehaviorGuard(MockSecurityConfig("enforce"), Path("/tmp/workspace"))
         registry = ToolRegistry(type("Limits", (), {"max_concurrent_tools": 10})(), guard)
 
@@ -175,11 +201,23 @@ class TestToolResultCaching:
         spec = ToolSpec(name="file_read", description="Read file", parameters=[], read_only=True)
         registry.register(spec, handler)
 
-        asyncio.run(registry.execute("run_1", "file_read", {"name": "a"}))
-        asyncio.run(registry.execute("run_1", "file_read", {"name": "b"}))
+        for arguments in ({"name": "a"}, {"name": "b"}):
+            asyncio.run(
+                registry.execute(
+                    "run_1",
+                    "file_read",
+                    arguments,
+                    execution_context=echo_tool_context(
+                        run_id="run_1",
+                        tool_name="file_read",
+                        arguments=arguments,
+                        registry=registry,
+                    ),
+                )
+            )
         assert call_count == 2
 
-    def test_cache_ttl_expires(self):
+    def test_cache_ttl_expires(self, echo_tool_context):
         guard = BehaviorGuard(MockSecurityConfig("enforce"), Path("/tmp/workspace"))
         registry = ToolRegistry(type("Limits", (), {"max_concurrent_tools": 10})(), guard)
         registry._cache_ttl_seconds = 0.01  # 10ms for testing
@@ -194,13 +232,38 @@ class TestToolResultCaching:
         spec = ToolSpec(name="file_read", description="Read file", parameters=[], read_only=True)
         registry.register(spec, handler)
 
-        asyncio.run(registry.execute("run_1", "file_read", {"name": "world"}))
+        arguments = {"name": "world"}
+        asyncio.run(
+            registry.execute(
+                "run_1",
+                "file_read",
+                arguments,
+                execution_context=echo_tool_context(
+                    run_id="run_1",
+                    tool_name="file_read",
+                    arguments=arguments,
+                    registry=registry,
+                ),
+            )
+        )
         import time
         time.sleep(0.02)
-        asyncio.run(registry.execute("run_1", "file_read", {"name": "world"}))
+        asyncio.run(
+            registry.execute(
+                "run_1",
+                "file_read",
+                arguments,
+                execution_context=echo_tool_context(
+                    run_id="run_1",
+                    tool_name="file_read",
+                    arguments=arguments,
+                    registry=registry,
+                ),
+            )
+        )
         assert call_count == 2  # Cache expired, handler called again
 
-    def test_no_cache_for_mutable_tools(self):
+    def test_no_cache_for_mutable_tools(self, echo_tool_context):
         guard = BehaviorGuard(MockSecurityConfig("enforce"), Path("/tmp/workspace"))
         registry = ToolRegistry(type("Limits", (), {"max_concurrent_tools": 10})(), guard)
 
@@ -214,11 +277,24 @@ class TestToolResultCaching:
         spec = ToolSpec(name="file_write", description="Write file", parameters=[], read_only=False)
         registry.register(spec, handler)
 
-        asyncio.run(registry.execute("run_1", "file_write", {"name": "world"}))
-        asyncio.run(registry.execute("run_1", "file_write", {"name": "world"}))
+        arguments = {"name": "world"}
+        for _ in range(2):
+            asyncio.run(
+                registry.execute(
+                    "run_1",
+                    "file_write",
+                    arguments,
+                    execution_context=echo_tool_context(
+                        run_id="run_1",
+                        tool_name="file_write",
+                        arguments=arguments,
+                        registry=registry,
+                    ),
+                )
+            )
         assert call_count == 2  # No caching for write tools
 
-    def test_failed_results_not_cached(self):
+    def test_failed_results_not_cached(self, echo_tool_context):
         guard = BehaviorGuard(MockSecurityConfig("enforce"), Path("/tmp/workspace"))
         registry = ToolRegistry(type("Limits", (), {"max_concurrent_tools": 10})(), guard)
 
@@ -232,6 +308,19 @@ class TestToolResultCaching:
         spec = ToolSpec(name="file_read", description="Read file", parameters=[], read_only=True)
         registry.register(spec, handler)
 
-        asyncio.run(registry.execute("run_1", "file_read", {"name": "world"}))
-        asyncio.run(registry.execute("run_1", "file_read", {"name": "world"}))
+        arguments = {"name": "world"}
+        for _ in range(2):
+            asyncio.run(
+                registry.execute(
+                    "run_1",
+                    "file_read",
+                    arguments,
+                    execution_context=echo_tool_context(
+                        run_id="run_1",
+                        tool_name="file_read",
+                        arguments=arguments,
+                        registry=registry,
+                    ),
+                )
+            )
         assert call_count == 2  # Failed results are not cached

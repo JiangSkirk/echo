@@ -6,6 +6,7 @@ import asyncio
 import json
 from pathlib import Path
 
+from js.security.sandbox import SandboxExecutor
 from js.skills.executor import execute_skill
 from js.skills.hermes_bridge import (
     HermesBridgeStats,
@@ -15,6 +16,11 @@ from js.skills.hermes_bridge import (
 )
 from js.skills.security import runtime_security_check
 from js.skills.spec import SkillSpec, SkillType
+
+
+def _strict_sandbox(workspace: Path) -> SandboxExecutor:
+    workspace.mkdir(parents=True, exist_ok=True)
+    return SandboxExecutor(workspace, strict_isolation=True)
 
 
 class TestHermesBridgeStats:
@@ -58,7 +64,9 @@ class TestRuntimeSecurityCheck:
         skill_dir.mkdir()
         manifest = skill_dir / "SKILL.md"
         manifest.write_text("---\nname: safe\ndescription: Safe skill\n---\n")
-        spec = SkillSpec(id="hermes:tampered", name="tampered", path=skill_dir, type=SkillType.PROMPT)
+        spec = SkillSpec(
+            id="hermes:tampered", name="tampered", path=skill_dir, type=SkillType.PROMPT
+        )
         spec.content_hash = "old_hash_1234"
         ok, warnings = runtime_security_check(spec)
         assert ok is False  # Integrity failure now blocks execution
@@ -69,7 +77,9 @@ class TestRuntimeSecurityCheck:
         skill_dir.mkdir(parents=True)
         manifest = skill_dir / "SKILL.md"
         manifest.write_text("---\nname: suspicious\n---\n")
-        spec = SkillSpec(id="hermes:suspicious", name="suspicious", path=skill_dir, type=SkillType.PROMPT)
+        spec = SkillSpec(
+            id="hermes:suspicious", name="suspicious", path=skill_dir, type=SkillType.PROMPT
+        )
         spec.content_hash = spec.compute_hash()
         ok, warnings = runtime_security_check(spec)
         assert ok is False
@@ -83,8 +93,11 @@ class TestRuntimeSecurityCheck:
         manifest = skill_dir / "SKILL.md"
         manifest.write_text("---\nname: leaky\n---\n")
         spec = SkillSpec(
-            id="hermes:leaky", name="leaky", path=skill_dir,
-            type=SkillType.CODE, entry="main.py",
+            id="hermes:leaky",
+            name="leaky",
+            path=skill_dir,
+            type=SkillType.CODE,
+            entry="main.py",
         )
         spec.content_hash = spec.compute_hash()
         ok, warnings = runtime_security_check(spec)
@@ -99,8 +112,11 @@ class TestRuntimeSecurityCheck:
         manifest = skill_dir / "SKILL.md"
         manifest.write_text("---\nname: safe\n---\n")
         spec = SkillSpec(
-            id="hermes:safe-code", name="safe-code", path=skill_dir,
-            type=SkillType.CODE, entry="main.py",
+            id="hermes:safe-code",
+            name="safe-code",
+            path=skill_dir,
+            type=SkillType.CODE,
+            entry="main.py",
         )
         spec.content_hash = spec.compute_hash()
         ok, warnings = runtime_security_check(spec)
@@ -127,13 +143,16 @@ description: A refresh test skill
 ---
 """)
 
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setattr("js.skills.hermes_bridge.DEFAULT_HERMES_HOME", fake_hermes)
         monkeypatch.setattr("js.skills.hermes_bridge.HERMES_SKILLS_DIR", fake_skills)
 
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
-        manager = SkillManager(state_dir, workspace)
+        manager = SkillManager(state_dir, workspace, hermes_skills_enabled=True)
         import asyncio
+
         asyncio.run(manager.load_hermes_async())
 
         assert "hermes:test-refresh" in manager.get_all()
@@ -163,19 +182,23 @@ description: New after refresh
         skill_dir.mkdir()
         skill_dir.joinpath("SKILL.md").write_text("---\nname: to-delete\n---\n")
 
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setattr("js.skills.hermes_bridge.DEFAULT_HERMES_HOME", fake_hermes)
         monkeypatch.setattr("js.skills.hermes_bridge.HERMES_SKILLS_DIR", fake_skills)
 
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
-        manager = SkillManager(state_dir, workspace)
+        manager = SkillManager(state_dir, workspace, hermes_skills_enabled=True)
         import asyncio
+
         asyncio.run(manager.load_hermes_async())
 
         assert "hermes:to-delete" in manager.get_all()
 
         # Delete the skill directory
         import shutil
+
         shutil.rmtree(skill_dir)
 
         result = manager.refresh_hermes_skills()
@@ -192,8 +215,11 @@ class TestHermesSkillExecutionSecurity:
         manifest = skill_dir / "SKILL.md"
         manifest.write_text("---\nname: dangerous\n---\n")
         spec = SkillSpec(
-            id="hermes:dangerous", name="dangerous", path=skill_dir,
-            type=SkillType.CODE, entry="main.py",
+            id="hermes:dangerous",
+            name="dangerous",
+            path=skill_dir,
+            type=SkillType.CODE,
+            entry="main.py",
         )
         spec.content_hash = spec.compute_hash()
         result = asyncio.run(execute_skill(spec, {}, tmp_path / "workspace"))
@@ -201,7 +227,7 @@ class TestHermesSkillExecutionSecurity:
         assert result.get("security_blocked") is True
         assert "quarantine" in result["error"].lower()
 
-    def test_hermes_skill_execution_with_hermes_home_injected(self, tmp_path: Path):
+    def test_hermes_skill_execution_filters_host_hermes_home(self, tmp_path: Path):
         skill_dir = tmp_path / "hermes_env_test"
         skill_dir.mkdir()
         script = skill_dir / "main.py"
@@ -215,14 +241,25 @@ print(json.dumps({
         manifest = skill_dir / "SKILL.md"
         manifest.write_text("---\nname: env-test\n---\n")
         spec = SkillSpec(
-            id="hermes:env-test", name="env-test", path=skill_dir,
-            type=SkillType.CODE, entry="main.py",
+            id="hermes:env-test",
+            name="env-test",
+            path=skill_dir,
+            type=SkillType.CODE,
+            entry="main.py",
         )
         spec.content_hash = spec.compute_hash()
-        result = asyncio.run(execute_skill(spec, {"test": True}, tmp_path / "workspace"))
+        workspace = tmp_path / "workspace"
+        result = asyncio.run(
+            execute_skill(
+                spec,
+                {"test": True},
+                workspace,
+                sandbox=_strict_sandbox(workspace),
+            )
+        )
         assert result["success"] is True
         output = json.loads(result["output"].strip())
-        assert output["hermes_home"] != "NOT_SET"
+        assert output["hermes_home"] == "NOT_SET"
         args = json.loads(output["js_args"])
         assert args["test"] is True
 
@@ -234,8 +271,11 @@ print(json.dumps({
         manifest = skill_dir / "SKILL.md"
         manifest.write_text("---\nname: sensitive\n---\n")
         spec = SkillSpec(
-            id="hermes:sensitive", name="sensitive", path=skill_dir,
-            type=SkillType.CODE, entry="main.py",
+            id="hermes:sensitive",
+            name="sensitive",
+            path=skill_dir,
+            type=SkillType.CODE,
+            entry="main.py",
         )
         spec.content_hash = spec.compute_hash()
         # Runtime check now blocks execution for sensitive-path references
@@ -257,8 +297,11 @@ class TestHermesNamespace:
         script = skill_dir / "main.py"
         script.write_text("import os\nprint(os.path.expanduser('~/.ssh/id_rsa'))\n")
         spec = SkillSpec(
-            id="native-test", name="native-test", path=skill_dir,
-            type=SkillType.CODE, entry="main.py",
+            id="native-test",
+            name="native-test",
+            path=skill_dir,
+            type=SkillType.CODE,
+            entry="main.py",
         )
         spec.content_hash = spec.compute_hash()
         # Native skill should not trigger Hermes quarantine check

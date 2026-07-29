@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
 
@@ -18,7 +20,9 @@ class FleetCollaborateTool:
     # Rate limiting: max 3 fleet calls per 60s window to prevent abuse
     _MAX_CALLS_PER_WINDOW = 3
     _WINDOW_SECONDS = 60.0
-    _call_timestamps: list[float] = []
+    _MAX_RATE_LIMIT_SCOPES = 1024
+    _rate_limit_lock = threading.Lock()
+    _call_timestamps_by_scope: OrderedDict[str, list[float]] = OrderedDict()
 
     def __init__(self, fleet_factory: Callable[[], Any]) -> None:
         self._fleet_factory = fleet_factory
@@ -46,13 +50,39 @@ class FleetCollaborateTool:
                     "如果不提供，系统会自动拆分。",
                     required=False,
                 ),
+                ToolParam(
+                    "session_id",
+                    "string",
+                    "Optional safe Fleet session identifier.",
+                    required=False,
+                ),
+                ToolParam(
+                    "role_mapping",
+                    "object",
+                    "Optional subtask-index to safe role-name mapping.",
+                    required=False,
+                ),
+                ToolParam(
+                    "mode",
+                    "string",
+                    "Collaboration strategy.",
+                    required=False,
+                    enum=["auto", "debate", "sequential", "manager"],
+                ),
             ],
         )
 
     def register(self, registry: Any) -> None:
         registry.register(self.get_spec(), self.collaborate)
 
-    async def collaborate(self, task: str, subtasks: list[str] | None = None) -> ToolResult:
+    async def collaborate(
+        self,
+        task: str,
+        subtasks: list[str] | None = None,
+        session_id: str | None = None,
+        role_mapping: dict[int | str, str] | None = None,
+        mode: str = "auto",
+    ) -> ToolResult:
         """Execute a task via the AgentFleet."""
         # Sanitize inputs to prevent prompt injection into sub-agent system prompts.
         # Subtask strings are injected directly into agent instructions; strip
@@ -77,18 +107,63 @@ class FleetCollaborateTool:
                     break
             return text[:_max_subtask_len]
 
-        sanitized_subtasks: list[str] | None = None
-        if subtasks:
-            sanitized_subtasks = [_sanitize(s) for s in subtasks]
+        from js.orchestration.fleet import AgentFleet
+
+        try:
+            (
+                normalized_task,
+                normalized_subtasks,
+                normalized_session_id,
+                normalized_role_mapping,
+                normalized_mode,
+            ) = AgentFleet._validate_collaboration_request(
+                task,
+                subtasks,
+                session_id,
+                role_mapping,
+                mode,
+            )
+        except (TypeError, ValueError):
+            return ToolResult(
+                success=False,
+                error="Invalid Fleet collaboration request",
+                metadata={"status_code": 400},
+            )
+
+        sanitized_subtasks = (
+            [_sanitize(subtask) for subtask in normalized_subtasks]
+            if normalized_subtasks is not None
+            else None
+        )
 
         # Rate limit: prevent excessive fleet calls in a short window
         import time as _time
+
+        from js.echo.turn_context import current_owner_key_hash, current_runtime_context
+
         now = _time.time()
-        FleetCollaborateTool._call_timestamps = [
-            t for t in FleetCollaborateTool._call_timestamps
-            if now - t < FleetCollaborateTool._WINDOW_SECONDS
-        ]
-        if len(FleetCollaborateTool._call_timestamps) >= FleetCollaborateTool._MAX_CALLS_PER_WINDOW:
+        runtime_context = current_runtime_context()
+        product_id = runtime_context.product_id if runtime_context is not None else "js-agent"
+        owner = current_owner_key_hash("local-user") or "local-user"
+        scope = f"{product_id}:{owner}"
+        with FleetCollaborateTool._rate_limit_lock:
+            timestamps = FleetCollaborateTool._call_timestamps_by_scope.get(scope, [])
+            timestamps = [
+                timestamp
+                for timestamp in timestamps
+                if now - timestamp < FleetCollaborateTool._WINDOW_SECONDS
+            ]
+            FleetCollaborateTool._call_timestamps_by_scope[scope] = timestamps
+            FleetCollaborateTool._call_timestamps_by_scope.move_to_end(scope)
+            while (
+                len(FleetCollaborateTool._call_timestamps_by_scope)
+                > FleetCollaborateTool._MAX_RATE_LIMIT_SCOPES
+            ):
+                FleetCollaborateTool._call_timestamps_by_scope.popitem(last=False)
+            rate_limited = len(timestamps) >= FleetCollaborateTool._MAX_CALLS_PER_WINDOW
+            if not rate_limited:
+                timestamps.append(now)
+        if rate_limited:
             return ToolResult(
                 success=False,
                 error=(
@@ -98,24 +173,57 @@ class FleetCollaborateTool:
                     "Please wait before delegating again."
                 ),
             )
-        FleetCollaborateTool._call_timestamps.append(now)
 
         try:
             fleet = self._fleet_factory()
-        except Exception as e:
-            return ToolResult(success=False, error=f"Fleet not available: {e}")
+        except Exception:
+            logger.error("Fleet factory failed", exc_info=True)
+            return ToolResult(
+                success=False,
+                error="Fleet is unavailable",
+                metadata={"status_code": 503},
+            )
 
         try:
-            result = await fleet.collaborate(main_task=_sanitize(task), subtasks=sanitized_subtasks)
-            final = result.get("final", "")
+            result = await fleet.collaborate(
+                main_task=_sanitize(normalized_task),
+                subtasks=sanitized_subtasks,
+                session_id=normalized_session_id,
+                role_mapping=normalized_role_mapping,
+                mode=normalized_mode,
+            )
+            final = str(result.get("final", ""))
             review = result.get("review")
+            raw_subtasks = result.get("subtasks", {})
+            bounded_subtasks = (
+                {
+                    str(key)[:500]: str(value)[:1000]
+                    for key, value in list(raw_subtasks.items())[:20]
+                }
+                if isinstance(raw_subtasks, dict)
+                else {}
+            )
             meta: dict[str, Any] = {
-                "subtask_count": len(result.get("subtasks", {})),
-                "subtask_results": result.get("subtasks", {}),
+                "session_id": str(result.get("session_id", normalized_session_id or ""))[:128],
+                "mode": str(result.get("mode", normalized_mode)),
+                "subtask_count": len(bounded_subtasks),
+                "subtasks": bounded_subtasks,
             }
             if review:
-                meta["review"] = review
+                meta["review"] = str(review)[:2000]
             return ToolResult(success=True, output=final, metadata=meta)
-        except Exception as e:
-            logger.error(f"Fleet collaboration failed: {e}", exc_info=True)
-            return ToolResult(success=False, error=f"Collaboration failed: {e}")
+        except Exception as exc:
+            from js.orchestration.fleet import FleetCapacityError
+
+            logger.error("Fleet collaboration failed", exc_info=True)
+            status_code = 503 if isinstance(exc, FleetCapacityError) else 500
+            error = (
+                "Fleet capacity is exhausted"
+                if status_code == 503
+                else "Fleet collaboration failed"
+            )
+            return ToolResult(
+                success=False,
+                error=error,
+                metadata={"status_code": status_code},
+            )

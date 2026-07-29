@@ -26,6 +26,7 @@ from js.skills.spec import SkillSpec, SkillType, TrustLevel, parse_skill_manifes
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def fake_hermes_home(tmp_path: Path, monkeypatch):
     """Create a fake Hermes home directory with sample skills."""
@@ -124,7 +125,9 @@ Search academic papers.
     )
     refs_subdir = research_dir / "references"
     refs_subdir.mkdir()
-    refs_subdir.joinpath("api.md").write_text("# arXiv API\n\nEndpoint: https://export.arxiv.org/api/\n")
+    refs_subdir.joinpath("api.md").write_text(
+        "# arXiv API\n\nEndpoint: https://export.arxiv.org/api/\n"
+    )
 
     # 5. Hidden/internal skill (should be skipped)
     hidden_dir = skills_dir / ".hub" / "quarantine" / "suspicious"
@@ -141,16 +144,24 @@ description: "Should be skipped."
     hub_dir = skills_dir / ".hub"
     hub_dir.mkdir(exist_ok=True)
     hub_dir.joinpath("lock.json").write_text(
-        json.dumps({
-            "skills": {
-                "plan": {"source": "builtin", "installed_at": "2024-01-01"},
-                "apple-notes": {"source": "community", "installed_at": "2024-02-01"},
-                "auto-deploy": {"source": "github", "repo": "acme/skills", "installed_at": "2024-03-01"},
+        json.dumps(
+            {
+                "skills": {
+                    "plan": {"source": "builtin", "installed_at": "2024-01-01"},
+                    "apple-notes": {"source": "community", "installed_at": "2024-02-01"},
+                    "auto-deploy": {
+                        "source": "github",
+                        "repo": "acme/skills",
+                        "installed_at": "2024-03-01",
+                    },
+                }
             }
-        })
+        )
     )
 
-    # Patch DEFAULT_HERMES_HOME for the duration of the test
+    # Call-time discovery uses Path.home() / HERMES_HOME — isolate HOME.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
     monkeypatch.setattr("js.skills.hermes_bridge.DEFAULT_HERMES_HOME", hermes_home)
     monkeypatch.setattr("js.skills.hermes_bridge.HERMES_SKILLS_DIR", skills_dir)
 
@@ -160,6 +171,7 @@ description: "Should be skipped."
 # ---------------------------------------------------------------------------
 # Discovery tests
 # ---------------------------------------------------------------------------
+
 
 class TestDiscovery:
     def test_discover_hermes_skills(self, fake_hermes_home):
@@ -190,6 +202,7 @@ class TestDiscovery:
 # ---------------------------------------------------------------------------
 # Loading tests
 # ---------------------------------------------------------------------------
+
 
 class TestLoading:
     def test_load_simple_prompt_skill(self, fake_hermes_home):
@@ -260,6 +273,7 @@ class TestLoading:
 # Trust level tests
 # ---------------------------------------------------------------------------
 
+
 class TestTrustLevels:
     def test_builtin_trust_from_lock(self, fake_hermes_home):
         lock = _load_hub_lock()
@@ -281,6 +295,7 @@ class TestTrustLevels:
 # Type inference tests
 # ---------------------------------------------------------------------------
 
+
 class TestTypeInference:
     def test_prompt_type_no_scripts(self, fake_hermes_home):
         plan_manifest = fake_hermes_home / "skills" / "software-development" / "plan" / "SKILL.md"
@@ -301,6 +316,7 @@ class TestTypeInference:
 # ---------------------------------------------------------------------------
 # Template variable substitution tests
 # ---------------------------------------------------------------------------
+
 
 class TestTemplateSubstitution:
     def test_substitute_skill_dir(self):
@@ -333,6 +349,7 @@ class TestTemplateSubstitution:
 # ---------------------------------------------------------------------------
 # Security scan tests
 # ---------------------------------------------------------------------------
+
 
 class TestSecurityScan:
     def test_enhanced_scan_on_safe_skill(self, fake_hermes_home):
@@ -371,6 +388,7 @@ os.system("rm -rf /")
 # Hermes namespace utilities
 # ---------------------------------------------------------------------------
 
+
 class TestNamespaceUtilities:
     def test_is_hermes_skill(self):
         assert is_hermes_skill("hermes:plan") is True
@@ -384,6 +402,7 @@ class TestNamespaceUtilities:
 # Manager integration tests
 # ---------------------------------------------------------------------------
 
+
 class TestManagerIntegration:
     def test_skill_manager_loads_hermes_skills(self, fake_hermes_home, tmp_path: Path):
         """Test that SkillManager._load_hermes_skills() integrates correctly."""
@@ -391,8 +410,9 @@ class TestManagerIntegration:
 
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
-        manager = SkillManager(state_dir, workspace)
+        manager = SkillManager(state_dir, workspace, hermes_skills_enabled=True)
         import asyncio
+
         asyncio.run(manager.load_hermes_async())
 
         hermes_skills = {k: v for k, v in manager.get_all().items() if k.startswith("hermes:")}
@@ -405,8 +425,9 @@ class TestManagerIntegration:
 
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
-        manager = SkillManager(state_dir, workspace)
+        manager = SkillManager(state_dir, workspace, hermes_skills_enabled=True)
         import asyncio
+
         asyncio.run(manager.load_hermes_async())
 
         all_skills = manager.list_skills(only_compatible=False)
@@ -418,8 +439,9 @@ class TestManagerIntegration:
 
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
-        manager = SkillManager(state_dir, workspace)
+        manager = SkillManager(state_dir, workspace, hermes_skills_enabled=True)
         import asyncio
+
         asyncio.run(manager.load_hermes_async())
 
         detail = manager.view_skill("hermes:arxiv")
@@ -452,8 +474,9 @@ class TestManagerIntegration:
 
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
-        manager = SkillManager(state_dir, workspace)
+        manager = SkillManager(state_dir, workspace, hermes_skills_enabled=True)
         import asyncio
+
         asyncio.run(manager.load_hermes_async())
 
         software = manager.list_skills(category="software-development")
@@ -465,8 +488,9 @@ class TestManagerIntegration:
 
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
-        manager = SkillManager(state_dir, workspace)
+        manager = SkillManager(state_dir, workspace, hermes_skills_enabled=True)
         import asyncio
+
         asyncio.run(manager.load_hermes_async())
 
         results = manager.search_skills("arxiv")
@@ -477,8 +501,9 @@ class TestManagerIntegration:
 
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
-        manager = SkillManager(state_dir, workspace)
+        manager = SkillManager(state_dir, workspace, hermes_skills_enabled=True)
         import asyncio
+
         asyncio.run(manager.load_hermes_async())
 
         stats = manager.get_global_stats()
@@ -492,8 +517,9 @@ class TestManagerIntegration:
         state_dir = tmp_path / "state"
         workspace = tmp_path / "workspace"
 
-        manager = SkillManager(state_dir, workspace)
+        manager = SkillManager(state_dir, workspace, hermes_skills_enabled=True)
         import asyncio
+
         asyncio.run(manager.load_hermes_async())
         # "plan" might conflict — verify Hermes version is namespaced
         if "plan" in manager.get_all():

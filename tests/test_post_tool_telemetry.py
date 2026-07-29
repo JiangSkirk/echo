@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from js.agent.runner import TurnExecutor
 from js.agent.state import AgentState
+from js.echo.turn_loop import EchoTurnLoop
 from js.models.providers import ChatMessage
 from js.security.audit import AuditEventType
 from js.tools.registry import ToolResult
 
 
-def _make_executor(session_id: str = "s-1", run_id: str = "r-1") -> TurnExecutor:
+def _make_executor(session_id: str = "s-1", run_id: str = "r-1") -> EchoTurnLoop:
     agent = MagicMock()
     agent.settings.max_turns = 10
-    executor = TurnExecutor(
+    executor = EchoTurnLoop(
         agent=agent,
         user_input="hi",
         session_id=session_id,
@@ -30,7 +30,7 @@ def _make_executor(session_id: str = "s-1", run_id: str = "r-1") -> TurnExecutor
     return executor
 
 
-@patch("js.agent.runner.get_metrics")
+@patch("js.echo.turn_loop.get_metrics")
 def test_telemetry_logs_batch_details(mock_get_metrics: MagicMock) -> None:
     executor = _make_executor()
     batch = [
@@ -67,7 +67,7 @@ def test_telemetry_logs_batch_details(mock_get_metrics: MagicMock) -> None:
     mock_get_metrics.return_value.tool_batches_total.labels.return_value.inc.assert_called_once()
 
 
-@patch("js.agent.runner.get_metrics")
+@patch("js.echo.turn_loop.get_metrics")
 def test_telemetry_all_failed_true(mock_get_metrics: MagicMock) -> None:
     executor = _make_executor()
     batch = [
@@ -87,7 +87,7 @@ def test_telemetry_all_failed_true(mock_get_metrics: MagicMock) -> None:
     )
 
 
-@patch("js.agent.runner.get_metrics")
+@patch("js.echo.turn_loop.get_metrics")
 def test_telemetry_empty_batch(mock_get_metrics: MagicMock) -> None:
     executor = _make_executor()
     executor._emit_tool_telemetry(executor.state, [], None)

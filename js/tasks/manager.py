@@ -94,6 +94,12 @@ class TaskManager:
                 conn.execute("SELECT owner_key_hash FROM tasks LIMIT 1")
             except sqlite3.OperationalError:
                 conn.execute("ALTER TABLE tasks ADD COLUMN owner_key_hash TEXT")
+            # Legacy unowned rows belong only to the local single-user tenant;
+            # authenticated owners must never inherit them implicitly.
+            conn.execute(
+                "UPDATE tasks SET owner_key_hash = ? WHERE owner_key_hash IS NULL",
+                ("local-user",),
+            )
             conn.commit()
 
     def register(
@@ -113,7 +119,18 @@ class TaskManager:
                 INSERT INTO tasks (id, name, type, status, progress, created_at, updated_at, session_id, can_resume, owner_key_hash)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (task_id, name, type, "running", 0.0, now, now, session_id, 1 if can_resume else 0, owner_key_hash),
+                (
+                    task_id,
+                    name,
+                    type,
+                    "running",
+                    0.0,
+                    now,
+                    now,
+                    session_id,
+                    1 if can_resume else 0,
+                    owner_key_hash or "local-user",
+                ),
             )
             conn.commit()
         logger.debug(f"Task registered: {task_id} ({name})")
@@ -169,7 +186,7 @@ class TaskManager:
             if owner_key_hash:
                 cur = conn.execute(
                     "UPDATE tasks SET status = ?, updated_at = ? "
-                    "WHERE id = ? AND (owner_key_hash = ? OR owner_key_hash IS NULL)",
+                    "WHERE id = ? AND owner_key_hash = ?",
                     ("paused", now, task_id, owner_key_hash),
                 )
             else:
@@ -187,7 +204,7 @@ class TaskManager:
             if owner_key_hash:
                 cur = conn.execute(
                     "UPDATE tasks SET status = ?, updated_at = ? "
-                    "WHERE id = ? AND (owner_key_hash = ? OR owner_key_hash IS NULL)",
+                    "WHERE id = ? AND owner_key_hash = ?",
                     ("running", now, task_id, owner_key_hash),
                 )
             else:
@@ -203,7 +220,7 @@ class TaskManager:
         with self._conn() as conn:
             if owner_key_hash:
                 cur = conn.execute(
-                    "DELETE FROM tasks WHERE id = ? AND (owner_key_hash = ? OR owner_key_hash IS NULL)",
+                    "DELETE FROM tasks WHERE id = ? AND owner_key_hash = ?",
                     (task_id, owner_key_hash),
                 )
             else:
@@ -216,7 +233,7 @@ class TaskManager:
         with self._conn() as conn:
             if owner_key_hash:
                 row = conn.execute(
-                    "SELECT * FROM tasks WHERE id = ? AND (owner_key_hash = ? OR owner_key_hash IS NULL)",
+                    "SELECT * FROM tasks WHERE id = ? AND owner_key_hash = ?",
                     (task_id, owner_key_hash),
                 ).fetchone()
             else:
@@ -238,7 +255,7 @@ class TaskManager:
             conditions: list[str] = []
             params: list[Any] = []
             if owner_key_hash:
-                conditions.append("(owner_key_hash = ? OR owner_key_hash IS NULL)")
+                conditions.append("owner_key_hash = ?")
                 params.append(owner_key_hash)
             if status:
                 conditions.append("status = ?")

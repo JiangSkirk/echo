@@ -199,8 +199,13 @@ class TestFleetIsolation:
         a2 = fleet._spawn_reviewer()
 
         assert a1.agent.settings.state_dir != a2.agent.settings.state_dir
-        assert a1.agent.settings.state_dir.parent.name == "fleet"
-        assert a2.agent.settings.state_dir.parent.name == "fleet"
+        fleet_state_root = (settings.state_dir / "fleet").resolve()
+        for instance in (a1, a2):
+            relative = instance.agent.settings.state_dir.resolve().relative_to(fleet_state_root)
+            assert len(relative.parts) == 3
+            assert relative.parts[-1] == instance.id
+            assert instance.product_id
+            assert instance.owner_key_hash
 
     @pytest.mark.asyncio
     async def test_fleet_collaborate_times_out(self, tmp_path: Path) -> None:
@@ -228,9 +233,15 @@ class TestWebUIApp:
 
     def test_create_app(self) -> None:
         """create_app() returns a valid FastAPI instance."""
+        from fastapi.routing import iter_route_contexts
+
         app = create_app()
         assert app is not None
-        routes = [r.path for r in app.routes if hasattr(r, "path")]
+        routes = {
+            route.path
+            for context in iter_route_contexts(app.routes)
+            if (route := context.route) is not None and hasattr(route, "path")
+        }
         assert "/api/models" in routes
         assert "/api/status" in routes
         assert "/ws" in routes

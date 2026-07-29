@@ -50,9 +50,10 @@ async def start_scenario(scenario_id: str, auth: dict[str, Any] = Depends(requir
         fleet_config[role.role] = ""
 
     # Check and suggest skills
+    skills_manager = getattr(agent, "skills", None)
     skills_status: list[dict[str, Any]] = []
     for skill_id in scenario.suggested_skills:
-        skill = agent.skills.get(skill_id)  # type: ignore[attr-defined]
+        skill = skills_manager.get(skill_id) if skills_manager is not None else None
         skills_status.append({
             "id": skill_id,
             "available": skill is not None,

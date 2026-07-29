@@ -23,6 +23,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from js.utils.db import (
+    is_recoverable_database_corruption,
+    quarantine_corrupt_database,
+)
+
 _LEGACY_LOCAL_OWNER = "__legacy_local__"
 
 
@@ -86,9 +91,10 @@ class PromotionStore:
         try:
             with sqlite3.connect(str(self.db_path)) as conn:
                 conn.execute("PRAGMA journal_mode=WAL")
-        except sqlite3.DatabaseError:
-            # Corrupted file — drop and recreate (matches lifecycle_store behavior).
-            self.db_path.unlink(missing_ok=True)
+        except sqlite3.DatabaseError as error:
+            if not is_recoverable_database_corruption(error):
+                raise
+            quarantine_corrupt_database(self.db_path)
             with sqlite3.connect(str(self.db_path)) as conn:
                 conn.execute("PRAGMA journal_mode=WAL")
         with self._conn() as conn:

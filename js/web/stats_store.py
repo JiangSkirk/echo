@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+_DEFAULT_MAX_ROWS = 1_000
+
 
 class TokenStatsStore:
     """SQLite-backed store for token usage statistics."""
@@ -74,13 +76,30 @@ class TokenStatsStore:
             )
             conn.commit()
 
-    def prune(self, days: int = 90) -> int:
-        """Remove token usage records older than *days*. Returns rows deleted."""
+    def prune(self, days: int = 90, max_rows: int = _DEFAULT_MAX_ROWS) -> int:
+        """Apply the age window, then retain only the newest ``max_rows``."""
+        if days < 0:
+            raise ValueError("days must be non-negative")
+        if max_rows < 0:
+            raise ValueError("max_rows must be non-negative")
+
         since = time.time() - days * 86400
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("DELETE FROM token_usage WHERE timestamp < ?", (since,))
-            conn.commit()
-            return cursor.rowcount
+            changes_before = conn.total_changes
+            conn.execute("DELETE FROM token_usage WHERE timestamp < ?", (since,))
+            conn.execute(
+                """
+                DELETE FROM token_usage
+                WHERE id IN (
+                    SELECT id
+                    FROM token_usage
+                    ORDER BY timestamp DESC, id DESC
+                    LIMIT -1 OFFSET ?
+                )
+                """,
+                (max_rows,),
+            )
+            return conn.total_changes - changes_before
 
     def get_summary(self, days: int = 30) -> dict[str, Any]:
         """Get aggregated token usage summary."""
@@ -164,13 +183,21 @@ class TokenStatsStore:
                     "cost": round(m["cost"] or 0, 6),
                     "cached_tokens": m["cached_tokens"],
                     "cache_rate": round(
-                        (m["cached_tokens"] / m["prompt_tokens"] * 100) if m["prompt_tokens"] else 0, 2
+                        (m["cached_tokens"] / m["prompt_tokens"] * 100)
+                        if m["prompt_tokens"]
+                        else 0,
+                        2,
                     ),
                 }
                 for m in models
             ],
             "daily": [
-                {"day": d["day"], "calls": d["calls"], "tokens": d["tokens"], "cost": round(d["cost"] or 0, 6)}
+                {
+                    "day": d["day"],
+                    "calls": d["calls"],
+                    "tokens": d["tokens"],
+                    "cost": round(d["cost"] or 0, 6),
+                }
                 for d in daily
             ],
         }

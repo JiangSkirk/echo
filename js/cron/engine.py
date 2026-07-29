@@ -19,11 +19,16 @@ from js.utils.log import get_logger
 logger = get_logger("js.cron")
 
 
+class CronJobAlreadyRunningError(RuntimeError):
+    """Raised when one job would overlap its existing execution."""
+
+
 class JobStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
     PAUSED = "paused"
     DISABLED = "disabled"
 
@@ -36,8 +41,12 @@ class JobResult:
     run_at: float
     duration_ms: float
     success: bool
+    status: JobStatus
     output: str = ""
     error: str = ""
+    owner_key_hash: str = "local-user"
+    output_truncated: bool = False
+    error_truncated: bool = False
 
 
 @dataclass
@@ -56,6 +65,9 @@ class ScheduledJob:
     task_type: str = "custom"  # custom, health_check, backup, report, dream, cleanup, search, skill_evolve
     # JSON payload for the task
     payload: dict[str, Any] = field(default_factory=dict)
+    owner_key_hash: str = "local-user"
+    product_id: str = "js-agent"
+    session_id: str = ""
     # Runtime state
     status: JobStatus = JobStatus.PENDING
     created_at: float = field(default_factory=time.time)
@@ -69,6 +81,7 @@ class ScheduledJob:
     # Notification settings
     notify_on_success: bool = False
     notify_on_failure: bool = True
+    system_scope: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +92,9 @@ class ScheduledJob:
             "schedule_summary": self.schedule_summary or self._humanize_cron(),
             "task_type": self.task_type,
             "payload": self.payload,
+            "owner_key_hash": self.owner_key_hash,
+            "product_id": self.product_id,
+            "session_id": self.session_id,
             "status": self.status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -90,6 +106,7 @@ class ScheduledJob:
             "enabled": self.enabled,
             "notify_on_success": self.notify_on_success,
             "notify_on_failure": self.notify_on_failure,
+            "system_scope": self.system_scope,
         }
 
     @classmethod
@@ -102,6 +119,9 @@ class ScheduledJob:
             schedule_summary=data.get("schedule_summary", ""),
             task_type=data.get("task_type", "custom"),
             payload=data.get("payload", {}),
+            owner_key_hash=data.get("owner_key_hash", "local-user"),
+            product_id=data.get("product_id", "js-agent"),
+            session_id=data.get("session_id", ""),
             status=JobStatus(data.get("status", "pending")),
             created_at=data.get("created_at", 0.0),
             updated_at=data.get("updated_at", 0.0),
@@ -113,6 +133,7 @@ class ScheduledJob:
             enabled=data.get("enabled", True),
             notify_on_success=data.get("notify_on_success", False),
             notify_on_failure=data.get("notify_on_failure", True),
+            system_scope=data.get("system_scope", False),
         )
 
     def _humanize_cron(self) -> str:
@@ -250,6 +271,7 @@ class CronEngine:
     _MAX_JOBS = 100
     _MAX_CONCURRENT_JOBS = 4
     _JOB_TIMEOUT_SECONDS = 300.0
+    _MAX_RESULT_TEXT_BYTES = 262_144
 
     def __init__(self, state_dir: Path) -> None:
         self.state_dir = state_dir
@@ -258,11 +280,17 @@ class CronEngine:
         self._running = False
         self._task: asyncio.Task[Any] | None = None
         self._callbacks: dict[str, Callable[[ScheduledJob], Awaitable[Any]]] = {}
+        self._result_callback: Callable[[JobResult], Any] | None = None
         self._history: list[JobResult] = []
         self._max_history = 100
         self._job_semaphore = asyncio.Semaphore(self._MAX_CONCURRENT_JOBS)
         # Track currently-executing job IDs to prevent re-entrant execution
         self._executing_job_ids: set[str] = set()
+        self._execution_tasks: set[asyncio.Task[JobResult]] = set()
+
+    @property
+    def active_execution_count(self) -> int:
+        return len(self._execution_tasks)
 
     def register_callback(
         self, task_type: str, callback: Callable[[ScheduledJob], Awaitable[Any]]
@@ -270,6 +298,9 @@ class CronEngine:
         """Register a handler for a task type."""
         self._callbacks[task_type] = callback
         logger.info(f"Registered cron callback for task_type='{task_type}'")
+
+    def register_result_callback(self, callback: Callable[[JobResult], Any]) -> None:
+        self._result_callback = callback
 
     def add_job(self, job: ScheduledJob) -> None:
         """Add a job to the engine."""
@@ -317,7 +348,29 @@ class CronEngine:
         if self._task:
             self._task.cancel()
             self._task = None
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
+        for task in tuple(self._execution_tasks):
+            if task is not current:
+                task.cancel()
         logger.info("Cron engine stopped")
+
+    async def stop_and_wait(self) -> None:
+        """Cancel and reap the scheduler plus every admitted job execution."""
+        current = asyncio.current_task()
+        tasks: tuple[asyncio.Task[Any], ...] = tuple(
+            task
+            for task in (
+                *((self._task,) if self._task is not None else ()),
+                *self._execution_tasks,
+            )
+            if task is not current
+        )
+        self.stop()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _loop(self) -> None:
         """Main cron loop."""
@@ -352,7 +405,7 @@ class CronEngine:
                     logger.debug("Job '%s' is already executing — skipping tick", job.name)
                     continue
                 # Execute the job
-                asyncio.create_task(self._execute_job(job))
+                self._schedule_job(job)
                 # Recalculate next run
                 try:
                     cron = CronExpression(job.cron_expr)
@@ -360,17 +413,34 @@ class CronEngine:
                 except Exception:
                     job.next_run_at = None
 
-    async def _execute_job(self, job: ScheduledJob) -> None:
+    async def _execute_job(self, job: ScheduledJob) -> JobResult:
         """Execute a single job and record result."""
         # Concurrency guard: at most _MAX_CONCURRENT_JOBS run simultaneously
         async with self._job_semaphore:
-            self._executing_job_ids.add(job.id)
             try:
-                await self._do_execute_job(job)
+                return await self._do_execute_job(job)
             finally:
                 self._executing_job_ids.discard(job.id)
 
-    async def _do_execute_job(self, job: ScheduledJob) -> None:
+    def _schedule_job(self, job: ScheduledJob) -> asyncio.Task[JobResult]:
+        if job.id in self._executing_job_ids:
+            raise CronJobAlreadyRunningError("Cron job is already executing")
+        self._executing_job_ids.add(job.id)
+        try:
+            task = asyncio.create_task(self._execute_job(job))
+        except BaseException:
+            self._executing_job_ids.discard(job.id)
+            raise
+        self._execution_tasks.add(task)
+
+        def discard(completed: asyncio.Task[JobResult]) -> None:
+            self._execution_tasks.discard(completed)
+            self._executing_job_ids.discard(job.id)
+
+        task.add_done_callback(discard)
+        return task
+
+    async def _do_execute_job(self, job: ScheduledJob) -> JobResult:
         """Internal: execute a single job with timeout enforcement."""
         job.status = JobStatus.RUNNING
         job.last_run_at = time.time()
@@ -379,20 +449,43 @@ class CronEngine:
 
         start = time.perf_counter()
         callback = self._callbacks.get(job.task_type)
+        cancellation: asyncio.CancelledError | None = None
 
         try:
             if callback is None:
                 raise RuntimeError(f"No callback registered for task_type='{job.task_type}'")
-            await asyncio.wait_for(callback(job), timeout=self._JOB_TIMEOUT_SECONDS)
+            callback_output = await asyncio.wait_for(
+                callback(job), timeout=self._JOB_TIMEOUT_SECONDS
+            )
             duration = (time.perf_counter() - start) * 1000
+            output, output_truncated = self._bound_result_text(
+                "" if callback_output is None else str(callback_output)
+            )
             result = JobResult(
                 job_id=job.id,
                 run_at=job.last_run_at,
                 duration_ms=duration,
                 success=True,
+                status=JobStatus.COMPLETED,
+                output=output,
+                owner_key_hash=job.owner_key_hash,
+                output_truncated=output_truncated,
             )
             job.status = JobStatus.COMPLETED
             logger.info(f"Job '{job.name}' completed in {duration:.0f}ms")
+        except asyncio.CancelledError as exc:
+            duration = (time.perf_counter() - start) * 1000
+            result = JobResult(
+                job_id=job.id,
+                run_at=job.last_run_at,
+                duration_ms=duration,
+                success=False,
+                status=JobStatus.CANCELLED,
+                error="Job was cancelled",
+                owner_key_hash=job.owner_key_hash,
+            )
+            job.status = JobStatus.CANCELLED
+            cancellation = exc
         except TimeoutError:
             duration = (time.perf_counter() - start) * 1000
             result = JobResult(
@@ -400,7 +493,9 @@ class CronEngine:
                 run_at=job.last_run_at,
                 duration_ms=duration,
                 success=False,
+                status=JobStatus.FAILED,
                 error=f"Job timed out after {self._JOB_TIMEOUT_SECONDS}s",
+                owner_key_hash=job.owner_key_hash,
             )
             job.fail_count += 1
             job.status = JobStatus.FAILED
@@ -412,15 +507,37 @@ class CronEngine:
                 run_at=job.last_run_at,
                 duration_ms=duration,
                 success=False,
-                error=str(e),
+                status=JobStatus.FAILED,
+                error="Job execution failed safely",
+                owner_key_hash=job.owner_key_hash,
             )
             job.fail_count += 1
             job.status = JobStatus.FAILED
-            logger.error(f"Job '{job.name}' failed: {e}")
+            logger.error("Cron job failed: %s", type(e).__name__)
 
+        job.updated_at = time.time()
         self._history.append(result)
         if len(self._history) > self._max_history:
             self._history = self._history[-self._max_history :]
+        if self._result_callback is not None:
+            try:
+                self._result_callback(result)
+            except Exception:
+                logger.exception("Cron result callback raised; result was still recorded")
+        if cancellation is not None:
+            raise cancellation
+        return result
+
+    @classmethod
+    def _bound_result_text(cls, value: str) -> tuple[str, bool]:
+        encoded = value.encode("utf-8")
+        if len(encoded) <= cls._MAX_RESULT_TEXT_BYTES:
+            return value, False
+        bounded = encoded[: cls._MAX_RESULT_TEXT_BYTES].decode(
+            "utf-8",
+            errors="ignore",
+        )
+        return bounded, True
 
     def get_history(self, job_id: str | None = None, limit: int = 50) -> list[JobResult]:
         """Get execution history, optionally filtered by job_id."""
@@ -434,5 +551,4 @@ class CronEngine:
         job = self._jobs.get(job_id)
         if not job:
             raise ValueError(f"Job not found: {job_id}")
-        await self._execute_job(job)
-        return self._history[-1]
+        return await self._schedule_job(job)

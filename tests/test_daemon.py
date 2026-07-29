@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from js import __version__
 from js.config import JSSettings
-from js.daemon.core import DaemonHeartbeat, JSDaemon, ScheduledTask, build_default_daemon
+from js.cron.engine import JobResult, JobStatus, ScheduledJob
+from js.daemon.core import DaemonHeartbeat, JSDaemon, build_default_daemon
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -56,20 +56,6 @@ class TestDaemonHeartbeat:
 
 
 # ---------------------------------------------------------------------------
-# ScheduledTask
-# ---------------------------------------------------------------------------
-
-
-class TestScheduledTask:
-    def test_task_defaults(self) -> None:
-        task = ScheduledTask(name="test", interval_seconds=10.0, callback=lambda a: None)
-        assert task.last_run == 0.0
-        assert task.run_count == 0
-        assert task.enabled is True
-        assert task.failures == 0
-
-
-# ---------------------------------------------------------------------------
 # JSDaemon initialization
 # ---------------------------------------------------------------------------
 
@@ -80,16 +66,17 @@ class TestJSDaemonInit:
         assert daemon._state_dir.exists()
         assert daemon._state_dir.name == "daemon"
 
-    def test_default_tasks_empty(self, settings: JSSettings) -> None:
+    def test_default_jobs_empty(self, settings: JSSettings) -> None:
         daemon = JSDaemon(settings)
-        assert daemon._tasks == []
+        assert daemon.list_jobs() == []
+        assert not hasattr(daemon, "_tasks")
 
-    def test_add_task(self, settings: JSSettings) -> None:
+    def test_add_job(self, settings: JSSettings) -> None:
         daemon = JSDaemon(settings)
-        task = ScheduledTask(name="t1", interval_seconds=5.0, callback=lambda a: None)
-        daemon.add_task(task)
-        assert len(daemon._tasks) == 1
-        assert daemon._tasks[0].name == "t1"
+        job = ScheduledJob(name="t1", cron_expr="*/5 * * * *")
+        daemon.add_job(job)
+        assert daemon.list_jobs() == [job]
+        assert daemon.get_job(job.id) is job
 
 
 # ---------------------------------------------------------------------------
@@ -98,41 +85,58 @@ class TestJSDaemonInit:
 
 
 class TestDaemonStatePersistence:
-    def test_save_and_load_state(self, settings: JSSettings) -> None:
+    def test_job_state_roundtrips_through_sqlite(self, settings: JSSettings) -> None:
         daemon = JSDaemon(settings)
-        task = ScheduledTask(name="t1", interval_seconds=5.0, callback=lambda a: None)
-        task.last_run = 1234.0
-        task.run_count = 7
-        task.failures = 2
-        daemon.add_task(task)
-        daemon._save_state()
+        job = ScheduledJob(
+            name="t1",
+            cron_expr="*/5 * * * *",
+            run_count=7,
+            fail_count=2,
+            last_run_at=1234.0,
+        )
+        daemon.add_job(job)
 
         # Create fresh daemon pointing at same state dir
         daemon2 = JSDaemon(settings)
-        daemon2.add_task(ScheduledTask(name="t1", interval_seconds=5.0, callback=lambda a: None))
-        daemon2._load_state()
+        restored = daemon2.get_job(job.id)
 
-        assert daemon2._tasks[0].last_run == 1234.0
-        assert daemon2._tasks[0].run_count == 7
-        assert daemon2._tasks[0].failures == 2
+        assert restored is not None
+        assert restored.last_run_at == 1234.0
+        assert restored.run_count == 7
+        assert restored.fail_count == 2
 
-    def test_load_state_missing_file(self, settings: JSSettings) -> None:
+    def test_legacy_json_state_is_not_created(self, settings: JSSettings) -> None:
         daemon = JSDaemon(settings)
-        task = ScheduledTask(name="t1", interval_seconds=5.0, callback=lambda a: None)
-        daemon.add_task(task)
-        # No state file exists yet
-        daemon._load_state()
-        assert task.last_run == 0.0
+        daemon.add_job(ScheduledJob(name="health", cron_expr="* * * * *"))
+        daemon._persist_job_states()
 
-    def test_save_state_file_format(self, settings: JSSettings) -> None:
+        assert not (daemon._state_dir / "daemon_state.json").exists()
+
+    def test_result_callback_atomically_persists_cancelled_job_terminal(
+        self,
+        settings: JSSettings,
+    ) -> None:
         daemon = JSDaemon(settings)
-        daemon.add_task(ScheduledTask(name="health", interval_seconds=60.0, callback=lambda a: None))
-        daemon._save_state()
+        job = ScheduledJob(name="cancelled", cron_expr="@daily")
+        daemon.add_job(job)
+        job.status = JobStatus.CANCELLED
+        result = JobResult(
+            job_id=job.id,
+            run_at=1.0,
+            duration_ms=2.0,
+            success=False,
+            status=JobStatus.CANCELLED,
+            error="Job was cancelled",
+            owner_key_hash=job.owner_key_hash,
+        )
 
-        content = json.loads(daemon._state_path.read_text())
-        assert "saved_at" in content
-        assert len(content["tasks"]) == 1
-        assert content["tasks"][0]["name"] == "health"
+        daemon._persist_result(result)
+
+        restored = daemon.store.get_job(job.id)
+        assert restored is not None
+        assert restored.status == JobStatus.CANCELLED
+        history = daemon.store.get_history(job.id)
+        assert history[0].status == JobStatus.CANCELLED
 
 
 # ---------------------------------------------------------------------------
@@ -154,85 +158,54 @@ class TestDaemonHeartbeatFile:
 
     def test_heartbeat_after_tasks_run(self, settings: JSSettings) -> None:
         daemon = JSDaemon(settings)
-        task = ScheduledTask(name="t1", interval_seconds=1.0, callback=lambda a: None)
-        task.run_count = 5
-        task.failures = 1
-        daemon.add_task(task)
+        job = ScheduledJob(
+            name="t1",
+            cron_expr="* * * * *",
+            run_count=5,
+            fail_count=1,
+        )
+        daemon.add_job(job)
         daemon._write_heartbeat()
 
         data = json.loads(daemon._heartbeat_path.read_text())
         assert data["tasks_run"] == 5
         assert data["tasks_failed"] == 1
 
-
-# ---------------------------------------------------------------------------
-# Tick execution
-# ---------------------------------------------------------------------------
-
-
-class TestDaemonTick:
-    @pytest.mark.asyncio
-    async def test_tick_executes_due_tasks(self, settings: JSSettings) -> None:
-        calls: list[str] = []
-
-        async def callback(agent: Any) -> None:
-            calls.append("called")
-
+    def test_heartbeat_rejects_symlink_target(self, settings: JSSettings) -> None:
+        """Heartbeat must fail-closed if target path is a symlink (§4 stability)."""
         daemon = JSDaemon(settings)
-        task = ScheduledTask(name="t1", interval_seconds=1.0, callback=callback)
-        # Task is way overdue (last_run=0, interval=1)
-        daemon.add_task(task)
-        await daemon._tick()
+        # Create a symlink at the heartbeat path
+        settings.state_dir.mkdir(parents=True, exist_ok=True)
+        link_target = settings.state_dir / "daemon" / "evil_heartbeat.json"
+        link_target.parent.mkdir(parents=True, exist_ok=True)
+        link_target.write_text("evil")
+        daemon._heartbeat_path.unlink(missing_ok=True)
+        daemon._heartbeat_path.symlink_to(link_target)
+        with pytest.raises((ValueError, OSError)):
+            daemon._write_heartbeat()
 
-        assert calls == ["called"]
-        assert task.run_count == 1
-        assert task.last_run > 0
-
-    @pytest.mark.asyncio
-    async def test_tick_skips_not_due_tasks(self, settings: JSSettings) -> None:
-        calls: list[str] = []
-
-        async def callback(agent: Any) -> None:
-            calls.append("called")
-
-        import time
-
+    def test_heartbeat_atomic_no_partial_write(self, settings: JSSettings) -> None:
+        """Heartbeat must be atomic - no partial JSON visible to readers."""
         daemon = JSDaemon(settings)
-        task = ScheduledTask(name="t1", interval_seconds=9999.0, callback=callback)
-        task.last_run = time.time()  # Just ran
-        daemon.add_task(task)
-        await daemon._tick()
+        daemon._write_heartbeat()
+        # The file must be valid JSON (not partial)
+        data = json.loads(daemon._heartbeat_path.read_text())
+        assert "timestamp" in data
+        assert "schema" in data or "version" in data
 
-        assert calls == []
-        assert task.run_count == 0
-
-    @pytest.mark.asyncio
-    async def test_tick_skips_disabled_tasks(self, settings: JSSettings) -> None:
-        calls: list[str] = []
-
-        async def callback(agent: Any) -> None:
-            calls.append("called")
-
+    def test_heartbeat_includes_schema_and_sequence(self, settings: JSSettings) -> None:
+        """Heartbeat must include schema, instance_id, sequence for auditability."""
         daemon = JSDaemon(settings)
-        task = ScheduledTask(name="t1", interval_seconds=1.0, callback=callback)
-        task.enabled = False
-        daemon.add_task(task)
-        await daemon._tick()
-
-        assert calls == []
-
-    @pytest.mark.asyncio
-    async def test_tick_failure_counted(self, settings: JSSettings) -> None:
-        async def failing_callback(agent: Any) -> None:
-            raise RuntimeError("boom")
-
-        daemon = JSDaemon(settings)
-        task = ScheduledTask(name="fail", interval_seconds=1.0, callback=failing_callback)
-        daemon.add_task(task)
-        await daemon._tick()
-
-        assert task.failures == 1
-        assert task.run_count == 1
+        daemon._write_heartbeat()
+        data = json.loads(daemon._heartbeat_path.read_text())
+        assert "schema" in data, "heartbeat must include schema field"
+        assert "instance_id" in data, "heartbeat must include instance_id"
+        assert "sequence" in data, "heartbeat must include sequence"
+        assert data["sequence"] == 0
+        # Second write should increment sequence
+        daemon._write_heartbeat()
+        data2 = json.loads(daemon._heartbeat_path.read_text())
+        assert data2["sequence"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -258,11 +231,16 @@ class TestDaemonShutdown:
         assert daemon._running is False
 
     @pytest.mark.asyncio
-    async def test_graceful_shutdown_saves_state(self, settings: JSSettings) -> None:
+    async def test_graceful_shutdown_persists_cron_state(self, settings: JSSettings) -> None:
         daemon = JSDaemon(settings)
-        daemon.add_task(ScheduledTask(name="t1", interval_seconds=5.0, callback=lambda a: None))
+        job = ScheduledJob(name="t1", cron_expr="*/5 * * * *", run_count=3)
+        daemon.add_job(job)
+        job.run_count = 4
         await daemon._shutdown()
-        assert daemon._state_path.exists()
+        restored = daemon.store.get_job(job.id)
+        assert restored is not None
+        assert restored.run_count == 4
+        assert not (daemon._state_dir / "daemon_state.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -271,20 +249,22 @@ class TestDaemonShutdown:
 
 
 class TestBuildDefaultDaemon:
-    def test_default_tasks_registered(self, settings: JSSettings) -> None:
+    def test_default_jobs_registered_once(self, settings: JSSettings) -> None:
         daemon = build_default_daemon(settings)
-        names = {t.name for t in daemon._tasks}
-        assert "health_check" in names
-        assert "dream_consolidation" in names
-        assert "session_cleanup" in names
-        assert len(daemon._tasks) == 3
+        jobs = daemon.list_jobs()
+        assert {job.task_type for job in jobs} == {"health_check", "dream", "cleanup"}
+        assert len(jobs) == 3
+        assert len({job.id for job in jobs}) == 3
+        assert not hasattr(daemon, "_tasks")
 
-    def test_default_task_intervals(self, settings: JSSettings) -> None:
+    def test_default_jobs_use_template_cron(self, settings: JSSettings) -> None:
         daemon = build_default_daemon(settings)
-        intervals = {t.name: t.interval_seconds for t in daemon._tasks}
-        assert intervals["health_check"] == 60.0
-        assert intervals["dream_consolidation"] == 300.0
-        assert intervals["session_cleanup"] == 3600.0
+        schedules = {job.task_type: job.cron_expr for job in daemon.list_jobs()}
+        assert schedules == {
+            "health_check": "0 */6 * * *",
+            "dream": "0 4 * * *",
+            "cleanup": "0 3 * * *",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -294,24 +274,69 @@ class TestBuildDefaultDaemon:
 
 class TestBuiltInCallbacks:
     @pytest.mark.asyncio
-    async def test_health_check_task_no_crash(self, settings: JSSettings) -> None:
-        from js.daemon.core import _health_check_task
-
+    async def test_health_check_callback_no_crash(self, settings: JSSettings) -> None:
         daemon = JSDaemon(settings)
-        # Should not raise even with minimal agent state
-        await _health_check_task(daemon.agent)
+        await daemon._cb_health_check(ScheduledJob(task_type="health_check"))
 
     @pytest.mark.asyncio
-    async def test_dream_task_no_crash_without_scheduler(self, settings: JSSettings) -> None:
-        from js.daemon.core import _dream_task
-
+    async def test_dream_callback_no_crash_without_scheduler(self, settings: JSSettings) -> None:
         daemon = JSDaemon(settings)
-        # Agent may not have _dream_scheduler or _task
-        await _dream_task(daemon.agent)
+        await daemon._cb_dream(ScheduledJob(task_type="dream"))
 
     @pytest.mark.asyncio
-    async def test_session_cleanup_task_no_crash(self, settings: JSSettings) -> None:
-        from js.daemon.core import _session_cleanup_task
-
+    async def test_session_cleanup_callback_no_crash(self, settings: JSSettings) -> None:
         daemon = JSDaemon(settings)
-        await _session_cleanup_task(daemon.agent)
+        await daemon._cb_cleanup(ScheduledJob(task_type="cleanup"))
+
+    def test_default_jobs_use_system_principal(self, settings: JSSettings) -> None:
+        """C-fix: 默认任务必须使用 system principal，不能默认 local-user."""
+        daemon = build_default_daemon(settings)
+        for job in daemon.list_jobs():
+            assert job.owner_key_hash == "__system__", (
+                f"默认任务 {job.name} owner 应为 __system__, got {job.owner_key_hash}"
+            )
+            assert job.system_scope is True, (
+                f"默认任务 {job.name} 应标记 system_scope=True"
+            )
+
+    @pytest.mark.asyncio
+    async def test_cleanup_does_not_touch_other_owner(
+        self, settings: JSSettings
+    ) -> None:
+        """C-fix: cleanup 回调必须只清理 job.owner 指定的 owner，不全局遍历."""
+        daemon = JSDaemon(settings)
+        # Create a job scoped to owner-A
+        job_a = ScheduledJob(
+            name="cleanup-a",
+            cron_expr="0 3 * * *",
+            task_type="cleanup",
+            owner_key_hash="owner-a",
+            product_id="js-agent",
+        )
+        # Create a job scoped to owner-B
+        job_b = ScheduledJob(
+            name="cleanup-b",
+            cron_expr="0 3 * * *",
+            task_type="cleanup",
+            owner_key_hash="owner-b",
+            product_id="js-agent",
+        )
+        # cleanup for owner-A should not touch owner-B's sessions
+        # We verify the callback respects job.owner_key_hash by checking it
+        # doesn't call cleanup_empty_sessions() without an owner filter
+        called_owners: list[str] = []
+        original_cleanup = daemon.agent.memory.enhanced.cleanup_empty_sessions
+
+        def tracking_cleanup(*args: object, **kwargs: object) -> int:
+            owner = kwargs.get("owner_key_hash") or (args[0] if args else None)
+            called_owners.append(str(owner))
+            return 0
+
+        daemon.agent.memory.enhanced.cleanup_empty_sessions = tracking_cleanup  # type: ignore[method-assign]
+        try:
+            await daemon._cb_cleanup(job_a)
+            await daemon._cb_cleanup(job_b)
+        finally:
+            daemon.agent.memory.enhanced.cleanup_empty_sessions = original_cleanup  # type: ignore[method-assign]
+        assert "owner-a" in called_owners, f"cleanup 应传 owner-a, got {called_owners}"
+        assert "owner-b" in called_owners, f"cleanup 应传 owner-b, got {called_owners}"

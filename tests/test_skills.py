@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+import io
+import tarfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest import mock
 
 import pytest
 
 from js.config import DefenseMode
 from js.skills.evolver import SkillEvolver
+from js.skills.executor import execute_skill
 from js.skills.manager import SkillManager
 from js.skills.security import scan_skill, verify_integrity
 from js.skills.spec import Prerequisites, SkillSpec, SkillType, TrustLevel, parse_skill_manifest
@@ -67,6 +73,7 @@ type: code
     def test_platform_compatibility(self) -> None:
         spec = SkillSpec(id="test", name="Test", platforms=["linux"])
         import sys
+
         if sys.platform.startswith("linux"):
             assert spec.is_compatible()
         elif sys.platform == "darwin":
@@ -168,6 +175,212 @@ class TestSkillManager:
         assert len(results) >= 1
         assert any("arxiv" in s["id"] for s in results)
 
+    def test_list_skills_uses_stable_snapshot_during_background_load(
+        self,
+        manager: SkillManager,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        first = SkillSpec(id="first", name="First", trust_level=TrustLevel.BUILTIN)
+        second = SkillSpec(id="second", name="Second", trust_level=TrustLevel.BUILTIN)
+        manager._skills = {first.id: first}
+        entered = threading.Event()
+        release = threading.Event()
+        original = SkillSpec.to_summary_dict
+
+        def blocking_summary(spec: SkillSpec) -> dict[str, object]:
+            if spec.id == first.id:
+                entered.set()
+                assert release.wait(timeout=2.0)
+            return original(spec)
+
+        monkeypatch.setattr(SkillSpec, "to_summary_dict", blocking_summary)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(manager.list_skills)
+            assert entered.wait(timeout=2.0)
+            manager.register_auto_skill(second)
+            release.set()
+            result = pending.result(timeout=2.0)
+
+        assert [item["id"] for item in result] == ["first"]
+
+    def test_hermes_refresh_is_atomic_for_readers(
+        self,
+        manager: SkillManager,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from js.skills import hermes_bridge as hermes_module
+
+        manager.hermes_skills_enabled = True
+        old = SkillSpec(id="hermes:old", name="Old", trust_level=TrustLevel.TRUSTED)
+        new = SkillSpec(id="hermes:new", name="New", trust_level=TrustLevel.TRUSTED)
+        manager.register_auto_skill(old)
+        entered = threading.Event()
+        release = threading.Event()
+
+        hermes_dir = tmp_path / ".hermes" / "skills"
+        hermes_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(hermes_module, "HERMES_SKILLS_DIR", hermes_dir)
+
+        def staged_reload(*, replace_existing: bool) -> None:
+            assert replace_existing is True
+            entered.set()
+            assert release.wait(timeout=5.0)
+            with manager._skills_lock:
+                manager._skills = {new.id: new}
+
+        monkeypatch.setattr(manager, "_publish_hermes_skills", staged_reload)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            refresh = pool.submit(manager.refresh_hermes_skills)
+            assert entered.wait(timeout=5.0)
+            read = pool.submit(manager.list_skills, None, None, None, False)
+            ids_before_publish = {item["id"] for item in read.result(timeout=5.0)}
+            assert "hermes:old" in ids_before_publish
+            assert "hermes:new" not in ids_before_publish
+            release.set()
+            refresh.result(timeout=5.0)
+            ids = {item["id"] for item in manager.list_skills(only_compatible=False)}
+
+        assert "hermes:old" not in ids
+        assert "hermes:new" in ids
+
+    def test_closed_manager_rejects_new_skill_registration(
+        self,
+        manager: SkillManager,
+    ) -> None:
+        manager.close()
+
+        with pytest.raises(RuntimeError, match="closed"):
+            manager.register_auto_skill(SkillSpec(id="late", name="Late"))
+
+    @pytest.mark.asyncio
+    async def test_hermes_refresh_publishes_complete_tool_generation_to_concurrent_readers(
+        self,
+        manager: SkillManager,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        echo_tool_context: Any,
+    ) -> None:
+        """Refresh must not expose a registry between Hermes tool generations."""
+        from js.config import SecurityConfig, ToolLimits
+        from js.security.guard import BehaviorGuard
+        from js.tools.registry import ToolRegistry, ToolResult, ToolSpec
+
+        registry = ToolRegistry(
+            ToolLimits(max_concurrent_tools=4), BehaviorGuard(SecurityConfig(), tmp_path)
+        )
+
+        async def native_handler() -> ToolResult:
+            return ToolResult(success=True, output="native")
+
+        registry.register(ToolSpec("native", "native", []), native_handler)
+        manager.register_as_tools(registry)
+        manager.hermes_skills_enabled = True
+        old = SkillSpec(id="hermes:old", name="Old", trust_level=TrustLevel.TRUSTED)
+        manager.register_auto_skill(old)
+
+        hermes_dir = tmp_path / ".hermes" / "skills"
+        hermes_dir.mkdir(parents=True)
+        manifest = hermes_dir / "SKILL.md"
+        manifest.write_text("---\nname: new\n---\n")
+        entered = threading.Event()
+        release = threading.Event()
+        new = SkillSpec(id="hermes:new", name="New", trust_level=TrustLevel.TRUSTED)
+
+        def blocking_discover(_: Path) -> list[Path]:
+            entered.set()
+            assert release.wait(timeout=2.0)
+            return [manifest]
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr("js.skills.manager.discover_hermes_skills", blocking_discover)
+        monkeypatch.setattr("js.skills.manager.load_hermes_skill", lambda _: new)
+        monkeypatch.setattr("js.skills.hermes_bridge.HERMES_SKILLS_DIR", hermes_dir)
+
+        old_name = manager._skill_id_to_tool_name(old.id)
+        new_name = manager._skill_id_to_tool_name(new.id)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            refresh = pool.submit(manager.refresh_hermes_skills)
+            assert entered.wait(timeout=2.0)
+
+            observed: list[set[str]] = []
+            for index in range(8):
+                tool_names = {tool.name for tool in registry.list_tools()}
+                observed.append({name for name in tool_names if name in {old_name, new_name}})
+                assert registry.get("native") is not None
+                assert "native" in {
+                    schema["function"]["name"] for schema in registry.to_openai_schemas()
+                }
+                result = await registry.execute(
+                    f"refresh-read-{index}",
+                    "native",
+                    {},
+                    execution_context=echo_tool_context(
+                        run_id=f"refresh-read-{index}",
+                        tool_name="native",
+                        arguments={},
+                        registry=registry,
+                    ),
+                )
+                assert result.success is True
+                await asyncio.sleep(0)
+
+            release.set()
+            assert refresh.result(timeout=2.0)["success"] is True
+
+        assert all(names in ({old_name}, {new_name}) for names in observed)
+
+    @pytest.mark.asyncio
+    async def test_close_removes_only_its_tools_and_stale_handler_fails_closed(
+        self,
+        manager: SkillManager,
+        tmp_path: Path,
+        echo_tool_context: Any,
+    ) -> None:
+        """Closing a manager must not disable native registry tools."""
+        from js.config import SecurityConfig, ToolLimits
+        from js.security.guard import BehaviorGuard
+        from js.tools.registry import ToolRegistry, ToolResult, ToolSpec
+
+        registry = ToolRegistry(ToolLimits(), BehaviorGuard(SecurityConfig(), tmp_path))
+
+        async def native_handler() -> ToolResult:
+            return ToolResult(success=True, output="native")
+
+        registry.register(ToolSpec("native", "native", []), native_handler)
+        manager.register_as_tools(registry)
+        skill = SkillSpec(id="hermes:close-me", name="Close me", trust_level=TrustLevel.TRUSTED)
+        manager.register_auto_skill(skill)
+        tool_name = manager._skill_id_to_tool_name(skill.id)
+        stale_handler = registry.get_handler(tool_name)
+        assert stale_handler is not None
+
+        manager.close()
+
+        assert registry.get(tool_name) is None
+        assert tool_name not in {
+            schema["function"]["name"] for schema in registry.to_openai_schemas()
+        }
+        stale_result = await stale_handler()
+        assert stale_result.success is False
+        assert "direct tool handler access is disabled" in stale_result.error.lower()
+
+        native_result = await registry.execute(
+            "native-after-close",
+            "native",
+            {},
+            execution_context=echo_tool_context(
+                run_id="native-after-close",
+                tool_name="native",
+                arguments={},
+                registry=registry,
+            ),
+        )
+        assert native_result.success is True
+
     def test_view_skill_progressive_disclosure(self, manager: SkillManager) -> None:
         # list_skills should NOT include full content
         summary = manager.list_skills()[0]
@@ -215,6 +428,253 @@ entry: main.py
         assert await manager.uninstall("my_skill")
         assert "my_skill" not in manager._skills
 
+    @pytest.mark.anyio
+    async def test_install_does_not_run_unreviewed_dependency_resolver(
+        self,
+        manager: SkillManager,
+        tmp_path: Path,
+    ) -> None:
+        src = tmp_path / "dependency_skill"
+        src.mkdir()
+        (src / "SKILL.md").write_text(
+            "---\nid: dependency_skill\nname: Dependency Skill\ntype: code\nentry: main.py\n---\n",
+            encoding="utf-8",
+        )
+        (src / "main.py").write_text("print('ok')\n", encoding="utf-8")
+        (src / "requirements.txt").write_text("requests==2.32.4\n", encoding="utf-8")
+
+        with mock.patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=AssertionError("skill install must not spawn pip or venv"),
+        ):
+            spec = await manager.install(str(src), "dependency_skill")
+
+        assert not (manager.skills_dir / "dependency_skill" / ".venv").exists()
+        assert "dependencies_unprovisioned" in spec.risk_flags
+
+    @pytest.mark.anyio
+    async def test_failed_reinstall_preserves_the_published_skill(
+        self,
+        manager: SkillManager,
+        tmp_path: Path,
+    ) -> None:
+        original = tmp_path / "original_skill"
+        original.mkdir()
+        (original / "SKILL.md").write_text(
+            "---\nid: stable\nname: Stable\ntype: prompt\n---\n",
+            encoding="utf-8",
+        )
+        (original / "content.txt").write_text("original", encoding="utf-8")
+        installed = await manager.install(str(original), "stable")
+
+        unsafe = tmp_path / "unsafe_update"
+        unsafe.mkdir()
+        (unsafe / "SKILL.md").write_text(
+            "---\nid: stable\nname: Unsafe\ntype: prompt\n---\n",
+            encoding="utf-8",
+        )
+        (unsafe / "requirements.txt").write_text(
+            "https://evil.test/package.whl\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="unsafe requirement"):
+            await manager.install(str(unsafe), "stable")
+
+        assert (manager.skills_dir / "stable" / "content.txt").read_text(
+            encoding="utf-8"
+        ) == "original"
+        assert manager.get_skill("stable") is installed
+        assert not list(manager.skills_dir.glob(".install-stable-*"))
+
+    @pytest.mark.anyio
+    async def test_local_install_rejects_source_symlinks_before_copy(
+        self,
+        manager: SkillManager,
+        tmp_path: Path,
+    ) -> None:
+        outside = tmp_path / "outside.txt"
+        outside.write_text("private", encoding="utf-8")
+        source = tmp_path / "linked_skill"
+        source.mkdir()
+        (source / "SKILL.md").write_text(
+            "---\nid: linked\nname: Linked\ntype: prompt\n---\n",
+            encoding="utf-8",
+        )
+        (source / "escape.txt").symlink_to(outside)
+
+        with pytest.raises(ValueError, match="symlink"):
+            await manager.install(str(source), "linked")
+
+        assert not (manager.skills_dir / "linked").exists()
+
+    @pytest.mark.anyio
+    async def test_remote_install_requires_consumed_echo_tool_context(
+        self,
+        manager: SkillManager,
+    ) -> None:
+        with (
+            mock.patch(
+                "asyncio.create_subprocess_exec",
+                side_effect=AssertionError("raw git clone bypass"),
+            ),
+            pytest.raises(PermissionError, match="Echo.*context"),
+        ):
+            await manager.install(
+                "https://github.com/example/remote-skill.git",
+                "remote_skill",
+            )
+
+    @pytest.mark.anyio
+    async def test_remote_install_uses_bounded_downloader_inside_echo_handler(
+        self,
+        manager: SkillManager,
+        tmp_path: Path,
+        echo_tool_context: Any,
+    ) -> None:
+        from js.config import SecurityConfig, ToolLimits
+        from js.security.guard import BehaviorGuard
+        from js.tools.registry import ToolRegistry, ToolResult, ToolSpec
+
+        registry = ToolRegistry(
+            ToolLimits(),
+            BehaviorGuard(SecurityConfig(), tmp_path),
+        )
+        source = "https://github.com/example/remote-skill.git"
+        arguments = {"source": source, "skill_id": "remote_skill"}
+
+        async def install_handler(source: str, skill_id: str) -> ToolResult:
+            spec = await manager.install(source, skill_id)
+            return ToolResult(success=True, output=spec.id)
+
+        async def fake_download(_source: str, target: Path) -> None:
+            target.mkdir()
+            (target / "SKILL.md").write_text(
+                "---\nid: remote_skill\nname: Remote Skill\ntype: prompt\n---\n",
+                encoding="utf-8",
+            )
+
+        registry.register(
+            ToolSpec(name="control_skill_install", description="install", parameters=[]),
+            install_handler,
+        )
+        context = echo_tool_context(
+            run_id="remote-install-run",
+            tool_name="control_skill_install",
+            arguments=arguments,
+            network_policy="allow",
+            network_hosts=(
+                "api.github.com",
+                "codeload.github.com",
+                "github.com",
+            ),
+            registry=registry,
+        )
+
+        with (
+            mock.patch.object(
+                manager,
+                "_download_github_repository",
+                side_effect=fake_download,
+            ) as download,
+            mock.patch(
+                "asyncio.create_subprocess_exec",
+                side_effect=AssertionError("remote install must not use git or pip"),
+            ),
+        ):
+            result = await registry.execute(
+                "remote-install-run",
+                "control_skill_install",
+                arguments,
+                execution_context=context,
+            )
+
+        assert result.success is True
+        assert result.output == "remote_skill"
+        download.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "https://gitlab.com/example/skill.git",
+            "https://github.com@example.test/example/skill.git",
+            "https://github.com/example/skill.git?ref=main",
+            "git@github.com:example/skill.git",
+        ],
+    )
+    def test_remote_skill_source_is_exact_github_https_repository(
+        self,
+        manager: SkillManager,
+        source: str,
+    ) -> None:
+        with pytest.raises(ValueError, match="skill source"):
+            manager._validate_skill_source(source)
+
+    @staticmethod
+    def _github_tar(
+        entries: list[tuple[str, bytes | None, str]],
+    ) -> bytes:
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode="w:gz") as archive:
+            for name, content, kind in entries:
+                member = tarfile.TarInfo(name)
+                if kind == "dir":
+                    member.type = tarfile.DIRTYPE
+                    member.size = 0
+                    archive.addfile(member)
+                elif kind == "symlink":
+                    member.type = tarfile.SYMTYPE
+                    member.linkname = "/etc/passwd"
+                    member.size = 0
+                    archive.addfile(member)
+                else:
+                    assert content is not None
+                    member.size = len(content)
+                    archive.addfile(member, io.BytesIO(content))
+        return payload.getvalue()
+
+    def test_remote_skill_archive_extracts_regular_files_only(
+        self,
+        manager: SkillManager,
+        tmp_path: Path,
+    ) -> None:
+        archive = self._github_tar(
+            [
+                ("repo-sha/", None, "dir"),
+                ("repo-sha/SKILL.md", b"---\nid: safe\nname: Safe\n---\n", "file"),
+                ("repo-sha/scripts/", None, "dir"),
+                ("repo-sha/scripts/main.py", b"print('safe')\n", "file"),
+            ]
+        )
+        target = tmp_path / "safe-remote"
+
+        manager._extract_github_archive(archive, target)
+
+        assert (target / "SKILL.md").read_text(encoding="utf-8").startswith("---")
+        assert (target / "scripts" / "main.py").read_text(encoding="utf-8") == ("print('safe')\n")
+        assert not any(path.is_symlink() for path in target.rglob("*"))
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            ("repo-sha/../../escape", b"bad", "file"),
+            ("repo-sha/link", None, "symlink"),
+        ],
+    )
+    def test_remote_skill_archive_rejects_escape_and_links(
+        self,
+        manager: SkillManager,
+        tmp_path: Path,
+        entry: tuple[str, bytes | None, str],
+    ) -> None:
+        archive = self._github_tar([("repo-sha/", None, "dir"), entry])
+        target = tmp_path / "blocked-remote"
+
+        with pytest.raises(ValueError, match="archive"):
+            manager._extract_github_archive(archive, target)
+
+        assert not target.exists()
+
     def test_trust_override(self, manager: SkillManager) -> None:
         assert manager.trust_skill("arxiv-research", TrustLevel.TRUSTED)
         spec = manager.get_skill("arxiv-research")
@@ -234,7 +694,9 @@ entry: main.py
         assert spec is not None
 
     @pytest.mark.anyio
-    async def test_install_openclaw_prompt_inference(self, manager: SkillManager, tmp_path: Path) -> None:
+    async def test_install_openclaw_prompt_inference(
+        self, manager: SkillManager, tmp_path: Path
+    ) -> None:
         """OpenClaw skills without scripts/ dir are inferred as prompt type."""
         src = tmp_path / "openclaw_prompt"
         src.mkdir()
@@ -254,7 +716,9 @@ Write compelling copy.
         await manager.uninstall("openclaw_prompt")
 
     @pytest.mark.anyio
-    async def test_install_openclaw_code_inference(self, manager: SkillManager, tmp_path: Path) -> None:
+    async def test_install_openclaw_code_inference(
+        self, manager: SkillManager, tmp_path: Path
+    ) -> None:
         """OpenClaw skills with scripts/ dir are inferred as code type."""
         src = tmp_path / "openclaw_code"
         src.mkdir()
@@ -273,7 +737,9 @@ description: Process data files
         await manager.uninstall("openclaw_code")
 
     @pytest.mark.anyio
-    async def test_install_explicit_type_not_overridden(self, manager: SkillManager, tmp_path: Path) -> None:
+    async def test_install_explicit_type_not_overridden(
+        self, manager: SkillManager, tmp_path: Path
+    ) -> None:
         """If manifest explicitly declares type, inference is skipped."""
         src = tmp_path / "explicit_type"
         src.mkdir()
@@ -328,6 +794,8 @@ class TestSkillWebAPI:
 
         from fastapi.testclient import TestClient
 
+        from js.models.providers import ChatMessage
+        from js.tools.registry import ToolResult
         from js.web import server
         from js.web.server import create_app
 
@@ -374,6 +842,69 @@ class TestSkillWebAPI:
         mock_skills.uninstall = AsyncMock(return_value=True)
         mock_skills.trust_skill.return_value = True
         mock_agent.skills = mock_skills
+        private_results: dict[str, dict[str, object]] = {}
+        mock_agent.stage_skill_mutation_payload.return_value = "skill-payload-ref"
+        mock_agent.take_skill_mutation_result.side_effect = lambda reference, _owner, **_scope: (
+            private_results.pop(reference, None)
+        )
+
+        async def execute_skill_effect(effect, _context):
+            import json
+
+            arguments = json.loads(effect.arguments_json)
+            if effect.tool_name == "control_skill_install":
+                return (
+                    ChatMessage(role="tool", content="installed", name="control_skill_install"),
+                    ToolResult(
+                        success=True,
+                        output="installed",
+                        metadata={
+                            "skill_id": "new-skill",
+                            "trust_level": "community",
+                            "risk_flags": [],
+                        },
+                    ),
+                )
+            assert effect.tool_name == "control_skill_mutate"
+            owner, payload = mock_agent.stage_skill_mutation_payload.call_args.args
+            del owner
+            action = arguments["action"]
+            if action == "uninstall":
+                assert await mock_skills.uninstall(payload["skill_id"])
+                response: dict[str, object] = {"success": True}
+            elif action == "trust" and payload["level"] == "trusted":
+                assert mock_skills.trust_skill(
+                    payload["skill_id"],
+                    TrustLevel.TRUSTED,
+                    decided_by="web",
+                    owner_key_hash=mock_agent.stage_skill_mutation_payload.call_args.args[0],
+                )
+                response = {
+                    "success": True,
+                    "skill_id": payload["skill_id"],
+                    "trust_level": "trusted",
+                }
+            else:
+                return (
+                    ChatMessage(role="tool", content="failed", name=effect.tool_name),
+                    ToolResult(
+                        success=False,
+                        error="Invalid skill trust level",
+                        metadata={"status_code": 400},
+                    ),
+                )
+            result_ref = "skill-result-ref"
+            private_results[result_ref] = response
+            return (
+                ChatMessage(role="tool", content="completed", name=effect.tool_name),
+                ToolResult(
+                    success=True,
+                    output="completed",
+                    metadata={"result_ref": result_ref},
+                ),
+            )
+
+        mock_agent.echo_runtime.execute_tool_effect = AsyncMock(side_effect=execute_skill_effect)
 
         server._agent = mock_agent
         server._settings = mock_agent.settings
@@ -381,6 +912,7 @@ class TestSkillWebAPI:
 
         # Create an admin API key so admin-only endpoints (install/trust) work
         from js.web.auth import AuthManager
+
         auth_mgr = AuthManager(mock_agent.settings.state_dir)
         admin_key = auth_mgr.create_key("test-admin", role="admin")
 
@@ -404,11 +936,17 @@ class TestSkillWebAPI:
         assert "content" in data
 
     def test_install_skill_api(self, client: TestClient) -> None:
-        resp = client.post("/api/skills/install", json={"source": "/tmp/test", "skill_id": "new-skill"})
+        resp = client.post(
+            "/api/skills/install", json={"source": "/tmp/test", "skill_id": "new-skill"}
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["success"] is True
         assert data["skill_id"] == "new-skill"
+        from js.web import server
+
+        server._agent.skills.install.assert_not_awaited()
+        server._agent.echo_runtime.execute_tool_effect.assert_awaited_once()
 
     def test_uninstall_skill_api(self, client: TestClient) -> None:
         resp = client.delete("/api/skills/test-skill")
@@ -437,7 +975,9 @@ class TestSkillManagerFeedbackLoops:
         return SkillManager(tmp_path, tmp_path / "workspace")
 
     @pytest.mark.anyio
-    async def test_set_evolver_and_record_result(self, manager: SkillManager, tmp_path: Path) -> None:
+    async def test_set_evolver_and_record_result(
+        self, manager: SkillManager, tmp_path: Path
+    ) -> None:
         """execute() should feed results back to the evolver's best variant."""
         from unittest.mock import MagicMock
 
@@ -449,7 +989,9 @@ class TestSkillManagerFeedbackLoops:
 
         src = tmp_path / "test_skill"
         src.mkdir()
-        (src / "SKILL.md").write_text("---\nid: test\nname: Test\ntype: code\nentry: main.py\n---\n")
+        (src / "SKILL.md").write_text(
+            "---\nid: test\nname: Test\ntype: code\nentry: main.py\n---\n"
+        )
         (src / "main.py").write_text("print('ok')")
 
         await manager.install(str(src), "test")
@@ -466,7 +1008,9 @@ class TestSkillManagerFeedbackLoops:
         mock_evolver.promote_variant.assert_called_once_with("test", mock.ANY, "main.py")
 
     @pytest.mark.anyio
-    async def test_set_composer_and_record_transition(self, manager: SkillManager, tmp_path: Path) -> None:
+    async def test_set_composer_and_record_transition(
+        self, manager: SkillManager, tmp_path: Path
+    ) -> None:
         """Two skills executed in the same session should record a transition."""
         from unittest.mock import MagicMock
 
@@ -478,7 +1022,9 @@ class TestSkillManagerFeedbackLoops:
         for sk_id in ("skill_a", "skill_b"):
             sk_dir = src / sk_id
             sk_dir.mkdir()
-            (sk_dir / "SKILL.md").write_text(f"---\nid: {sk_id}\nname: {sk_id}\ntype: code\nentry: main.py\n---\n")
+            (sk_dir / "SKILL.md").write_text(
+                f"---\nid: {sk_id}\nname: {sk_id}\ntype: code\nentry: main.py\n---\n"
+            )
             (sk_dir / "main.py").write_text("print('ok')")
             await manager.install(str(sk_dir), sk_id)
 
@@ -488,7 +1034,9 @@ class TestSkillManagerFeedbackLoops:
         mock_composer.record_transition.assert_called_once_with("skill_a", "skill_b", "sess-1")
 
     @pytest.mark.anyio
-    async def test_execute_without_session_id_does_not_record_chain(self, manager: SkillManager, tmp_path: Path) -> None:
+    async def test_execute_without_session_id_does_not_record_chain(
+        self, manager: SkillManager, tmp_path: Path
+    ) -> None:
         """Without session_id, composer should not be called."""
         from unittest.mock import MagicMock
 
@@ -503,6 +1051,22 @@ class TestSkillManagerFeedbackLoops:
 
         await manager.execute("x", {})
         mock_composer.record_transition.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_execute_sanitizes_unexpected_executor_error(
+        self,
+        manager: SkillManager,
+    ) -> None:
+        private_detail = "/Users/private/Documents/customer.xlsx secret-token"
+
+        with mock.patch(
+            "js.skills.manager.execute_skill",
+            new=mock.AsyncMock(side_effect=RuntimeError(private_detail)),
+        ):
+            result = await manager.execute("shell-safety", {"command": "echo safe"})
+
+        assert result == {"success": False, "error": "Skill execution failed safely"}
+        assert private_detail not in str(result)
 
 
 class TestSkillAsToolBridge:
@@ -544,25 +1108,190 @@ class TestSkillAsToolBridge:
         assert registry.get("skill_arxiv-research") is None
 
     @pytest.mark.anyio
-    async def test_skill_tool_handler(self, tmp_path: Path) -> None:
+    async def test_skill_tool_handler(
+        self,
+        tmp_path: Path,
+        echo_tool_context: Any,
+    ) -> None:
         from unittest.mock import AsyncMock, patch
 
-        from js.config import ToolLimits
+        from js.config import SecurityConfig, ToolLimits
         from js.security.guard import BehaviorGuard
         from js.skills.manager import SkillManager
         from js.tools.registry import ToolRegistry
 
-        guard = BehaviorGuard.__new__(BehaviorGuard)
+        guard = BehaviorGuard(SecurityConfig(), tmp_path)
         registry = ToolRegistry(ToolLimits(), guard)
         manager = SkillManager(tmp_path, tmp_path / "workspace")
         manager.register_as_tools(registry)
-
-        handler = registry.get_handler("skill_shell-safety")
-        assert handler is not None
+        tool_name = "skill_shell-safety"
+        arguments = {"command": "echo hello"}
 
         # Mock execute to avoid actual LLM/tool calls
-        with patch.object(manager, "execute", new_callable=AsyncMock, return_value={"success": True, "output": "Safe"}):
-            result = await handler(command="echo hello")
+        with patch.object(
+            manager,
+            "execute",
+            new_callable=AsyncMock,
+            return_value={"success": True, "output": "Safe"},
+        ):
+            result = await registry.execute(
+                "skill-tool-run",
+                tool_name,
+                arguments,
+                execution_context=echo_tool_context(
+                    run_id="skill-tool-run",
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    registry=registry,
+                ),
+            )
             assert result.success is True
             assert result.output == "Safe"
             assert result.metadata.get("skill_id") == "shell-safety"
+
+    @pytest.mark.anyio
+    async def test_skill_tool_handler_sanitizes_manager_runtime_error(
+        self,
+        tmp_path: Path,
+        echo_tool_context: Any,
+    ) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from js.config import SecurityConfig, ToolLimits
+        from js.security.guard import BehaviorGuard
+        from js.skills.manager import SkillManager
+        from js.tools.registry import ToolRegistry
+
+        private_detail = "/Users/private/.config/credential secret-token"
+        guard = BehaviorGuard(SecurityConfig(), tmp_path)
+        registry = ToolRegistry(ToolLimits(), guard)
+        manager = SkillManager(tmp_path, tmp_path / "workspace")
+        manager.register_as_tools(registry)
+        tool_name = "skill_shell-safety"
+        arguments = {"command": "echo hello"}
+
+        with patch.object(
+            manager,
+            "execute",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError(private_detail),
+        ):
+            result = await registry.execute(
+                "skill-tool-error",
+                tool_name,
+                arguments,
+                execution_context=echo_tool_context(
+                    run_id="skill-tool-error",
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    registry=registry,
+                ),
+            )
+
+        assert result.success is False
+        assert result.error == "Skill execution failed safely"
+        assert private_detail not in str(result)
+
+
+class TestSkillSubprocessBoundary:
+    """Executable skill steps must never fall back to a host subprocess."""
+
+    @pytest.mark.anyio
+    async def test_code_skill_requires_sandbox(self, tmp_path: Path) -> None:
+        skill_dir = tmp_path / "code-skill"
+        skill_dir.mkdir()
+        (skill_dir / "main.py").write_text("print('must not run')\n")
+        spec = SkillSpec(
+            id="sandbox-required",
+            name="Sandbox Required",
+            path=skill_dir,
+            type=SkillType.CODE,
+            entry="main.py",
+            trust_level=TrustLevel.BUILTIN,
+        )
+
+        with mock.patch("asyncio.create_subprocess_exec") as spawn:
+            result = await execute_skill(spec, {}, tmp_path / "workspace")
+
+        assert result["success"] is False
+        assert result.get("security_blocked") is True
+        assert "sandbox" in result["error"].lower()
+        spawn.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_workflow_shell_step_requires_sandbox(self, tmp_path: Path) -> None:
+        spec = SkillSpec(
+            id="sandboxed-workflow",
+            name="Sandboxed Workflow",
+            type=SkillType.WORKFLOW,
+            trust_level=TrustLevel.BUILTIN,
+            metadata={"workflow": {"steps": [{"type": "shell", "input": "echo no"}]}},
+        )
+
+        with mock.patch("asyncio.create_subprocess_exec") as spawn:
+            result = await execute_skill(spec, {}, tmp_path / "workspace")
+
+        assert result["success"] is False
+        steps = __import__("json").loads(result["output"])
+        assert steps[0]["status"] == "error"
+        assert "sandbox" in steps[0]["error"].lower()
+        spawn.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_skill_executor_sanitizes_unexpected_runtime_errors(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        private_detail = "/Users/private/Documents/customer.xlsx secret-token"
+
+        async def fail_llm(_prompt: str, _skill_id: str | None) -> str:
+            raise RuntimeError(private_detail)
+
+        async def fail_skill(_skill_id: str, _args: dict[str, Any]) -> dict[str, Any]:
+            raise RuntimeError(private_detail)
+
+        prompt = SkillSpec(
+            id="prompt-error",
+            name="Prompt Error",
+            type=SkillType.PROMPT,
+            trust_level=TrustLevel.BUILTIN,
+            full_content="safe",
+        )
+        workflow = SkillSpec(
+            id="workflow-error",
+            name="Workflow Error",
+            type=SkillType.WORKFLOW,
+            trust_level=TrustLevel.BUILTIN,
+            metadata={"workflow": {"steps": [{"type": "prompt", "input": "safe"}]}},
+        )
+        meta = SkillSpec(
+            id="meta-error",
+            name="Meta Error",
+            type=SkillType.META,
+            trust_level=TrustLevel.BUILTIN,
+            metadata={"workflow": {"steps": [{"type": "skill", "skill_id": "child"}]}},
+        )
+        code_dir = tmp_path / "code-error"
+        code_dir.mkdir()
+        (code_dir / "main.py").write_text("print('safe')\n")
+        code = SkillSpec(
+            id="code-error",
+            name="Code Error",
+            path=code_dir,
+            type=SkillType.CODE,
+            entry="main.py",
+            trust_level=TrustLevel.BUILTIN,
+        )
+        sandbox = mock.MagicMock(strict_isolation=True)
+        sandbox.execute = mock.AsyncMock(side_effect=RuntimeError(private_detail))
+
+        prompt_result = await execute_skill(prompt, {}, tmp_path, llm_caller=fail_llm)
+        workflow_result = await execute_skill(workflow, {}, tmp_path, llm_caller=fail_llm)
+        meta_result = await execute_skill(meta, {}, tmp_path, skill_resolver=fail_skill)
+        code_result = await execute_skill(code, {}, tmp_path, sandbox=sandbox)
+
+        assert prompt_result["error"] == "LLM application failed safely"
+        assert private_detail not in str(prompt_result)
+        assert private_detail not in str(workflow_result)
+        assert private_detail not in str(meta_result)
+        assert private_detail not in str(code_result)

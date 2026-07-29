@@ -1,5 +1,6 @@
 """Tests for metacognition loop."""
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -71,6 +72,36 @@ class TestMetacognitionLoop:
         loop.reflect()
         proposals = loop.get_proposals()
         assert isinstance(proposals, list)
+
+    def test_prune_bounds_reports_and_their_proposals(self, loop: MetacognitionLoop) -> None:
+        for _index in range(5):
+            loop.reflect()
+        with sqlite3.connect(loop.db_path) as conn:
+            newest_report = conn.execute("SELECT MAX(id) FROM reports").fetchone()[0]
+            conn.executemany(
+                "INSERT INTO proposals (report_id, area, proposal) VALUES (?, 'test', ?)",
+                ((newest_report, f"proposal-{index}") for index in range(5)),
+            )
+
+        removed = loop.prune(max_reports=2, max_proposals=3)
+
+        assert removed >= 5
+        with sqlite3.connect(loop.db_path) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM reports").fetchone()[0] == 2
+            assert conn.execute("SELECT COUNT(*) FROM proposals").fetchone()[0] == 3
+            assert (
+                conn.execute(
+                    """
+                SELECT COUNT(*) FROM proposals
+                WHERE report_id NOT IN (SELECT id FROM reports)
+                """
+                ).fetchone()[0]
+                == 0
+            )
+
+    def test_prune_rejects_negative_report_limits(self, loop: MetacognitionLoop) -> None:
+        with pytest.raises(ValueError, match="max_reports"):
+            loop.prune(max_reports=-1)
 
 
 class TestMetacognitionComposerIntegration:

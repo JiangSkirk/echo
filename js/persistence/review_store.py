@@ -10,7 +10,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from js.utils.db import (
+    is_recoverable_database_corruption,
+    quarantine_corrupt_database,
+)
+
 _LEGACY_LOCAL_OWNER = "__legacy_local__"
+_DEFAULT_MAX_CAPSULES_PER_OWNER = 1_000
+_DEFAULT_MAX_CAPSULES_TOTAL = 10_000
 
 
 @dataclass
@@ -48,8 +55,10 @@ class ReviewStore:
         try:
             with sqlite3.connect(str(self.db_path)) as conn:
                 conn.execute("PRAGMA journal_mode=WAL")
-        except sqlite3.DatabaseError:
-            self.db_path.unlink(missing_ok=True)
+        except sqlite3.DatabaseError as error:
+            if not is_recoverable_database_corruption(error):
+                raise
+            quarantine_corrupt_database(self.db_path)
             with sqlite3.connect(str(self.db_path)) as conn:
                 conn.execute("PRAGMA journal_mode=WAL")
         with self._conn() as conn:
@@ -191,6 +200,52 @@ class ReviewStore:
         if row is None:
             return None
         return self._row_to_capsule(row)
+
+    def prune(
+        self,
+        max_per_owner: int = _DEFAULT_MAX_CAPSULES_PER_OWNER,
+        max_total: int = _DEFAULT_MAX_CAPSULES_TOTAL,
+    ) -> int:
+        """Enforce per-owner and global hard caps in one transaction."""
+        if max_per_owner < 0:
+            raise ValueError("max_per_owner must be non-negative")
+        if max_total < 0:
+            raise ValueError("max_total must be non-negative")
+
+        with self._conn() as conn:
+            changes_before = conn.total_changes
+            conn.execute(
+                """
+                DELETE FROM review_capsules
+                WHERE rowid IN (
+                    SELECT rowid
+                    FROM (
+                        SELECT
+                            rowid,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY owner_key_hash
+                                ORDER BY created_at DESC, rowid DESC
+                            ) AS retention_rank
+                        FROM review_capsules
+                    )
+                    WHERE retention_rank > ?
+                )
+                """,
+                (max_per_owner,),
+            )
+            conn.execute(
+                """
+                DELETE FROM review_capsules
+                WHERE rowid IN (
+                    SELECT rowid
+                    FROM review_capsules
+                    ORDER BY created_at DESC, rowid DESC
+                    LIMIT -1 OFFSET ?
+                )
+                """,
+                (max_total,),
+            )
+            return conn.total_changes - changes_before
 
     def list_recent(
         self, owner_key_hash: str | None = None, limit: int = 20

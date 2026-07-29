@@ -2,9 +2,78 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
+from typing import TYPE_CHECKING
 
 from js.persistence.lifecycle_store import SessionLifecycleStore
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest
+
+
+class _HeartbeatBeforeAbortConnection:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        heartbeat_connection: sqlite3.Connection,
+        session_id: str,
+        owner: str,
+    ) -> None:
+        self._connection = connection
+        self._heartbeat_connection = heartbeat_connection
+        self._session_id = session_id
+        self._owner = owner
+        self._triggered = False
+
+    def execute(
+        self,
+        sql: str,
+        parameters: tuple[object, ...] = (),
+    ) -> sqlite3.Cursor:
+        compact_sql = "".join(sql.casefold().split())
+        if (
+            not self._triggered
+            and "updatesession_lifecycle" in compact_sql
+            and "setstatus='aborted'" in compact_sql
+        ):
+            self._heartbeat_connection.execute(
+                "UPDATE session_lifecycle SET last_heartbeat_at = ? "
+                "WHERE session_id = ? AND owner_key_hash = ?",
+                (time.time(), self._session_id, self._owner),
+            )
+            self._heartbeat_connection.commit()
+            self._triggered = True
+        return self._connection.execute(sql, parameters)
+
+    def __enter__(self) -> _HeartbeatBeforeAbortConnection:
+        self._connection.__enter__()
+        return self
+
+    def commit(self) -> None:
+        self._connection.commit()
+
+    def __exit__(self, *args: object) -> bool | None:
+        return self._connection.__exit__(*args)
+
+
+def _interleave_heartbeat_before_abort(
+    store: SessionLifecycleStore,
+    monkeypatch: pytest.MonkeyPatch,
+    session_id: str,
+    owner: str,
+) -> sqlite3.Connection:
+    heartbeat_connection = sqlite3.connect(store.db_path, check_same_thread=False)
+    connection = _HeartbeatBeforeAbortConnection(
+        store._conn(),
+        heartbeat_connection,
+        session_id,
+        owner,
+    )
+    monkeypatch.setattr(store, "_conn", lambda: connection)
+    return heartbeat_connection
 
 
 def test_mark_started_and_completed(tmp_path):
@@ -20,6 +89,37 @@ def test_mark_started_and_completed(tmp_path):
     assert row["status"] == "completed"
     assert row["exit_reason"] == "done"
     assert row["completed_at"] is not None
+
+
+def test_terminal_state_is_single_assignment_for_one_run(tmp_path: Path) -> None:
+    store = SessionLifecycleStore(tmp_path / "lifecycle.db")
+    store.mark_started("session", "owner", "run-1")
+
+    store.mark_terminal("session", "completed", "done", "owner", "run-1")
+    store.mark_terminal("session", "cancelled", "late cancel", "owner", "run-1")
+    store.mark_aborted("session", "late recovery", "owner", "run-1")
+
+    row = store.get("session", "owner")
+    assert row is not None
+    assert row["run_id"] == "run-1"
+    assert row["status"] == "completed"
+    assert row["exit_reason"] == "done"
+
+
+def test_late_terminal_from_old_run_cannot_overwrite_new_run(tmp_path: Path) -> None:
+    store = SessionLifecycleStore(tmp_path / "lifecycle.db")
+    store.mark_started("session", "owner", "run-1")
+    store.mark_terminal("session", "completed", "done", "owner", "run-1")
+    store.mark_started("session", "owner", "run-2")
+
+    store.mark_terminal("session", "error", "late failure", "owner", "run-1")
+    store.heartbeat("session", "owner", "run-1")
+
+    row = store.get("session", "owner")
+    assert row is not None
+    assert row["run_id"] == "run-2"
+    assert row["status"] == "running"
+    assert row["exit_reason"] == ""
 
 
 def test_owner_isolation(tmp_path):
@@ -38,6 +138,76 @@ def test_legacy_null_owner_backfill(tmp_path):
     store.mark_started("s3", None)
     row = store.get("s3")
     assert row["owner_key_hash"] == "__legacy_local__"
+
+
+def test_migrates_composite_owner_schema_without_run_id(tmp_path: Path) -> None:
+    db_path = tmp_path / "lifecycle.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE session_lifecycle (
+                session_id TEXT NOT NULL,
+                owner_key_hash TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                completed_at REAL,
+                exit_reason TEXT,
+                status TEXT NOT NULL DEFAULT 'running',
+                last_heartbeat_at REAL NOT NULL,
+                PRIMARY KEY (session_id, owner_key_hash)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO session_lifecycle
+            (session_id, owner_key_hash, created_at, completed_at, exit_reason,
+             status, last_heartbeat_at)
+            VALUES ('legacy', 'owner', 1.0, NULL, NULL, 'running', 1.0)
+            """
+        )
+
+    store = SessionLifecycleStore(db_path)
+
+    legacy = store.get("legacy", "owner")
+    assert legacy is not None
+    assert legacy["run_id"] == ""
+    store.mark_started("new", "owner", "run-new")
+    assert store.get("new", "owner")["run_id"] == "run-new"
+
+
+def test_migrates_single_primary_key_schema_without_run_id(tmp_path: Path) -> None:
+    db_path = tmp_path / "lifecycle.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE session_lifecycle (
+                session_id TEXT PRIMARY KEY,
+                owner_key_hash TEXT,
+                created_at REAL NOT NULL,
+                completed_at REAL,
+                exit_reason TEXT,
+                status TEXT NOT NULL DEFAULT 'running',
+                last_heartbeat_at REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO session_lifecycle
+            (session_id, owner_key_hash, created_at, completed_at, exit_reason,
+             status, last_heartbeat_at)
+            VALUES ('legacy', NULL, 1.0, NULL, NULL, 'running', 1.0)
+            """
+        )
+
+    store = SessionLifecycleStore(db_path)
+
+    legacy = store.get("legacy")
+    assert legacy is not None
+    assert legacy["owner_key_hash"] == "__legacy_local__"
+    assert legacy["run_id"] == ""
+    store.mark_started("legacy", "other-owner", "run-2")
+    assert store.get("legacy", "other-owner")["run_id"] == "run-2"
 
 
 def test_same_session_id_different_owners(tmp_path):
@@ -161,6 +331,38 @@ def test_recover_aborted_sessions_scoped_by_owner(tmp_path):
     assert store.get("stale_b", "owner_b")["status"] == "running"
 
 
+def test_owner_recovery_does_not_overwrite_interleaved_heartbeat(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store = SessionLifecycleStore(tmp_path / "lifecycle.db")
+    store.mark_started("shared", "owner_a")
+    store.mark_started("shared", "owner_b")
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE session_lifecycle SET last_heartbeat_at = ? WHERE session_id = ?",
+            (time.time() - 1_000, "shared"),
+        )
+
+    heartbeat_connection = _interleave_heartbeat_before_abort(
+        store,
+        monkeypatch,
+        "shared",
+        "owner_a",
+    )
+    try:
+        recovered = store.recover_aborted_sessions(
+            threshold_seconds=300,
+            owner_key_hash="owner_a",
+        )
+    finally:
+        heartbeat_connection.close()
+
+    assert recovered == []
+    assert store.get("shared", "owner_a")["status"] == "running"
+    assert store.get("shared", "owner_b")["status"] == "running"
+
+
 def test_recover_all_aborted_sessions_sweeps_every_owner(tmp_path):
     """Startup recovery must mark stale rows across ALL owners, not just legacy-local.
 
@@ -228,3 +430,32 @@ def test_recover_all_aborted_sessions_ignores_fresh_heartbeats(tmp_path):
     assert recovered == []
     assert store.get("fresh_a", "owner_a")["status"] == "running"
     assert store.get("fresh_b", "owner_b")["status"] == "running"
+
+
+def test_all_owner_recovery_reports_only_atomic_updates_after_interleaved_heartbeat(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store = SessionLifecycleStore(tmp_path / "lifecycle.db")
+    store.mark_started("shared", "owner_a")
+    store.mark_started("shared", "owner_b")
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE session_lifecycle SET last_heartbeat_at = ? WHERE session_id = ?",
+            (time.time() - 1_000, "shared"),
+        )
+
+    heartbeat_connection = _interleave_heartbeat_before_abort(
+        store,
+        monkeypatch,
+        "shared",
+        "owner_a",
+    )
+    try:
+        recovered = store.recover_all_aborted_sessions(threshold_seconds=300)
+    finally:
+        heartbeat_connection.close()
+
+    assert recovered == [("shared", "owner_b")]
+    assert store.get("shared", "owner_a")["status"] == "running"
+    assert store.get("shared", "owner_b")["status"] == "aborted"

@@ -62,6 +62,7 @@ class TestStaticAssets:
         "utils/dom.js",
         "utils/markdown.js",
         "tabs/agents.js",
+        "tabs/approvals.js",
         "tabs/audit.js",
         "tabs/cron.js",
         "tabs/dashboard.js",
@@ -80,6 +81,51 @@ class TestStaticAssets:
         res = client.get(f"/static/{path}")
         assert res.status_code == 200, f"Static file {path} not accessible"
         assert "javascript" in res.headers.get("content-type", "") or path.endswith(".js")
+
+    def test_default_chat_stream_keeps_tools_enabled(self, client: TestClient) -> None:
+        app_js = client.get("/static/app.js").text
+
+        assert "enable_tools: true" in app_js
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "vendor/tailwind.css",
+            "vendor/fontawesome/css/all.min.css",
+            "vendor/fontawesome/webfonts/fa-solid-900.woff2",
+        ],
+    )
+    def test_local_ui_asset_is_packaged_and_served(
+        self, client: TestClient, path: str
+    ) -> None:
+        response = client.get(f"/static/{path}")
+
+        assert response.status_code == 200
+        assert response.content
+
+    def test_stream_errors_clear_transient_ui_state(self, client: TestClient) -> None:
+        app_js = client.get("/static/app.js").text
+
+        assert "function abortStream()" in app_js
+        assert "data.type === 'stream_diagnostic'" in app_js
+        assert "abortStream();\n      appendMessage('system', '流式通道错误:" not in app_js
+        assert "data.type === 'error'" in app_js
+        assert "abortStream();\n      appendMessage('system', '错误:" in app_js
+
+    def test_echo_approval_ui_uses_safe_rendering_and_validates_decisions(
+        self, client: TestClient
+    ) -> None:
+        approvals_js = client.get("/static/tabs/approvals.js").text
+
+        assert "'/api/echo/approvals'" in approvals_js
+        assert "/api/echo/approvals/${encodeURIComponent(requestId)}/decision" in approvals_js
+        assert "JSON.parse" in approvals_js
+        assert "edited_arguments must be a JSON object" in approvals_js
+        assert "response must not be empty" in approvals_js
+        assert "startApprovalsPolling" in approvals_js
+        assert "stopApprovalsPolling" in approvals_js
+        assert ".textContent" in approvals_js
+        assert ".innerHTML" not in approvals_js
 
 
 class TestHtmlIntegrity:
@@ -169,6 +215,7 @@ class TestModuleSyntax:
         [
             "tabs/memory.js",
             "tabs/agents.js",
+            "tabs/approvals.js",
             "tabs/audit.js",
             "tabs/cron.js",
             "tabs/dashboard.js",
@@ -208,3 +255,29 @@ class TestIndexHtml:
         res = client.get("/")
         assert res.status_code == 200
         assert '<script type="module" src="/static/app.js?v=4"></script>' in res.text
+
+    def test_browser_assets_are_local_and_csp_disallows_public_cdns(
+        self, client: TestClient
+    ) -> None:
+        html = client.get("/").text
+
+        assert 'href="/static/vendor/tailwind.css"' in html
+        assert 'href="/static/vendor/fontawesome/css/all.min.css"' in html
+        assert "cdn.tailwindcss.com" not in html
+        assert "cdnjs.cloudflare.com" not in html
+        assert "script-src 'self' 'unsafe-inline'" in html
+        assert "font-src 'self'" in html
+
+    def test_echo_approvals_navigation_and_container_are_present(
+        self, client: TestClient
+    ) -> None:
+        html = client.get("/").text
+        app_js = client.get("/static/app.js").text
+
+        assert 'id="nav-approvals"' in html
+        assert "switchTab('approvals')" in html
+        assert 'id="approvals-pending-count"' in html
+        assert 'id="tab-approvals"' in html
+        assert 'id="approvals-list"' in html
+        assert "from './tabs/approvals.js'" in app_js
+        assert "if (tab === 'approvals') loadApprovals();" in app_js

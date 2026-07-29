@@ -3,13 +3,14 @@
 Supports:
 - Packaging a skill directory into a distributable archive
 - Generating ClawHub-compatible manifest entries
-- Content-hash signing for integrity verification
+- Ed25519 package signing for integrity and authenticity verification
 - Git-based publishing workflow
 """
 
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import tarfile
 import time
@@ -121,7 +122,10 @@ def package_skill(
     for item in skill_dir.rglob("*"):
         if item.is_file():
             # Skip common junk
-            if any(part.startswith(".") and part not in {".gitkeep", ".gitignore"} for part in item.relative_to(skill_dir).parts):
+            if any(
+                part.startswith(".") and part not in {".gitkeep", ".gitignore"}
+                for part in item.relative_to(skill_dir).parts
+            ):
                 continue
             if item.suffix in (".pyc", ".pyo", ".egg-info"):
                 continue
@@ -201,7 +205,9 @@ def package_skill(
     clawhub_path = out_dir / f"{archive_name}.clawhub.json"
     clawhub_path.write_text(json.dumps(clawhub_entry, indent=2), encoding="utf-8")
 
-    logger.info(f"Packaged {spec.id}: {archive_path} ({pkg_manifest.size_bytes} bytes, {pkg_manifest.file_count} files)")
+    logger.info(
+        f"Packaged {spec.id}: {archive_path} ({pkg_manifest.size_bytes} bytes, {pkg_manifest.file_count} files)"
+    )
 
     return PackageResult(
         success=True,
@@ -216,25 +222,55 @@ def package_skill(
 # ---------------------------------------------------------------------------
 
 
-def sign_package(archive_path: Path, _private_key_path: Path | None = None) -> Path | None:
-    """Sign a package archive with SHA-256 HMAC or Ed25519 if key available.
+def sign_package(archive_path: Path, state_dir: Path | None = None) -> Path | None:
+    """Sign a package archive with the local Ed25519 signing key.
 
-    Currently implements content-hash signing (deterministic, no key needed).
-    Returns path to signature file.
+    The signature file is a JSON document containing the archive SHA-256
+    digest, the Ed25519 signature over that digest, and the signer's
+    public key.  Keyless content hashes are NOT signatures — they prove
+    nothing about authorship and are trivially re-computable by an
+    attacker, so signing without a key fails closed (returns None).
+
+    Returns the path to the signature file, or None on failure.
     """
     if not archive_path.exists():
         return None
+    if state_dir is None:
+        logger.error(f"Refusing to sign {archive_path}: no signing-key state directory given")
+        return None
 
-    # Simple deterministic signature: SHA-256 of archive
-    sig = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    from js.security.signer import get_public_key, sign_content
+
+    digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    try:
+        signature = sign_content(digest, state_dir)
+        public_key = get_public_key(state_dir)
+    except RuntimeError:
+        logger.error(f"Cannot sign {archive_path}: no Ed25519 signing key in {state_dir}")
+        return None
+    if not signature or not public_key:
+        logger.error(f"Cannot sign {archive_path}: signing key unavailable")
+        return None
+
+    sig_payload = {
+        "algorithm": "ed25519",
+        "archive_sha256": digest,
+        "signature": signature,
+        "public_key": public_key,
+    }
     sig_path = archive_path.with_suffix(archive_path.suffix + ".sig")
-    sig_path.write_text(sig, encoding="utf-8")
+    sig_path.write_text(json.dumps(sig_payload, indent=2), encoding="utf-8")
     logger.info(f"Signed {archive_path}: {sig_path}")
     return sig_path
 
 
 def verify_package(archive_path: Path, signature_path: Path | None = None) -> bool:
-    """Verify a package signature."""
+    """Verify a package signature (fail-closed).
+
+    Only Ed25519 signatures produced by ``sign_package`` are accepted.
+    Legacy keyless SHA-256 digest files, missing signatures, tampered
+    archives, and forged signature blobs are all rejected.
+    """
     if not archive_path.exists():
         return False
 
@@ -243,9 +279,40 @@ def verify_package(archive_path: Path, signature_path: Path | None = None) -> bo
         logger.warning(f"No signature found for {archive_path}")
         return False
 
-    expected = sig_path.read_text(encoding="utf-8").strip()
-    actual = hashlib.sha256(archive_path.read_bytes()).hexdigest()
-    return expected == actual
+    try:
+        payload = json.loads(sig_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        # Legacy bare-hex keyless digests are forgeable — reject them.
+        logger.warning(f"Rejecting unparseable/legacy signature for {archive_path}")
+        return False
+    if not isinstance(payload, dict) or payload.get("algorithm") != "ed25519":
+        logger.warning(f"Unsupported signature format for {archive_path}")
+        return False
+
+    stored_digest = payload.get("archive_sha256")
+    signature = payload.get("signature")
+    public_key = payload.get("public_key")
+    if not all(
+        isinstance(value, str) and value for value in (stored_digest, signature, public_key)
+    ):
+        logger.warning(f"Incomplete signature payload for {archive_path}")
+        return False
+
+    actual_digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    # Constant-time comparison; also short-circuits before the costly verify.
+    assert isinstance(stored_digest, str)
+    assert isinstance(signature, str)
+    assert isinstance(public_key, str)
+    if not hmac.compare_digest(stored_digest, actual_digest):
+        logger.warning(f"Package digest mismatch for {archive_path} — archive tampered")
+        return False
+
+    from js.security.signer import verify_signature
+
+    if not verify_signature(actual_digest, signature, public_key):
+        logger.warning(f"Invalid Ed25519 signature for {archive_path}")
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -270,18 +337,20 @@ def generate_clawhub_json(skills: list[Path], output: Path) -> Path:
             continue
         try:
             spec = parse_skill_manifest(manifest)
-            entries.append({
-                "id": spec.id,
-                "name": spec.name,
-                "description": spec.description,
-                "version": spec.version,
-                "author": spec.author,
-                "license": spec.license,
-                "type": spec.type.value,
-                "category": spec.category,
-                "tags": spec.tags,
-                "source": f"git+https://github.com/user/skills.git#{spec.id}",
-            })
+            entries.append(
+                {
+                    "id": spec.id,
+                    "name": spec.name,
+                    "description": spec.description,
+                    "version": spec.version,
+                    "author": spec.author,
+                    "license": spec.license,
+                    "type": spec.type.value,
+                    "category": spec.category,
+                    "tags": spec.tags,
+                    "source": f"git+https://github.com/user/skills.git#{spec.id}",
+                }
+            )
         except Exception as e:
             logger.warning(f"Failed to parse {skill_dir}: {e}")
 
@@ -310,7 +379,9 @@ def publish_to_git(skill_dir: Path, repo_url: str, branch: str = "main") -> dict
     try:
         git_root = subprocess.run(
             ["git", "-C", str(skill_dir), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if git_root.returncode != 0:
             result["commands"].append(f"cd {skill_dir.parent}")
@@ -334,4 +405,5 @@ def publish_to_git(skill_dir: Path, repo_url: str, branch: str = "main") -> dict
 
 def shutil_which(cmd: str) -> str | None:
     import shutil
+
     return shutil.which(cmd)

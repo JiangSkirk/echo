@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import os
 import re
 import shutil
-import sys
+import tarfile
+import threading
 import time
 from collections.abc import Awaitable, Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import quote, urlsplit
 
+import httpx
+
+from js.security.net_guard import PinnedTransport, resolve_and_validate
 from js.security.sandbox import SandboxExecutor
 from js.skills.executor import execute_skill
 from js.skills.hermes_bridge import (
@@ -33,6 +40,12 @@ from js.utils.db import db_connection
 from js.utils.log import get_logger
 
 logger = get_logger("js.skills")
+
+_REMOTE_SKILL_NETWORK_HOSTS = frozenset({"api.github.com", "codeload.github.com", "github.com"})
+_MAX_REMOTE_SKILL_ARCHIVE_BYTES = 25 * 1024 * 1024
+_MAX_REMOTE_SKILL_EXPANDED_BYTES = 100 * 1024 * 1024
+_MAX_REMOTE_SKILL_FILE_BYTES = 10 * 1024 * 1024
+_MAX_REMOTE_SKILL_MEMBERS = 5_000
 
 # Type alias for LLM caller
 LLMCaller = Callable[[str, str | None], Awaitable[str]]
@@ -63,19 +76,33 @@ class SkillManager:
         promotion_store: PromotionStore | None = None,
         owner_key_hash: str | None = None,
         audit_logger: Any | None = None,
+        hermes_skills_enabled: bool = False,
     ) -> None:
         self.state_dir = state_dir
         self.workspace = workspace
+        self.hermes_skills_enabled = bool(hermes_skills_enabled)
         self.skills_dir = state_dir / "skills"
         self.skills_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = state_dir / "skills.db"
         self._init_db()
         self._skills: dict[str, SkillSpec] = {}
+        self._skills_lock = threading.RLock()
+        self._install_lock = asyncio.Lock()
+        self._hermes_load_lock = threading.RLock()
+        self._closed = threading.Event()
         self._scan_cache: dict[str, ScanResult] = {}
-        self._sandbox: SandboxExecutor | None = None
+        # Every manager is safe by construction, including CLI/test callers
+        # that do not go through JSAgent's composition root.
+        self._sandbox: SandboxExecutor | None = SandboxExecutor(
+            workspace,
+            strict_isolation=True,
+        )
         self._composer: Any | None = None
         self._last_skill_by_session: dict[str, str] = {}
         self._tool_registry: Any | None = None
+        self._tool_owner = object()
+        self._tool_generation = 0
+        self._registered_tool_names: frozenset[str] = frozenset()
         # v0.1.5-alpha: PromotionStore powers the auditable trust/variant pipeline.
         # When None, a per-state_dir store is created lazily so SkillManager
         # remains usable in unit tests and CLI contexts that don't wire one.
@@ -143,15 +170,45 @@ class SkillManager:
 
     def register_as_tools(self, registry: Any) -> None:
         """Register all loaded skills as callable tools in the agent's registry."""
-        self._tool_registry = registry
-        for spec in self._skills.values():
-            self._register_skill_as_tool(spec)
+        with self._skills_lock:
+            self._ensure_open()
+            if self._tool_registry is not None and self._tool_registry is not registry:
+                self._replace_owned_tools(self._tool_registry, self._tool_generation + 1, [])
+            self._tool_registry = registry
+            self._publish_skill_tools_locked()
 
     def register_auto_skill(self, spec: SkillSpec) -> None:
         """Register an auto-generated skill and expose it as a tool."""
-        self._skills[spec.id] = spec
-        self._register_skill_as_tool(spec)
+        self._ensure_open()
+        with self._skills_lock:
+            self._skills[spec.id] = spec
+            self._publish_skill_tools_locked()
         logger.info(f"Registered auto-skill: {spec.id}")
+
+    def _skills_snapshot(self) -> tuple[SkillSpec, ...]:
+        """Return a stable view while background discovery mutates the registry."""
+        with self._skills_lock:
+            return tuple(self._skills.values())
+
+    def _ensure_open(self) -> None:
+        if self._closed.is_set():
+            raise RuntimeError("skill manager is closed")
+
+    def close(self) -> None:
+        """Stop discovery and revoke only this manager's registered tools."""
+        with self._skills_lock:
+            if self._closed.is_set():
+                return
+            self._closed.set()
+            registry = self._tool_registry
+            self._tool_generation += 1
+            if registry is not None:
+                self._replace_owned_tools(registry, self._tool_generation, [])
+            self._registered_tool_names = frozenset()
+            self._tool_registry = None
+            self._sandbox = None
+            self._composer = None
+            self._evolver = None
 
     @staticmethod
     def _skill_id_to_tool_name(skill_id: str) -> str:
@@ -180,17 +237,12 @@ class SkillManager:
         """
         return spec.trust_level != TrustLevel.QUARANTINE
 
-    def _register_skill_as_tool(self, spec: SkillSpec) -> None:
-        if not self._tool_registry:
-            return
-        if not self._should_expose_as_tool(spec):
-            logger.debug(
-                "Skipping tool registration for %s (trust_level=%s)",
-                spec.id,
-                spec.trust_level.value,
-            )
-            return
-
+    def _tool_registration(
+        self,
+        spec: SkillSpec,
+        registry: Any,
+        generation: int,
+    ) -> tuple[ToolSpec, Callable[..., Awaitable[ToolResult]]]:
         tool_name = self._skill_id_to_tool_name(spec.id)
 
         # Build parameters from metadata if available, otherwise generic args
@@ -225,8 +277,20 @@ class SkillManager:
         )
 
         async def _handler(**kwargs: Any) -> ToolResult:
+            if not self._is_active_tool_registration(registry, tool_name, generation):
+                return ToolResult(
+                    success=False, error="Skill manager is closed or tool registration is inactive"
+                )
             args = kwargs.get("args", {}) if "args" in kwargs else kwargs
-            result = await self.execute(spec.id, args)
+            try:
+                result = await self.execute(spec.id, args)
+            except RuntimeError as exc:
+                logger.warning(
+                    "Skill tool execution failed for %s: %s",
+                    spec.id,
+                    type(exc).__name__,
+                )
+                return ToolResult(success=False, error="Skill execution failed safely")
             return ToolResult(
                 success=result.get("success", False),
                 output=result.get("output", ""),
@@ -234,13 +298,61 @@ class SkillManager:
                 metadata={"skill_id": spec.id, "skill_type": spec.type.value},
             )
 
-        self._tool_registry.register(tool_spec, _handler)
-        logger.debug(f"Registered skill as tool: {tool_name}")
+        return tool_spec, _handler
+
+    def _is_active_tool_registration(self, registry: Any, tool_name: str, generation: int) -> bool:
+        with self._skills_lock:
+            return (
+                not self._closed.is_set()
+                and registry is self._tool_registry
+                and generation == self._tool_generation
+                and tool_name in self._registered_tool_names
+            )
+
+    def _replace_owned_tools(
+        self,
+        registry: Any,
+        generation: int,
+        registrations: list[tuple[ToolSpec, Callable[..., Awaitable[ToolResult]]]],
+    ) -> frozenset[str]:
+        replace_owned = getattr(registry, "replace_owned", None)
+        if callable(replace_owned):
+            return frozenset(
+                str(tool_name)
+                for tool_name in replace_owned(self._tool_owner, generation, registrations)
+            )
+
+        # Compatibility for small external registry adapters. The production
+        # ToolRegistry supplies replace_owned(), which is the atomic path.
+        for tool_name in self._registered_tool_names:
+            registry.unregister(tool_name)
+        for tool_spec, handler in registrations:
+            registry.register(tool_spec, handler)
+        return frozenset(tool_spec.name for tool_spec, _ in registrations)
+
+    def _publish_skill_tools_locked(self) -> None:
+        registry = self._tool_registry
+        if registry is None or self._closed.is_set():
+            return
+        self._tool_generation += 1
+        generation = self._tool_generation
+        registrations = [
+            self._tool_registration(spec, registry, generation)
+            for spec in self._skills.values()
+            if self._should_expose_as_tool(spec)
+        ]
+        self._registered_tool_names = self._replace_owned_tools(registry, generation, registrations)
+        logger.debug("Published %d skill tools (generation=%d)", len(registrations), generation)
+
+    def _register_skill_as_tool(self, _spec: SkillSpec) -> None:
+        """Republish the manager-owned generation after a skill mutation."""
+        with self._skills_lock:
+            self._publish_skill_tools_locked()
 
     def _unregister_skill_as_tool(self, skill_id: str) -> None:
-        if self._tool_registry:
-            self._tool_registry.unregister(self._skill_id_to_tool_name(skill_id))
-            logger.debug(f"Unregistered skill tool: {self._skill_id_to_tool_name(skill_id)}")
+        del skill_id
+        with self._skills_lock:
+            self._publish_skill_tools_locked()
 
     # ------------------------------------------------------------------
     # Discovery
@@ -265,98 +377,128 @@ class SkillManager:
         """Asynchronously load Hermes skills in a background thread."""
         import asyncio
 
+        if self._closed.is_set():
+            return
         await asyncio.to_thread(self._load_hermes_skills)
 
     def _load_hermes_skills(self) -> None:
-        """Load skills from the Hermes skills directory (~/.hermes/skills/).
+        self._publish_hermes_skills(replace_existing=False)
 
-        This enables JS Agent to use all skills already installed by
-        OpenClaw Hermes without any migration or re-installation.
+    def _publish_hermes_skills(self, *, replace_existing: bool) -> None:
+        """Load skills from the Hermes skills directory when explicitly enabled.
+
+        Discovery resolves the Hermes skills path at call time so isolated HOME
+        overrides are honored. Default is opt-in/off for privacy-safe starts.
         """
-        from js.skills.hermes_bridge import HERMES_SKILLS_DIR
+        from js.skills.hermes_bridge import hermes_skills_dir
 
-        if not HERMES_SKILLS_DIR.exists():
-            logger.debug("Hermes skills directory not found, skipping Hermes bridge")
-            return
+        with self._hermes_load_lock:
+            if self._closed.is_set():
+                return
+            if not self.hermes_skills_enabled:
+                logger.debug("Hermes skills bridge disabled (opt-in required)")
+                return
+            skills_root = hermes_skills_dir()
+            if not skills_root.exists():
+                logger.debug("Hermes skills directory not found, skipping Hermes bridge")
+                return
 
-        stats = get_bridge_stats()
-        stats.failed_loads = 0
-        stats.total_loaded = 0
-        stats.prompt_count = 0
-        stats.code_count = 0
+            stats = get_bridge_stats()
+            stats.failed_loads = 0
+            stats.total_loaded = 0
+            stats.prompt_count = 0
+            stats.code_count = 0
 
-        try:
-            manifests = discover_hermes_skills(HERMES_SKILLS_DIR)
-            for manifest in manifests:
-                try:
-                    spec = load_hermes_skill(manifest)
+            try:
+                manifests = discover_hermes_skills(skills_root)
+                discovered: list[SkillSpec] = []
+                for manifest in manifests:
+                    if self._closed.is_set():
+                        break
+                    try:
+                        spec = load_hermes_skill(manifest)
 
-                    # Skip if a JS Agent skill with the same ID already exists
-                    if spec.id in self._skills:
-                        logger.debug(
-                            f"Skipping Hermes skill {spec.id}: ID conflict with existing skill"
-                        )
-                        continue
+                        # Security scan (with optional Hermes guard enhancement)
+                        cached = self._load_cached_scan(spec.id, spec.content_hash)
+                        if cached:
+                            spec.risk_flags = cached.risk_flags
+                            spec.trust_level = cached.trust_level
+                        else:
+                            result = enhanced_scan_hermes_skill(spec)
+                            spec.risk_flags = result.risk_flags
+                            spec.trust_level = result.trust_level
+                            self._save_scan_cache(result)
 
-                    # Security scan (with optional Hermes guard enhancement)
-                    cached = self._load_cached_scan(spec.id, spec.content_hash)
-                    if cached:
-                        spec.risk_flags = cached.risk_flags
-                        spec.trust_level = cached.trust_level
-                    else:
-                        result = enhanced_scan_hermes_skill(spec)
-                        spec.risk_flags = result.risk_flags
-                        spec.trust_level = result.trust_level
-                        self._save_scan_cache(result)
+                        if self._closed.is_set():
+                            break
+                        discovered.append(spec)
+                    except Exception as e:
+                        stats.failed_loads += 1
+                        logger.warning(f"Failed to load Hermes skill from {manifest}: {e}")
 
-                    self._skills[spec.id] = spec
-                    stats.total_loaded += 1
-                    if spec.type == SkillType.PROMPT:
-                        stats.prompt_count += 1
-                    elif spec.type == SkillType.CODE:
-                        stats.code_count += 1
+                with self._skills_lock:
+                    if self._closed.is_set():
+                        return
+                    next_skills = dict(self._skills)
+                    if replace_existing:
+                        next_skills = {
+                            skill_id: spec
+                            for skill_id, spec in next_skills.items()
+                            if not skill_id.startswith("hermes:")
+                        }
+                    for spec in discovered:
+                        if spec.id in next_skills:
+                            logger.debug(
+                                "Skipping Hermes skill %s: ID conflict with existing skill", spec.id
+                            )
+                            continue
+                        next_skills[spec.id] = spec
+                        stats.total_loaded += 1
+                        if spec.type == SkillType.PROMPT:
+                            stats.prompt_count += 1
+                        elif spec.type == SkillType.CODE:
+                            stats.code_count += 1
 
-                    # Auto-register as tool if registry is available
-                    self._register_skill_as_tool(spec)
-                except Exception as e:
-                    stats.failed_loads += 1
-                    logger.warning(f"Failed to load Hermes skill from {manifest}: {e}")
+                    # The skill map and all manager-owned registry entries are
+                    # published together after discovery has completed.
+                    self._skills = next_skills
+                    self._publish_skill_tools_locked()
 
-            stats.last_refresh_time = time.time()
-            stats.refresh_count += 1
-            logger.info(
-                f"Hermes bridge loaded {stats.total_loaded} skills "
-                f"({stats.prompt_count} prompt, {stats.code_count} code, "
-                f"{stats.failed_loads} failed)"
-            )
-        except Exception as e:
-            logger.warning(f"Hermes bridge initialization failed: {e}")
+                stats.last_refresh_time = time.time()
+                stats.refresh_count += 1
+                logger.info(
+                    f"Hermes bridge loaded {stats.total_loaded} skills "
+                    f"({stats.prompt_count} prompt, {stats.code_count} code, "
+                    f"{stats.failed_loads} failed)"
+                )
+            except Exception as e:
+                logger.warning(f"Hermes bridge initialization failed: {e}")
 
     def refresh_hermes_skills(self) -> dict[str, Any]:
         """Refresh Hermes skills from disk without restarting.
 
         Removes stale Hermes skills, reloads changed ones, and discovers new ones.
         """
-        from js.skills.hermes_bridge import HERMES_SKILLS_DIR
+        from js.skills.hermes_bridge import hermes_skills_dir
 
-        if not HERMES_SKILLS_DIR.exists():
+        self._ensure_open()
+        if not self.hermes_skills_enabled:
+            return {
+                "success": False,
+                "error": "Hermes skills bridge is disabled (set features.hermes_skills_enabled)",
+            }
+        skills_root = hermes_skills_dir()
+        if not skills_root.exists():
             return {"success": False, "error": "Hermes skills directory not found"}
 
-        # 1. Remove all existing Hermes skills
-        hermes_ids = [sid for sid in self._skills if sid.startswith("hermes:")]
-        for sid in hermes_ids:
-            del self._skills[sid]
-            self._unregister_skill_as_tool(sid)
-
-        # 2. Re-load from disk
-        self._load_hermes_skills()
+        self._publish_hermes_skills(replace_existing=True)
 
         stats = get_bridge_stats()
         return {
             "success": True,
             "reloaded": stats.total_loaded,
             "failed": stats.failed_loads,
-            "total_hermes": sum(1 for s in self._skills.values() if s.id.startswith("hermes:")),
+            "total_hermes": sum(1 for s in self._skills_snapshot() if s.id.startswith("hermes:")),
         }
 
     def _scan_directory(self, root: Path, trust_override: TrustLevel | None = None) -> None:
@@ -389,7 +531,8 @@ class SkillManager:
                         spec.trust_level = result.trust_level
                     self._save_scan_cache(result)
 
-                self._skills[spec.id] = spec
+                with self._skills_lock:
+                    self._skills[spec.id] = spec
             except Exception as e:
                 logger.warning(f"Failed to load skill from {path.parent}: {e}")
 
@@ -449,7 +592,7 @@ class SkillManager:
         Returns minimal dicts suitable for showing in a list/table.
         """
         results: list[dict[str, Any]] = []
-        for spec in self._skills.values():
+        for spec in self._skills_snapshot():
             if category and spec.category != category:
                 continue
             if skill_type and spec.type != skill_type:
@@ -474,7 +617,8 @@ class SkillManager:
 
         Loads the full Markdown body, references, and templates on demand.
         """
-        spec = self._skills.get(skill_id)
+        with self._skills_lock:
+            spec = self._skills.get(skill_id)
         if not spec:
             return None
 
@@ -515,11 +659,13 @@ class SkillManager:
         return data
 
     def get_skill(self, skill_id: str) -> SkillSpec | None:
-        return self._skills.get(skill_id)
+        with self._skills_lock:
+            return self._skills.get(skill_id)
 
     def get_all(self) -> dict[str, SkillSpec]:
         """Return all loaded skills."""
-        return dict(self._skills)
+        with self._skills_lock:
+            return dict(self._skills)
 
     # ------------------------------------------------------------------
     # Categories & Discovery
@@ -529,7 +675,7 @@ class SkillManager:
         """Return all categories with skill counts."""
         from collections import Counter
 
-        cats = Counter(s.category for s in self._skills.values())
+        cats = Counter(s.category for s in self._skills_snapshot())
         return [{"name": name, "count": count} for name, count in sorted(cats.items())]
 
     def search_skills(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
@@ -538,7 +684,8 @@ class SkillManager:
 
     def check_prerequisites(self, skill_id: str) -> tuple[bool, list[str]]:
         """Check if a skill's prerequisites are satisfied."""
-        spec = self._skills.get(skill_id)
+        with self._skills_lock:
+            spec = self._skills.get(skill_id)
         if not spec:
             return False, ["Skill not found"]
         return spec.prerequisites.check()
@@ -547,101 +694,369 @@ class SkillManager:
     # Installation
     # ------------------------------------------------------------------
 
-    # Allowed git host domains for skill installation.
-    _SKILL_SOURCE_ALLOWLIST: frozenset[str] = frozenset(
-        {
-            "github.com",
-            "gitlab.com",
-            "bitbucket.org",
-            "gitee.com",
-            "codeberg.org",
-        }
-    )
-
     def _validate_skill_source(self, source: str) -> None:
-        """Validate that a skill source URL is from an allowed domain.
+        """Validate an exact GitHub HTTPS repository or an existing local source.
 
         Raises ValueError for disallowed sources.
         """
-        if source.startswith("http") or source.startswith("git@"):
-            from urllib.parse import urlparse
-
-            parsed = urlparse(source.replace("git@", "https://"))
-            hostname = parsed.hostname or ""
-            if hostname not in self._SKILL_SOURCE_ALLOWLIST:
-                raise ValueError(
-                    f"Skill source domain not allowed: {hostname}. "
-                    f"Allowed: {', '.join(sorted(self._SKILL_SOURCE_ALLOWLIST))}"
-                )
-        elif not Path(source).exists():
+        if not isinstance(source, str) or not source.strip() or "\x00" in source:
+            raise ValueError("Remote skill source is invalid")
+        if self._github_repo_name(source) is not None:
+            return
+        parsed = urlsplit(source)
+        if parsed.scheme or source.startswith("git@"):
+            raise ValueError(
+                "Remote skill source must be an exact https://github.com/<owner>/<repo>.git URL"
+            )
+        local_source = Path(source).expanduser()
+        if not local_source.exists():
             raise ValueError(f"Unknown skill source: {source}")
+        if local_source.is_symlink():
+            raise ValueError("Local skill source cannot be a symlink")
+        if local_source.is_dir():
+            for item in local_source.rglob("*"):
+                if item.is_symlink():
+                    raise ValueError(
+                        f"Local skill source contains a symlink: {item.relative_to(local_source)}"
+                    )
+
+    @staticmethod
+    def _github_repo_name(source: str) -> str | None:
+        try:
+            parsed = urlsplit(source)
+            port = parsed.port
+        except ValueError:
+            return None
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != "github.com"
+            or parsed.username is not None
+            or parsed.password is not None
+            or port not in (None, 443)
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+        repo_name = parsed.path.strip("/")
+        if repo_name.endswith(".git"):
+            repo_name = repo_name[:-4]
+        if not re.fullmatch(
+            r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9_.-]{1,100}",
+            repo_name,
+        ):
+            return None
+        return repo_name
+
+    @staticmethod
+    def _remote_install_context_error() -> str | None:
+        from js.tools.registry import current_tool_execution_context
+
+        context = current_tool_execution_context()
+        if context is None:
+            return "Remote skill installation requires a consumed Echo tool context"
+        if context.tool_name not in {
+            "control_skill_install",
+            "control_clawhub_install",
+        }:
+            return "Remote skill installation requires the dedicated Echo control tool"
+        if context.network_policy != "allow":
+            return "Remote skill installation requires an Echo network grant"
+        if not _REMOTE_SKILL_NETWORK_HOSTS.issubset(context.network_hosts):
+            return "Remote skill installation Echo context is missing exact GitHub hosts"
+        return None
+
+    async def _secure_github_bytes(
+        self,
+        url: str,
+        *,
+        max_bytes: int,
+        headers: dict[str, str] | None = None,
+    ) -> bytes:
+        context_error = self._remote_install_context_error()
+        if context_error is not None:
+            raise PermissionError(context_error)
+        try:
+            parsed = urlsplit(url)
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("Remote skill download URL is invalid") from exc
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname not in {"api.github.com", "codeload.github.com"}
+            or parsed.username is not None
+            or parsed.password is not None
+            or port not in (None, 443)
+            or not parsed.path.startswith("/")
+            or parsed.fragment
+        ):
+            raise ValueError("Remote skill download destination is not allowlisted")
+        validated_ips = await asyncio.to_thread(
+            resolve_and_validate,
+            url,
+            allow_loopback=False,
+            allow_private=False,
+        )
+        chunks: list[bytes] = []
+        total = 0
+        async with (
+            httpx.AsyncClient(
+                transport=PinnedTransport(validated_ips[0], verify=True),
+                timeout=httpx.Timeout(30.0),
+                follow_redirects=False,
+                trust_env=False,
+            ) as client,
+            client.stream("GET", url, headers=headers) as response,
+        ):
+            if response.is_redirect:
+                raise ValueError("Remote skill download redirects are disabled")
+            response.raise_for_status()
+            content_length = response.headers.get("content-length")
+            if content_length:
+                try:
+                    declared_size = int(content_length)
+                except ValueError as exc:
+                    raise ValueError("Remote skill download has an invalid content length") from exc
+                if declared_size < 0 or declared_size > max_bytes:
+                    raise ValueError("Remote skill download exceeds the size limit")
+            async for chunk in response.aiter_bytes():
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError("Remote skill download exceeds the size limit")
+                chunks.append(chunk)
+        return b"".join(chunks)
+
+    async def _download_github_repository(self, source: str, target_dir: Path) -> None:
+        repo_name = self._github_repo_name(source)
+        if repo_name is None:
+            raise ValueError("Remote skill source is invalid")
+        context_error = self._remote_install_context_error()
+        if context_error is not None:
+            raise PermissionError(context_error)
+
+        metadata_url = f"https://api.github.com/repos/{repo_name}"
+        metadata_bytes = await self._secure_github_bytes(
+            metadata_url,
+            max_bytes=1_000_000,
+            headers={"Accept": "application/vnd.github+json"},
+        )
+        metadata = json.loads(metadata_bytes)
+        if not isinstance(metadata, dict):
+            raise ValueError("GitHub repository metadata is malformed")
+        branch = metadata.get("default_branch")
+        if (
+            not isinstance(branch, str)
+            or not branch
+            or len(branch) > 200
+            or branch.startswith("/")
+            or ".." in PurePosixPath(branch).parts
+            or not re.fullmatch(r"[A-Za-z0-9._/-]+", branch)
+        ):
+            raise ValueError("GitHub repository default branch is invalid")
+        owner, repository = repo_name.split("/", 1)
+        archive_url = (
+            f"https://codeload.github.com/{owner}/{repository}/tar.gz/refs/heads/"
+            f"{quote(branch, safe='')}"
+        )
+        archive_bytes = await self._secure_github_bytes(
+            archive_url,
+            max_bytes=_MAX_REMOTE_SKILL_ARCHIVE_BYTES,
+        )
+        await asyncio.to_thread(
+            self._extract_github_archive,
+            archive_bytes,
+            target_dir,
+        )
+
+    @staticmethod
+    def _extract_github_archive(archive_bytes: bytes, target_dir: Path) -> None:
+        if not archive_bytes or len(archive_bytes) > _MAX_REMOTE_SKILL_ARCHIVE_BYTES:
+            raise ValueError("Remote skill archive exceeds the size limit")
+        if target_dir.exists():
+            raise ValueError("Remote skill extraction target already exists")
+
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as archive:
+            members = archive.getmembers()
+            if not members or len(members) > _MAX_REMOTE_SKILL_MEMBERS:
+                raise ValueError("Remote skill archive member limit exceeded")
+
+            normalized: list[tuple[tarfile.TarInfo, PurePosixPath | None]] = []
+            root_name: str | None = None
+            expanded_bytes = 0
+            seen: set[PurePosixPath] = set()
+            for member in members:
+                raw_path = PurePosixPath(member.name)
+                if (
+                    not member.name
+                    or "\x00" in member.name
+                    or raw_path.is_absolute()
+                    or ".." in raw_path.parts
+                    or not raw_path.parts
+                ):
+                    raise ValueError("Remote skill archive contains an unsafe path")
+                if member.issym() or member.islnk() or member.isdev() or member.isfifo():
+                    raise ValueError("Remote skill archive contains a link or special file")
+                if not member.isdir() and not member.isfile():
+                    raise ValueError("Remote skill archive contains an unsupported member")
+                if root_name is None:
+                    root_name = raw_path.parts[0]
+                if raw_path.parts[0] != root_name:
+                    raise ValueError("Remote skill archive has multiple roots")
+                relative = PurePosixPath(*raw_path.parts[1:])
+                if not relative.parts:
+                    normalized.append((member, None))
+                    continue
+                if relative.parts[0] in {".git", ".venv"}:
+                    raise ValueError("Remote skill archive contains a forbidden directory")
+                if relative in seen:
+                    raise ValueError("Remote skill archive contains duplicate paths")
+                seen.add(relative)
+                if member.isfile():
+                    if member.size < 0 or member.size > _MAX_REMOTE_SKILL_FILE_BYTES:
+                        raise ValueError("Remote skill archive file exceeds the size limit")
+                    expanded_bytes += member.size
+                    if expanded_bytes > _MAX_REMOTE_SKILL_EXPANDED_BYTES:
+                        raise ValueError("Remote skill archive expands beyond the size limit")
+                normalized.append((member, relative))
+
+            target_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
+            try:
+                target_root = target_dir.resolve()
+                for member, normalized_relative in normalized:
+                    if normalized_relative is None:
+                        continue
+                    destination = target_dir.joinpath(*normalized_relative.parts)
+                    resolved_destination = destination.resolve(strict=False)
+                    try:
+                        resolved_destination.relative_to(target_root)
+                    except ValueError as exc:
+                        raise ValueError("Remote skill archive path escapes the target") from exc
+                    if member.isdir():
+                        destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        continue
+                    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    source_file = archive.extractfile(member)
+                    if source_file is None:
+                        raise ValueError("Remote skill archive file cannot be read")
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                    if hasattr(os, "O_NOFOLLOW"):
+                        flags |= os.O_NOFOLLOW
+                    try:
+                        fd = os.open(destination, flags, 0o600)
+                        written = 0
+                        try:
+                            while True:
+                                chunk = source_file.read(65_536)
+                                if not chunk:
+                                    break
+                                written += len(chunk)
+                                if written > member.size:
+                                    raise ValueError(
+                                        "Remote skill archive member size is inconsistent"
+                                    )
+                                view = memoryview(chunk)
+                                while view:
+                                    count = os.write(fd, view)
+                                    if count <= 0:
+                                        raise OSError("Remote skill archive write stalled")
+                                    view = view[count:]
+                            if written != member.size:
+                                raise ValueError("Remote skill archive member size is inconsistent")
+                            os.fsync(fd)
+                        finally:
+                            os.close(fd)
+                    finally:
+                        source_file.close()
+            except Exception:
+                shutil.rmtree(target_dir, ignore_errors=True)
+                raise
 
     async def install(
         self, source: str, skill_id: str | None = None, expected_hash: str | None = None
     ) -> SkillSpec:
-        """Install a skill from git repo or local path.
+        """Serialise installation so staging and publication are atomic."""
+        async with self._install_lock:
+            return await self._install_locked(source, skill_id, expected_hash)
 
-        New skills enter quarantine until explicitly trusted.
-        If expected_hash is provided, the skill contents are verified against it.
-        """
+    async def _install_locked(
+        self, source: str, skill_id: str | None, expected_hash: str | None
+    ) -> SkillSpec:
+        """Prepare in a private directory, then atomically publish the skill."""
         self._validate_skill_source(source)
 
         target_id = skill_id or Path(source).name
-        # Sanitize target_id to prevent path traversal
         target_id = Path(target_id).name
         if not target_id or target_id in (".", ".."):
             raise ValueError(f"Invalid skill ID: {skill_id or Path(source).name}")
-        # Validate ID format (same rules as plugins)
-        import re
-
         if not re.match(r"^[a-z0-9_-]+$", target_id) or len(target_id) > 64:
             raise ValueError(
                 f"Invalid skill ID: {target_id!r}. "
                 f"Allowed: lowercase letters, digits, hyphens, underscores, max 64 chars."
             )
         target_dir = self.skills_dir / target_id
-        # Ensure target_dir is inside skills_dir
         try:
-            target_dir.resolve().relative_to(self.skills_dir.resolve())
+            target_dir.resolve(strict=False).relative_to(self.skills_dir.resolve())
         except ValueError as e:
             raise ValueError(f"Skill ID escapes skills directory: {target_id}") from e
-        if target_dir.exists():
-            await asyncio.to_thread(shutil.rmtree, target_dir)
-
-        if source.startswith("http") or source.startswith("git@"):
-            proc = await asyncio.create_subprocess_exec(
-                "git",
-                "clone",
-                "--depth",
-                "1",
-                source,
-                str(target_dir),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+        staging_dir = self.skills_dir / (
+            f".install-{target_id}-{os.getpid()}-{time.monotonic_ns()}"
+        )
+        try:
+            await self._stage_skill_source(source, staging_dir)
+            spec, scan_result = self._prepare_skill_spec(
+                staging_dir,
+                target_id=target_id,
+                expected_hash=expected_hash,
             )
-            _, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                raise RuntimeError(f"git clone failed: {stderr.decode()}")
-        elif Path(source).exists():
-            if Path(source).is_dir():
-                # copytree with symlink rejection
-                def _safe_copytree(src: str, dst: str) -> None:
-                    shutil.copytree(src, dst, symlinks=False)
+            await self._publish_skill_directory(staging_dir, target_dir)
+            spec.path = target_dir
+            self._save_scan_cache(scan_result)
+            with self._skills_lock:
+                self._skills[spec.id] = spec
+            self._register_skill_as_tool(spec)
+            logger.info(f"Installed skill: {spec.id} (trust={spec.trust_level.value})")
+            return spec
+        finally:
+            if staging_dir.exists() or staging_dir.is_symlink():
+                await asyncio.to_thread(
+                    self._remove_install_path,
+                    staging_dir,
+                )
 
-                await asyncio.to_thread(_safe_copytree, str(source), str(target_dir))
-            else:
-                target_dir.mkdir(parents=True, exist_ok=True)
-                await asyncio.to_thread(shutil.copy2, source, target_dir)
+    async def _stage_skill_source(self, source: str, staging_dir: Path) -> None:
+        if self._github_repo_name(source) is not None:
+            await self._download_github_repository(source, staging_dir)
         else:
-            raise ValueError(f"Unknown skill source: {source}")
+            local_source = Path(source).expanduser()
+            if local_source.is_dir():
+                await asyncio.to_thread(
+                    shutil.copytree,
+                    local_source,
+                    staging_dir,
+                    True,
+                )
+            elif local_source.is_file():
+                staging_dir.mkdir(mode=0o700)
+                await asyncio.to_thread(
+                    shutil.copy2,
+                    local_source,
+                    staging_dir / local_source.name,
+                    follow_symlinks=False,
+                )
+            else:
+                raise ValueError(f"Unknown skill source: {source}")
 
-        # Reject any symlinks that may have been created
-        for item in target_dir.rglob("*"):
+        for item in staging_dir.rglob("*"):
             if item.is_symlink():
-                raise RuntimeError(f"Skill contains symlinks: {item.relative_to(target_dir)}")
+                raise RuntimeError(f"Skill contains symlinks: {item.relative_to(staging_dir)}")
 
-        # Parse and scan
-        manifest = target_dir / self.SKILL_MANIFEST
+    def _prepare_skill_spec(
+        self,
+        staging_dir: Path,
+        *,
+        target_id: str,
+        expected_hash: str | None,
+    ) -> tuple[SkillSpec, ScanResult]:
+        manifest = staging_dir / self.SKILL_MANIFEST
         if not manifest.exists():
             manifest.write_text(
                 f"""---
@@ -652,116 +1067,124 @@ version: 0.1.0
 type: code
 entry: main.py
 ---
-"""
+""",
+                encoding="utf-8",
             )
+        if manifest.is_symlink() or not manifest.is_file():
+            raise ValueError("Skill manifest must be a regular file")
+        if manifest.stat().st_size > 1_000_000:
+            raise ValueError("Skill manifest exceeds the size limit")
 
         spec = parse_skill_manifest(manifest)
-        spec.path = target_dir
-
-        # Hash verification
+        # The administrator-authorised destination is authoritative. An
+        # untrusted manifest cannot replace another skill by claiming its ID.
+        spec.id = target_id
+        spec.path = staging_dir
         if expected_hash:
+            if not re.fullmatch(r"[0-9a-fA-F]{64}", expected_hash):
+                raise ValueError("Skill expected hash must be a SHA-256 digest")
             actual_hash = spec.compute_hash()
             if actual_hash.lower() != expected_hash.lower():
-                await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
                 raise ValueError(
                     f"Skill hash mismatch for {spec.id}: expected {expected_hash}, got {actual_hash}"
                 )
 
-        # --- OpenClaw / Hermes type inference ---
-        # If the manifest did not explicitly declare a type, infer from directory contents.
-        # OpenClaw skills default to prompt unless they ship executable scripts.
-        has_explicit_type = False
-        try:
-            import re as _re
+        self._infer_installed_skill_type(spec, manifest, staging_dir)
+        scan_result = scan_skill(spec)
+        spec.risk_flags = list(scan_result.risk_flags)
+        spec.trust_level = scan_result.trust_level
+        if self._validate_requirement_manifest(staging_dir / "requirements.txt", spec.id):
+            spec.risk_flags = list(dict.fromkeys([*spec.risk_flags, "dependencies_unprovisioned"]))
+        return spec, scan_result
 
+    @staticmethod
+    def _infer_installed_skill_type(
+        spec: SkillSpec,
+        manifest: Path,
+        staging_dir: Path,
+    ) -> None:
+        try:
             import yaml
 
             text = manifest.read_text(encoding="utf-8")
-            # Try YAML frontmatter format first (---\n...\n---\n)
-            match = _re.match(r"^---\s*\n(.*?)\n---\s*\n", text, _re.DOTALL)
-            if match:
-                frontmatter = yaml.safe_load(match.group(1)) or {}
-            else:
-                # Fall back to plain YAML (JS Agent native format)
-                frontmatter = yaml.safe_load(text) or {}
-            has_explicit_type = "type" in frontmatter
+            match = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
+            frontmatter = yaml.safe_load(match.group(1) if match else text) or {}
+            has_explicit_type = isinstance(frontmatter, dict) and "type" in frontmatter
         except Exception:
-            logger.warning("Operation failed", exc_info=True)
+            logger.warning("Skill type inference failed closed", exc_info=True)
+            has_explicit_type = True
         if not has_explicit_type:
-            has_scripts = (target_dir / "scripts").exists() and any(
-                (target_dir / "scripts").iterdir()
-            )
+            scripts_dir = staging_dir / "scripts"
+            has_scripts = scripts_dir.is_dir() and any(scripts_dir.iterdir())
             if not has_scripts:
                 spec.type = SkillType.PROMPT
                 logger.debug(f"Inferred type=prompt for {spec.id} (no scripts/ dir)")
 
-        # New installs start in quarantine
-        result = scan_skill(spec)
-        spec.risk_flags = result.risk_flags
-        spec.trust_level = result.trust_level
-        self._save_scan_cache(result)
+    @staticmethod
+    def _validate_requirement_manifest(req_file: Path, skill_id: str) -> bool:
+        if not req_file.exists():
+            return False
+        if req_file.is_symlink() or not req_file.is_file():
+            raise ValueError("Skill requirements must be a regular file")
+        if req_file.stat().st_size > 1_000_000:
+            raise ValueError("Skill requirements exceed the size limit")
+        raw_reqs = req_file.read_text(encoding="utf-8")
+        for line in raw_reqs.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if (
+                stripped.startswith("git+")
+                or stripped.startswith("-e ")
+                or stripped.startswith(".")
+                or stripped.startswith("-")
+                or stripped.startswith("file:")
+                or stripped.startswith("http:")
+                or stripped.startswith("https:")
+                or "//" in stripped
+                or ";" in stripped
+            ):
+                raise ValueError(f"Blocked unsafe requirement in {skill_id}: {stripped[:80]}")
+        return True
 
-        self._skills[spec.id] = spec
+    async def _publish_skill_directory(
+        self,
+        staging_dir: Path,
+        target_dir: Path,
+    ) -> None:
+        backup_dir = self.skills_dir / (
+            f".replace-{target_dir.name}-{os.getpid()}-{time.monotonic_ns()}"
+        )
+        moved_old = False
+        try:
+            if target_dir.exists() or target_dir.is_symlink():
+                os.replace(target_dir, backup_dir)
+                moved_old = True
+            os.replace(staging_dir, target_dir)
+            directory_fd = os.open(self.skills_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except Exception:
+            if moved_old and not target_dir.exists() and backup_dir.exists():
+                os.replace(backup_dir, target_dir)
+            raise
+        if moved_old:
+            await asyncio.to_thread(self._remove_install_path, backup_dir)
 
-        # Install pip dependencies into a skill-local venv if present
-        req_file = target_dir / "requirements.txt"
-        if req_file.exists():
-            # Safety: reject requirements with git URLs or local paths
-            raw_reqs = req_file.read_text(encoding="utf-8")
-            for line in raw_reqs.splitlines():
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#"):
-                    continue
-                if (
-                    stripped.startswith("git+")
-                    or stripped.startswith("-e ")
-                    or stripped.startswith(".")
-                    or stripped.startswith("-")
-                    or stripped.startswith("file:")
-                    or stripped.startswith("http:")
-                    or stripped.startswith("https:")
-                    or "//" in stripped
-                    or ";" in stripped
-                ):
-                    raise ValueError(f"Blocked unsafe requirement in {spec.id}: {stripped[:80]}")
-            venv_dir = target_dir / ".venv"
-            pip_cmd = [sys.executable, "-m", "pip"]
-            if not venv_dir.exists():
-                # Create isolated venv for this skill
-                venv_proc = await asyncio.create_subprocess_exec(
-                    sys.executable,
-                    "-m",
-                    "venv",
-                    str(venv_dir),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                await asyncio.wait_for(venv_proc.communicate(), timeout=120)
-                pip_cmd = [str(venv_dir / "bin" / "python"), "-m", "pip"]
-                if sys.platform == "win32":
-                    pip_cmd = [str(venv_dir / "Scripts" / "python.exe"), "-m", "pip"]
-            else:
-                pip_cmd = [str(venv_dir / "bin" / "python"), "-m", "pip"]
-                if sys.platform == "win32":
-                    pip_cmd = [str(venv_dir / "Scripts" / "python.exe"), "-m", "pip"]
-            proc = await asyncio.create_subprocess_exec(
-                *pip_cmd,
-                "install",
-                "-r",
-                str(req_file),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await asyncio.wait_for(proc.communicate(), timeout=120)
-
-        logger.info(f"Installed skill: {spec.id} (trust={spec.trust_level.value})")
-        self._register_skill_as_tool(spec)
-        return spec
+    @staticmethod
+    def _remove_install_path(path: Path) -> None:
+        if path.is_symlink() or path.is_file():
+            path.unlink(missing_ok=True)
+        elif path.exists():
+            shutil.rmtree(path, ignore_errors=True)
 
     async def uninstall(self, skill_id: str) -> bool:
-        if skill_id not in self._skills:
+        with self._skills_lock:
+            spec = self._skills.pop(skill_id, None)
+        if spec is None:
             return False
-        spec = self._skills.pop(skill_id)
         if spec.path and spec.path.exists() and not self._is_builtin(spec):
             await asyncio.to_thread(shutil.rmtree, spec.path)
         self._unregister_skill_as_tool(skill_id)
@@ -777,6 +1200,7 @@ entry: main.py
         reason: str | None = None,
         decided_by: str | None = None,
         event_id: str | None = None,
+        owner_key_hash: str | None = None,
     ) -> bool:
         """Manually override a skill's trust level after review.
 
@@ -816,7 +1240,9 @@ entry: main.py
                     skill_id,
                     previous.value,
                     level.value,
-                    owner_key_hash=self._owner_key_hash,
+                    owner_key_hash=(
+                        owner_key_hash if owner_key_hash is not None else self._owner_key_hash
+                    ),
                     decided_by=actor,
                     reason=reason,
                     source=source,
@@ -1174,8 +1600,10 @@ entry: main.py
     ) -> dict[str, Any]:
         """Execute a skill with full lifecycle tracking."""
 
+        self._ensure_open()
         start = time.time()
-        spec = self._skills.get(skill_id)
+        with self._skills_lock:
+            spec = self._skills.get(skill_id)
         if not spec:
             return {"success": False, "error": f"Skill not found: {skill_id}"}
 
@@ -1216,8 +1644,13 @@ entry: main.py
             exec_result: dict[str, Any] = await execute_skill(
                 spec, args, self.workspace, llm_caller, self._sandbox, self.execute
             )
-        except Exception as e:
-            exec_result = {"success": False, "error": str(e)}
+        except Exception as exc:
+            logger.warning(
+                "Skill execution failed for %s: %s",
+                skill_id,
+                type(exc).__name__,
+            )
+            exec_result = {"success": False, "error": "Skill execution failed safely"}
 
         latency = (time.time() - start) * 1000
         success = exec_result.get("success", False)
@@ -1379,16 +1812,13 @@ entry: main.py
             success = conn.execute("SELECT SUM(success) FROM skill_usage").fetchone()[0]
             avg_lat = conn.execute("SELECT AVG(latency_ms) FROM skill_usage").fetchone()[0]
 
+        skills = self._skills_snapshot()
         return {
             "skills_used": total,
             "total_executions": executions,
             "overall_success_rate": (success / executions) if executions else 1.0,
             "avg_latency_ms": avg_lat or 0.0,
-            "skills_loaded": len(self._skills),
-            "builtin_count": sum(
-                1 for s in self._skills.values() if s.trust_level == TrustLevel.BUILTIN
-            ),
-            "quarantined_count": sum(
-                1 for s in self._skills.values() if s.trust_level == TrustLevel.QUARANTINE
-            ),
+            "skills_loaded": len(skills),
+            "builtin_count": sum(1 for s in skills if s.trust_level == TrustLevel.BUILTIN),
+            "quarantined_count": sum(1 for s in skills if s.trust_level == TrustLevel.QUARANTINE),
         }

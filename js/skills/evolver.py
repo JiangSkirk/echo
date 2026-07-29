@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -234,8 +234,10 @@ class SkillEvolver:
         current_code: str,
         feedback: str,
         llm_caller: LLMCaller | None = None,
+        *,
+        propagate_llm_errors: bool = False,
     ) -> str:
-        """Generate improved code based on feedback using LLM."""
+        """Generate improved code, optionally surfacing model-call failures."""
         if not llm_caller:
             # Fallback: mark as needing evolution without LLM
             lines = current_code.splitlines()
@@ -261,6 +263,8 @@ class SkillEvolver:
             return improved
         except Exception as e:
             logger.warning(f"LLM code evolution failed for {skill_id}: {e}")
+            if propagate_llm_errors:
+                raise
             return current_code
 
     async def evolve_skill(
@@ -268,6 +272,8 @@ class SkillEvolver:
         skill_id: str,
         current_code: str,
         llm_caller: LLMCaller | None = None,
+        *,
+        propagate_llm_errors: bool = False,
     ) -> SkillVariant | None:
         """Run one evolution cycle: collect feedback, generate improved variant, record."""
         # Check cooldown
@@ -288,7 +294,13 @@ class SkillEvolver:
             )
             return None
 
-        improved = await self.generate_improved_code(skill_id, current_code, feedback, llm_caller)
+        improved = await self.generate_improved_code(
+            skill_id,
+            current_code,
+            feedback,
+            llm_caller,
+            propagate_llm_errors=propagate_llm_errors,
+        )
         if improved == current_code:
             return None
 
@@ -322,13 +334,45 @@ class SkillEvolver:
 
     def should_evolve(self, skill_id: str) -> bool:
         """Check if a skill should be evolved based on recent performance."""
-        success_rate = self._get_skill_success_rate(skill_id)
-        if success_rate is None:
-            return False
-        if success_rate >= self.AUTO_EVOLVE_THRESHOLD:
-            return False
-        last = self._last_evolution.get(skill_id, 0)
-        return time.time() - last >= self.EVOLUTION_COOLDOWN_SECONDS
+        return skill_id in self.should_evolve_many((skill_id,))
+
+    def should_evolve_many(self, skill_ids: Iterable[str]) -> set[str]:
+        """Return underperforming skills using one bounded database connection."""
+        now = time.time()
+        eligible = tuple(
+            dict.fromkeys(
+                skill_id
+                for skill_id in skill_ids
+                if now - self._last_evolution.get(skill_id, 0)
+                >= self.EVOLUTION_COOLDOWN_SECONDS
+            )
+        )
+        if not eligible:
+            return set()
+
+        aggregates: dict[str, tuple[int, int]] = {}
+        with db_connection(self.db_path) as conn:
+            for start in range(0, len(eligible), 500):
+                chunk = eligible[start : start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"""
+                    SELECT skill_id, SUM(success_count), SUM(total_count)
+                    FROM skill_variants
+                    WHERE skill_id IN ({placeholders})
+                    GROUP BY skill_id
+                    """,
+                    chunk,
+                ).fetchall()
+                for skill_id, successes, total in rows:
+                    aggregates[str(skill_id)] = (int(successes or 0), int(total or 0))
+
+        return {
+            skill_id
+            for skill_id, (successes, total) in aggregates.items()
+            if total >= self.MIN_EXECUTIONS
+            and float(successes) / float(total) < self.AUTO_EVOLVE_THRESHOLD
+        }
 
     def _get_skill_success_rate(self, skill_id: str) -> float | None:
         """Get the current success rate for a skill."""

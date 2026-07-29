@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import json
 import os
@@ -61,9 +60,10 @@ class PluginManager:
         self.settings = settings
         self._plugins: dict[str, PluginRecord] = {}
         self._hooks: dict[str, list[tuple[int, Callable[..., Any]]]] = {}
-        self._user_plugin_dir = Path.home() / ".js" / "plugins"
+        state_dir = Path(settings.state_dir).expanduser().resolve()
+        self._user_plugin_dir = state_dir / "plugins"
         self._builtin_plugin_dir = Path(__file__).parent / "builtin"
-        self._data_dir = Path.home() / ".js" / "plugin_data"
+        self._data_dir = state_dir / "plugin_data"
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self._user_plugin_dir.mkdir(parents=True, exist_ok=True)
 
@@ -74,7 +74,9 @@ class PluginManager:
     def discover(self) -> list[PluginRecord]:
         """Scan plugin directories and discover available plugins."""
         discovered: list[PluginRecord] = []
-        for root in [self._builtin_plugin_dir, self._user_plugin_dir]:
+        # Executable Python extensions are limited to the reviewed files
+        # shipped in the release artifact. User directories are not imported.
+        for root in [self._builtin_plugin_dir]:
             if not root.exists():
                 continue
             for entry in root.iterdir():
@@ -115,6 +117,9 @@ class PluginManager:
         record = self._plugins.get(plugin_id)
         if not record:
             logger.warning(f"Plugin not found: {plugin_id}")
+            return False
+        if not self._is_builtin_record(record):
+            logger.warning("External Python plugin load denied: %s", plugin_id)
             return False
         if record.status in (PluginStatus.LOADED, PluginStatus.ENABLED):
             return True
@@ -205,12 +210,14 @@ class PluginManager:
         record = self._plugins.get(plugin_id)
         if not record:
             return False
+        if not self._is_builtin_record(record):
+            logger.warning("External Python plugin enable denied: %s", plugin_id)
+            return False
         if record.status == PluginStatus.ENABLED:
             return True
 
         if not self.load(plugin_id):
             return False
-
         assert record.instance is not None
         try:
             from js.utils.log import get_logger
@@ -241,6 +248,15 @@ class PluginManager:
             record.error = str(e)
             logger.error(f"Failed to enable plugin {plugin_id}: {e}", exc_info=True)
             return False
+
+    def _is_builtin_record(self, record: PluginRecord) -> bool:
+        try:
+            source = record.source_dir.resolve()
+            builtin = self._builtin_plugin_dir.resolve()
+            source.relative_to(builtin)
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return source != builtin
 
     def disable(self, plugin_id: str) -> bool:
         """Disable a plugin: teardown + unregister contributions."""
@@ -335,252 +351,26 @@ class PluginManager:
     # ------------------------------------------------------------------
 
     def install_from_url(self, url: str, expected_hash: str | None = None) -> dict[str, Any]:
-        """Download and install a plugin from a remote URL.
-
-        Supports .zip and .tar.gz archives. The archive must contain a
-        plugin.json manifest at its root (or in a single subdirectory).
-
-        Args:
-            url: Remote URL to download the plugin archive.
-            expected_hash: Optional SHA-256 hex digest of the archive.
-                If provided, the download is verified before extraction.
-        """
-        import shutil
-        import tarfile
-        import tempfile
-        import urllib.parse
-        import urllib.request
-        import zipfile
-
-        result: dict[str, Any] = {"success": False, "plugin_id": None, "message": ""}
-
-        # Parse URL to guess plugin id
-        parsed = urllib.parse.urlparse(url)
-        basename = Path(parsed.path).name or "plugin"
-        guessed_id = basename.split(".")[0].replace("-", "_")
-
-        # Reject non-HTTPS URLs (mitigate MITM / downgrade attacks)
-        if parsed.scheme != "https":
-            result["message"] = (
-                f"不安全的 URL scheme '{parsed.scheme}'。"
-                "插件安装仅支持 HTTPS。"
-            )
-            return result
-
-        # Download to temp file
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".download") as tmp:
-                tmp_path = Path(tmp.name)
-                urllib.request.urlretrieve(url, tmp_path)
-        except Exception as e:
-            result["message"] = f"下载失败: {e}"
-            return result
-
-        # Verify hash if provided
-        if expected_hash:
-            actual_hash = hashlib.sha256(tmp_path.read_bytes()).hexdigest()
-            if actual_hash.lower() != expected_hash.lower():
-                result["message"] = (
-                    f"哈希验证失败: 期望 {expected_hash}, 实际 {actual_hash}"
-                )
-                tmp_path.unlink(missing_ok=True)
-                return result
-
-        # Extract to temp dir with path-traversal guards
-        try:
-            extract_dir = Path(tempfile.mkdtemp(prefix="js_plugin_"))
-            if basename.endswith(".tar.gz") or basename.endswith(".tgz"):
-                with tarfile.open(tmp_path, "r:gz") as tf:
-                    for member in tf.getmembers():
-                        target = (extract_dir / member.name).resolve()
-                        try:
-                            target.relative_to(extract_dir.resolve())
-                        except ValueError:
-                            result["message"] = (
-                                f"检测到路径遍历攻击: {member.name}"
-                            )
-                            shutil.rmtree(extract_dir, ignore_errors=True)
-                            tmp_path.unlink(missing_ok=True)
-                            return result
-                        # Reject symlinks, hardlinks, and devices in archives
-                        if member.islnk() or member.issym() or member.isdev():
-                            result["message"] = (
-                                f"检测到不安全的归档成员: {member.name}"
-                            )
-                            shutil.rmtree(extract_dir, ignore_errors=True)
-                            tmp_path.unlink(missing_ok=True)
-                            return result
-                    tf.extractall(extract_dir)
-            elif basename.endswith(".zip"):
-                with zipfile.ZipFile(tmp_path, "r") as zf:
-                    for zmember in zf.infolist():
-                        target = (extract_dir / zmember.filename).resolve()
-                        try:
-                            target.relative_to(extract_dir.resolve())
-                        except ValueError:
-                            result["message"] = (
-                                f"检测到路径遍历攻击: {zmember.filename}"
-                            )
-                            shutil.rmtree(extract_dir, ignore_errors=True)
-                            tmp_path.unlink(missing_ok=True)
-                            return result
-                    zf.extractall(extract_dir)
-            else:
-                # Try zip first, then tar.gz
-                try:
-                    with zipfile.ZipFile(tmp_path, "r") as zf:
-                        for zmember in zf.infolist():
-                            target = (extract_dir / zmember.filename).resolve()
-                            try:
-                                target.relative_to(extract_dir.resolve())
-                            except ValueError:
-                                result["message"] = (
-                                    f"检测到路径遍历攻击: {zmember.filename}"
-                                )
-                                shutil.rmtree(extract_dir, ignore_errors=True)
-                                tmp_path.unlink(missing_ok=True)
-                                return result
-                        zf.extractall(extract_dir)
-                except zipfile.BadZipFile:
-                    with tarfile.open(tmp_path, "r:gz") as tf:
-                        for member in tf.getmembers():
-                            target = (extract_dir / member.name).resolve()
-                            try:
-                                target.relative_to(extract_dir.resolve())
-                            except ValueError:
-                                result["message"] = (
-                                    f"检测到路径遍历攻击: {member.name}"
-                                )
-                                shutil.rmtree(extract_dir, ignore_errors=True)
-                                tmp_path.unlink(missing_ok=True)
-                                return result
-                            if member.islnk() or member.issym() or member.isdev():
-                                result["message"] = (
-                                    f"检测到不安全的归档成员: {member.name}"
-                                )
-                                shutil.rmtree(extract_dir, ignore_errors=True)
-                                tmp_path.unlink(missing_ok=True)
-                                return result
-                        tf.extractall(extract_dir)
-        except Exception as e:
-            result["message"] = f"解压失败: {e}"
-            shutil.rmtree(extract_dir, ignore_errors=True)
-            tmp_path.unlink(missing_ok=True)
-            return result
-        finally:
-            tmp_path.unlink(missing_ok=True)
-
-        # Find plugin directory (may be nested one level)
-        plugin_dirs = [d for d in extract_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
-        if not plugin_dirs:
-            result["message"] = "插件包为空"
-            shutil.rmtree(extract_dir, ignore_errors=True)
-            return result
-        source_dir = plugin_dirs[0] if len(plugin_dirs) == 1 else extract_dir
-
-        # Validate manifest
-        manifest_path = source_dir / "plugin.json"
-        if not manifest_path.exists():
-            result["message"] = "缺少 plugin.json manifest 文件"
-            shutil.rmtree(extract_dir, ignore_errors=True)
-            return result
-
-        try:
-            data = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest = PluginManifest.from_dict(data)
-            plugin_id = manifest.id or guessed_id
-        except Exception as e:
-            result["message"] = f"manifest 解析失败: {e}"
-            shutil.rmtree(extract_dir, ignore_errors=True)
-            return result
-
-        # Check for duplicate
-        if plugin_id in self._plugins:
-            result["message"] = f"插件 '{plugin_id}' 已存在，请先卸载"
-            shutil.rmtree(extract_dir, ignore_errors=True)
-            return result
-
-        # Security scan all .py files
-        try:
-            from js.plugins.security import scan_plugin_file
-            py_files = list(source_dir.rglob("*.py"))
-            for py_file in py_files:
-                scan_result = scan_plugin_file(plugin_id, py_file)
-                if scan_result.blocked:
-                    result["message"] = (
-                        f"安全扫描未通过: {scan_result.risk_flags}"
-                    )
-                    shutil.rmtree(extract_dir, ignore_errors=True)
-                    return result
-        except Exception as e:
-            result["message"] = f"安全扫描失败: {e}"
-            shutil.rmtree(extract_dir, ignore_errors=True)
-            return result
-
-        # Move to user plugin dir
-        target_dir = self._user_plugin_dir / plugin_id
-        try:
-            if target_dir.exists():
-                shutil.rmtree(target_dir)
-            shutil.move(str(source_dir), str(target_dir))
-            shutil.rmtree(extract_dir, ignore_errors=True)
-        except Exception as e:
-            result["message"] = f"安装失败: {e}"
-            shutil.rmtree(extract_dir, ignore_errors=True)
-            return result
-
-        # Discover, load, but do NOT auto-enable (admin must explicitly enable)
-        record = self._discover_from_dir(target_dir)
-        if not record:
-            result["message"] = "插件发现失败"
-            return result
-        self._plugins[record.manifest.id] = record
-
-        result["success"] = True
-        result["plugin_id"] = record.manifest.id
-        result["message"] = (
-            f"插件 '{record.manifest.id}' 安装成功。"
-            "请管理员在插件列表中手动启用。"
-        )
-
-        return result
+        """Fail closed: executable remote Python extensions are unsupported."""
+        del url, expected_hash
+        return {
+            "success": False,
+            "plugin_id": None,
+            "message": (
+                "Remote Python plugin installation is disabled; only reviewed "
+                "plugins shipped in the release artifact may run"
+            ),
+        }
 
     def uninstall(self, plugin_id: str) -> dict[str, Any]:
-        """Uninstall a plugin: disable + remove files."""
-        result: dict[str, Any] = {"success": False, "message": ""}
-        record = self._plugins.get(plugin_id)
-        if not record:
-            result["message"] = f"插件 '{plugin_id}' 不存在"
-            return result
+        """Fail closed: release-shipped Python plugins are immutable."""
+        del plugin_id
+        return {
+            "success": False,
+            "message": "Plugin removal is disabled for release-shipped plugins",
+        }
 
-        # Disable first
-        self.disable(plugin_id)
-        self.unload(plugin_id)
 
-        # Remove from registry
-        del self._plugins[plugin_id]
-
-        # Remove files if in user plugin dir (never delete builtin)
-        try:
-            resolved_source = record.source_dir.resolve()
-            resolved_builtin = self._builtin_plugin_dir.resolve()
-            is_builtin = resolved_source == resolved_builtin or str(
-                resolved_source
-            ).startswith(str(resolved_builtin) + os.sep)
-        except (OSError, ValueError):
-            is_builtin = False
-
-        if not is_builtin:
-            try:
-                import shutil
-                shutil.rmtree(record.source_dir, ignore_errors=True)
-            except Exception as e:
-                result["message"] = f"已禁用但文件删除失败: {e}"
-                return result
-
-        result["success"] = True
-        result["message"] = f"插件 '{plugin_id}' 已卸载"
-        return result
 
 
 import asyncio  # noqa: E402

@@ -21,4 +21,10 @@ export const state = {
   wizardCloudPresets: [],
   // Auth
   apiKey: localStorage.getItem('js-api-key') || '',
+  // Product capability manifest from /api/capabilities
+  capabilities: null,
+  // AppShell dual-backend chrome (ADR 0002)
+  activeProduct: localStorage.getItem('js-appshell-active-product') || '',
+  personalBaseUrl: localStorage.getItem('js-appshell-personal-url') || 'http://127.0.0.1:8000',
+  workBaseUrl: localStorage.getItem('js-appshell-work-url') || 'http://127.0.0.1:8765',
 };

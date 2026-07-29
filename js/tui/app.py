@@ -14,6 +14,7 @@ from textual.widgets import Footer, Header, Input
 
 from js.agent import JSAgent
 from js.config import JSSettings
+from js.echo.turn_runtime import run_echo_turn
 from js.tui.widgets.chat_log import ChatLog
 from js.tui.widgets.sidebar import Sidebar
 from js.tui.widgets.status_bar import StatusBar
@@ -107,10 +108,17 @@ class JSTuiApp(App[None]):
         assert self.settings is not None
         try:
             self.agent = JSAgent(self.settings)
+            self.agent.start_background_tasks()
             chat_log.add_system("✅ Agent 就绪。输入 /help 查看可用命令。")
-        except Exception as e:
-            chat_log.add_system(f"❌ Agent 初始化失败: {e}")
-            logger.error(f"TUI agent init failed: {e}", exc_info=True)
+        except Exception as exc:
+            chat_log.add_system("❌ Agent 初始化失败，请检查本地配置。")
+            logger.error("TUI agent init failed: %s", type(exc).__name__)
+
+    async def on_unmount(self) -> None:
+        """Stop maintenance tasks and flush Agent state before the TUI exits."""
+        agent, self.agent = self.agent, None
+        if agent is not None:
+            await agent.close()
 
     # ------------------------------------------------------------------
     # Input handling
@@ -144,28 +152,75 @@ class JSTuiApp(App[None]):
         try:
             async for chunk in self._stream_response(text):
                 chat_log.append_to_last(chunk)
-        except Exception as e:
-            chat_log.add_assistant(f"❌ 错误: {e}")
-            logger.error(f"TUI chat error: {e}", exc_info=True)
+        except Exception as exc:
+            chat_log.add_assistant("❌ 处理失败，请重试。")
+            logger.error("TUI chat error: %s", type(exc).__name__)
         finally:
             self.is_thinking = False
             self._update_status()
 
     async def _stream_response(self, message: str) -> Any:
-        """Stream agent response chunk by chunk."""
+        """Stream agent response token-by-token via Echo runtime callbacks."""
         if self.agent is None:
             return
-        # JSAgent.run() returns a string; for TUI we simulate streaming
-        # by yielding words. In a future version, the agent could yield tokens.
         assert self.agent is not None
-        state = await self.agent.run(message)
-        response_text = state.messages[-1].content if state.messages else ""
-        if isinstance(response_text, list):
-            response_text = ""
-        words = response_text.split(" ")
-        for i, word in enumerate(words):
-            yield word + (" " if i < len(words) - 1 else "")
-            await asyncio.sleep(0.01)  # Simulate typing effect
+
+        token_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        saw_token = False
+
+        async def _on_token(token: str) -> None:
+            nonlocal saw_token
+            if not token:
+                return
+            saw_token = True
+            await token_queue.put(token)
+
+        async def _run_turn() -> Any:
+            try:
+                return await run_echo_turn(
+                    self.agent,
+                    message,
+                    channel="tui",
+                    owner_key_hash="js-tui-local",
+                    session_id=self.current_session,
+                    stream_callback=_on_token,
+                )
+            finally:
+                await token_queue.put(None)
+
+        task = asyncio.create_task(_run_turn())
+        try:
+            while True:
+                item = await token_queue.get()
+                if item is None:
+                    break
+                yield item
+
+            state = await task
+            if state is not None and getattr(state, "session_id", None):
+                self.current_session = state.session_id
+
+            # Provider produced no stream tokens — fall back once to final text.
+            if not saw_token and state is not None:
+                response_text = ""
+                for msg in reversed(getattr(state, "messages", []) or []):
+                    if (
+                        getattr(msg, "role", None) == "assistant"
+                        and isinstance(msg.content, str)
+                        and msg.content
+                    ):
+                        response_text = msg.content
+                        break
+                if response_text:
+                    yield response_text
+        except BaseException:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            raise
 
     async def _handle_slash_command(self, text: str) -> None:
         """Process slash commands."""

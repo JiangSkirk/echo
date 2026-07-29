@@ -72,6 +72,73 @@ def _load_or_create_token(state_dir: Path | None) -> str:
     return token
 
 
+_JS_LINE_COMMENT_RE = None  # lazily compiled in _normalize_js_for_scan
+
+
+def _normalize_js_for_scan(code: str) -> str:
+    """Normalize JS source for security scanning.
+
+    Steps: strip comments (quote-aware), decode \\uXXXX/\\xXX escapes, and
+    fold adjacent string-literal concatenations (``"ev"+"al"`` → ``"eval"``).
+    Purely heuristic — see the residual-risk note in ``_scan_js_code``.
+    """
+    import re
+
+    # 1. Strip comments with a small quote-aware state machine so that
+    #    comment markers inside string literals survive.
+    out: list[str] = []
+    idx = 0
+    quote: str | None = None
+    length = len(code)
+    while idx < length:
+        ch = code[idx]
+        nxt = code[idx + 1] if idx + 1 < length else ""
+        if quote is not None:
+            out.append(ch)
+            if ch == "\\" and idx + 1 < length:
+                out.append(code[idx + 1])
+                idx += 2
+                continue
+            if ch == quote:
+                quote = None
+            idx += 1
+            continue
+        if ch in "'\"`":
+            quote = ch
+            out.append(ch)
+            idx += 1
+            continue
+        if ch == "/" and nxt == "*":
+            end = code.find("*/", idx + 2)
+            idx = length if end == -1 else end + 2
+            continue
+        if ch == "/" and nxt == "/":
+            end = code.find("\n", idx + 2)
+            idx = length if end == -1 else end
+            continue
+        out.append(ch)
+        idx += 1
+    stripped = "".join(out)
+
+    # 2. Decode hex/unicode escapes (both raw and string-embedded forms).
+    stripped = re.sub(
+        r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), stripped
+    )
+    stripped = re.sub(
+        r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), stripped
+    )
+
+    # 3. Fold adjacent string-literal concatenations, repeatedly.
+    concat_re = re.compile(
+        r"""(['"`])([^'"`]*)\1\s*\+\s*(['"`])([^'"`]*)\3"""
+    )
+    previous = None
+    while previous != stripped:
+        previous = stripped
+        stripped = concat_re.sub(lambda m: m.group(1) + m.group(2) + m.group(4) + m.group(1), stripped)
+    return stripped
+
+
 def _resolve_url_safe(url: str) -> tuple[bool, str, list[str]]:
     """Block private/internal URLs to prevent SSRF.
 
@@ -203,6 +270,7 @@ class WebBridgeTool:
                     ToolParam("new_tab", "boolean", "Open in a new tab (recommended for first call)", required=False),
                     ToolParam("session", "string", "Browser session name for isolation", required=False),
                 ],
+                dangerous=True,
             ),
             ToolSpec(
                 name="web_snapshot",
@@ -277,6 +345,7 @@ class WebBridgeTool:
                     ToolParam("active", "boolean", "Select the currently active tab", required=False),
                     ToolParam("session", "string", "Browser session name", required=False),
                 ],
+                dangerous=True,
             ),
             ToolSpec(
                 name="web_list_tabs",
@@ -455,6 +524,11 @@ class WebBridgeTool:
         (r"\b(?:window|this|globalThis|self|top|parent)\.eval\b", "indirect eval access"),
         # Indirect fetch via property access
         (r"\b(?:window|this|globalThis|self|top|parent)\.fetch\b", "indirect fetch access"),
+        # Reflect-based dynamic invocation: Reflect.apply(eval, ...),
+        # Reflect.construct(Function, ...)
+        (r"\bReflect\s*\.\s*(?:apply|construct|defineProperty)\b", "Reflect dynamic invocation"),
+        # with(...) scope manipulation — classic eval-hiding primitive
+        (r"\bwith\s*\(", "with statement scope manipulation"),
         # Hex / unicode escape sequences often used to hide eval/fetch
         (r"\\x[0-9a-fA-F]{2}", "hex escape obfuscation"),
         (r"\\u[0-9a-fA-F]{4}", "unicode escape obfuscation"),
@@ -473,7 +547,21 @@ class WebBridgeTool:
     ]
 
     def _scan_js_code(self, code: str) -> str | None:
-        """Static analysis for dangerous JS patterns."""
+        """Static analysis for dangerous JS patterns.
+
+        The raw source is scanned first (so obfuscation markers like
+        ``\\uXXXX`` escapes are rejected even when they decode to something
+        benign), then a normalized form is scanned as well: comments are
+        stripped, ``\\uXXXX``/``\\xXX`` escapes are decoded, and adjacent
+        string-literal concatenations are folded.  This defeats the classic
+        ev/*x*/al, \\u0065val and "ev"+"al" bypass families.
+
+        Residual risk: this is regex heuristics, not a JS parser.  A
+        determined attacker with full grammar-level obfuscation (computed
+        property names from non-literal expressions, getter tricks, tagged
+        templates) may still slip through.  The scan is one layer; the
+        ``dangerous=True`` approval gate is the primary control.
+        """
         import re
         for pattern, description in self._JS_DANGEROUS_PATTERNS:
             if re.search(pattern, code, re.IGNORECASE):
@@ -484,6 +572,15 @@ class WebBridgeTool:
         # Additional check: btoa() could be used to encode exfiltrated data
         if re.search(r'\bbtoa\s*\(', code, re.IGNORECASE):
             return "Blocked btoa() — base64 encode may hide exfiltrated data"
+        normalized = _normalize_js_for_scan(code)
+        if normalized != code:
+            for pattern, description in self._JS_DANGEROUS_PATTERNS:
+                if re.search(pattern, normalized, re.IGNORECASE):
+                    return f"Blocked dangerous JS pattern after normalization: {description}"
+            if re.search(r'\batob\s*\(', normalized, re.IGNORECASE):
+                return "Blocked atob() after normalization"
+            if re.search(r'\bbtoa\s*\(', normalized, re.IGNORECASE):
+                return "Blocked btoa() after normalization"
         return None
 
     async def evaluate(self, code: str, session: str = "js-agent") -> ToolResult:

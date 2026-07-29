@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, BinaryIO, cast
 
 from js.utils.log import get_logger
 
@@ -19,14 +20,24 @@ def format_size(size_bytes: int) -> str:
     return f"{size:.1f} TB"
 
 
-def extract_pdf_text(path: Path) -> str:
+def _library_source(source: Path | BinaryIO) -> str | BinaryIO:
+    return str(source) if isinstance(source, Path) else source
+
+
+def _rewind(source: Path | BinaryIO) -> None:
+    if not isinstance(source, Path):
+        source.seek(0)
+
+
+def extract_pdf_text(path: Path | BinaryIO) -> str:
     """Best-effort PDF-to-text extraction."""
     try:
         from pypdf import PdfReader
     except ImportError as _e:
         raise ImportError("Install js-agent[pdf] to extract PDF text.") from _e
     try:
-        reader = PdfReader(str(path))
+        _rewind(path)
+        reader = PdfReader(_library_source(path))
         texts: list[str] = []
         for page in reader.pages:
             text = page.extract_text()
@@ -41,7 +52,8 @@ def extract_pdf_text(path: Path) -> str:
         raise ImportError("Install js-agent[pdf] to extract PDF text.") from _e
     try:
         texts2: list[str] = []
-        with pdfplumber.open(str(path)) as pdf:
+        _rewind(path)
+        with pdfplumber.open(cast("Any", _library_source(path))) as pdf:
             for pdf_page in pdf.pages:
                 text = pdf_page.extract_text()
                 if text:
@@ -51,14 +63,15 @@ def extract_pdf_text(path: Path) -> str:
         return ""
 
 
-def extract_excel_text(path: Path) -> str:
+def extract_excel_text(path: Path | BinaryIO) -> str:
     """Best-effort Excel-to-text extraction with smart header detection."""
     try:
         import pandas as pd
     except ImportError as _e:
         raise ImportError("Install js-agent[office] to extract Excel text.") from _e
     try:
-        df = pd.read_excel(str(path), header=None, engine="openpyxl")
+        _rewind(path)
+        df = pd.read_excel(_library_source(path), header=None, engine="openpyxl")
         if len(df) == 0:
             return "(空表格)"
 
