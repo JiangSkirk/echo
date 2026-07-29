@@ -15,6 +15,7 @@ env/
 !.env.example
 config.local.*
 secrets.*
+!js/security/secrets.py
 *.pem
 *.key
 *.crt
@@ -69,3 +70,16 @@ logs/
 js_agent_*.md
 # Manual validation script (one-off, not for repo)
 manual_validation_security.py
+
+# Local evidence / scratch (never commit — may contain keys)
+.task-tmp/
+.tmp/
+.test-tmp-baseline/
+MagicMock/
+.cursor/
+
+# Accidental empty / mistyped paths
+/=
+
+# Local architecture research notes (optional publish later)
+architecture-research/
