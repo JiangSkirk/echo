@@ -86,10 +86,19 @@ class EnhancedMemoryStore:
         self.embedder = embedder or KeywordEmbedder()
         self._init_db()
         self._last_dream: float = 0.0
+        self._layered: Any | None = None
 
     def close(self) -> None:
         if hasattr(self, "embedder") and self.embedder and hasattr(self.embedder, "close"):
             self.embedder.close()
+
+    def _layered_store(self) -> Any:
+        """Lazy LayeredMemoryStore sharing this enhanced DB path."""
+        if self._layered is None:
+            from js.memory.layered import LayeredMemoryStore
+
+            self._layered = LayeredMemoryStore(self.db_path)
+        return self._layered
 
     @property
     def _secrets(self) -> Any:
@@ -2738,12 +2747,28 @@ class EnhancedMemoryStore:
         # Run eviction after insert (scoped to this owner's partition)
         evicted = self._evict_semantic_if_needed(owner_key_hash=owner_key_hash)
 
+        layered_meta: dict[str, Any] | None = None
+        if getattr(self.config, "layered_memory_dual_write", False) and memory_id is not None:
+            layered_meta = self._layered_store().dual_write_semantic(
+                owner_key_hash=owner_key_hash,
+                key=key,
+                value=value,
+                category=category,
+                confidence=float(confidence or 0.5),
+                entity_type=inferred_type,
+                entity_name=inferred_name,
+                source_semantic_id=int(memory_id) if memory_id is not None else None,
+                evidence=evidence,
+                source=source or "agent",
+            )
+
         return {
             "conflicts": conflicts,
             "evicted": evicted,
             "memory_id": memory_id,
             "memory_path": inferred_path,
             "entity_type": inferred_type,
+            "layered": layered_meta,
         }
 
     def feedback(
@@ -3901,6 +3926,19 @@ class EnhancedMemoryStore:
         user_profile = self._read_memory_file("user", owner_key_hash)
         if user_profile and not self._is_mostly_template(user_profile):
             _add("## About User\n" + user_profile[:500] + "\n\n")
+
+        # 0b. Optional layered claims (off by default — legacy path unchanged).
+        if getattr(self.config, "layered_memory_retrieve", False):
+            try:
+                claim_block = self._layered_store().format_claims_context(
+                    owner_key_hash=owner_key_hash,
+                    query=query,
+                    max_chars=max(200, max_chars // 5),
+                )
+                if claim_block:
+                    _add(claim_block)
+            except Exception:
+                logger.warning("layered claim retrieve failed", exc_info=True)
 
         # 1. Block summaries — a compact map of the hierarchical library.
         try:

@@ -381,6 +381,16 @@ class MemoryConfig(BaseModel):
         le=20,
         description="Number of recent user/assistant turns to keep verbatim when capsule is used",
     )
+    # Layered Entity/Claim side-car (Phase A+B). Legacy semantic tables remain
+    # authoritative; dual-write is best-effort and must not break old reads.
+    layered_memory_dual_write: bool = Field(
+        default=True,
+        description="Best-effort dual-write semantic stores into Entity/Claim tables",
+    )
+    layered_memory_retrieve: bool = Field(
+        default=False,
+        description="When true, merge active layered claims into get_context_string",
+    )
 
 
 class DisplayConfig(BaseModel):
