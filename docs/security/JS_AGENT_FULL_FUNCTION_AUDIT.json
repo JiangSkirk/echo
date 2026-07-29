@@ -1,0 +1,440 @@
+{
+  "status": "passed",
+  "rounds": 7,
+  "generated_at": "2026-07-16T20:24:55Z",
+  "checks": [
+    {
+      "group": "web_api",
+      "name": "HTTP chat/status/router regression",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/web",
+        "tests/echo/test_web_echo_on_e2e.py",
+        "-q"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 120,
+      "status": "passed",
+      "duration_seconds": 7.238,
+      "returncode": 0,
+      "stdout_tail": "........................................................................ [ 61%]\n.............................................                            [100%]\n117 passed in 6.72s\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "websocket",
+      "name": "WebSocket message and stream regression",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/echo/ledger/test_websocket_primary.py",
+        "-q"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 120,
+      "status": "passed",
+      "duration_seconds": 1.231,
+      "returncode": 0,
+      "stdout_tail": ".................                                                        [100%]\n17 passed in 0.90s\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "stream_thinking",
+      "name": "Stream events and thinking frames",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/test_stream_events_dispatch.py",
+        "-q"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 120,
+      "status": "passed",
+      "duration_seconds": 0.712,
+      "returncode": 0,
+      "stdout_tail": ".....................                                                    [100%]\n21 passed in 0.29s\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "tools",
+      "name": "Tool lease and registry boundary",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/echo/test_tool_capability_context.py",
+        "tests/test_progress_callback_redacts.py",
+        "-q"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 120,
+      "status": "passed",
+      "duration_seconds": 0.733,
+      "returncode": 0,
+      "stdout_tail": ".................................................                        [100%]\n49 passed in 0.41s\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "attachments_vision",
+      "name": "Attachments and vision safety",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/web/test_chat_router.py",
+        "tests/echo/ledger/test_agent_model_gate.py",
+        "-q"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 120,
+      "status": "passed",
+      "duration_seconds": 2.374,
+      "returncode": 0,
+      "stdout_tail": "..................................................                       [100%]\n50 passed in 2.05s\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "memory_skills",
+      "name": "Memory, capsule, and skills",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/test_memory.py",
+        "tests/test_session_capsule.py",
+        "tests/test_skills.py",
+        "-q"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 120,
+      "status": "passed",
+      "duration_seconds": 2.446,
+      "returncode": 0,
+      "stdout_tail": "........................................................................ [ 88%]\n.........                                                                [100%]\n81 passed in 2.12s\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "fleet_cron_setup",
+      "name": "Fleet, cron, setup, and static frontend",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/test_orchestration.py",
+        "tests/test_cron_nlp.py",
+        "tests/test_setup_wizard.py",
+        "tests/test_frontend_sanity.py",
+        "-q"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 120,
+      "status": "passed",
+      "duration_seconds": 1.925,
+      "returncode": 0,
+      "stdout_tail": "........................................................................ [ 75%]\n.......................                                                  [100%]\n95 passed in 1.59s\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "work",
+      "name": "JS Agent Work Echo product smoke",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "scripts/js_work_echo_smoke.py",
+        "--turns",
+        "3",
+        "--state-dir",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/js-work"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 180,
+      "status": "passed",
+      "duration_seconds": 0.679,
+      "returncode": 0,
+      "stdout_tail": "\n2026-07-17 04:23:11 [info     ] Using KeywordEmbedder (no embedding_model configured). Semantic memory will use keyword matching instead of vector similarity. To enable vector search, set embedding_model in your provider config.\n2026-07-17 04:23:11 [info     ] Registered defense strategy: command_block\n2026-07-17 04:23:11 [info     ] Registered defense strategy: path_protection\n2026-07-17 04:23:11 [info     ] Registered defense strategy: loop_guard\n2026-07-17 04:23:11 [info     ] Fleet collaboration tool registered\n2026-07-17 04:23:11 [info     ] Using KeywordEmbedder (no embedding_model configured). Semantic memory will use keyword matching instead of vector similarity. To enable vector search, set embedding_model in your provider config.\n2026-07-17 04:23:11 [info     ] Registered defense strategy: command_block\n2026-07-17 04:23:11 [info     ] Registered defense strategy: path_protection\n2026-07-17 04:23:11 [info     ] Registered defense strategy: loop_guard\n2026-07-17 04:23:11 [info     ] Fleet collaboration tool registered\n2026-07-17 04:23:11 [info     ] Using KeywordEmbedder (no embedding_model configured). Semantic memory will use keyword matching instead of vector similarity. To enable vector search, set embedding_model in your provider config.\n2026-07-17 04:23:11 [info     ] Registered defense strategy: command_block\n2026-07-17 04:23:11 [info     ] Registered defense strategy: path_protection\n2026-07-17 04:23:11 [info     ] Registered defense strategy: loop_guard\n2026-07-17 04:23:11 [info     ] Fleet collaboration tool registered\n2026-07-17 04:23:11 [info     ] Using KeywordEmbedder (no embedding_model configured). Semantic memory will use keyword matching instead of vector similarity. To enable vector search, set embedding_model in your provider config.\n2026-07-17 04:23:11 [info     ] Registered defense strategy: command_block\n2026-07-17 04:23:11 [info     ] Registered defense strategy: path_protection\n2026-07-17 04:23:11 [info     ] Registered defense strategy: loop_guard\n2026-07-17 04:23:11 [info     ] Fleet collaboration tool registered\n2026-07-17 04:23:11 [info     ] Starting run                   extra={'session': 'js-work-echo-smoke', 'run': '2c15b6ba-d08d-4ae0-819d-00f8d460b1e5', 'attachments': 0}\n2026-07-17 04:23:11 [debug    ] Turn 1                         extra={'run': '2c15b6ba-d08d-4ae0-819d-00f8d460b1e5'}\n2026-07-17 04:23:11 [debug    ] Context 2364 tokens within budget, no compression needed\n2026-07-17 04:23:11 [info     ] Run complete                   extra={'run': '2c15b6ba-d08d-4ae0-819d-00f8d460b1e5', 'status': 'completed', 'turns': 1, 'tokens': {'input': 13, 'output': 5}}\n2026-07-17 04:23:11 [info     ] Starting run                   extra={'session': 'js-work-echo-smoke', 'run': '4daeb5f0-41db-4f71-ae4e-dfcac0be1267', 'attachments': 0}\n2026-07-17 04:23:11 [debug    ] Turn 1                         extra={'run': '4daeb5f0-41db-4f71-ae4e-dfcac0be1267'}\n2026-07-17 04:23:11 [debug    ] Context 2452 tokens within budget, no compression needed\n2026-07-17 04:23:11 [info     ] Run complete                   extra={'run': '4daeb5f0-41db-4f71-ae4e-dfcac0be1267', 'status': 'completed', 'turns': 1, 'tokens': {'input': 13, 'output': 5}}\n2026-07-17 04:23:11 [info     ] Starting run                   extra={'session': 'js-work-echo-smoke', 'run': '8ffa9662-da4e-49ce-8ced-0bb27d896cbe', 'attachments': 0}\n2026-07-17 04:23:11 [debug    ] Turn 1                         extra={'run': '8ffa9662-da4e-49ce-8ced-0bb27d896cbe'}\n2026-07-17 04:23:11 [debug    ] Context 2501 tokens within budget, no compression needed\n2026-07-17 04:23:11 [info     ] Run complete                   extra={'run': '8ffa9662-da4e-49ce-8ced-0bb27d896cbe', 'status': 'completed', 'turns': 1, 'tokens': {'input': 13, 'output': 5}}\njs_work_echo_smoke ok turns=3 records=27 journal=/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/js-work/.js-work/state/echo/ledger/tenants/68d0248c8a746734a98ad83cd6bc745c/chat.jsonl\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "security",
+      "name": "Security and red-team regression",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "-m",
+        "pytest",
+        "tests/test_sandbox.py",
+        "tests/test_security.py",
+        "tests/test_security_expanded.py",
+        "tests/test_redteam.py",
+        "-q"
+      ],
+      "risk": "P0",
+      "timeout_seconds": 120,
+      "status": "passed",
+      "duration_seconds": 3.022,
+      "returncode": 0,
+      "stdout_tail": "........................................................................ [ 62%]\n............................................                             [100%]\n116 passed in 2.68s\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "performance",
+      "name": "Echo benchmark SLO",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "scripts/echo_architecture_benchmark.py",
+        "--iterations",
+        "50",
+        "--warmup",
+        "10",
+        "--enforce-slo",
+        "--baseline",
+        "/Users/jiangxuanzhen/titan-agent/docs/security/ECHO_BASELINE_65CC545.json",
+        "--output",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/ECHO_SLO_BENCHMARK.json"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 240,
+      "status": "passed",
+      "duration_seconds": 37.864,
+      "returncode": 0,
+      "stdout_tail": "7a8095dfb', 'status': 'completed', 'turns': 1, 'tokens': {'input': 1796, 'output': 4}}\n2026-07-17 04:23:52 [info     ] Run complete                   extra={'run': '5a5cca1d-f23c-4672-8eba-85224a80fe16', 'status': 'completed', 'turns': 1, 'tokens': {'input': 1796, 'output': 4}}\n2026-07-17 04:23:52 [info     ] Run complete                   extra={'run': '974b1ed0-bb0e-46f9-ae04-e9e5716ff8e7', 'status': 'completed', 'turns': 1, 'tokens': {'input': 1796, 'output': 4}}\n2026-07-17 04:23:52 [info     ] Run complete                   extra={'run': 'ce4237df-6aef-485c-9fa7-766bb2a626f9', 'status': 'completed', 'turns': 1, 'tokens': {'input': 1796, 'output': 4}}\n2026-07-17 04:23:52 [info     ] Run complete                   extra={'run': '99c4a4a5-d030-469b-8d42-35346c394ea6', 'status': 'completed', 'turns': 1, 'tokens': {'input': 1796, 'output': 4}}\n2026-07-17 04:23:52 [info     ] Run complete                   extra={'run': '5747a12d-20c7-48c8-ba9d-aea7c8210e19', 'status': 'completed', 'turns': 1, 'tokens': {'input': 1796, 'output': 4}}\n2026-07-17 04:23:52 [info     ] Run complete                   extra={'run': 'bcada8b0-000d-4bd7-8b9e-ce6840ad672c', 'status': 'completed', 'turns': 1, 'tokens': {'input': 1796, 'output': 4}}\n2026-07-17 04:23:52 [info     ] Metacognition report generated: health=1.00, proposals=0, actions=0\n{\n  \"iterations\": 50,\n  \"warmup\": 10,\n  \"slo_contract\": {\n    \"version\": \"js-agent-slo-v1\",\n    \"full_request_p95_ms\": 45.0,\n    \"wrapper_p95_ms\": 2.0,\n    \"journal_append_p95_ms\": 10.0,\n    \"replay_10k_seconds\": 2.0,\n    \"compaction_ms\": 250.0,\n    \"concurrency_workers\": 50,\n    \"concurrency_rounds\": 3,\n    \"max_rss_mb\": 500.0,\n    \"benchmark_groups\": 5,\n    \"benchmark_warmup\": 10,\n    \"benchmark_measured\": 50,\n    \"long_context_min_reduction_pct\": 15.0,\n    \"short_context_max_increase_pct\": 5.0\n  },\n  \"benchmark_script_sha256\": \"922edca1d0352576e9d75bba10c07dbd4e140786c907099ad51efbfa1ccf45ec\",\n  \"base_dir\": \"ephemeral-per-group\",\n  \"modes\": [\n    {\n      \"name\": \"echo\",\n      \"echo_engine\": \"on\"\n    }\n  ],\n  \"note\": \"Deterministic local benchmark; fake provider, no network LLM calls. Numbers measure FastAPI/TestClient architecture overhead plus a deterministic prompt-size latency proxy. Prompt counts use the local cl100k_base tokenizer and are not provider billing data.\",\n  \"runs\": 5,\n  \"authoritative_latency\": \"aggregate.latency_p95_median_ms\"\n}\n\nPrompt-token budget: {'api_full_agent_prompt_p95_echo': 3375.0, 'api_full_agent_prompt_p95_limit': 9000.0, 'api_full_agent_prompt_within_limit': True, 'token_source': 'tokenizer', 'token_method': 'tiktoken_cl100k_base_canonical_json', 'api_short_prompt_p50_echo': 1779.0, 'api_short_prompt_p95_echo': 1779.0, 'short_token_source': 'tokenizer', 'short_token_method': 'tiktoken_cl100k_base_canonical_json'}\n\nMode details:\n\n[echo]\n  api_full_agent: failures=0, mean=33.943ms, p50=33.016ms, p95=36.205ms, journal_records_measured=0\n    prompt_tokens={'n': 50, 'min': 3375, 'mean': 3375.0, 'p50': 3375.0, 'p95': 3375.0, 'max': 3375, 'source': 'tokenizer', 'method': 'tiktoken_cl100k_base_canonical_json'}\n  api_wrapper_only: failures=0, mean=0.78ms, p50=0.765ms, p95=0.87ms, journal_records_measured=0\n  ws_message_wrapper: failures=0, mean=1.03ms, p50=1.02ms, p95=1.12ms, journal_records_measured=0\n  ws_stream_wrapper: failures=0, mean=1.203ms, p50=1.189ms, p95=1.306ms, journal_records_measured=0\n  secret_block: {'status_code': 400, 'provider_chat_calls': 0, 'blocked_before_model': True, 'journal_records': 0, 'response_excerpt': '{\"detail\":\"Echo blocked sensitive input before model execution\"}'}\n  status_echo: {'mode': 'on', 'architecture': 'echo-2.0', 'architecture_state': 'primary_healthy', 'default_architecture': True, 'ledger_mode': 'on', 'core': {'ledger': 'FrameLedger', 'journal_impl': 'FileEchoLedger', 'scope_gate': 'ScopeGate', 'budget': 'BudgetClock', 'context': 'ContextVault', 'outbox': 'EffectOutbox'}}\n\nSecurity matrix: {'ok': True, 'passed': 25, 'total': 25, 'failed': []}\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "release",
+      "name": "Echo ledger smoke",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "scripts/echo_ledger_smoke.py",
+        "--turns",
+        "5",
+        "--state-dir",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/echo-ledger-smoke"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 180,
+      "status": "passed",
+      "duration_seconds": 0.114,
+      "returncode": 0,
+      "stdout_tail": "echo_ledger_smoke ok mode=on records=45 journal=/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/echo-ledger-smoke/echo/ledger/chat.jsonl\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "release",
+      "name": "Release smoke all",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "scripts/release_smoke.py",
+        "--all"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 240,
+      "status": "passed",
+      "duration_seconds": 41.95,
+      "returncode": 0,
+      "stdout_tail": "n': 'f752f7be-fb00-4e7c-b171-e79622b72e56', 'run': 'a0b600d9-81a8-4aa6-9461-fc6b926a52c2', 'attachments': 0}\n2026-07-17 04:23:55 [info     ] Starting run                   extra={'session': 'f752f7be-fb00-4e7c-b171-e79622b72e56', 'run': '9ea00494-4fd9-4819-ad9c-a88730572b2a', 'attachments': 0}\n2026-07-17 04:23:55 [debug    ] Turn 1                         extra={'run': 'a0b600d9-81a8-4aa6-9461-fc6b926a52c2'}\n2026-07-17 04:23:55 [debug    ] Context 1044 tokens within budget, no compression needed\n2026-07-17 04:23:55 [debug    ] Turn 1                         extra={'run': '9ea00494-4fd9-4819-ad9c-a88730572b2a'}\n2026-07-17 04:23:55 [debug    ] Context 1044 tokens within budget, no compression needed\n2026-07-17 04:23:55 [info     ] Run complete                   extra={'run': 'a0b600d9-81a8-4aa6-9461-fc6b926a52c2', 'status': 'completed', 'turns': 1, 'tokens': {'input': 1, 'output': 1}}\n2026-07-17 04:23:55 [info     ] Run complete                   extra={'run': '9ea00494-4fd9-4819-ad9c-a88730572b2a', 'status': 'completed', 'turns': 1, 'tokens': {'input': 1, 'output': 1}}\n2026-07-17 04:23:55 [info     ] Curation complete: 12 healthy, 0 stale, 0 duplicates, 0 underperforming\n2026-07-17 04:23:55 [info     ] Skill curation completed       extra={'healthy': 12, 'underperforming': 0}\n2026-07-17 04:23:55 [info     ] Curation complete: 12 healthy, 0 stale, 0 duplicates, 0 underperforming\n2026-07-17 04:23:55 [info     ] Skill curation completed       extra={'healthy': 12, 'underperforming': 0}\n2026-07-17 04:23:55 [info     ] Using KeywordEmbedder (no embedding_model configured). Semantic memory will use keyword matching instead of vector similarity. To enable vector search, set embedding_model in your provider config.\n2026-07-17 04:23:55 [info     ] Discovered 2 plugins\n2026-07-17 04:23:55 [info     ] Plugin metadata initialized: 2 release-shipped plugins discovered\n2026-07-17 04:23:55 [info     ] Loaded 12 native skills\n2026-07-17 04:23:55 [info     ] Registered defense strategy: command_block\n2026-07-17 04:23:55 [info     ] Registered defense strategy: path_protection\n2026-07-17 04:23:55 [info     ] Registered defense strategy: loop_guard\n2026-07-17 04:23:55 [debug    ] Published 12 skill tools (generation=1)\n2026-07-17 04:23:55 [info     ] Spawned reviewer (reviewer) id=agent_d03d8bcdbabd68288e358e persona=94 chars\n2026-07-17 04:23:55 [info     ] Starting run                   extra={'session': 'f752f7be-fb00-4e7c-b171-e79622b72e56', 'run': '737c67ac-933d-4694-85a8-1ca01c3259ff', 'attachments': 0}\n2026-07-17 04:23:55 [debug    ] Turn 1                         extra={'run': '737c67ac-933d-4694-85a8-1ca01c3259ff'}\n2026-07-17 04:23:55 [debug    ] Context 1075 tokens within budget, no compression needed\n2026-07-17 04:23:55 [info     ] Run complete                   extra={'run': '737c67ac-933d-4694-85a8-1ca01c3259ff', 'status': 'completed', 'turns': 1, 'tokens': {'input': 0, 'output': 0}}\n2026-07-17 04:23:55 [info     ] Curation complete: 12 healthy, 0 stale, 0 duplicates, 0 underperforming\n2026-07-17 04:23:55 [info     ] Skill curation completed       extra={'healthy': 12, 'underperforming': 0}\n2026-07-17 04:23:55 [info     ] Starting run                   extra={'session': 'f752f7be-fb00-4e7c-b171-e79622b72e56', 'run': '02cdb3c3-a790-484b-acd7-1d69e9428796', 'attachments': 0}\n2026-07-17 04:23:55 [debug    ] Exploration: selected random variant system_c7b8d621\n2026-07-17 04:23:55 [debug    ] Turn 1                         extra={'run': '02cdb3c3-a790-484b-acd7-1d69e9428796'}\n2026-07-17 04:23:55 [debug    ] Context 1104 tokens within budget, no compression needed\n2026-07-17 04:23:55 [info     ] Run complete                   extra={'run': '02cdb3c3-a790-484b-acd7-1d69e9428796', 'status': 'completed', 'turns': 1, 'tokens': {'input': 0, 'output': 0}}\n2026-07-17 04:23:55 [info     ] Fleet done mode=auto: 实现并测试一个多 agent 发布烟测流程 -> 107 chars\n  [OK] fleet\n\n[检查] work\n  [OK] work\n\n[检查] echo\n  [OK] echo\n\n[检查] echo_ledger\n  [OK] echo_ledger\n\n发布烟测通过。\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "quality",
+      "name": "Ruff quality gate",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "-m",
+        "ruff",
+        "check",
+        "js",
+        "js_work",
+        "tests",
+        "scripts"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 180,
+      "status": "passed",
+      "duration_seconds": 0.029,
+      "returncode": 0,
+      "stdout_tail": "All checks passed!\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "quality",
+      "name": "Mypy quality gate",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "-m",
+        "mypy",
+        "js",
+        "js_work",
+        "--no-error-summary"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 240,
+      "status": "passed",
+      "duration_seconds": 0.226,
+      "returncode": 0,
+      "stdout_tail": "",
+      "stderr_tail": ""
+    },
+    {
+      "group": "code_audit",
+      "name": "Round 1 repository audit",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "scripts/echo_full_audit.py",
+        "--rounds",
+        "1",
+        "--output",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/audit-round-1.md",
+        "--final-report-output",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/final-round-1.md",
+        "--fix-verification"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 180,
+      "status": "passed",
+      "duration_seconds": 2.926,
+      "returncode": 0,
+      "stdout_tail": "wrote /var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/audit-round-1.md\nwrote /var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/final-round-1.md\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "code_audit",
+      "name": "Round 2 repository audit",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "scripts/echo_full_audit.py",
+        "--rounds",
+        "2",
+        "--output",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/audit-round-2.md",
+        "--final-report-output",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/final-round-2.md",
+        "--fix-verification"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 180,
+      "status": "passed",
+      "duration_seconds": 2.931,
+      "returncode": 0,
+      "stdout_tail": "wrote /var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/audit-round-2.md\nwrote /var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/final-round-2.md\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "code_audit",
+      "name": "Round 3 repository audit",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "scripts/echo_full_audit.py",
+        "--rounds",
+        "3",
+        "--output",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/audit-round-3.md",
+        "--final-report-output",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/final-round-3.md",
+        "--fix-verification"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 180,
+      "status": "passed",
+      "duration_seconds": 2.933,
+      "returncode": 0,
+      "stdout_tail": "wrote /var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/audit-round-3.md\nwrote /var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/final-round-3.md\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "code_audit",
+      "name": "Round 4 repository audit",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "scripts/echo_full_audit.py",
+        "--rounds",
+        "4",
+        "--output",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/audit-round-4.md",
+        "--final-report-output",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/final-round-4.md",
+        "--fix-verification"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 180,
+      "status": "passed",
+      "duration_seconds": 2.941,
+      "returncode": 0,
+      "stdout_tail": "wrote /var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/audit-round-4.md\nwrote /var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/final-round-4.md\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "code_audit",
+      "name": "Round 5 repository audit",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "scripts/echo_full_audit.py",
+        "--rounds",
+        "5",
+        "--output",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/audit-round-5.md",
+        "--final-report-output",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/final-round-5.md",
+        "--fix-verification"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 180,
+      "status": "passed",
+      "duration_seconds": 2.985,
+      "returncode": 0,
+      "stdout_tail": "wrote /var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/audit-round-5.md\nwrote /var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/final-round-5.md\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "code_audit",
+      "name": "Round 6 repository audit",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "scripts/echo_full_audit.py",
+        "--rounds",
+        "6",
+        "--output",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/audit-round-6.md",
+        "--final-report-output",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/final-round-6.md",
+        "--fix-verification"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 180,
+      "status": "passed",
+      "duration_seconds": 2.956,
+      "returncode": 0,
+      "stdout_tail": "wrote /var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/audit-round-6.md\nwrote /var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/final-round-6.md\n",
+      "stderr_tail": ""
+    },
+    {
+      "group": "code_audit",
+      "name": "Round 7 repository audit",
+      "command": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "scripts/echo_full_audit.py",
+        "--rounds",
+        "7",
+        "--output",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/audit-round-7.md",
+        "--final-report-output",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/final-round-7.md",
+        "--fix-verification"
+      ],
+      "risk": "P1",
+      "timeout_seconds": 180,
+      "status": "passed",
+      "duration_seconds": 2.94,
+      "returncode": 0,
+      "stdout_tail": "wrote /var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/audit-round-7.md\nwrote /var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/final-round-7.md\n",
+      "stderr_tail": ""
+    }
+  ],
+  "external_stable_blockers": [
+    "legal_fto_review_pending",
+    "clean_room_reviewer_pending",
+    "external_security_audit_pending",
+    "real_redteam_report_pending"
+  ]
+}

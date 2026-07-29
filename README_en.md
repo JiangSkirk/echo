@@ -4,7 +4,7 @@ An AI agent harness, not a chatbot. JS Agent wraps your chosen model with persis
 
 The model is the engine. The harness is the complete frame that lets the engine work.
 
-> **Status**: v0.1.5 stable release — APIs stabilizing, feedback welcome!
+> **Status**: v0.1.5 local release candidate / controlled trial — feedback welcome!
 
 ## Core Harness Capabilities
 
@@ -24,7 +24,7 @@ The model is the engine. The harness is the complete frame that lets the engine 
 
 ### 🛡️ Safety Guardrails (Defense in Depth)
 - **Strategy-pattern defense**: Tool-call defenses are injectable, ordered strategy objects—not hardcoded if-else chains
-- **Fail-Open semantics**: When the security subsystem itself crashes/fails, it does not block the main system (prevents security from becoming a single point of failure)
+- **Fail-Closed semantics**: Echo authorization and the durable ledger fail closed when missing, unhealthy, or unverifiable — side effects are not bypassed
 - **Behavior audit**: Immutable hash-chained audit log of every tool call; tampering/truncation detectable
 - **Path protection**: Prevents accidental deletion of system files; writes outside workspace require confirmation
 - **Secret management**: Auto-detects and redacts API keys, tokens, and passwords; stores them encrypted at rest
@@ -98,9 +98,9 @@ js search "latest AI developments"
 | Capability | OpenClaw | Hermes | **JS Agent** |
 |---|---|---|---|
 | Runtime | Node.js (3700 chunks) | Python + Node UI | **Unified Python 3.12** |
-| Security | External plugin (ClawAegis) | Tirith + approval | **Built-in + Strategy pattern + Fail-Open** |
+| Security | External plugin (ClawAegis) | Tirith + approval | **Built-in + Strategy pattern + Fail-Closed** |
 | Context Compression | ❌ | ✅ Best-in-class | ✅ **Hermes-style compressor + Context capsules** |
-| Checkpoint | ❌ | ✅ Git Shadow | ✅ **Git Shadow Repo** |
+| Checkpoint | ❌ | ✅ Git Shadow | ⚠️ **Checkpoints removed — not shipped in this package** |
 | Circuit Breaker | ❌ | ❌ | ✅ **Auto-recovery probes** |
 | Model Discovery | ❌ Manual | ❌ Manual | ✅ **Auto-detection** |
 | Search | ❌ Plugin needed | Tavily (config needed) | ✅ **DuckDuckGo out-of-box** |

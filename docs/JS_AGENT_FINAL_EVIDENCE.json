@@ -1,0 +1,187 @@
+{
+  "HEAD": "65cc545e3ec893f5bab62d356514643f14456a58",
+  "branch": "feature/echo-runtime",
+  "classification": {
+    "external_pending": [
+      "legal_fto_review_pending",
+      "clean_room_reviewer_pending",
+      "external_security_audit_missing",
+      "redteam_report_missing"
+    ],
+    "failed": [],
+    "not_tested": [
+      "real_office_business_files"
+    ],
+    "partial": [],
+    "passed": [
+      "bulk_truncation_recovery",
+      "release_source_integrity_preflight",
+      "echo_model_and_tool_authorization_fail_closed",
+      "work_owner_session_snapshot_and_descriptor_output",
+      "atomic_context_compression_and_verified_token_accounting",
+      "external_old_baseline_provenance_v2",
+      "required_local_gates",
+      "real_3600_soak"
+    ]
+  },
+  "e2e_ok": true,
+  "evidence_root_relative": ".task-tmp/evidence/appshell_closeout/20260729T125851Z",
+  "frozen_source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db",
+  "gate_receipts": {
+    "echo_full_audit": {
+      "artifact_sha256": "a0913d7e659484ec48fc3932deb3ce6aa0ba012587e7a3aa3089c9f1d96d799b",
+      "duration_seconds": 6.181506,
+      "end_utc": "2026-07-29T14:37:46Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T14:37:40Z"
+    },
+    "git_diff_check": {
+      "artifact_sha256": null,
+      "duration_seconds": 0.040228,
+      "end_utc": "2026-07-29T12:58:52Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T12:58:52Z"
+    },
+    "isolated_venv_e2e": {
+      "artifact_sha256": "4cd31d3fd82f696f03edde0e19b53243f1542b8be676f118900c8733076a39e9",
+      "duration_seconds": 62.464369,
+      "end_utc": "2026-07-29T14:32:21Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T14:31:19Z"
+    },
+    "mypy": {
+      "artifact_sha256": null,
+      "duration_seconds": 0.288941,
+      "end_utc": "2026-07-29T12:58:54Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T12:58:54Z"
+    },
+    "pytest_full_not_playwright": {
+      "artifact_sha256": null,
+      "duration_seconds": 332.745517,
+      "end_utc": "2026-07-29T13:05:00Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T12:59:28Z"
+    },
+    "pytest_playwright": {
+      "artifact_sha256": null,
+      "duration_seconds": 10.484344,
+      "end_utc": "2026-07-29T13:05:12Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T13:05:02Z"
+    },
+    "pytest_targeted_round815": {
+      "artifact_sha256": null,
+      "duration_seconds": 17.052494,
+      "end_utc": "2026-07-29T12:59:12Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T12:58:55Z"
+    },
+    "pytest_work": {
+      "artifact_sha256": null,
+      "duration_seconds": 12.989376,
+      "end_utc": "2026-07-29T12:59:27Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T12:59:14Z"
+    },
+    "release_smoke": {
+      "artifact_sha256": null,
+      "duration_seconds": 62.003015,
+      "end_utc": "2026-07-29T14:37:39Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T14:36:37Z"
+    },
+    "ruff": {
+      "artifact_sha256": null,
+      "duration_seconds": 0.012998,
+      "end_utc": "2026-07-29T12:58:53Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T12:58:53Z"
+    },
+    "slo_run_1": {
+      "artifact_sha256": "04d003e0a383ba354816ad43d78760279ab685760d224205d8377879a9efefb4",
+      "duration_seconds": 56.770435,
+      "end_utc": "2026-07-29T13:06:10Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T13:05:13Z"
+    },
+    "slo_run_2": {
+      "artifact_sha256": "6cbb21fc0eaf1869b8d35c7ce4fa85470b9fecd1d0651a400d3006a2b89f1237",
+      "duration_seconds": 56.847533,
+      "end_utc": "2026-07-29T13:07:08Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T13:06:11Z"
+    },
+    "slo_run_3": {
+      "artifact_sha256": "c9162993464f281cd502749ca2df76bcc9cc211d973c081d151ab37d1858b0d1",
+      "duration_seconds": 56.759786,
+      "end_utc": "2026-07-29T13:08:06Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T13:07:09Z"
+    },
+    "slo_run_4": {
+      "artifact_sha256": "12cf124fba093d0802acef0731524d72236b8bdd86bafcfdde27afeda6be50aa",
+      "duration_seconds": 56.363336,
+      "end_utc": "2026-07-29T13:09:03Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T13:08:07Z"
+    },
+    "slo_run_5": {
+      "artifact_sha256": "0f49eebbeae91162d5bcbbc4658c44de42076e139b26dca54d5f2a64a4fc57f6",
+      "duration_seconds": 55.377934,
+      "end_utc": "2026-07-29T13:10:00Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T13:09:05Z"
+    },
+    "soak_3600": {
+      "artifact_sha256": "ac464e5e3d4f88529ef7d84984a484e8fe7ade42bdbbc5bb14989be0d69cb74d",
+      "duration_seconds": 3605.980725,
+      "end_utc": "2026-07-29T14:10:07Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T13:10:01Z"
+    },
+    "strict_readiness": {
+      "artifact_sha256": null,
+      "duration_seconds": 1.560282,
+      "end_utc": "2026-07-29T14:37:49Z",
+      "exit_code": 0,
+      "passed": true,
+      "start_utc": "2026-07-29T14:37:47Z"
+    }
+  },
+  "generated_utc": "2026-07-29T14:39:10Z",
+  "internal_ready": true,
+  "not_a_third_party_signature": true,
+  "notes": "AppShell Personal/Work unified chrome closeout. Data planes remain isolated. M1 nested soak/SLO/audit SHA binding applied via final_evidence builder.",
+  "round": "appshell-closeout",
+  "schema_version": "js-agent-final-evidence-v2",
+  "slo_ok": true,
+  "soak": {
+    "crosstalk_count": 0,
+    "duration_seconds": 3600.0,
+    "failure_count": 0,
+    "http_5xx_count": 0,
+    "ok": true,
+    "sample_count": 14478,
+    "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db",
+    "success_count": 14478
+  },
+  "stable_ready": false,
+  "validation_ok": true
+}

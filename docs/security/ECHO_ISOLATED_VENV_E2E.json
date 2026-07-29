@@ -1,0 +1,1693 @@
+{
+  "schema_version": "isolated-venv-e2e-v7",
+  "offline": true,
+  "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db",
+  "evidence_root": ".task-tmp/evidence/appshell_closeout/20260729T125851Z",
+  "started_utc": "2026-07-29T14:31:19Z",
+  "finished_utc": "2026-07-29T14:32:20Z",
+  "ok": true,
+  "wheelhouse": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse",
+  "artifacts": {
+    "wheel": {
+      "path": "e2e/artifacts/js_agent-0.1.5-py3-none-any.whl",
+      "sha256": "a2ebb02c3629a2a836e3d0b9ee773fa8cb745f0aeeec4db0e183424c66599070",
+      "bytes": 4322020
+    },
+    "sdist": {
+      "path": "e2e/artifacts/js_agent-0.1.5.tar.gz",
+      "sha256": "589e8e537f221067e68a0b6a46feb0bdb5ea92294e55285bc21b1611517fbc67",
+      "bytes": 4307434
+    }
+  },
+  "work_output": {
+    "path": "e2e/work/sdist/iso-e2e.xlsx",
+    "sha256": "359341259d391bd14e19235dc8b0e1ef7fa177dd8d782dfc39f22f0ba2611afa",
+    "bytes": 4841,
+    "cells": [
+      [
+        "iso",
+        "e2e",
+        "leased"
+      ]
+    ]
+  },
+  "work_outputs": {
+    "wheel": {
+      "path": "e2e/work/wheel/iso-e2e.xlsx",
+      "sha256": "d3e7c2b7b9ce4af4c8ae129e4589299f6160c7b28cfbf684e91c0ca275115faa",
+      "bytes": 4841,
+      "cells": [
+        [
+          "iso",
+          "e2e",
+          "leased"
+        ]
+      ]
+    },
+    "sdist": {
+      "path": "e2e/work/sdist/iso-e2e.xlsx",
+      "sha256": "359341259d391bd14e19235dc8b0e1ef7fa177dd8d782dfc39f22f0ba2611afa",
+      "bytes": 4841,
+      "cells": [
+        [
+          "iso",
+          "e2e",
+          "leased"
+        ]
+      ]
+    }
+  },
+  "manifest": [
+    {
+      "path": "e2e/artifacts/js_agent-0.1.5-py3-none-any.whl",
+      "sha256": "a2ebb02c3629a2a836e3d0b9ee773fa8cb745f0aeeec4db0e183424c66599070",
+      "bytes": 4322020
+    },
+    {
+      "path": "e2e/artifacts/js_agent-0.1.5.tar.gz",
+      "sha256": "589e8e537f221067e68a0b6a46feb0bdb5ea92294e55285bc21b1611517fbc67",
+      "bytes": 4307434
+    },
+    {
+      "path": "e2e/work/wheel/iso-e2e.xlsx",
+      "sha256": "d3e7c2b7b9ce4af4c8ae129e4589299f6160c7b28cfbf684e91c0ca275115faa",
+      "bytes": 4841
+    },
+    {
+      "path": "e2e/work/wheel/ledger.journal",
+      "sha256": "d9031c5c168308bdcf1d5fe9f2c680a2dda6263ad7cb674636e82f17de96811b",
+      "bytes": 15639
+    },
+    {
+      "path": "e2e/work/sdist/iso-e2e.xlsx",
+      "sha256": "359341259d391bd14e19235dc8b0e1ef7fa177dd8d782dfc39f22f0ba2611afa",
+      "bytes": 4841
+    },
+    {
+      "path": "e2e/work/sdist/ledger.journal",
+      "sha256": "b49cb8c2789b3ab1ddb038b2c6467a5b172c0b82bd05b5c9bba5ea771050e569",
+      "bytes": 15639
+    }
+  ],
+  "pip_check": {
+    "wheel": {
+      "ok": true,
+      "exit_code": 0,
+      "stdout_tail": "No broken requirements found.\n",
+      "stderr_tail": ""
+    },
+    "sdist": {
+      "ok": true,
+      "exit_code": 0,
+      "stdout_tail": "No broken requirements found.\n",
+      "stderr_tail": ""
+    }
+  },
+  "results": [
+    {
+      "step": "build: python -m build --no-isolation (wheel+sdist)",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "-m",
+        "build",
+        "--outdir",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/iso-venv-e2e-h_ozm_s4/dist",
+        "--no-isolation"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent",
+      "started_utc": "2026-07-29T14:31:19Z",
+      "finished_utc": "2026-07-29T14:31:28Z",
+      "exit_code": 0,
+      "duration_seconds": 9.15,
+      "stdout_tail": "Successfully built js_agent-0.1.5.tar.gz and js_agent-0.1.5-py3-none-any.whl\n",
+      "stderr_tail": "* Getting build dependencies for sdist...\n* Building sdist...\n* Building wheel from sdist\n* Getting build dependencies for wheel...\n* Building wheel...\n",
+      "stdout_sha256": "fddb6771913e9a7df6b2dd441a048b4e814b4ae66121cf319a6d1a0142fd7703",
+      "stderr_sha256": "807e97125a07cf58c76bef6d9db88eabace05a8d396c6082665436b821e3923f",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/01_build_python_m_build_no_isolation_wheel_sdist.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/01_build_python_m_build_no_isolation_wheel_sdist.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/01_build_python_m_build_no_isolation_wheel_sdist.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db"
+    },
+    {
+      "step": "wheel: create venv",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "-m",
+        "venv",
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-07-29T14:31:28Z",
+      "finished_utc": "2026-07-29T14:31:29Z",
+      "exit_code": 0,
+      "duration_seconds": 0.959,
+      "stdout_tail": "",
+      "stderr_tail": "",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/02_wheel_create_venv.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/02_wheel_create_venv.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/02_wheel_create_venv.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db"
+    },
+    {
+      "step": "wheel: pip install artifact offline (echo-tokenizer,office)",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/bin/python",
+        "-m",
+        "pip",
+        "install",
+        "--no-index",
+        "--find-links",
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse",
+        "--no-input",
+        "--report",
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/pip/wheel.install-report.json",
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/artifacts/js_agent-0.1.5-py3-none-any.whl[echo-tokenizer,office]"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-07-29T14:31:29Z",
+      "finished_utc": "2026-07-29T14:31:36Z",
+      "exit_code": 0,
+      "duration_seconds": 6.988,
+      "stdout_tail": "ers/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/lxml-6.1.1-cp312-cp312-macosx_26_0_arm64.whl (from python-docx>=1.2->js-agent==0.1.5->js-agent==0.1.5)\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/pillow-12.2.0-cp312-cp312-macosx_26_0_arm64.whl (from reportlab>=4.0->js-agent==0.1.5->js-agent==0.1.5)\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/charset_normalizer-3.4.7-cp312-cp312-macosx_26_0_arm64.whl (from reportlab>=4.0->js-agent==0.1.5->js-agent==0.1.5)\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/markdown_it_py-4.2.0-py3-none-any.whl (from rich>=13.9->js-agent==0.1.5->js-agent==0.1.5)\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/pygments-2.20.0-py3-none-any.whl (from rich>=13.9->js-agent==0.1.5->js-agent==0.1.5)\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/mdurl-0.1.2-py3-none-any.whl (from markdown-it-py>=2.2.0->rich>=13.9->js-agent==0.1.5->js-agent==0.1.5)\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/mdit_py_plugins-0.6.1-py3-none-any.whl (from textual>=0.70->js-agent==0.1.5->js-agent==0.1.5)\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/linkify_it_py-2.1.0-py3-none-any.whl (from markdown-it-py[linkify]>=2.1.0->textual>=0.70->js-agent==0.1.5->js-agent==0.1.5)\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/uc_micro_py-2.0.0-py3-none-any.whl (from linkify-it-py<3,>=1->markdown-it-py[linkify]>=2.1.0->textual>=0.70->js-agent==0.1.5->js-agent==0.1.5)\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/urllib3-2.7.0-py3-none-any.whl (from requests->tiktoken<1,>=0.7->js-agent==0.1.5->js-agent==0.1.5)\nInstalling collected packages: xlrd, wcwidth, watchdog, urllib3, uc-micro-py, typing-extensions, tqdm, tenacity, structlog, sniffio, six, rfc8785, regex, pyyaml, python-multipart, python-dotenv, pypdf, pygments, pycparser, psutil, platformdirs, pillow, packaging, numpy, mdurl, lxml, jiter, idna, hyperframe, hpack, h11, et-xmlfile, distro, click, charset-normalizer, certifi, cachetools, annotated-types, annotated-doc, aiosqlite, uvicorn, typing-inspection, requests, reportlab, python-docx, python-dateutil, pydantic-core, prompt-toolkit, openpyxl, markdown-it-py, linkify-it-py, httpcore, h2, cffi, anyio, tiktoken, starlette, rich, pydantic, pandas, mdit-py-plugins, httpx, cryptography, textual, pydantic-settings, openai, fastapi, js-agent\n\nSuccessfully installed aiosqlite-0.22.1 annotated-doc-0.0.4 annotated-types-0.7.0 anyio-4.13.0 cachetools-7.1.4 certifi-2026.5.20 cffi-2.0.0 charset-normalizer-3.4.7 click-8.4.1 cryptography-48.0.1 distro-1.9.0 et-xmlfile-2.0.0 fastapi-0.139.0 h11-0.16.0 h2-4.3.0 hpack-4.2.0 httpcore-1.0.9 httpx-0.28.1 hyperframe-6.1.0 idna-3.18 jiter-0.15.0 js-agent-0.1.5 linkify-it-py-2.1.0 lxml-6.1.1 markdown-it-py-4.2.0 mdit-py-plugins-0.6.1 mdurl-0.1.2 numpy-2.4.6 openai-2.38.0 openpyxl-3.1.5 packaging-26.2 pandas-3.0.3 pillow-12.2.0 platformdirs-4.10.0 prompt-toolkit-3.0.52 psutil-7.2.2 pycparser-3.0 pydantic-2.13.4 pydantic-core-2.46.4 pydantic-settings-2.14.2 pygments-2.20.0 pypdf-6.14.2 python-dateutil-2.9.0.post0 python-docx-1.2.0 python-dotenv-1.2.2 python-multipart-0.0.32 pyyaml-6.0.3 regex-2026.5.9 reportlab-4.5.1 requests-2.34.2 rfc8785-0.1.4 rich-15.0.0 six-1.17.0 sniffio-1.3.1 starlette-1.3.1 structlog-25.5.0 tenacity-9.1.4 textual-8.2.7 tiktoken-0.13.0 tqdm-4.67.3 typing-extensions-4.15.0 typing-inspection-0.4.2 uc-micro-py-2.0.0 urllib3-2.7.0 uvicorn-0.48.0 watchdog-6.0.0 wcwidth-0.7.0 xlrd-2.0.2\n",
+      "stderr_tail": "",
+      "stdout_sha256": "aa663b59e28cab97283c62ab4a0a0c903c6ef9672d973da664d7485db37c59d9",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/03_wheel_pip_install_artifact_offline_echo_tokenizer_office.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/03_wheel_pip_install_artifact_offline_echo_tokenizer_office.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/03_wheel_pip_install_artifact_offline_echo_tokenizer_office.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db",
+      "pip_report": {
+        "path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/pip/wheel.install-report.json",
+        "sha256": "c00a54413e144f7f05eb6b04e7d6f2c8134e7086a89f2e2b0d34773dc45b9162",
+        "packages": [
+          {
+            "name": "js-agent",
+            "version": "0.1.5",
+            "archive_hash": "sha256=a2ebb02c3629a2a836e3d0b9ee773fa8cb745f0aeeec4db0e183424c66599070"
+          },
+          {
+            "name": "rfc8785",
+            "version": "0.1.4",
+            "archive_hash": "sha256=cb81f38a0ece0a44dfc09b1223ab5b15c92c2e42a4dd4ca5899dfe5332d973a7"
+          },
+          {
+            "name": "xlrd",
+            "version": "2.0.2",
+            "archive_hash": "sha256=2507eeabf882d0ac8d2a75585adf28215e4b65493208bf0aefae8e6be05f21d7"
+          },
+          {
+            "name": "cryptography",
+            "version": "48.0.1",
+            "archive_hash": "sha256=eac6d8fa768ba8f1582975258bacd73ec24c84323c6c7bccd3413a609af16bbe"
+          },
+          {
+            "name": "fastapi",
+            "version": "0.139.0",
+            "archive_hash": "sha256=c487e2b6646eca100baa9222fbc3655aace6b3e25dbdabc8a88c93a513c74b0a"
+          },
+          {
+            "name": "openai",
+            "version": "2.38.0",
+            "archive_hash": "sha256=84663a3f223522556a3eaef8fe3e35b2fc38862d4a20238c2cf440b9ead68d94"
+          },
+          {
+            "name": "anyio",
+            "version": "4.13.0",
+            "archive_hash": "sha256=f200cd7ec119d42db9fc8c6a0d14a4880ad62550fe85de28993fcb4a3991a545"
+          },
+          {
+            "name": "distro",
+            "version": "1.9.0",
+            "archive_hash": "sha256=0782da67923283001fb97a5d87832e4760c872159551b52c7bd4f1c890a485c8"
+          },
+          {
+            "name": "httpx",
+            "version": "0.28.1",
+            "archive_hash": "sha256=bbfc94c65ec292e39b83c669f1bf6eb82aad3728349d3ad4632634f44f86413b"
+          },
+          {
+            "name": "httpcore",
+            "version": "1.0.9",
+            "archive_hash": "sha256=e56ddd058d6a9b88fdb266eb78425c60c2dffd1be5cafc3838bc76800991276d"
+          },
+          {
+            "name": "jiter",
+            "version": "0.15.0",
+            "archive_hash": "sha256=9c6a9558564c1982d041ad227ca500ba47fd2a1f4e5d41a8c9043786ee98d52a"
+          },
+          {
+            "name": "pydantic",
+            "version": "2.13.4",
+            "archive_hash": "sha256=e7ea43cd722064ae6879d37c5d5c48d4ab51a9be29df6dd74dad400939ea5bd7"
+          },
+          {
+            "name": "pydantic_core",
+            "version": "2.46.4",
+            "archive_hash": "sha256=de1262538eef9ea7b35763cc48140712b02bdc24c5d0d3e412cd8c0cb85d0079"
+          },
+          {
+            "name": "starlette",
+            "version": "1.3.1",
+            "archive_hash": "sha256=97fd4e5a492789a29724a4fb88ca6cb08cce7e7c880653ac78e741aaee99567a"
+          },
+          {
+            "name": "tiktoken",
+            "version": "0.13.0",
+            "archive_hash": "sha256=f08f7cbe78a05d3a939d0ae39d56dacf3163566f95e3fb2b00a4ae22dc8b945d"
+          },
+          {
+            "name": "typing_extensions",
+            "version": "4.15.0",
+            "archive_hash": "sha256=ffa9abb4cdd2ebf43a90cc1fa574d71a1f0b0fd48ea46f2c92eb08854c302b4d"
+          },
+          {
+            "name": "aiosqlite",
+            "version": "0.22.1",
+            "archive_hash": "sha256=6921310c9138b1c856de45c638b8f5eb15884bd4a43d651265a0d04635b3efd0"
+          },
+          {
+            "name": "annotated-doc",
+            "version": "0.0.4",
+            "archive_hash": "sha256=92eb49bcacba1bf2604b222da5a624d4f440805bdee65c8e2be1078ff7891898"
+          },
+          {
+            "name": "annotated-types",
+            "version": "0.7.0",
+            "archive_hash": "sha256=de7b36802ebd7fcd580894649ad26693f9dfe7ab2be7d383dc220d4f078085ee"
+          },
+          {
+            "name": "cachetools",
+            "version": "7.1.4",
+            "archive_hash": "sha256=d5a25638ae2952fb8eed73d75efe33577dee0c8c9b3b202718e9f015715956f1"
+          },
+          {
+            "name": "cffi",
+            "version": "2.0.0",
+            "archive_hash": "sha256=762bf4cc1d86008d1c1c7e9985f498a901d528baa72ad104b9049ea9e124c460"
+          },
+          {
+            "name": "click",
+            "version": "8.4.1",
+            "archive_hash": "sha256=931afda99e488eca581a1d941bfa0d557a7d77aa63abfd44fbf98585976d1fe7"
+          },
+          {
+            "name": "h11",
+            "version": "0.16.0",
+            "archive_hash": "sha256=7582456460e81c5f51141be6b439562ae6ce0a19299c7691866d0ceb16a31817"
+          },
+          {
+            "name": "h2",
+            "version": "4.3.0",
+            "archive_hash": "sha256=38501dcc4a5c498c41e73918663c34ff73986af7a089b95f7d8c1420320ce3a9"
+          },
+          {
+            "name": "hpack",
+            "version": "4.2.0",
+            "archive_hash": "sha256=1542a88f1fefb5ceac0e91b5bc02c99a8324cdf0b3a6d7764cb81ffc360eed9b"
+          },
+          {
+            "name": "hyperframe",
+            "version": "6.1.0",
+            "archive_hash": "sha256=1fdfa4638a0bd49caf04655f45670fa3275839b97a255578ba999609e582997c"
+          },
+          {
+            "name": "idna",
+            "version": "3.18",
+            "archive_hash": "sha256=97bace3b3471d57886778511c5e8910940f6c7237b045424341a93e1ec32ccbd"
+          },
+          {
+            "name": "openpyxl",
+            "version": "3.1.5",
+            "archive_hash": "sha256=91af0f3a8589abd1cef9f5c2f589d48d79c95eae7cb2b328cba015a20bd42a6c"
+          },
+          {
+            "name": "packaging",
+            "version": "26.2",
+            "archive_hash": "sha256=73d2f15aa9c4cef5bb2ebd4bf10277980d59a901e1eaca129e2f20eb3fdab336"
+          },
+          {
+            "name": "pandas",
+            "version": "3.0.3",
+            "archive_hash": "sha256=4138fc8ba1f674b51ad9016dd769441424e6be275ded1aa52d06dfc94000b4bd"
+          },
+          {
+            "name": "numpy",
+            "version": "2.4.6",
+            "archive_hash": "sha256=3f45d01c6c8443cabd5e4afc64fcced243109e057fd96749c31dc98abbac284a"
+          },
+          {
+            "name": "platformdirs",
+            "version": "4.10.0",
+            "archive_hash": "sha256=1cee584d2d558f8bae2c240748dcddde8164043a1be3e2ead98663d60ca17c04"
+          },
+          {
+            "name": "prompt_toolkit",
+            "version": "3.0.52",
+            "archive_hash": "sha256=31e6909ad14e61406da8acef834973ce1f3055ee9f35ff0db0415046e1dfba71"
+          },
+          {
+            "name": "psutil",
+            "version": "7.2.2",
+            "archive_hash": "sha256=017c1afcbc4b66c06b3b0853ae01f2b9d5a60f2eae45d9ed34871c5443477a26"
+          },
+          {
+            "name": "pydantic-settings",
+            "version": "2.14.2",
+            "archive_hash": "sha256=bd1386e9312773b49408e0602e3d714e4d2f354d109d296be090f827c4e1a918"
+          },
+          {
+            "name": "pypdf",
+            "version": "6.14.2",
+            "archive_hash": "sha256=f10b94760e53ce9c8fdedb4bd32e7f6522a20923a0cebc518d625bdd9e004bef"
+          },
+          {
+            "name": "python-dateutil",
+            "version": "2.9.0.post0",
+            "archive_hash": "sha256=872e8db34fc9120d8668eff8255fcb89fac75bb50852a32d4b8686a49112bc6b"
+          },
+          {
+            "name": "python-docx",
+            "version": "1.2.0",
+            "archive_hash": "sha256=8d4cdfebfe6abe305fda09455a80d947e9b2a45e40b1685a6f3374bf459b50b4"
+          },
+          {
+            "name": "lxml",
+            "version": "6.1.1",
+            "archive_hash": "sha256=de88fb947f474af6d7c3ee7d5b0d12d05beb0b73bd8262bf8d70a6ecd1ab160e"
+          },
+          {
+            "name": "python-dotenv",
+            "version": "1.2.2",
+            "archive_hash": "sha256=791787e4970b9d320db5f41d6bcf68b1e53932e937bc7156fac4ea9d1b67ffa6"
+          },
+          {
+            "name": "python-multipart",
+            "version": "0.0.32",
+            "archive_hash": "sha256=ff1bcdd4741614e229e8b3e23ac5eb0ea3b5228fcb7e7da1cbe04c5840adb598"
+          },
+          {
+            "name": "PyYAML",
+            "version": "6.0.3",
+            "archive_hash": "sha256=8ad8ac77e331939fff7c3eeb73c5e3f1af9f122d7baabfbd5d82b1d073097357"
+          },
+          {
+            "name": "reportlab",
+            "version": "4.5.1",
+            "archive_hash": "sha256=5ddb8fa561db710ef35548770098314c2a800c8f3399e2d12fbee9ae7ba32f67"
+          },
+          {
+            "name": "pillow",
+            "version": "12.2.0",
+            "archive_hash": "sha256=15d43fa9732a85ec5870070ea7a6ffb1f0a4f56d97972955a1cfe007ee1f9811"
+          },
+          {
+            "name": "rich",
+            "version": "15.0.0",
+            "archive_hash": "sha256=f970d04326393a9f2d2a34edaab26b6dd2bdef44772e70ea40d24b038c2181b6"
+          },
+          {
+            "name": "Pygments",
+            "version": "2.20.0",
+            "archive_hash": "sha256=7c676b797db038de87b9764019bc0cfc91480ff581d40bd642650b18e6587ff9"
+          },
+          {
+            "name": "markdown-it-py",
+            "version": "4.2.0",
+            "archive_hash": "sha256=debfa3d9134432d2046f1c037c52367880447a4a54db036e8884ce20db513e6d"
+          },
+          {
+            "name": "mdurl",
+            "version": "0.1.2",
+            "archive_hash": "sha256=78bdd76801a899460fae617258d748db072f3e1f1201f6eae3741f51f5c3b5d7"
+          },
+          {
+            "name": "six",
+            "version": "1.17.0",
+            "archive_hash": "sha256=355592143bc4c6c690f4d3651e66898f2b0506e91b58347c3b9dd8922b54cd10"
+          },
+          {
+            "name": "structlog",
+            "version": "25.5.0",
+            "archive_hash": "sha256=628ed5dd2d5ccc81ad92a2f6254b2f89838abbfb321d113b470a3c5adb6d5c22"
+          },
+          {
+            "name": "tenacity",
+            "version": "9.1.4",
+            "archive_hash": "sha256=4b031df07a4df9150871009f0edee76958ba722ba959e205effd9de3426525d7"
+          },
+          {
+            "name": "textual",
+            "version": "8.2.7",
+            "archive_hash": "sha256=cfdd60c39418c293e63d37e017fdbaa37b3fda84e8c649b15c8c9e6768bde024"
+          },
+          {
+            "name": "linkify-it-py",
+            "version": "2.1.0",
+            "archive_hash": "sha256=85da03abdaa97fd764f06039560b440859221453e2a0ff71f3aa353729c36591"
+          },
+          {
+            "name": "tqdm",
+            "version": "4.67.3",
+            "archive_hash": "sha256=924fdb47c10119d1dbb586679816ccb4dede287d0cacba66590ad8c86205b479"
+          },
+          {
+            "name": "typing-inspection",
+            "version": "0.4.2",
+            "archive_hash": "sha256=a2b1541c242518615bf800e32ba0f154ff036c7996c07541d458acf08e4db590"
+          },
+          {
+            "name": "uvicorn",
+            "version": "0.48.0",
+            "archive_hash": "sha256=5920920d82ee80fb548d90125c5f7ede9fa23c0018635e7950fc6340ffac9d0b"
+          },
+          {
+            "name": "watchdog",
+            "version": "6.0.0",
+            "archive_hash": "sha256=f4c944427162fc35b886202aacce5ed3d7d3a248c6a0071e1a8ecd009af0b5eb"
+          },
+          {
+            "name": "certifi",
+            "version": "2026.5.20",
+            "archive_hash": "sha256=114320ca88258268f4c299f58408eea969274edb561416a90d1c2d7d25233eb6"
+          },
+          {
+            "name": "charset-normalizer",
+            "version": "3.4.7",
+            "archive_hash": "sha256=b62763340642ff0664013ad46bd9465c06c0335a68a79bc250990359d617cd8f"
+          },
+          {
+            "name": "et_xmlfile",
+            "version": "2.0.0",
+            "archive_hash": "sha256=f507ac3149890ba599800d2b1bf23cf257a010399b0673d5f0e474a4a92fe85c"
+          },
+          {
+            "name": "mdit-py-plugins",
+            "version": "0.6.1",
+            "archive_hash": "sha256=164c656db23956d8e3051dadce5f37ca10f1578b97b03ad8b948505bebfabeb5"
+          },
+          {
+            "name": "pycparser",
+            "version": "3.0",
+            "archive_hash": "sha256=cd8ac1783d38614afb9e96adf85e67e4d886d1218c5970e79fd6a13410bdb150"
+          },
+          {
+            "name": "regex",
+            "version": "2026.5.9",
+            "archive_hash": "sha256=49a227d51870a3445094e72d20ce96127af493476a1a9db102a10b00c66445b4"
+          },
+          {
+            "name": "requests",
+            "version": "2.34.2",
+            "archive_hash": "sha256=19ef025f7ae34d1f6ac504cd9290dbdc4512119decaba62c10a6fbbfa77d2bde"
+          },
+          {
+            "name": "urllib3",
+            "version": "2.7.0",
+            "archive_hash": "sha256=7822b11bcf3fb7440bb183359ef092489332420d78bc1b3a0494c6fdc6395f46"
+          },
+          {
+            "name": "sniffio",
+            "version": "1.3.1",
+            "archive_hash": "sha256=4b07eaf947745edfe18aa2fad6b2ebed451427aa774499b2782e94e00694b94d"
+          },
+          {
+            "name": "uc-micro-py",
+            "version": "2.0.0",
+            "archive_hash": "sha256=f8f748f6194a30df271fcfa397bcf69f56fc2d7e97d50a94de6ebc64b647a44e"
+          },
+          {
+            "name": "wcwidth",
+            "version": "0.7.0",
+            "archive_hash": "sha256=e5b82d18aef7812cc6c881fe30885489202a245683601a788eb536bc2d8218fb"
+          }
+        ]
+      }
+    },
+    {
+      "step": "wheel: pip check",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/bin/python",
+        "-m",
+        "pip",
+        "check"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-07-29T14:31:36Z",
+      "finished_utc": "2026-07-29T14:31:36Z",
+      "exit_code": 0,
+      "duration_seconds": 0.14,
+      "stdout_tail": "No broken requirements found.\n",
+      "stderr_tail": "",
+      "stdout_sha256": "9261363b733079a641c2e4cc9bc46ffa1d8336945a87f807b6cf68847dbc9b09",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/04_wheel_pip_check.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/04_wheel_pip_check.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/04_wheel_pip_check.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db"
+    },
+    {
+      "step": "wheel: import js/js_work from venv site-packages",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/bin/python",
+        "-c",
+        "\nimport hashlib, json, pathlib, sys, sysconfig\nimport js, js_work\nerrors = []\nmodules = {}\nfor module in (js, js_work):\n    path = str(pathlib.Path(module.__file__).resolve())\n    if \"site-packages\" not in path:\n        errors.append(f\"{module.__name__} loaded from non-site-packages: {path}\")\n    modules[module.__name__] = {\n        \"file\": path,\n        \"file_sha256\": hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest(),\n        \"site_packages\": str(pathlib.Path(sysconfig.get_paths()[\"purelib\"]).resolve()),\n    }\nimport js.agent, js.echo.turn_runtime, js.echo.ledger.service\nimport js.models.router, js.models.permit\nimport js.security.approvals, js.web.server, js.tools.registry\nimport js_work.cli, js_work.routines.store, js_work.safe_output, js_work.routines\nfrom js.echo.turn_runtime import EchoPulseRuntime  # noqa: F401\nfrom js.security.approvals import ApprovalQueue  # noqa: F401\nprint(json.dumps({\"modules\": modules, \"errors\": errors}))\nsys.exit(1 if errors else 0)\n"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-07-29T14:31:36Z",
+      "finished_utc": "2026-07-29T14:31:49Z",
+      "exit_code": 0,
+      "duration_seconds": 12.966,
+      "stdout_tail": "{\"modules\": {\"js\": {\"file\": \"/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js/__init__.py\", \"file_sha256\": \"52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0\", \"site_packages\": \"/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages\"}, \"js_work\": {\"file\": \"/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js_work/__init__.py\", \"file_sha256\": \"ee40c59a0c6a8780e06ba6ecffbc2c0eba0e533b0dbbbd8ef6b4fe3dba4b272a\", \"site_packages\": \"/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages\"}}, \"errors\": []}\n",
+      "stderr_tail": "",
+      "stdout_sha256": "67c9bef061e08b1b32fa22a55d4708fd2779863a62df5bb91ece3567fbbde242",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/05_wheel_import_js_js_work_from_venv_site_packages.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/05_wheel_import_js_js_work_from_venv_site_packages.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/05_wheel_import_js_js_work_from_venv_site_packages.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db",
+      "import_evidence": {
+        "modules": {
+          "js": {
+            "file": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js/__init__.py",
+            "file_sha256": "52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0",
+            "site_packages": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages"
+          },
+          "js_work": {
+            "file": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js_work/__init__.py",
+            "file_sha256": "ee40c59a0c6a8780e06ba6ecffbc2c0eba0e533b0dbbbd8ef6b4fe3dba4b272a",
+            "site_packages": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages"
+          }
+        },
+        "errors": []
+      },
+      "detail": {
+        "payload_ok": null
+      }
+    },
+    {
+      "step": "wheel: tokenizer loads offline from vendored cache",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/bin/python",
+        "-c",
+        "\nimport json, os, sys\nos.environ.pop(\"TIKTOKEN_CACHE_DIR\", None)\nfrom js.echo.context_tokenizer import tiktoken_counter_factory\ncounter = tiktoken_counter_factory(\"cl100k_base\")\ncount = counter(b\"hello offline world\")\ncache_dir = os.environ.get(\"TIKTOKEN_CACHE_DIR\", \"\")\nok = count > 0 and \"site-packages\" in cache_dir\nprint(json.dumps({\"count\": count, \"cache_dir\": cache_dir, \"ok\": ok}))\nsys.exit(0 if ok else 1)\n"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-07-29T14:31:49Z",
+      "finished_utc": "2026-07-29T14:31:51Z",
+      "exit_code": 0,
+      "duration_seconds": 1.763,
+      "stdout_tail": "{\"count\": 3, \"cache_dir\": \"/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/resources/tokenizer\", \"ok\": true}\n",
+      "stderr_tail": "",
+      "stdout_sha256": "73f05b64a4b009932595d50ea64bfd82925b83f62024ee96352cdb1d0608befd",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/06_wheel_tokenizer_loads_offline_from_vendored_cache.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/06_wheel_tokenizer_loads_offline_from_vendored_cache.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/06_wheel_tokenizer_loads_offline_from_vendored_cache.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db",
+      "detail": {
+        "payload_ok": true
+      }
+    },
+    {
+      "step": "wheel: CLI js --help",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/bin/js",
+        "--help"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-07-29T14:31:51Z",
+      "finished_utc": "2026-07-29T14:31:52Z",
+      "exit_code": 0,
+      "duration_seconds": 0.927,
+      "stdout_tail": "Usage: js [OPTIONS] COMMAND [ARGS]...\n\n  JS Agent - A stable, secure, and convenient AI agent.\n\nOptions:\n  -c, --config PATH  Path to config file\n  -v, --verbose      Verbose logging\n  --help             Show this message and exit.\n\nCommands:\n  appshell  Launch Personal + Work backends under one AppShell chrome.\n  daemon    Run JS Agent in background daemon mode with scheduled tasks.\n  init      Initialize JS configuration.\n  open      Launch Web UI and open browser.\n  plugin    Manage plugins (discover, list, enable, disable).\n  rl        Reinforcement Learning: train agent policies in simulated...\n  run       Run a single message and exit.\n  search    Search the web.\n  setup     Run setup wizard to auto-configure everything.\n  skill     Manage skills.\n  status    Show system status.\n  telegram  Run JS Agent as a Telegram Bot (24/7 messaging interface).\n  tui       Launch the Terminal User Interface (Textual-based rich CLI).\n  web       Web UI server management.\n",
+      "stderr_tail": "",
+      "stdout_sha256": "df46661c9018cd2ce83878466d5975849d465c86bddbb78b8c57eef269dc4a31",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/07_wheel_cli_js_help.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/07_wheel_cli_js_help.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/07_wheel_cli_js_help.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db"
+    },
+    {
+      "step": "wheel: CLI js-work --help",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/bin/js-work",
+        "--help"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-07-29T14:31:52Z",
+      "finished_utc": "2026-07-29T14:31:53Z",
+      "exit_code": 0,
+      "duration_seconds": 1.069,
+      "stdout_tail": "Usage: js-work [OPTIONS] COMMAND [ARGS]...\n\n  JS Agent Work - a work-focused, skill-free Echo agent space.\n\nOptions:\n  -c, --config PATH               Path to JS Agent Work config\n  --profile [execute|safe|office]\n                                  [default: execute]\n  -v, --verbose                   Verbose logging\n  --help                          Show this message and exit.\n\nCommands:\n  init     Initialize JS Agent Work configuration.\n  routine  Manage JS Agent Work routines.\n  run      Run one Work task and exit.\n  web      Run the JS Agent Work Web UI.\n",
+      "stderr_tail": "",
+      "stdout_sha256": "43b5374816a5226c499e6bba00d73bee8b4fbaa86f4ffb5c9fcdf488ae6c7f22",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/08_wheel_cli_js_work_help.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/08_wheel_cli_js_work_help.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/08_wheel_cli_js_work_help.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db"
+    },
+    {
+      "step": "wheel: server HTTP+WS+attachment+work E2E",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/bin/python",
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/server_e2e.py"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-07-29T14:31:53Z",
+      "finished_utc": "2026-07-29T14:31:55Z",
+      "exit_code": 0,
+      "duration_seconds": 1.699,
+      "stdout_tail": "c2efc8181fa0f480c299\", \"record_hash\": \"sha256:b27dda2d587037bcdccdc7778bc806b3b7c977a4befe6abc50f00c931bd1a3f7\"}, {\"seq\": 14, \"record_type\": \"outbox\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"execution_contract\": {\"architecture\": \"echo-2.0\", \"channel\": \"tool_call\", \"contract_version\": \"echo-unified-turn-v1\", \"effect\": {\"action_kind\": \"tool.excel_write\", \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"input_hash\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"replay_class\": \"non_idempotent\", \"resource\": \"tool:excel_write\", \"scopes\": [\"tool:excel_write\"]}, \"executor_kind\": \"tool\", \"executor_route\": \"ToolExecutor.execute_tool\", \"outbox\": {\"bridge_hash\": \"sha256:09cdad0efdde42dc8e53e8590fca907b43f0a7df9fce6ea0d0eedf009b9d02ac\", \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_be5bb852d7ec9698387123d3c821df40\"}, \"run_id\": \"iso-e2e-work-run\", \"session_id\": \"iso-e2e-work\", \"side_effect\": {\"commitment\": \"manual_confirmation_required\", \"replay_class\": \"non_idempotent\"}, \"state_mapping\": {\"args_hash\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"journal_record_start\": 10, \"lease_id\": \"2dece8d0845e90804409ae427ff9cf9a\", \"permit_journal_seq\": 13, \"product_id\": \"js-work\", \"tool_call_id\": \"call_745948e2fa4727c1930588\", \"tool_name\": \"excel_write\"}, \"tenant_id\": \"iso-e2e-owner\"}, \"outbox_id\": \"out_be5bb852d7ec9698387123d3c821df40\", \"seal\": {\"action_kind\": \"tool.excel_write\", \"deadline_ms\": 18738116, \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"granted_scopes\": [\"tool:excel_write\"], \"journal_seq\": 13, \"key_epoch\": \"permit-epoch-1\", \"mac\": \"46a432b1779a682defbeda6d7810c50a1f7066a8e2317637a90abd461fce17c5\", \"policy_decision_id\": \"pdr_8283eff336731924c936fdf1a7c742f6\", \"replay_class\": \"non_idempotent\", \"seal_id\": \"seal_c30b1f8604eef35011d7dac6cc19e996\", \"tenant_id\": \"iso-e2e-owner\"}, \"sealed_input_ref\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\"}, \"prev_hash\": \"sha256:b27dda2d587037bcdccdc7778bc806b3b7c977a4befe6abc50f00c931bd1a3f7\", \"record_hash\": \"sha256:7e568bd03a4e3de1122ee183f620cc2468c397cec7dff3ae758ce8cc0c1a4356\"}, {\"seq\": 15, \"record_type\": \"outbox_claimed\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_be5bb852d7ec9698387123d3c821df40\"}, \"prev_hash\": \"sha256:7e568bd03a4e3de1122ee183f620cc2468c397cec7dff3ae758ce8cc0c1a4356\", \"record_hash\": \"sha256:75cc4930171cff2098517511f41874516ecc872ab0665ed9020af47fed0746bb\"}, {\"seq\": 17, \"record_type\": \"receipt\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_be5bb852d7ec9698387123d3c821df40\", \"output_hash\": \"sha256:d3e7c2b7b9ce4af4c8ae129e4589299f6160c7b28cfbf684e91c0ca275115faa\", \"output_ref\": \"sha256:d3e7c2b7b9ce4af4c8ae129e4589299f6160c7b28cfbf684e91c0ca275115faa\", \"replay_class\": \"non_idempotent\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:8918f715945556f0e3b2dd7b6f3e9d1944c500ea5eec7423226ba1cfe2191454\", \"record_hash\": \"sha256:4ecea98d29dc33066b85e2c7649fcee378601e229d04156dd751bb3b9a44d7ea\"}, {\"seq\": 18, \"record_type\": \"merge\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:4ecea98d29dc33066b85e2c7649fcee378601e229d04156dd751bb3b9a44d7ea\", \"record_hash\": \"sha256:e93692dd5dcb0dd17b3ed8a67736e592d80b131b287f201c46b06f8d5fb31fed\"}], \"journal_evidence_path\": \"e2e/work/wheel/ledger.journal\", \"arguments_sha256\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"ledger_signature_b64\": \"9YI9/ZSK/Jsa77BET5aVGCBFshh1lt4Y0MqaOv4bspVYprkTJ5FrunJ6mLGUtyMzb/tbifz2O80cZDdZPUMIAQ==\", \"pubkey_fingerprint\": \"2a27bc8ab0b0198235a1e977f441060f0526d899916bef5049f173bf73bfeec5\"}}}\n",
+      "stderr_tail": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n  from starlette.testclient import TestClient as TestClient  # noqa\n",
+      "stdout_sha256": "abd61bf1f9e842a1ff6062834296008740e1edb1e3300ed92f0a5f8ebf512a2c",
+      "stderr_sha256": "4dea34cfcf50accebaa3c8ef4af9b4e81f0061b6ec43269e101b0465d68bc80a",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/09_wheel_server_http_ws_attachment_work_e2e.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/09_wheel_server_http_ws_attachment_work_e2e.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/09_wheel_server_http_ws_attachment_work_e2e.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db",
+      "detail": {
+        "offline": true,
+        "schema_version": "isolated-venv-e2e-v6",
+        "health_status": 200,
+        "status_status": 200,
+        "chat_status": 200,
+        "chat_response_ok": true,
+        "upload_status": 200,
+        "attachment_path_ok": true,
+        "attachment_chat_status": 200,
+        "attachment_chat_ok": true,
+        "ws_frame_types": [
+          "status",
+          "thinking",
+          "tool_call",
+          "thinking",
+          "thinking",
+          "token",
+          "token",
+          "usage",
+          "thinking",
+          "done"
+        ],
+        "ws_terminal_ok": true,
+        "ws_saw_token": true,
+        "ws_saw_thinking": true,
+        "ws_saw_tool_call": true,
+        "ws_saw_done": true,
+        "provider_calls": 4,
+        "provider_scenarios": {
+          "chat": 1,
+          "attachment": 1,
+          "tool": 2
+        },
+        "attachment_consumed": true,
+        "attachment_marker_in_messages": true,
+        "unexpected_provider_calls": [],
+        "all_provider_hosts_loopback": true,
+        "tool_rounds": 1,
+        "work_receipt": {
+          "product_id": "js-work",
+          "owner": "iso-e2e-owner",
+          "session": "iso-e2e-work",
+          "run_id": "iso-e2e-work-run",
+          "tool_name": "excel_write",
+          "lease_id": "2dece8d0845e90804409ae427ff9cf9a",
+          "lease_consumed": true,
+          "status": "ok",
+          "terminal": true,
+          "output_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-wheel/home/.js-work/workspace/owners/o_4d801da505c7398e008b8819/s_43a848a10dbbeb10caf2d479/outputs/iso-e2e.xlsx",
+          "output_exists": true,
+          "output_sha256": "d3e7c2b7b9ce4af4c8ae129e4589299f6160c7b28cfbf684e91c0ca275115faa",
+          "output_cells": [
+            [
+              "iso",
+              "e2e",
+              "leased"
+            ]
+          ],
+          "journal_records_added": true,
+          "journal_relative_path": "echo/ledger/partitions/product_bb8e07ce637484216fe7ee1ecfda1057/owner_a75baa10e0f98108e330f25712195612/session_f27d520621b860f345f7448222ba3b5e/chat.jsonl",
+          "journal_sha256": "d9031c5c168308bdcf1d5fe9f2c680a2dda6263ad7cb674636e82f17de96811b",
+          "ledger_sequence": 18,
+          "record_hash": "sha256:e93692dd5dcb0dd17b3ed8a67736e592d80b131b287f201c46b06f8d5fb31fed",
+          "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+          "terminal_status": "ok",
+          "ledger_chain": [
+            {
+              "seq": 13,
+              "record_type": "permit",
+              "tenant_id": "iso-e2e-owner",
+              "run_id": "iso-e2e-work-run",
+              "payload": {
+                "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                "seal": {
+                  "action_kind": "tool.excel_write",
+                  "deadline_ms": 18738116,
+                  "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                  "granted_scopes": [
+                    "tool:excel_write"
+                  ],
+                  "journal_seq": 13,
+                  "key_epoch": "permit-epoch-1",
+                  "mac": "46a432b1779a682defbeda6d7810c50a1f7066a8e2317637a90abd461fce17c5",
+                  "policy_decision_id": "pdr_8283eff336731924c936fdf1a7c742f6",
+                  "replay_class": "non_idempotent",
+                  "seal_id": "seal_c30b1f8604eef35011d7dac6cc19e996",
+                  "tenant_id": "iso-e2e-owner"
+                },
+                "seal_id": "seal_c30b1f8604eef35011d7dac6cc19e996",
+                "tool_effect": {
+                  "args_hash": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
+                  "lease_id": "2dece8d0845e90804409ae427ff9cf9a",
+                  "product_id": "js-work",
+                  "session_id": "iso-e2e-work",
+                  "tool_call_id": "call_745948e2fa4727c1930588",
+                  "tool_name": "excel_write"
+                }
+              },
+              "prev_hash": "sha256:b20efd3d1d8ffd0f4783672d604ffb5f1cf90fb654c8c2efc8181fa0f480c299",
+              "record_hash": "sha256:b27dda2d587037bcdccdc7778bc806b3b7c977a4befe6abc50f00c931bd1a3f7"
+            },
+            {
+              "seq": 14,
+              "record_type": "outbox",
+              "tenant_id": "iso-e2e-owner",
+              "run_id": "iso-e2e-work-run",
+              "payload": {
+                "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                "execution_contract": {
+                  "architecture": "echo-2.0",
+                  "channel": "tool_call",
+                  "contract_version": "echo-unified-turn-v1",
+                  "effect": {
+                    "action_kind": "tool.excel_write",
+                    "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                    "input_hash": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
+                    "replay_class": "non_idempotent",
+                    "resource": "tool:excel_write",
+                    "scopes": [
+                      "tool:excel_write"
+                    ]
+                  },
+                  "executor_kind": "tool",
+                  "executor_route": "ToolExecutor.execute_tool",
+                  "outbox": {
+                    "bridge_hash": "sha256:09cdad0efdde42dc8e53e8590fca907b43f0a7df9fce6ea0d0eedf009b9d02ac",
+                    "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                    "outbox_id": "out_be5bb852d7ec9698387123d3c821df40"
+                  },
+                  "run_id": "iso-e2e-work-run",
+                  "session_id": "iso-e2e-work",
+                  "side_effect": {
+                    "commitment": "manual_confirmation_required",
+                    "replay_class": "non_idempotent"
+                  },
+                  "state_mapping": {
+                    "args_hash": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
+                    "journal_record_start": 10,
+                    "lease_id": "2dece8d0845e90804409ae427ff9cf9a",
+                    "permit_journal_seq": 13,
+                    "product_id": "js-work",
+                    "tool_call_id": "call_745948e2fa4727c1930588",
+                    "tool_name": "excel_write"
+                  },
+                  "tenant_id": "iso-e2e-owner"
+                },
+                "outbox_id": "out_be5bb852d7ec9698387123d3c821df40",
+                "seal": {
+                  "action_kind": "tool.excel_write",
+                  "deadline_ms": 18738116,
+                  "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                  "granted_scopes": [
+                    "tool:excel_write"
+                  ],
+                  "journal_seq": 13,
+                  "key_epoch": "permit-epoch-1",
+                  "mac": "46a432b1779a682defbeda6d7810c50a1f7066a8e2317637a90abd461fce17c5",
+                  "policy_decision_id": "pdr_8283eff336731924c936fdf1a7c742f6",
+                  "replay_class": "non_idempotent",
+                  "seal_id": "seal_c30b1f8604eef35011d7dac6cc19e996",
+                  "tenant_id": "iso-e2e-owner"
+                },
+                "sealed_input_ref": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558"
+              },
+              "prev_hash": "sha256:b27dda2d587037bcdccdc7778bc806b3b7c977a4befe6abc50f00c931bd1a3f7",
+              "record_hash": "sha256:7e568bd03a4e3de1122ee183f620cc2468c397cec7dff3ae758ce8cc0c1a4356"
+            },
+            {
+              "seq": 15,
+              "record_type": "outbox_claimed",
+              "tenant_id": "iso-e2e-owner",
+              "run_id": "iso-e2e-work-run",
+              "payload": {
+                "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                "outbox_id": "out_be5bb852d7ec9698387123d3c821df40"
+              },
+              "prev_hash": "sha256:7e568bd03a4e3de1122ee183f620cc2468c397cec7dff3ae758ce8cc0c1a4356",
+              "record_hash": "sha256:75cc4930171cff2098517511f41874516ecc872ab0665ed9020af47fed0746bb"
+            },
+            {
+              "seq": 17,
+              "record_type": "receipt",
+              "tenant_id": "iso-e2e-owner",
+              "run_id": "iso-e2e-work-run",
+              "payload": {
+                "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                "outbox_id": "out_be5bb852d7ec9698387123d3c821df40",
+                "output_hash": "sha256:d3e7c2b7b9ce4af4c8ae129e4589299f6160c7b28cfbf684e91c0ca275115faa",
+                "output_ref": "sha256:d3e7c2b7b9ce4af4c8ae129e4589299f6160c7b28cfbf684e91c0ca275115faa",
+                "replay_class": "non_idempotent",
+                "status": "ok"
+              },
+              "prev_hash": "sha256:8918f715945556f0e3b2dd7b6f3e9d1944c500ea5eec7423226ba1cfe2191454",
+              "record_hash": "sha256:4ecea98d29dc33066b85e2c7649fcee378601e229d04156dd751bb3b9a44d7ea"
+            },
+            {
+              "seq": 18,
+              "record_type": "merge",
+              "tenant_id": "iso-e2e-owner",
+              "run_id": "iso-e2e-work-run",
+              "payload": {
+                "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                "status": "ok"
+              },
+              "prev_hash": "sha256:4ecea98d29dc33066b85e2c7649fcee378601e229d04156dd751bb3b9a44d7ea",
+              "record_hash": "sha256:e93692dd5dcb0dd17b3ed8a67736e592d80b131b287f201c46b06f8d5fb31fed"
+            }
+          ],
+          "journal_evidence_path": "e2e/work/wheel/ledger.journal",
+          "arguments_sha256": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
+          "ledger_signature_b64": "9YI9/ZSK/Jsa77BET5aVGCBFshh1lt4Y0MqaOv4bspVYprkTJ5FrunJ6mLGUtyMzb/tbifz2O80cZDdZPUMIAQ==",
+          "pubkey_fingerprint": "2a27bc8ab0b0198235a1e977f441060f0526d899916bef5049f173bf73bfeec5"
+        },
+        "payload_ok": true
+      }
+    },
+    {
+      "step": "sdist: create venv",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "-m",
+        "venv",
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-07-29T14:31:55Z",
+      "finished_utc": "2026-07-29T14:31:56Z",
+      "exit_code": 0,
+      "duration_seconds": 0.942,
+      "stdout_tail": "",
+      "stderr_tail": "",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/10_sdist_create_venv.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/10_sdist_create_venv.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/10_sdist_create_venv.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db"
+    },
+    {
+      "step": "sdist: pip install build backends offline",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/bin/python",
+        "-m",
+        "pip",
+        "install",
+        "--no-index",
+        "--find-links",
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse",
+        "--no-input",
+        "hatchling",
+        "pathspec",
+        "packaging",
+        "trove-classifiers",
+        "pluggy"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-07-29T14:31:56Z",
+      "finished_utc": "2026-07-29T14:31:56Z",
+      "exit_code": 0,
+      "duration_seconds": 0.253,
+      "stdout_tail": "Looking in links: /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse, /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/hatchling-1.31.0-py3-none-any.whl\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/pathspec-1.1.1-py3-none-any.whl\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/packaging-26.2-py3-none-any.whl\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/trove_classifiers-2026.6.1.19-py3-none-any.whl\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/pluggy-1.6.0-py3-none-any.whl\nInstalling collected packages: trove-classifiers, pluggy, pathspec, packaging, hatchling\n\nSuccessfully installed hatchling-1.31.0 packaging-26.2 pathspec-1.1.1 pluggy-1.6.0 trove-classifiers-2026.6.1.19\n",
+      "stderr_tail": "",
+      "stdout_sha256": "6e41d5a291d12404b11e039d717a9f2109d2b828a22fa73564857bb24f529440",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/11_sdist_pip_install_build_backends_offline.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/11_sdist_pip_install_build_backends_offline.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/11_sdist_pip_install_build_backends_offline.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db"
+    },
+    {
+      "step": "sdist: pip install artifact offline (echo-tokenizer,office)",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/bin/python",
+        "-m",
+        "pip",
+        "install",
+        "--no-index",
+        "--find-links",
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse",
+        "--no-input",
+        "--report",
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/pip/sdist.install-report.json",
+        "--no-build-isolation",
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/artifacts/js_agent-0.1.5.tar.gz[echo-tokenizer,office]"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-07-29T14:31:56Z",
+      "finished_utc": "2026-07-29T14:32:03Z",
+      "exit_code": 0,
+      "duration_seconds": 7.316,
+      "stdout_tail": "iangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/charset_normalizer-3.4.7-cp312-cp312-macosx_26_0_arm64.whl (from reportlab>=4.0->js-agent==0.1.5)\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/markdown_it_py-4.2.0-py3-none-any.whl (from rich>=13.9->js-agent==0.1.5)\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/pygments-2.20.0-py3-none-any.whl (from rich>=13.9->js-agent==0.1.5)\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/mdurl-0.1.2-py3-none-any.whl (from markdown-it-py>=2.2.0->rich>=13.9->js-agent==0.1.5)\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/mdit_py_plugins-0.6.1-py3-none-any.whl (from textual>=0.70->js-agent==0.1.5)\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/linkify_it_py-2.1.0-py3-none-any.whl (from markdown-it-py[linkify]>=2.1.0->textual>=0.70->js-agent==0.1.5)\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/uc_micro_py-2.0.0-py3-none-any.whl (from linkify-it-py<3,>=1->markdown-it-py[linkify]>=2.1.0->textual>=0.70->js-agent==0.1.5)\nProcessing /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/wheelhouse/urllib3-2.7.0-py3-none-any.whl (from requests->tiktoken<1,>=0.7->js-agent==0.1.5)\nBuilding wheels for collected packages: js-agent\n  Building wheel for js-agent (pyproject.toml): started\n  Building wheel for js-agent (pyproject.toml): finished with status 'done'\n  Created wheel for js-agent: filename=js_agent-0.1.5-py3-none-any.whl size=4322020 sha256=a2ebb02c3629a2a836e3d0b9ee773fa8cb745f0aeeec4db0e183424c66599070\n  Stored in directory: /Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/home/Library/Caches/pip/wheels/dc/cb/c8/c0c4cd310261fa85d167ad72afe527a00b8b47afcee699c53f\nSuccessfully built js-agent\nInstalling collected packages: xlrd, wcwidth, watchdog, urllib3, uc-micro-py, typing-extensions, tqdm, tenacity, structlog, sniffio, six, rfc8785, regex, pyyaml, python-multipart, python-dotenv, pypdf, pygments, pycparser, psutil, platformdirs, pillow, numpy, mdurl, lxml, jiter, idna, hyperframe, hpack, h11, et-xmlfile, distro, click, charset-normalizer, certifi, cachetools, annotated-types, annotated-doc, aiosqlite, uvicorn, typing-inspection, requests, reportlab, python-docx, python-dateutil, pydantic-core, prompt-toolkit, openpyxl, markdown-it-py, linkify-it-py, httpcore, h2, cffi, anyio, tiktoken, starlette, rich, pydantic, pandas, mdit-py-plugins, httpx, cryptography, textual, pydantic-settings, openai, fastapi, js-agent\n\nSuccessfully installed aiosqlite-0.22.1 annotated-doc-0.0.4 annotated-types-0.7.0 anyio-4.13.0 cachetools-7.1.4 certifi-2026.5.20 cffi-2.0.0 charset-normalizer-3.4.7 click-8.4.1 cryptography-48.0.1 distro-1.9.0 et-xmlfile-2.0.0 fastapi-0.139.0 h11-0.16.0 h2-4.3.0 hpack-4.2.0 httpcore-1.0.9 httpx-0.28.1 hyperframe-6.1.0 idna-3.18 jiter-0.15.0 js-agent-0.1.5 linkify-it-py-2.1.0 lxml-6.1.1 markdown-it-py-4.2.0 mdit-py-plugins-0.6.1 mdurl-0.1.2 numpy-2.4.6 openai-2.38.0 openpyxl-3.1.5 pandas-3.0.3 pillow-12.2.0 platformdirs-4.10.0 prompt-toolkit-3.0.52 psutil-7.2.2 pycparser-3.0 pydantic-2.13.4 pydantic-core-2.46.4 pydantic-settings-2.14.2 pygments-2.20.0 pypdf-6.14.2 python-dateutil-2.9.0.post0 python-docx-1.2.0 python-dotenv-1.2.2 python-multipart-0.0.32 pyyaml-6.0.3 regex-2026.5.9 reportlab-4.5.1 requests-2.34.2 rfc8785-0.1.4 rich-15.0.0 six-1.17.0 sniffio-1.3.1 starlette-1.3.1 structlog-25.5.0 tenacity-9.1.4 textual-8.2.7 tiktoken-0.13.0 tqdm-4.67.3 typing-extensions-4.15.0 typing-inspection-0.4.2 uc-micro-py-2.0.0 urllib3-2.7.0 uvicorn-0.48.0 watchdog-6.0.0 wcwidth-0.7.0 xlrd-2.0.2\n",
+      "stderr_tail": "",
+      "stdout_sha256": "de76e2fe1915ada91f5241016925f600f6c3ea49c8e08a1831ca5724223d6aba",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/12_sdist_pip_install_artifact_offline_echo_tokenizer_office.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/12_sdist_pip_install_artifact_offline_echo_tokenizer_office.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/12_sdist_pip_install_artifact_offline_echo_tokenizer_office.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db",
+      "pip_report": {
+        "path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/pip/sdist.install-report.json",
+        "sha256": "a44365f58c84b08c8197e1efe25d31f6f711bf907c40295c72e2c07d2a4e9600",
+        "packages": [
+          {
+            "name": "js-agent",
+            "version": "0.1.5",
+            "archive_hash": "sha256=589e8e537f221067e68a0b6a46feb0bdb5ea92294e55285bc21b1611517fbc67"
+          },
+          {
+            "name": "rfc8785",
+            "version": "0.1.4",
+            "archive_hash": "sha256=cb81f38a0ece0a44dfc09b1223ab5b15c92c2e42a4dd4ca5899dfe5332d973a7"
+          },
+          {
+            "name": "xlrd",
+            "version": "2.0.2",
+            "archive_hash": "sha256=2507eeabf882d0ac8d2a75585adf28215e4b65493208bf0aefae8e6be05f21d7"
+          },
+          {
+            "name": "cryptography",
+            "version": "48.0.1",
+            "archive_hash": "sha256=eac6d8fa768ba8f1582975258bacd73ec24c84323c6c7bccd3413a609af16bbe"
+          },
+          {
+            "name": "fastapi",
+            "version": "0.139.0",
+            "archive_hash": "sha256=c487e2b6646eca100baa9222fbc3655aace6b3e25dbdabc8a88c93a513c74b0a"
+          },
+          {
+            "name": "openai",
+            "version": "2.38.0",
+            "archive_hash": "sha256=84663a3f223522556a3eaef8fe3e35b2fc38862d4a20238c2cf440b9ead68d94"
+          },
+          {
+            "name": "anyio",
+            "version": "4.13.0",
+            "archive_hash": "sha256=f200cd7ec119d42db9fc8c6a0d14a4880ad62550fe85de28993fcb4a3991a545"
+          },
+          {
+            "name": "distro",
+            "version": "1.9.0",
+            "archive_hash": "sha256=0782da67923283001fb97a5d87832e4760c872159551b52c7bd4f1c890a485c8"
+          },
+          {
+            "name": "httpx",
+            "version": "0.28.1",
+            "archive_hash": "sha256=bbfc94c65ec292e39b83c669f1bf6eb82aad3728349d3ad4632634f44f86413b"
+          },
+          {
+            "name": "httpcore",
+            "version": "1.0.9",
+            "archive_hash": "sha256=e56ddd058d6a9b88fdb266eb78425c60c2dffd1be5cafc3838bc76800991276d"
+          },
+          {
+            "name": "jiter",
+            "version": "0.15.0",
+            "archive_hash": "sha256=9c6a9558564c1982d041ad227ca500ba47fd2a1f4e5d41a8c9043786ee98d52a"
+          },
+          {
+            "name": "pydantic",
+            "version": "2.13.4",
+            "archive_hash": "sha256=e7ea43cd722064ae6879d37c5d5c48d4ab51a9be29df6dd74dad400939ea5bd7"
+          },
+          {
+            "name": "pydantic_core",
+            "version": "2.46.4",
+            "archive_hash": "sha256=de1262538eef9ea7b35763cc48140712b02bdc24c5d0d3e412cd8c0cb85d0079"
+          },
+          {
+            "name": "starlette",
+            "version": "1.3.1",
+            "archive_hash": "sha256=97fd4e5a492789a29724a4fb88ca6cb08cce7e7c880653ac78e741aaee99567a"
+          },
+          {
+            "name": "tiktoken",
+            "version": "0.13.0",
+            "archive_hash": "sha256=f08f7cbe78a05d3a939d0ae39d56dacf3163566f95e3fb2b00a4ae22dc8b945d"
+          },
+          {
+            "name": "typing_extensions",
+            "version": "4.15.0",
+            "archive_hash": "sha256=ffa9abb4cdd2ebf43a90cc1fa574d71a1f0b0fd48ea46f2c92eb08854c302b4d"
+          },
+          {
+            "name": "aiosqlite",
+            "version": "0.22.1",
+            "archive_hash": "sha256=6921310c9138b1c856de45c638b8f5eb15884bd4a43d651265a0d04635b3efd0"
+          },
+          {
+            "name": "annotated-doc",
+            "version": "0.0.4",
+            "archive_hash": "sha256=92eb49bcacba1bf2604b222da5a624d4f440805bdee65c8e2be1078ff7891898"
+          },
+          {
+            "name": "annotated-types",
+            "version": "0.7.0",
+            "archive_hash": "sha256=de7b36802ebd7fcd580894649ad26693f9dfe7ab2be7d383dc220d4f078085ee"
+          },
+          {
+            "name": "cachetools",
+            "version": "7.1.4",
+            "archive_hash": "sha256=d5a25638ae2952fb8eed73d75efe33577dee0c8c9b3b202718e9f015715956f1"
+          },
+          {
+            "name": "cffi",
+            "version": "2.0.0",
+            "archive_hash": "sha256=762bf4cc1d86008d1c1c7e9985f498a901d528baa72ad104b9049ea9e124c460"
+          },
+          {
+            "name": "click",
+            "version": "8.4.1",
+            "archive_hash": "sha256=931afda99e488eca581a1d941bfa0d557a7d77aa63abfd44fbf98585976d1fe7"
+          },
+          {
+            "name": "h11",
+            "version": "0.16.0",
+            "archive_hash": "sha256=7582456460e81c5f51141be6b439562ae6ce0a19299c7691866d0ceb16a31817"
+          },
+          {
+            "name": "h2",
+            "version": "4.3.0",
+            "archive_hash": "sha256=38501dcc4a5c498c41e73918663c34ff73986af7a089b95f7d8c1420320ce3a9"
+          },
+          {
+            "name": "hpack",
+            "version": "4.2.0",
+            "archive_hash": "sha256=1542a88f1fefb5ceac0e91b5bc02c99a8324cdf0b3a6d7764cb81ffc360eed9b"
+          },
+          {
+            "name": "hyperframe",
+            "version": "6.1.0",
+            "archive_hash": "sha256=1fdfa4638a0bd49caf04655f45670fa3275839b97a255578ba999609e582997c"
+          },
+          {
+            "name": "idna",
+            "version": "3.18",
+            "archive_hash": "sha256=97bace3b3471d57886778511c5e8910940f6c7237b045424341a93e1ec32ccbd"
+          },
+          {
+            "name": "openpyxl",
+            "version": "3.1.5",
+            "archive_hash": "sha256=91af0f3a8589abd1cef9f5c2f589d48d79c95eae7cb2b328cba015a20bd42a6c"
+          },
+          {
+            "name": "pandas",
+            "version": "3.0.3",
+            "archive_hash": "sha256=4138fc8ba1f674b51ad9016dd769441424e6be275ded1aa52d06dfc94000b4bd"
+          },
+          {
+            "name": "numpy",
+            "version": "2.4.6",
+            "archive_hash": "sha256=3f45d01c6c8443cabd5e4afc64fcced243109e057fd96749c31dc98abbac284a"
+          },
+          {
+            "name": "platformdirs",
+            "version": "4.10.0",
+            "archive_hash": "sha256=1cee584d2d558f8bae2c240748dcddde8164043a1be3e2ead98663d60ca17c04"
+          },
+          {
+            "name": "prompt_toolkit",
+            "version": "3.0.52",
+            "archive_hash": "sha256=31e6909ad14e61406da8acef834973ce1f3055ee9f35ff0db0415046e1dfba71"
+          },
+          {
+            "name": "psutil",
+            "version": "7.2.2",
+            "archive_hash": "sha256=017c1afcbc4b66c06b3b0853ae01f2b9d5a60f2eae45d9ed34871c5443477a26"
+          },
+          {
+            "name": "pydantic-settings",
+            "version": "2.14.2",
+            "archive_hash": "sha256=bd1386e9312773b49408e0602e3d714e4d2f354d109d296be090f827c4e1a918"
+          },
+          {
+            "name": "pypdf",
+            "version": "6.14.2",
+            "archive_hash": "sha256=f10b94760e53ce9c8fdedb4bd32e7f6522a20923a0cebc518d625bdd9e004bef"
+          },
+          {
+            "name": "python-dateutil",
+            "version": "2.9.0.post0",
+            "archive_hash": "sha256=872e8db34fc9120d8668eff8255fcb89fac75bb50852a32d4b8686a49112bc6b"
+          },
+          {
+            "name": "python-docx",
+            "version": "1.2.0",
+            "archive_hash": "sha256=8d4cdfebfe6abe305fda09455a80d947e9b2a45e40b1685a6f3374bf459b50b4"
+          },
+          {
+            "name": "lxml",
+            "version": "6.1.1",
+            "archive_hash": "sha256=de88fb947f474af6d7c3ee7d5b0d12d05beb0b73bd8262bf8d70a6ecd1ab160e"
+          },
+          {
+            "name": "python-dotenv",
+            "version": "1.2.2",
+            "archive_hash": "sha256=791787e4970b9d320db5f41d6bcf68b1e53932e937bc7156fac4ea9d1b67ffa6"
+          },
+          {
+            "name": "python-multipart",
+            "version": "0.0.32",
+            "archive_hash": "sha256=ff1bcdd4741614e229e8b3e23ac5eb0ea3b5228fcb7e7da1cbe04c5840adb598"
+          },
+          {
+            "name": "PyYAML",
+            "version": "6.0.3",
+            "archive_hash": "sha256=8ad8ac77e331939fff7c3eeb73c5e3f1af9f122d7baabfbd5d82b1d073097357"
+          },
+          {
+            "name": "reportlab",
+            "version": "4.5.1",
+            "archive_hash": "sha256=5ddb8fa561db710ef35548770098314c2a800c8f3399e2d12fbee9ae7ba32f67"
+          },
+          {
+            "name": "pillow",
+            "version": "12.2.0",
+            "archive_hash": "sha256=15d43fa9732a85ec5870070ea7a6ffb1f0a4f56d97972955a1cfe007ee1f9811"
+          },
+          {
+            "name": "rich",
+            "version": "15.0.0",
+            "archive_hash": "sha256=f970d04326393a9f2d2a34edaab26b6dd2bdef44772e70ea40d24b038c2181b6"
+          },
+          {
+            "name": "Pygments",
+            "version": "2.20.0",
+            "archive_hash": "sha256=7c676b797db038de87b9764019bc0cfc91480ff581d40bd642650b18e6587ff9"
+          },
+          {
+            "name": "markdown-it-py",
+            "version": "4.2.0",
+            "archive_hash": "sha256=debfa3d9134432d2046f1c037c52367880447a4a54db036e8884ce20db513e6d"
+          },
+          {
+            "name": "mdurl",
+            "version": "0.1.2",
+            "archive_hash": "sha256=78bdd76801a899460fae617258d748db072f3e1f1201f6eae3741f51f5c3b5d7"
+          },
+          {
+            "name": "six",
+            "version": "1.17.0",
+            "archive_hash": "sha256=355592143bc4c6c690f4d3651e66898f2b0506e91b58347c3b9dd8922b54cd10"
+          },
+          {
+            "name": "structlog",
+            "version": "25.5.0",
+            "archive_hash": "sha256=628ed5dd2d5ccc81ad92a2f6254b2f89838abbfb321d113b470a3c5adb6d5c22"
+          },
+          {
+            "name": "tenacity",
+            "version": "9.1.4",
+            "archive_hash": "sha256=4b031df07a4df9150871009f0edee76958ba722ba959e205effd9de3426525d7"
+          },
+          {
+            "name": "textual",
+            "version": "8.2.7",
+            "archive_hash": "sha256=cfdd60c39418c293e63d37e017fdbaa37b3fda84e8c649b15c8c9e6768bde024"
+          },
+          {
+            "name": "linkify-it-py",
+            "version": "2.1.0",
+            "archive_hash": "sha256=85da03abdaa97fd764f06039560b440859221453e2a0ff71f3aa353729c36591"
+          },
+          {
+            "name": "tqdm",
+            "version": "4.67.3",
+            "archive_hash": "sha256=924fdb47c10119d1dbb586679816ccb4dede287d0cacba66590ad8c86205b479"
+          },
+          {
+            "name": "typing-inspection",
+            "version": "0.4.2",
+            "archive_hash": "sha256=a2b1541c242518615bf800e32ba0f154ff036c7996c07541d458acf08e4db590"
+          },
+          {
+            "name": "uvicorn",
+            "version": "0.48.0",
+            "archive_hash": "sha256=5920920d82ee80fb548d90125c5f7ede9fa23c0018635e7950fc6340ffac9d0b"
+          },
+          {
+            "name": "watchdog",
+            "version": "6.0.0",
+            "archive_hash": "sha256=f4c944427162fc35b886202aacce5ed3d7d3a248c6a0071e1a8ecd009af0b5eb"
+          },
+          {
+            "name": "certifi",
+            "version": "2026.5.20",
+            "archive_hash": "sha256=114320ca88258268f4c299f58408eea969274edb561416a90d1c2d7d25233eb6"
+          },
+          {
+            "name": "charset-normalizer",
+            "version": "3.4.7",
+            "archive_hash": "sha256=b62763340642ff0664013ad46bd9465c06c0335a68a79bc250990359d617cd8f"
+          },
+          {
+            "name": "et_xmlfile",
+            "version": "2.0.0",
+            "archive_hash": "sha256=f507ac3149890ba599800d2b1bf23cf257a010399b0673d5f0e474a4a92fe85c"
+          },
+          {
+            "name": "mdit-py-plugins",
+            "version": "0.6.1",
+            "archive_hash": "sha256=164c656db23956d8e3051dadce5f37ca10f1578b97b03ad8b948505bebfabeb5"
+          },
+          {
+            "name": "pycparser",
+            "version": "3.0",
+            "archive_hash": "sha256=cd8ac1783d38614afb9e96adf85e67e4d886d1218c5970e79fd6a13410bdb150"
+          },
+          {
+            "name": "regex",
+            "version": "2026.5.9",
+            "archive_hash": "sha256=49a227d51870a3445094e72d20ce96127af493476a1a9db102a10b00c66445b4"
+          },
+          {
+            "name": "requests",
+            "version": "2.34.2",
+            "archive_hash": "sha256=19ef025f7ae34d1f6ac504cd9290dbdc4512119decaba62c10a6fbbfa77d2bde"
+          },
+          {
+            "name": "urllib3",
+            "version": "2.7.0",
+            "archive_hash": "sha256=7822b11bcf3fb7440bb183359ef092489332420d78bc1b3a0494c6fdc6395f46"
+          },
+          {
+            "name": "sniffio",
+            "version": "1.3.1",
+            "archive_hash": "sha256=4b07eaf947745edfe18aa2fad6b2ebed451427aa774499b2782e94e00694b94d"
+          },
+          {
+            "name": "uc-micro-py",
+            "version": "2.0.0",
+            "archive_hash": "sha256=f8f748f6194a30df271fcfa397bcf69f56fc2d7e97d50a94de6ebc64b647a44e"
+          },
+          {
+            "name": "wcwidth",
+            "version": "0.7.0",
+            "archive_hash": "sha256=e5b82d18aef7812cc6c881fe30885489202a245683601a788eb536bc2d8218fb"
+          }
+        ]
+      }
+    },
+    {
+      "step": "sdist: pip check",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/bin/python",
+        "-m",
+        "pip",
+        "check"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-07-29T14:32:03Z",
+      "finished_utc": "2026-07-29T14:32:03Z",
+      "exit_code": 0,
+      "duration_seconds": 0.143,
+      "stdout_tail": "No broken requirements found.\n",
+      "stderr_tail": "",
+      "stdout_sha256": "9261363b733079a641c2e4cc9bc46ffa1d8336945a87f807b6cf68847dbc9b09",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/13_sdist_pip_check.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/13_sdist_pip_check.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/13_sdist_pip_check.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db"
+    },
+    {
+      "step": "sdist: import js/js_work from venv site-packages",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/bin/python",
+        "-c",
+        "\nimport hashlib, json, pathlib, sys, sysconfig\nimport js, js_work\nerrors = []\nmodules = {}\nfor module in (js, js_work):\n    path = str(pathlib.Path(module.__file__).resolve())\n    if \"site-packages\" not in path:\n        errors.append(f\"{module.__name__} loaded from non-site-packages: {path}\")\n    modules[module.__name__] = {\n        \"file\": path,\n        \"file_sha256\": hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest(),\n        \"site_packages\": str(pathlib.Path(sysconfig.get_paths()[\"purelib\"]).resolve()),\n    }\nimport js.agent, js.echo.turn_runtime, js.echo.ledger.service\nimport js.models.router, js.models.permit\nimport js.security.approvals, js.web.server, js.tools.registry\nimport js_work.cli, js_work.routines.store, js_work.safe_output, js_work.routines\nfrom js.echo.turn_runtime import EchoPulseRuntime  # noqa: F401\nfrom js.security.approvals import ApprovalQueue  # noqa: F401\nprint(json.dumps({\"modules\": modules, \"errors\": errors}))\nsys.exit(1 if errors else 0)\n"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-07-29T14:32:03Z",
+      "finished_utc": "2026-07-29T14:32:13Z",
+      "exit_code": 0,
+      "duration_seconds": 9.492,
+      "stdout_tail": "{\"modules\": {\"js\": {\"file\": \"/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js/__init__.py\", \"file_sha256\": \"52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0\", \"site_packages\": \"/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages\"}, \"js_work\": {\"file\": \"/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js_work/__init__.py\", \"file_sha256\": \"ee40c59a0c6a8780e06ba6ecffbc2c0eba0e533b0dbbbd8ef6b4fe3dba4b272a\", \"site_packages\": \"/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages\"}}, \"errors\": []}\n",
+      "stderr_tail": "",
+      "stdout_sha256": "673ff85a0e93d771ff09a063cdfbee6757678f7f59468da6d0f165922fb03380",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/14_sdist_import_js_js_work_from_venv_site_packages.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/14_sdist_import_js_js_work_from_venv_site_packages.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/14_sdist_import_js_js_work_from_venv_site_packages.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db",
+      "import_evidence": {
+        "modules": {
+          "js": {
+            "file": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js/__init__.py",
+            "file_sha256": "52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0",
+            "site_packages": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages"
+          },
+          "js_work": {
+            "file": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js_work/__init__.py",
+            "file_sha256": "ee40c59a0c6a8780e06ba6ecffbc2c0eba0e533b0dbbbd8ef6b4fe3dba4b272a",
+            "site_packages": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages"
+          }
+        },
+        "errors": []
+      },
+      "detail": {
+        "payload_ok": null
+      }
+    },
+    {
+      "step": "sdist: tokenizer loads offline from vendored cache",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/bin/python",
+        "-c",
+        "\nimport json, os, sys\nos.environ.pop(\"TIKTOKEN_CACHE_DIR\", None)\nfrom js.echo.context_tokenizer import tiktoken_counter_factory\ncounter = tiktoken_counter_factory(\"cl100k_base\")\ncount = counter(b\"hello offline world\")\ncache_dir = os.environ.get(\"TIKTOKEN_CACHE_DIR\", \"\")\nok = count > 0 and \"site-packages\" in cache_dir\nprint(json.dumps({\"count\": count, \"cache_dir\": cache_dir, \"ok\": ok}))\nsys.exit(0 if ok else 1)\n"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-07-29T14:32:13Z",
+      "finished_utc": "2026-07-29T14:32:14Z",
+      "exit_code": 0,
+      "duration_seconds": 0.848,
+      "stdout_tail": "{\"count\": 3, \"cache_dir\": \"/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/resources/tokenizer\", \"ok\": true}\n",
+      "stderr_tail": "",
+      "stdout_sha256": "2713f5fea7c3c9189a84db568d96e3e65a0109aaa2d61f0a61b8f58ffa936d71",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/15_sdist_tokenizer_loads_offline_from_vendored_cache.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/15_sdist_tokenizer_loads_offline_from_vendored_cache.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/15_sdist_tokenizer_loads_offline_from_vendored_cache.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db",
+      "detail": {
+        "payload_ok": true
+      }
+    },
+    {
+      "step": "sdist: CLI js --help",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/bin/js",
+        "--help"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-07-29T14:32:14Z",
+      "finished_utc": "2026-07-29T14:32:15Z",
+      "exit_code": 0,
+      "duration_seconds": 0.852,
+      "stdout_tail": "Usage: js [OPTIONS] COMMAND [ARGS]...\n\n  JS Agent - A stable, secure, and convenient AI agent.\n\nOptions:\n  -c, --config PATH  Path to config file\n  -v, --verbose      Verbose logging\n  --help             Show this message and exit.\n\nCommands:\n  appshell  Launch Personal + Work backends under one AppShell chrome.\n  daemon    Run JS Agent in background daemon mode with scheduled tasks.\n  init      Initialize JS configuration.\n  open      Launch Web UI and open browser.\n  plugin    Manage plugins (discover, list, enable, disable).\n  rl        Reinforcement Learning: train agent policies in simulated...\n  run       Run a single message and exit.\n  search    Search the web.\n  setup     Run setup wizard to auto-configure everything.\n  skill     Manage skills.\n  status    Show system status.\n  telegram  Run JS Agent as a Telegram Bot (24/7 messaging interface).\n  tui       Launch the Terminal User Interface (Textual-based rich CLI).\n  web       Web UI server management.\n",
+      "stderr_tail": "",
+      "stdout_sha256": "df46661c9018cd2ce83878466d5975849d465c86bddbb78b8c57eef269dc4a31",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/16_sdist_cli_js_help.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/16_sdist_cli_js_help.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/16_sdist_cli_js_help.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db"
+    },
+    {
+      "step": "sdist: CLI js-work --help",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/bin/js-work",
+        "--help"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-07-29T14:32:15Z",
+      "finished_utc": "2026-07-29T14:32:16Z",
+      "exit_code": 0,
+      "duration_seconds": 1.012,
+      "stdout_tail": "Usage: js-work [OPTIONS] COMMAND [ARGS]...\n\n  JS Agent Work - a work-focused, skill-free Echo agent space.\n\nOptions:\n  -c, --config PATH               Path to JS Agent Work config\n  --profile [execute|safe|office]\n                                  [default: execute]\n  -v, --verbose                   Verbose logging\n  --help                          Show this message and exit.\n\nCommands:\n  init     Initialize JS Agent Work configuration.\n  routine  Manage JS Agent Work routines.\n  run      Run one Work task and exit.\n  web      Run the JS Agent Work Web UI.\n",
+      "stderr_tail": "",
+      "stdout_sha256": "43b5374816a5226c499e6bba00d73bee8b4fbaa86f4ffb5c9fcdf488ae6c7f22",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/17_sdist_cli_js_work_help.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/17_sdist_cli_js_work_help.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/17_sdist_cli_js_work_help.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db"
+    },
+    {
+      "step": "sdist: server HTTP+WS+attachment+work E2E",
+      "argv": [
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/bin/python",
+        "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/server_e2e.py"
+      ],
+      "cwd": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-07-29T14:32:16Z",
+      "finished_utc": "2026-07-29T14:32:17Z",
+      "exit_code": 0,
+      "duration_seconds": 1.634,
+      "stdout_tail": "41d506bc7bdfb9668d5a\", \"record_hash\": \"sha256:f9a6863ea46f058b8688b4cdc7137820bf0d4c59a08d66216db19711d15462da\"}, {\"seq\": 14, \"record_type\": \"outbox\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"execution_contract\": {\"architecture\": \"echo-2.0\", \"channel\": \"tool_call\", \"contract_version\": \"echo-unified-turn-v1\", \"effect\": {\"action_kind\": \"tool.excel_write\", \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"input_hash\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"replay_class\": \"non_idempotent\", \"resource\": \"tool:excel_write\", \"scopes\": [\"tool:excel_write\"]}, \"executor_kind\": \"tool\", \"executor_route\": \"ToolExecutor.execute_tool\", \"outbox\": {\"bridge_hash\": \"sha256:f7486c9e4ad7db51a0d74d34dfdbfd100d7a2ad0498732aa15e8f4f4f9dbe277\", \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_f6691122ca3cf568c2fee5333a9b0825\"}, \"run_id\": \"iso-e2e-work-run\", \"session_id\": \"iso-e2e-work\", \"side_effect\": {\"commitment\": \"manual_confirmation_required\", \"replay_class\": \"non_idempotent\"}, \"state_mapping\": {\"args_hash\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"journal_record_start\": 10, \"lease_id\": \"06f079e48de85bcfeee8742a05406e87\", \"permit_journal_seq\": 13, \"product_id\": \"js-work\", \"tool_call_id\": \"call_745948e2fa4727c1930588\", \"tool_name\": \"excel_write\"}, \"tenant_id\": \"iso-e2e-owner\"}, \"outbox_id\": \"out_f6691122ca3cf568c2fee5333a9b0825\", \"seal\": {\"action_kind\": \"tool.excel_write\", \"deadline_ms\": 18760640, \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"granted_scopes\": [\"tool:excel_write\"], \"journal_seq\": 13, \"key_epoch\": \"permit-epoch-1\", \"mac\": \"7d05311ecf29c22d08cb0da48bcfd94b3f42d86ff8e455f8dda70b869376948d\", \"policy_decision_id\": \"pdr_36c3da7744a99700e2420f3c4ffee6ae\", \"replay_class\": \"non_idempotent\", \"seal_id\": \"seal_4f9760f1875eece7bdb3f20375ece7d5\", \"tenant_id\": \"iso-e2e-owner\"}, \"sealed_input_ref\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\"}, \"prev_hash\": \"sha256:f9a6863ea46f058b8688b4cdc7137820bf0d4c59a08d66216db19711d15462da\", \"record_hash\": \"sha256:cecded226d870adf91729bf7ede33f96894a1dd0f1409a4f4da10f477ea21706\"}, {\"seq\": 15, \"record_type\": \"outbox_claimed\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_f6691122ca3cf568c2fee5333a9b0825\"}, \"prev_hash\": \"sha256:cecded226d870adf91729bf7ede33f96894a1dd0f1409a4f4da10f477ea21706\", \"record_hash\": \"sha256:0ba63e4eea7f29e898d6d2d77c4c316cc0073039d30bed09e2348dca13654c06\"}, {\"seq\": 17, \"record_type\": \"receipt\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_f6691122ca3cf568c2fee5333a9b0825\", \"output_hash\": \"sha256:359341259d391bd14e19235dc8b0e1ef7fa177dd8d782dfc39f22f0ba2611afa\", \"output_ref\": \"sha256:359341259d391bd14e19235dc8b0e1ef7fa177dd8d782dfc39f22f0ba2611afa\", \"replay_class\": \"non_idempotent\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:39df290f28712e95c9feeb011a2f63d55806e7e5d52d3e2dffcf5e6df0a4377c\", \"record_hash\": \"sha256:32423ed58620c76d9bc2e83defd236bf69d86b76a44c1be6a08377ada78c3ff1\"}, {\"seq\": 18, \"record_type\": \"merge\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:32423ed58620c76d9bc2e83defd236bf69d86b76a44c1be6a08377ada78c3ff1\", \"record_hash\": \"sha256:8135ca1b2b02b7ba1b2d1be953aa33c3e1466a0afdbe4deb548c5e5f9962467d\"}], \"journal_evidence_path\": \"e2e/work/sdist/ledger.journal\", \"arguments_sha256\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"ledger_signature_b64\": \"C4Kc3lHriMXsGvifJ07DUo5AZkzpW8zjIRG7dVsBv+M+6mKKXYJn+pO7Gx5HRmeY2iwSJe+BJEz1tQYiHXO8CA==\", \"pubkey_fingerprint\": \"2a27bc8ab0b0198235a1e977f441060f0526d899916bef5049f173bf73bfeec5\"}}}\n",
+      "stderr_tail": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n  from starlette.testclient import TestClient as TestClient  # noqa\n",
+      "stdout_sha256": "8cef9a292c854bd03be2755134f0b84d27c4e1ffb5f2a7f6746199407d18084a",
+      "stderr_sha256": "916593de348df40d4a6e16ac51df6279916c91ebedf5a780c8c9ebb0e3dcad8a",
+      "ok": true,
+      "stdout_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/18_sdist_server_http_ws_attachment_work_e2e.stdout.txt",
+      "stderr_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/18_sdist_server_http_ws_attachment_work_e2e.stderr.txt",
+      "step_receipt_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/steps/18_sdist_server_http_ws_attachment_work_e2e.receipt.json",
+      "source_digest": "4c73d303d80b20c8eee87f15762637dd3e31b6f062db6c36805c83b523a795db",
+      "detail": {
+        "offline": true,
+        "schema_version": "isolated-venv-e2e-v6",
+        "health_status": 200,
+        "status_status": 200,
+        "chat_status": 200,
+        "chat_response_ok": true,
+        "upload_status": 200,
+        "attachment_path_ok": true,
+        "attachment_chat_status": 200,
+        "attachment_chat_ok": true,
+        "ws_frame_types": [
+          "status",
+          "thinking",
+          "tool_call",
+          "thinking",
+          "thinking",
+          "token",
+          "token",
+          "usage",
+          "thinking",
+          "done"
+        ],
+        "ws_terminal_ok": true,
+        "ws_saw_token": true,
+        "ws_saw_thinking": true,
+        "ws_saw_tool_call": true,
+        "ws_saw_done": true,
+        "provider_calls": 4,
+        "provider_scenarios": {
+          "chat": 1,
+          "attachment": 1,
+          "tool": 2
+        },
+        "attachment_consumed": true,
+        "attachment_marker_in_messages": true,
+        "unexpected_provider_calls": [],
+        "all_provider_hosts_loopback": true,
+        "tool_rounds": 1,
+        "work_receipt": {
+          "product_id": "js-work",
+          "owner": "iso-e2e-owner",
+          "session": "iso-e2e-work",
+          "run_id": "iso-e2e-work-run",
+          "tool_name": "excel_write",
+          "lease_id": "06f079e48de85bcfeee8742a05406e87",
+          "lease_consumed": true,
+          "status": "ok",
+          "terminal": true,
+          "output_path": "/Users/jiangxuanzhen/titan-agent/.task-tmp/evidence/appshell_closeout/20260729T125851Z/e2e/runtime/install-sdist/home/.js-work/workspace/owners/o_4d801da505c7398e008b8819/s_43a848a10dbbeb10caf2d479/outputs/iso-e2e.xlsx",
+          "output_exists": true,
+          "output_sha256": "359341259d391bd14e19235dc8b0e1ef7fa177dd8d782dfc39f22f0ba2611afa",
+          "output_cells": [
+            [
+              "iso",
+              "e2e",
+              "leased"
+            ]
+          ],
+          "journal_records_added": true,
+          "journal_relative_path": "echo/ledger/partitions/product_bb8e07ce637484216fe7ee1ecfda1057/owner_a75baa10e0f98108e330f25712195612/session_f27d520621b860f345f7448222ba3b5e/chat.jsonl",
+          "journal_sha256": "b49cb8c2789b3ab1ddb038b2c6467a5b172c0b82bd05b5c9bba5ea771050e569",
+          "ledger_sequence": 18,
+          "record_hash": "sha256:8135ca1b2b02b7ba1b2d1be953aa33c3e1466a0afdbe4deb548c5e5f9962467d",
+          "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+          "terminal_status": "ok",
+          "ledger_chain": [
+            {
+              "seq": 13,
+              "record_type": "permit",
+              "tenant_id": "iso-e2e-owner",
+              "run_id": "iso-e2e-work-run",
+              "payload": {
+                "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                "seal": {
+                  "action_kind": "tool.excel_write",
+                  "deadline_ms": 18760640,
+                  "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                  "granted_scopes": [
+                    "tool:excel_write"
+                  ],
+                  "journal_seq": 13,
+                  "key_epoch": "permit-epoch-1",
+                  "mac": "7d05311ecf29c22d08cb0da48bcfd94b3f42d86ff8e455f8dda70b869376948d",
+                  "policy_decision_id": "pdr_36c3da7744a99700e2420f3c4ffee6ae",
+                  "replay_class": "non_idempotent",
+                  "seal_id": "seal_4f9760f1875eece7bdb3f20375ece7d5",
+                  "tenant_id": "iso-e2e-owner"
+                },
+                "seal_id": "seal_4f9760f1875eece7bdb3f20375ece7d5",
+                "tool_effect": {
+                  "args_hash": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
+                  "lease_id": "06f079e48de85bcfeee8742a05406e87",
+                  "product_id": "js-work",
+                  "session_id": "iso-e2e-work",
+                  "tool_call_id": "call_745948e2fa4727c1930588",
+                  "tool_name": "excel_write"
+                }
+              },
+              "prev_hash": "sha256:85dbbbed5ca4d5f49893f0d8c9cfa16b4810463e8aa141d506bc7bdfb9668d5a",
+              "record_hash": "sha256:f9a6863ea46f058b8688b4cdc7137820bf0d4c59a08d66216db19711d15462da"
+            },
+            {
+              "seq": 14,
+              "record_type": "outbox",
+              "tenant_id": "iso-e2e-owner",
+              "run_id": "iso-e2e-work-run",
+              "payload": {
+                "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                "execution_contract": {
+                  "architecture": "echo-2.0",
+                  "channel": "tool_call",
+                  "contract_version": "echo-unified-turn-v1",
+                  "effect": {
+                    "action_kind": "tool.excel_write",
+                    "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                    "input_hash": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
+                    "replay_class": "non_idempotent",
+                    "resource": "tool:excel_write",
+                    "scopes": [
+                      "tool:excel_write"
+                    ]
+                  },
+                  "executor_kind": "tool",
+                  "executor_route": "ToolExecutor.execute_tool",
+                  "outbox": {
+                    "bridge_hash": "sha256:f7486c9e4ad7db51a0d74d34dfdbfd100d7a2ad0498732aa15e8f4f4f9dbe277",
+                    "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                    "outbox_id": "out_f6691122ca3cf568c2fee5333a9b0825"
+                  },
+                  "run_id": "iso-e2e-work-run",
+                  "session_id": "iso-e2e-work",
+                  "side_effect": {
+                    "commitment": "manual_confirmation_required",
+                    "replay_class": "non_idempotent"
+                  },
+                  "state_mapping": {
+                    "args_hash": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
+                    "journal_record_start": 10,
+                    "lease_id": "06f079e48de85bcfeee8742a05406e87",
+                    "permit_journal_seq": 13,
+                    "product_id": "js-work",
+                    "tool_call_id": "call_745948e2fa4727c1930588",
+                    "tool_name": "excel_write"
+                  },
+                  "tenant_id": "iso-e2e-owner"
+                },
+                "outbox_id": "out_f6691122ca3cf568c2fee5333a9b0825",
+                "seal": {
+                  "action_kind": "tool.excel_write",
+                  "deadline_ms": 18760640,
+                  "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                  "granted_scopes": [
+                    "tool:excel_write"
+                  ],
+                  "journal_seq": 13,
+                  "key_epoch": "permit-epoch-1",
+                  "mac": "7d05311ecf29c22d08cb0da48bcfd94b3f42d86ff8e455f8dda70b869376948d",
+                  "policy_decision_id": "pdr_36c3da7744a99700e2420f3c4ffee6ae",
+                  "replay_class": "non_idempotent",
+                  "seal_id": "seal_4f9760f1875eece7bdb3f20375ece7d5",
+                  "tenant_id": "iso-e2e-owner"
+                },
+                "sealed_input_ref": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558"
+              },
+              "prev_hash": "sha256:f9a6863ea46f058b8688b4cdc7137820bf0d4c59a08d66216db19711d15462da",
+              "record_hash": "sha256:cecded226d870adf91729bf7ede33f96894a1dd0f1409a4f4da10f477ea21706"
+            },
+            {
+              "seq": 15,
+              "record_type": "outbox_claimed",
+              "tenant_id": "iso-e2e-owner",
+              "run_id": "iso-e2e-work-run",
+              "payload": {
+                "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                "outbox_id": "out_f6691122ca3cf568c2fee5333a9b0825"
+              },
+              "prev_hash": "sha256:cecded226d870adf91729bf7ede33f96894a1dd0f1409a4f4da10f477ea21706",
+              "record_hash": "sha256:0ba63e4eea7f29e898d6d2d77c4c316cc0073039d30bed09e2348dca13654c06"
+            },
+            {
+              "seq": 17,
+              "record_type": "receipt",
+              "tenant_id": "iso-e2e-owner",
+              "run_id": "iso-e2e-work-run",
+              "payload": {
+                "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                "outbox_id": "out_f6691122ca3cf568c2fee5333a9b0825",
+                "output_hash": "sha256:359341259d391bd14e19235dc8b0e1ef7fa177dd8d782dfc39f22f0ba2611afa",
+                "output_ref": "sha256:359341259d391bd14e19235dc8b0e1ef7fa177dd8d782dfc39f22f0ba2611afa",
+                "replay_class": "non_idempotent",
+                "status": "ok"
+              },
+              "prev_hash": "sha256:39df290f28712e95c9feeb011a2f63d55806e7e5d52d3e2dffcf5e6df0a4377c",
+              "record_hash": "sha256:32423ed58620c76d9bc2e83defd236bf69d86b76a44c1be6a08377ada78c3ff1"
+            },
+            {
+              "seq": 18,
+              "record_type": "merge",
+              "tenant_id": "iso-e2e-owner",
+              "run_id": "iso-e2e-work-run",
+              "payload": {
+                "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
+                "status": "ok"
+              },
+              "prev_hash": "sha256:32423ed58620c76d9bc2e83defd236bf69d86b76a44c1be6a08377ada78c3ff1",
+              "record_hash": "sha256:8135ca1b2b02b7ba1b2d1be953aa33c3e1466a0afdbe4deb548c5e5f9962467d"
+            }
+          ],
+          "journal_evidence_path": "e2e/work/sdist/ledger.journal",
+          "arguments_sha256": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
+          "ledger_signature_b64": "C4Kc3lHriMXsGvifJ07DUo5AZkzpW8zjIRG7dVsBv+M+6mKKXYJn+pO7Gx5HRmeY2iwSJe+BJEz1tQYiHXO8CA==",
+          "pubkey_fingerprint": "2a27bc8ab0b0198235a1e977f441060f0526d899916bef5049f173bf73bfeec5"
+        },
+        "payload_ok": true
+      }
+    }
+  ]
+}

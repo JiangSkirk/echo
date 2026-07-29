@@ -1,13 +1,20 @@
 # JS Agent - Developer Guide
 
-JS Agent is a local personal Agent Harness, not a chatbot. It wraps a model with memory, context capsules, tool execution, safety guardrails, test feedback, model switching, and task recovery.
+JS Agent is a local personal Agent Harness, not a chatbot. Echo is its only normal
+runtime architecture: it wraps models, tools, memory, attachments, streaming, and
+durable recovery behind one fail-closed execution boundary.
 
 ## Project Structure
 
 ```
 js/
+├── echo/                  # Authoritative Echo runtime, effects, gates, and ledger
+│   ├── turn_runtime.py    # Single public turn boundary
+│   ├── turn_loop.py       # Echo-owned model/tool loop
+│   ├── effect_interpreter.py # Executes authorized effects and records receipts
+│   └── ledger/            # MAC/hash journal, outbox, leases, and recovery
 ├── config.py              # Settings with Pydantic validation
-├── agent.py               # Core reasoning loop (~1270 lines)
+├── agent/                 # Compatibility facade; delegates turns to Echo
 ├── setup_wizard.py        # Interactive first-time setup
 ├── core/                  # Shared core utilities
 │   └── attachments.py     # PDF/Excel/text extraction + size formatting
@@ -97,12 +104,16 @@ demos/                     # Self-contained usage demos
 
 ## Design Principles
 
-1. **Security First**: Every operation passes through `BehaviorGuard`. Defense in depth with audit logging.
-2. **Fail-Open + Fail-Safe**:
-   - *Fail-Open*: 安全子系统自身崩溃/故障时不阻断主系统（防止安全成为单点故障）。
-   - *Fail-Safe*: 安全子系统正常工作时，对无法判断的情况默认阻断（保守策略）。
-3. **Minimal Surprises**: All destructive operations are explicit. Path resolution is predictable.
-4. **Observability**: Every tool call, model request, and security decision is logged.
+1. **One Runtime Boundary**: HTTP, WebSocket, CLI, TUI, Telegram, Work,
+   Fleet, cron, model calls, and tools enter through Echo. Direct provider or
+   tool-handler execution is forbidden in normal operation.
+2. **Fail Closed**: A missing, unhealthy, or ambiguous security gate blocks the
+   model call, tool, attachment, or side effect. Availability must never be
+   recovered by bypassing Echo authorization or its durable ledger.
+3. **Least Authority**: Tool leases bind product, owner, session, run, tool,
+   arguments, filesystem/network grants, budget, and single-use consumption.
+4. **Minimal Surprises**: All destructive operations are explicit. Path resolution is predictable.
+5. **Observability**: Every tool call, model request, and security decision is logged.
 
 ## Adding a New Tool
 
@@ -119,6 +130,10 @@ spec = ToolSpec(
 )
 registry.register(spec, my_tool)
 ```
+
+Registration only declares a tool. Production execution must still come from an
+Echo-authorized turn and a single-use capability lease; never call a registry
+handler directly.
 
 ## Running Tests
 

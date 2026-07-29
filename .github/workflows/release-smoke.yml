@@ -3,6 +3,7 @@ name: Release Smoke
 on:
   push:
     branches: [main, develop]
+    tags: ["v*"]
   pull_request:
     branches: [main, develop]
   workflow_dispatch:
@@ -29,5 +30,71 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
+      - name: Build release artifacts
+        run: python -m build --outdir dist
+
+      - name: Verify installed wheel in a clean virtual environment
+        run: python scripts/verify_installed_artifact.py --artifact-dir dist --audit
+
       - name: Run release smoke checks
         run: python scripts/release_smoke.py --all
+
+      - name: Install Chromium for browser gate
+        if: matrix.python-version == '3.12'
+        run: python -m playwright install chromium
+
+      - name: Run self-contained browser gate
+        if: matrix.python-version == '3.12'
+        run: python -m pytest -q -m playwright tests/e2e
+
+      - name: Run wheel and sdist isolated install checks
+        env:
+          RELEASE_ARTIFACT_DIR: dist
+        run: python -m pytest tests/test_release_package_isolation.py -q
+
+      - name: Verify generated release evidence is current
+        run: python scripts/generate_release_evidence.py --check
+
+      - name: Verify benchmark-bound Echo audit reports
+        run: python scripts/echo_full_audit.py --rounds 10 --check --fix-verification
+
+  stable-release-gate:
+    name: Stable release approval gate
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    runs-on: ubuntu-latest
+    environment: stable-release
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install release gate dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Require independently trusted external approvals
+        env:
+          JS_ECHO_TRUSTED_REVIEW_KEYS: ${{ secrets.JS_ECHO_TRUSTED_REVIEW_KEYS }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          from js.echo.ledger.release_gates import verify_release_readiness
+
+          report = verify_release_readiness(Path("."))
+          print(f"internal_ready={report.internal_ready}")
+          print(f"stable_ready={report.stable_ready}")
+          print("internal_blockers=" + ",".join(report.internal_blockers))
+          print("external_blockers=" + ",".join(report.external_blockers))
+          if not report.stable_ready:
+              raise SystemExit("Stable release blocked: independently trusted external approvals are required.")
+          PY

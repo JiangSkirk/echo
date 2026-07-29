@@ -1,6 +1,6 @@
 # JS Agent — 本地个人 Agent Harness
 
-> **当前版本: v0.1.5 stable — API 趋稳，欢迎反馈！**
+> **当前版本: v0.1.5 本地 release candidate / 受控试用 — 欢迎反馈！**
 >
 > [English README](README_en.md)
 
@@ -26,7 +26,7 @@ JS Agent 不是聊天机器人，而是一套**本地个人 Agent Harness**—�
 
 ### 🛡️ 安全护栏（Defense in Depth）
 - **策略模式防御**: 工具调用防御不是硬编码 if-else，是可注入、可排序的策略对象
-- **Fail-Open 语义**: 安全子系统自身崩溃/故障时不阻断主系统（防止安全成为单点故障）
+- **Fail-Closed 语义**: Echo 授权与 ledger 在缺失、异常或不可验证时 fail-closed，不 bypass 主路径
 - **行为审计**: 完整记录每个工具调用，哈希链式日志可检测篡改/截断
 - **路径保护**: 防止误删系统文件，Workspace 外写操作需确认
 - **秘密管理**: 自动检测和屏蔽 API keys、tokens，持久化加密存储
@@ -115,9 +115,9 @@ pytest tests -q -p no:cacheprovider
 | 能力 | OpenClaw | Hermes | **JS Agent** |
 |------|----------|--------|-----------|
 | 运行时 | Node.js (3700 chunks) | Python + Node UI | **Python 3.12+ 统一** |
-| 安全 | 外部插件 (ClawAegis) | Tirith + 审批 | **内置 + 策略模式 + Fail-Open** |
+| 安全 | 外部插件 (ClawAegis) | Tirith + 审批 | **内置 + 策略模式 + Fail-Closed** |
 | 上下文压缩 | ❌ | ✅ 最强 | ✅ **Hermes 式压缩器 + 上下文胶囊** |
-| Checkpoint | ❌ | ✅ Git Shadow | ✅ **Git Shadow Repo** |
+| Checkpoint | ❌ | ✅ Git Shadow | ⚠️ **已移除 checkpoints，不随包发布** |
 | 配置缓存 | ❌ | ✅ Stat-based | ⚠️ 已移除 (YAGNI) |
 | 断路器 | ❌ | ❌ | ✅ **自动恢复探测** |
 | 模型发现 | ❌ 手动配置 | ❌ 手动配置 | ✅ **自动探测** |

@@ -18,6 +18,7 @@ COPY pyproject.toml README.md ./
 
 # Copy source code and tests
 COPY js/ ./js/
+COPY js_work/ ./js_work/
 COPY tests/ ./tests/
 
 # Install the package with development dependencies

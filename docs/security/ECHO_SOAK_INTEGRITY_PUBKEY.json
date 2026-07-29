@@ -1,0 +1,9 @@
+{
+  "algorithm": "Ed25519",
+  "fingerprint_sha256": "b419f25911eead67f0239c7d9d436fb6071b8f74255ed5f1f1c31ec56dc2da4d",
+  "public_key_b64": "o1wGblZ+gsN0R4TGG6gPKcDZRpfByy/2GwyS7thzKGs=",
+  "purpose": "deterministic-hash-chain-consistency-v1",
+  "not_a_third_party_signature": true,
+  "schema_version": "echo-soak-integrity-pubkey-v1",
+  "notes": "Derived from a public fixed seed for format and chain-consistency tests only. Anyone can regenerate the same key; this does not prove independent authenticity. Evidence authenticity is expressed by the final MANIFEST + detached digest + external review status."
+}

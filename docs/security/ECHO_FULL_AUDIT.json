@@ -1,0 +1,146 @@
+# Echo 10 Round Audit
+
+This is local engineering evidence. It is not external FTO, clean-room, security-audit, or red-team approval.
+
+## Summary
+
+- Echo-only default: `True`
+- Security matrix: `25/25`, ok=`True`
+- Internal release ready: `False`
+- Stable release ready: `False`
+- Stable release blockers: `legal_fto_review_pending, clean_room_reviewer_pending, external_security_audit_missing, redteam_report_missing`
+- Benchmark SHA-256: `9a7cca2896afd791b776a2c1d1e9181deeb00f951150fd0495e5a382bf3fc2f1`
+
+## Round 1: 架构边界轮
+
+- **P2 Echo-only runtime; removed-runtime production mentions=0**
+  - Status: `fixed`
+  - Evidence: `js/config.py; docs/echo/DEFAULT_ARCHITECTURE.md`
+  - Repair: Keep removed runtime packages, switches, and execution loops out of production.
+  - Verification: `.venv/bin/python -m pytest tests/echo/test_legacy_runtime_removed.py -q`
+
+## Round 2: 模型调用边界轮
+
+- **P0 Provider-bound stream calls use Echo before/after model gate**
+  - Status: `fixed`
+  - Evidence: `js/models/router.py; js/agent/runner.py`
+  - Repair: Route chat_stream_events through before_model_call/after_model_call.
+  - Verification: `.venv/bin/python -m pytest tests/echo/ledger/test_agent_model_gate.py::test_router_stream_events_authorizes_and_finalizes_fallback_provider -q`
+- **P1 ScopeGate binds the real product, session, run, model, messages, and tools**
+  - Status: `fixed`
+  - Evidence: `js/echo/ledger/service.py; tests/echo/ledger/test_service.py`
+  - Repair: Keep product/session identity in every provider-bound ScopePermit.
+  - Verification: `.venv/bin/python -m pytest tests/echo/ledger/test_service.py::test_service_authorize_model_call_records_echo2_scope_permit_metadata -q`
+
+## Round 3: 工具与 sandbox 轮
+
+- **P0 Tool execution uses signed persistent CapabilityLease ledger**
+  - Status: `fixed`
+  - Evidence: `js/echo/capability.py; js/agent/tool_executor.py`
+  - Repair: Persist issue/consume/revoke and load consumed nonce state on restart.
+  - Verification: `.venv/bin/python -m pytest tests/echo/test_capability_lease.py::test_persistent_lease_ledger_replays_consumed_nonce tests/test_progress_callback_redacts.py::test_echo_tool_execution_default_authority_writes_persistent_lease_ledger -q`
+- **P1 Tool lease resource scopes bind product and session**
+  - Status: `fixed`
+  - Evidence: `js/agent/tool_executor.py; tests/echo/test_tool_capability_context.py`
+  - Repair: Prevent a signed Work lease from being reused in the main product namespace.
+  - Verification: `.venv/bin/python -m pytest tests/echo/test_tool_capability_context.py::test_tool_executor_passes_consumed_lease_context_to_registry -q`
+
+## Round 4: 附件/vision/secret 轮
+
+- **P0 Attachment, vision, and secret gates block before model call**
+  - Status: `fixed`
+  - Evidence: `tests/echo/ledger/test_agent_model_gate.py; js/web/uploads.py`
+  - Repair: Keep upload ownership and model-bound secret scan on the same Echo path.
+  - Verification: `.venv/bin/python -m pytest tests/echo/ledger/test_agent_model_gate.py::test_vision_attachment_blocks_by_default_without_vision_safety_approval -q`
+
+## Round 5: 租户/session/memory 轮
+
+- **P1 Owner/session locks and tenant state are bounded**
+  - Status: `fixed`
+  - Evidence: `js/web/session_locks.py; js/echo/ledger/service.py`
+  - Repair: Keep owner+session keyed locks and bounded tenant journal cache.
+  - Verification: `.venv/bin/python -m pytest tests/test_cancel_checkpoint.py::TestCancelAPI::test_same_session_id_cancels_only_matching_owner tests/echo/test_turn_runtime.py::test_same_session_id_uses_distinct_owner_lanes tests/echo/test_web_session_locks.py tests/echo/ledger/test_service.py::test_service_tenant_state_cache_is_bounded -q`
+
+## Round 6: ledger/outbox/recovery 轮
+
+- **P0 Journal recovery, manual review, and compaction are observable**
+  - Status: `fixed`
+  - Evidence: `js/echo/ledger/journal.py; js/echo/ledger/service.py`
+  - Repair: Keep hash/MAC replay, corrupt-tail isolation, manual-review, and snapshot anchor.
+  - Verification: `.venv/bin/python -m pytest tests/echo/ledger/test_service.py::test_service_compaction_skips_open_effects_then_writes_anchor -q`
+
+## Round 7: stream/thinking/UI 轮
+
+- **P1 Stream terminal ordering and thinking side-channel are covered**
+  - Status: `fixed`
+  - Evidence: `js/web/server.py; tests/echo/ledger/test_websocket_primary.py`
+  - Repair: Keep token/thinking frames before one terminal done/error.
+  - Verification: `.venv/bin/python -m pytest tests/echo/ledger/test_websocket_primary.py tests/test_stream_events_dispatch.py -q`
+
+## Round 8: 性能/token 轮
+
+- **P2 api_full_agent Echo p95 32.279ms / limit 45.0ms**
+  - Status: `fixed`
+  - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
+  - Repair: Keep Echo p95 within the deterministic absolute SLO gate.
+  - Verification: `.venv/bin/python scripts/echo_architecture_benchmark.py --iterations 50 --warmup 10 --enforce-slo --baseline docs/security/ECHO_BASELINE_65CC545.json --output docs/security/ECHO_SLO_BENCHMARK.json`
+- **P2 api_wrapper_only Echo p95 0.672ms / limit 2.0ms**
+  - Status: `fixed`
+  - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
+  - Repair: Keep Echo p95 within the deterministic absolute SLO gate.
+  - Verification: `.venv/bin/python scripts/echo_architecture_benchmark.py --iterations 50 --warmup 10 --enforce-slo --baseline docs/security/ECHO_BASELINE_65CC545.json --output docs/security/ECHO_SLO_BENCHMARK.json`
+- **P2 ws_message_wrapper Echo p95 1.347ms / limit 2.0ms**
+  - Status: `fixed`
+  - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
+  - Repair: Keep Echo p95 within the deterministic absolute SLO gate.
+  - Verification: `.venv/bin/python scripts/echo_architecture_benchmark.py --iterations 50 --warmup 10 --enforce-slo --baseline docs/security/ECHO_BASELINE_65CC545.json --output docs/security/ECHO_SLO_BENCHMARK.json`
+- **P2 ws_stream_wrapper Echo p95 1.605ms / limit 2.0ms**
+  - Status: `fixed`
+  - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
+  - Repair: Keep Echo p95 within the deterministic absolute SLO gate.
+  - Verification: `.venv/bin/python scripts/echo_architecture_benchmark.py --iterations 50 --warmup 10 --enforce-slo --baseline docs/security/ECHO_BASELINE_65CC545.json --output docs/security/ECHO_SLO_BENCHMARK.json`
+- **P2 api_full_agent prompt token p95 1661.0 (tokenizer) / limit 9000.0**
+  - Status: `fixed`
+  - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
+  - Repair: Keep ContextVault payloads bounded and label token evidence honestly.
+  - Verification: `.venv/bin/python scripts/echo_architecture_benchmark.py --iterations 50 --warmup 10 --enforce-slo --baseline docs/security/ECHO_BASELINE_65CC545.json --output docs/security/ECHO_SLO_BENCHMARK.json`
+- **P2 Concurrency evidence 150/150 at 50 x 3 rounds**
+  - Status: `fixed`
+  - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
+  - Repair: Run 50 concurrent requests for three rounds with no 5xx or crosstalk.
+  - Verification: `.venv/bin/python scripts/echo_architecture_benchmark.py --iterations 50 --warmup 10 --enforce-slo --baseline docs/security/ECHO_BASELINE_65CC545.json --output docs/security/ECHO_SLO_BENCHMARK.json`
+- **P2 10k replay and compaction recovery SLO**
+  - Status: `fixed`
+  - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
+  - Repair: Keep 10k replay and compaction below their absolute limits.
+  - Verification: `.venv/bin/python scripts/echo_architecture_benchmark.py --iterations 50 --warmup 10 --enforce-slo --baseline docs/security/ECHO_BASELINE_65CC545.json --output docs/security/ECHO_SLO_BENCHMARK.json`
+- **P1 BudgetClock covers background model calls and counts nine ledger records per attempt**
+  - Status: `fixed`
+  - Evidence: `js/echo/model_budget.py; js/agent/__init__.py; js/echo/turn_loop.py`
+  - Repair: Keep summary, dreaming, evolution, and profile model calls under hard budgets.
+  - Verification: `.venv/bin/python -m pytest tests/echo/test_budget_runtime.py -q`
+- **P1 Token evidence records provider_actual, tokenizer, estimated, or unavailable**
+  - Status: `fixed`
+  - Evidence: `js/models/providers.py; js/echo/ledger/service.py`
+  - Repair: Never present heuristic stream tokens as provider billing data.
+  - Verification: `.venv/bin/python -m pytest tests/test_stream_events_dispatch.py::TestStreamEventDispatch::test_missing_stream_usage_is_explicitly_estimated tests/echo/ledger/test_service.py::test_service_authorize_model_call_records_echo2_scope_permit_metadata -q`
+
+## Round 9: 扩展性轮
+
+- **P2 Extension boundaries exist for model, tool, context, and release gates**
+  - Status: `fixed`
+  - Evidence: `js/models/router.py; js/agent/tool_executor.py; js/echo/context_runtime.py; js/echo/ledger/release_gates.py`
+  - Repair: Keep new feature work behind these interfaces instead of adding direct web/server bypasses.
+  - Verification: `.venv/bin/ruff check js/models/router.py js/agent/tool_executor.py js/echo/ledger tests/echo/ledger`
+
+## Round 10: 发布与供应链轮
+
+- **P0 Stable release blockers remain external-only**
+  - Status: `open`
+  - Evidence: `docs/security; js/echo/ledger/release_gates.py`
+  - Repair: Do not mark stable until external FTO, clean-room, security audit, and red-team reports are approved.
+  - Verification: `.venv/bin/python - <<'PY'
+from pathlib import Path
+from js.echo.ledger.release_gates import verify_release_readiness
+print(verify_release_readiness(Path('.')))
+PY`

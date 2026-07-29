@@ -1,0 +1,16 @@
+# Echo runtime and security-sensitive boundaries require explicit review.
+
+/js/echo/ @JiangSkirk
+/js/agent/ @JiangSkirk
+/js/security/ @JiangSkirk
+/js/tools/ @JiangSkirk
+/js/web/ @JiangSkirk
+/js_work/ @JiangSkirk
+/tests/echo/ @JiangSkirk
+/tests/work/ @JiangSkirk
+/docs/echo/ @JiangSkirk
+/docs/security/ @JiangSkirk
+/ORIGIN_LEDGER.md @JiangSkirk
+/THIRD_PARTY_NOTICES.md @JiangSkirk
+/docs/adr/ @JiangSkirk
+/docs/rfc/ @JiangSkirk
