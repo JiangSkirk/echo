@@ -455,7 +455,7 @@ def test_no_drift_when_consistent():
 def test_dynamic_recent_turns():
     """_compute_recent_turns should vary based on model context window."""
     # We test the logic directly by mocking the agent settings
-    from js.agent.runner import TurnExecutor
+    from js.echo.turn_loop import EchoTurnLoop
 
     class FakeMemoryConfig:
         capsule_recent_turns = 6
@@ -471,7 +471,7 @@ def test_dynamic_recent_turns():
         settings = type("Settings", (), {"memory": FakeMemoryConfig()})()
         router = FakeRouter()
 
-    executor = TurnExecutor.__new__(TurnExecutor)
+    executor = EchoTurnLoop.__new__(EchoTurnLoop)
     # For a 200k context window, should return at least 8
     assert executor._compute_recent_turns(FakeAgent(), "any_model") >= 8
 

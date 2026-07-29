@@ -130,6 +130,116 @@ class TestDreamSchedulerAutoTrigger:
         # Buffer should be cleared after evolution
         assert len(sched._conversation_buffer) == 0
 
+    @pytest.mark.asyncio
+    async def test_scheduler_preserves_activity_added_during_evolution(self) -> None:
+        """A sixth turn added during success keeps the scheduler pending."""
+        evolution_started = asyncio.Event()
+        allow_evolution_to_finish = asyncio.Event()
+
+        class FakeAgent:
+            async def _run_evolution_cycle(
+                self, conversation_buffer: list[dict[str, str]]
+            ) -> dict:
+                evolution_started.set()
+                await allow_evolution_to_finish.wait()
+                return {"ok": True}
+
+        sched = DreamScheduler(FakeAgent())
+        for index in range(5):
+            sched.notify_activity(f"user-{index}", f"assistant-{index}")
+
+        evolution_task = asyncio.create_task(sched._run_once())
+        await evolution_started.wait()
+        sched.notify_activity("user-new", "assistant-new")
+        new_activity_at = sched._last_activity
+        allow_evolution_to_finish.set()
+        await evolution_task
+
+        assert sched._conversation_buffer == [
+            {
+                "user": "user-new",
+                "assistant": "assistant-new",
+                "owner_key_hash": None,
+                "session_id": "",
+            }
+        ]
+        assert sched._pending is True
+        assert sched._pending_since == new_activity_at
+
+    @pytest.mark.asyncio
+    async def test_scheduler_preserves_activity_added_during_failure(self) -> None:
+        """A sixth turn added during an ordinary failure keeps the scheduler pending."""
+        evolution_started = asyncio.Event()
+        allow_evolution_to_fail = asyncio.Event()
+
+        class FakeAgent:
+            async def _run_evolution_cycle(
+                self, conversation_buffer: list[dict[str, str]]
+            ) -> dict:
+                evolution_started.set()
+                await allow_evolution_to_fail.wait()
+                raise RuntimeError("evolution failed")
+
+        sched = DreamScheduler(FakeAgent())
+        for index in range(5):
+            sched.notify_activity(f"user-{index}", f"assistant-{index}")
+
+        evolution_task = asyncio.create_task(sched._run_once())
+        await evolution_started.wait()
+        sched.notify_activity("user-new", "assistant-new")
+        new_activity_at = sched._last_activity
+        allow_evolution_to_fail.set()
+        await evolution_task
+
+        assert sched._conversation_buffer == [
+            {
+                "user": "user-new",
+                "assistant": "assistant-new",
+                "owner_key_hash": None,
+                "session_id": "",
+            }
+        ]
+        assert sched._pending is True
+        assert sched._pending_since == new_activity_at
+
+    @pytest.mark.asyncio
+    async def test_scheduler_preserves_activity_added_during_cancellation(self) -> None:
+        """Cancellation removes only the snapshot and propagates after preserving new work."""
+        evolution_started = asyncio.Event()
+        evolution_never_finishes = asyncio.Event()
+
+        class FakeAgent:
+            async def _run_evolution_cycle(
+                self, conversation_buffer: list[dict[str, str]]
+            ) -> dict:
+                evolution_started.set()
+                await evolution_never_finishes.wait()
+                return {"ok": True}
+
+        sched = DreamScheduler(FakeAgent())
+        for index in range(5):
+            sched.notify_activity(f"user-{index}", f"assistant-{index}")
+
+        evolution_task = asyncio.create_task(sched._run_once())
+        await evolution_started.wait()
+        sched.notify_activity("user-new", "assistant-new")
+        new_activity_at = sched._last_activity
+        evolution_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await evolution_task
+
+        assert sched._conversation_buffer == [
+            {
+                "user": "user-new",
+                "assistant": "assistant-new",
+                "owner_key_hash": None,
+                "session_id": "",
+            }
+        ]
+        assert sched._pending is True
+        assert sched._pending_since == new_activity_at
+
     def test_snapshot_buffer_is_readonly_copy(self) -> None:
         """snapshot_buffer returns the recent turns without consuming them."""
         class FakeAgent:

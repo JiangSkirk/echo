@@ -78,9 +78,9 @@ class BuiltinMemoryProvider(MemoryProvider):
 
     async def prefetch(self, query: str) -> list[MemoryQueryResult]:
         """Search episodic + semantic memory for relevant context."""
-        from js.web.auth import _session_owner_hash
+        from js.echo.turn_context import current_owner_key_hash
 
-        owner = _session_owner_hash.get(None)
+        owner = current_owner_key_hash()
         results: list[MemoryQueryResult] = []
         try:
             # Semantic search
@@ -124,9 +124,9 @@ class BuiltinMemoryProvider(MemoryProvider):
         # Delegate to the existing store methods
         import asyncio
 
-        from js.web.auth import _session_owner_hash
+        from js.echo.turn_context import current_owner_key_hash
 
-        owner = _session_owner_hash.get(None)
+        owner = current_owner_key_hash()
         await asyncio.to_thread(
             self._store.store_messages,
             session_id,

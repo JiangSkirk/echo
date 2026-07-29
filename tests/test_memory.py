@@ -61,3 +61,25 @@ class TestMemoryStore:
         # FTS operator characters in the query must not raise.
         for q in ('a:b', 'AND', '"quoted"', 'd-e', '(c)'):
             assert isinstance(store.search(q), list)
+
+    def test_profile_files_are_owner_scoped_and_never_fall_back_to_shared(
+        self, store: MemoryStore
+    ) -> None:
+        store.write_memory_file("user", "shared local profile")
+        store.write_memory_file("user", "alice private profile", owner_key_hash="owner-alice")
+
+        assert store.read_memory_file("user") == "shared local profile"
+        assert (
+            store.read_memory_file("user", owner_key_hash="owner-alice")
+            == "alice private profile"
+        )
+        assert store.read_memory_file("user", owner_key_hash="owner-bob") == ""
+
+        alice_context = store.get_context_string(
+            owner_key_hash="owner-alice", max_chars=4000
+        )
+        bob_context = store.get_context_string(owner_key_hash="owner-bob", max_chars=4000)
+        assert "alice private profile" in alice_context
+        assert "shared local profile" not in alice_context
+        assert "alice private profile" not in bob_context
+        assert "shared local profile" not in bob_context

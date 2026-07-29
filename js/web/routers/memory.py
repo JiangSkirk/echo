@@ -7,6 +7,8 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
+from js.agent.tool_executor import CONTROL_MEMORY_MUTATE_TOOL
+from js.echo.effect_interpreter import ToolEffect
 from js.utils.log import get_logger
 from js.web.auth import (
     memory_owner,
@@ -14,11 +16,76 @@ from js.web.auth import (
     require_admin_write,
     require_auth_dep,
     require_user_write,
+    runtime_owner,
 )
-from js.web.deps import get_agent
+from js.web.deps import get_agent, optional_query_session_id, require_path_session_id
+from js.web.runtime_context import web_channel
 
 logger = get_logger("js.web.memory")
 router = APIRouter(tags=["memory"])
+
+
+async def _mutate_memory(
+    action: str,
+    payload: dict[str, Any],
+    auth: dict[str, Any],
+    *,
+    session_id: str = "",
+) -> dict[str, Any]:
+    """Execute a private memory mutation through an opaque Echo payload."""
+    agent = get_agent()
+    owner = runtime_owner(auth)
+    runtime = agent.echo_runtime
+    context = runtime.build_context(
+        channel=web_channel(agent.settings, f"memory_{action}"),
+        owner_key_hash=owner,
+        session_id=session_id,
+        role=str(auth.get("role") or "user"),
+        capabilities=(CONTROL_MEMORY_MUTATE_TOOL,),
+    )
+    payload_ref = agent.stage_memory_mutation_payload(
+        owner,
+        payload,
+        product_id=context.product_id,
+        session_id=context.session_id,
+    )
+    if not isinstance(payload_ref, str) or not payload_ref:
+        raise HTTPException(503, "Memory mutation admission is unavailable")
+    try:
+        _message, result = await runtime.execute_tool_effect(
+            ToolEffect.from_arguments(
+                CONTROL_MEMORY_MUTATE_TOOL,
+                {"action": action, "payload_ref": payload_ref},
+                user_input=f"Apply owner-bound memory action: {action}",
+                allowed_tools=(CONTROL_MEMORY_MUTATE_TOOL,),
+            ),
+            context,
+        )
+    finally:
+        agent.discard_memory_mutation_payload(
+            payload_ref,
+            owner,
+            product_id=context.product_id,
+            session_id=context.session_id,
+        )
+
+    if not result.success:
+        status_code = result.metadata.get("status_code", 500)
+        if not isinstance(status_code, int) or not 400 <= status_code <= 599:
+            status_code = 500
+        raise HTTPException(status_code, result.error or "Memory update failed")
+    result_ref = result.metadata.get("result_ref")
+    if not isinstance(result_ref, str) or not result_ref:
+        raise HTTPException(500, "Memory result handoff failed")
+    response = agent.take_memory_mutation_result(
+        result_ref,
+        owner,
+        product_id=context.product_id,
+        session_id=context.session_id,
+    )
+    if not isinstance(response, dict):
+        raise HTTPException(500, "Memory result handoff failed")
+    return response
 
 
 @router.get("/api/memory")
@@ -30,7 +97,7 @@ async def memory(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, 
 
 @router.get("/api/memory/enhanced")
 async def memory_enhanced(
-    session_id: str | None = None,
+    session_id: str | None = Depends(optional_query_session_id),
     auth: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     agent = get_agent()
@@ -53,7 +120,7 @@ async def memory_enhanced(
         "dream_logs": agent.memory.get_dream_logs(limit=10),
         "semantic_memories": agent.memory.get_all_semantic(limit=20, owner_key_hash=owner),
         "working_memories": agent.memory.get_all_working(limit=20, owner_key_hash=owner),
-        "memory_files": agent.memory.list_memory_files(),
+        "memory_files": agent.memory.list_memory_files(owner_key_hash=owner),
     }
     if session_id:
         result["session_working"] = agent.memory.get_working(
@@ -65,7 +132,7 @@ async def memory_enhanced(
 @router.get("/api/memory/files")
 async def memory_file_list(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
     agent = get_agent()
-    return {"files": agent.memory.list_memory_files()}
+    return {"files": agent.memory.list_memory_files(owner_key_hash=memory_owner(auth))}
 
 
 @router.get("/api/memory/files/{name}")
@@ -74,7 +141,7 @@ async def memory_file_get(
 ) -> dict[str, Any]:
     agent = get_agent()
     try:
-        content = agent.memory.read_memory_file(name)
+        content = agent.memory.read_memory_file(name, owner_key_hash=memory_owner(auth))
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     return {"name": name, "content": content}
@@ -84,83 +151,77 @@ async def memory_file_get(
 async def memory_file_put(
     name: str, body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin_write)
 ) -> dict[str, Any]:
-    agent = get_agent()
-    try:
-        await asyncio.to_thread(agent.memory.write_memory_file, name, body.get("content", ""))
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-    return {"name": name, "saved": True}
+    content = body.get("content", "")
+    if not isinstance(content, str):
+        raise HTTPException(400, "content must be a string")
+    return await _mutate_memory(
+        "file_put",
+        {"name": name, "content": content},
+        auth,
+    )
 
 
 @router.post("/api/memory/semantic")
 async def memory_semantic_post(
     body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin_write)
 ) -> dict[str, Any]:
-    agent = get_agent()
     key = (body.get("key") or "").strip()
     value = (body.get("value") or "").strip()
     category = (body.get("category") or "fact").strip()
     source = (body.get("source") or "user").strip()
     if not key or not value:
         raise HTTPException(400, "key and value are required")
-    result = await asyncio.to_thread(
-        agent.memory.store_semantic,
-        key=key,
-        value=value,
-        category=category,
-        source=source,
-        memory_path=body.get("memory_path"),
-        entity_type=body.get("entity_type"),
-        entity_name=body.get("entity_name"),
-        parent_id=body.get("parent_id"),
-        relation_type=body.get("relation_type"),
-        owner_key_hash=memory_owner(auth),
-        evidence=(body.get("evidence") or ""),
+    return await _mutate_memory(
+        "semantic_create",
+        {
+            "key": key,
+            "value": value,
+            "category": category,
+            "source": source,
+            "memory_path": body.get("memory_path"),
+            "entity_type": body.get("entity_type"),
+            "entity_name": body.get("entity_name"),
+            "parent_id": body.get("parent_id"),
+            "relation_type": body.get("relation_type"),
+            "evidence": body.get("evidence") or "",
+        },
+        auth,
     )
-    return {"success": True, "key": key, **result}
 
 
 @router.delete("/api/memory/semantic/{memory_id}")
 async def memory_semantic_delete(
     memory_id: int, auth: dict[str, Any] = Depends(require_admin_write)
 ) -> dict[str, Any]:
-    agent = get_agent()
-    ok = await asyncio.to_thread(
-        agent.memory.delete_semantic,
-        memory_id,
-        source="user",
-        owner_key_hash=memory_owner(auth),
+    return await _mutate_memory(
+        "semantic_delete",
+        {"memory_id": memory_id},
+        auth,
     )
-    if not ok:
-        raise HTTPException(404, "memory not found")
-    return {"success": True}
 
 
 @router.put("/api/memory/semantic/{memory_id}")
 async def memory_semantic_put(
     memory_id: int, body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin_write)
 ) -> dict[str, Any]:
-    agent = get_agent()
     value = (body.get("value") or "").strip()
     category = body.get("category")
     if not value:
         raise HTTPException(400, "value is required")
-    ok = await asyncio.to_thread(
-        agent.memory.update_semantic,
-        memory_id,
-        value,
-        category=category,
-        source="user",
-        memory_path=body.get("memory_path"),
-        entity_type=body.get("entity_type"),
-        entity_name=body.get("entity_name"),
-        parent_id=body.get("parent_id"),
-        relation_type=body.get("relation_type"),
-        owner_key_hash=memory_owner(auth),
+    return await _mutate_memory(
+        "semantic_update",
+        {
+            "memory_id": memory_id,
+            "value": value,
+            "category": category,
+            "memory_path": body.get("memory_path"),
+            "entity_type": body.get("entity_type"),
+            "entity_name": body.get("entity_name"),
+            "parent_id": body.get("parent_id"),
+            "relation_type": body.get("relation_type"),
+        },
+        auth,
     )
-    if not ok:
-        raise HTTPException(404, "memory not found")
-    return {"success": True}
 
 
 @router.get("/api/memory/search")
@@ -240,16 +301,11 @@ async def memory_semantic_verify(
     auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Mark a memory as verified (updates last_verified_at)."""
-    agent = get_agent()
-    ok = await asyncio.to_thread(
-        agent.memory.verify_semantic,
-        memory_id,
-        "user",
-        owner_key_hash=memory_owner(auth),
+    return await _mutate_memory(
+        "semantic_verify",
+        {"memory_id": memory_id},
+        auth,
     )
-    if not ok:
-        raise HTTPException(404, "memory not found")
-    return {"success": True, "verified": True}
 
 
 # ── Proposed changes (review queue) ──
@@ -280,17 +336,12 @@ async def memory_proposal_approve(
     An optional JSON body acts as edit-before-confirm overrides, e.g.
     ``{"value": "...", "memory_path": "/people/family", "category": "fact"}``.
     """
-    agent = get_agent()
     overrides = body if isinstance(body, dict) and body else None
-    result = await asyncio.to_thread(
-        agent.memory.approve_proposal,
-        proposal_id,
-        owner_key_hash=memory_owner(auth),
-        overrides=overrides,
+    return await _mutate_memory(
+        "proposal_approve",
+        {"proposal_id": proposal_id, "overrides": overrides},
+        auth,
     )
-    if not result.get("success"):
-        raise HTTPException(404, result.get("error", "proposal not found"))
-    return result
 
 
 @router.post("/api/memory/proposals/{proposal_id}/reject")
@@ -299,13 +350,11 @@ async def memory_proposal_reject(
     auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Reject a pending proposal."""
-    agent = get_agent()
-    result = await asyncio.to_thread(
-        agent.memory.reject_proposal, proposal_id, owner_key_hash=memory_owner(auth)
+    return await _mutate_memory(
+        "proposal_reject",
+        {"proposal_id": proposal_id},
+        auth,
     )
-    if not result.get("success"):
-        raise HTTPException(404, result.get("error", "proposal not found"))
-    return result
 
 
 @router.post("/api/memory/organize")
@@ -318,22 +367,7 @@ async def memory_organize(
     consuming them) and runs structured extraction → proposal queue. Returns
     counts so the UI can show progress (turns analyzed, staged, auto-applied).
     """
-    agent = get_agent()
-    ds = getattr(agent, "_dream_scheduler", None)
-    buffer = ds.snapshot_buffer() if ds is not None and hasattr(ds, "snapshot_buffer") else []
-    if not buffer:
-        return {
-            "success": True,
-            "turns": 0,
-            "proposed": 0,
-            "auto_applied": 0,
-            "pending": 0,
-            "skipped": "no recent conversation",
-        }
-    if not hasattr(agent, "_extract_memories"):
-        raise HTTPException(501, "Agent does not support memory extraction.")
-    report = await agent._extract_memories(buffer)
-    return {"success": True, "turns": len(buffer), **report}
+    return await _mutate_memory("organize", {}, auth)
 
 
 # ── Block operations (move / merge) ──
@@ -349,11 +383,11 @@ async def memory_block_move(
     dst = (body.get("dst") or "").strip()
     if not src or not dst:
         raise HTTPException(400, "src and dst are required")
-    agent = get_agent()
-    moved = await asyncio.to_thread(
-        agent.memory.move_block, src, dst, owner_key_hash=memory_owner(auth)
+    return await _mutate_memory(
+        "block_move",
+        {"src": src, "dst": dst},
+        auth,
     )
-    return {"success": True, "moved": moved, "src": src, "dst": dst}
 
 
 @router.post("/api/memory/blocks/merge")
@@ -366,11 +400,11 @@ async def memory_block_merge(
     dst = (body.get("dst") or "").strip()
     if not src or not dst:
         raise HTTPException(400, "src and dst are required")
-    agent = get_agent()
-    moved = await asyncio.to_thread(
-        agent.memory.merge_blocks, src, dst, owner_key_hash=memory_owner(auth)
+    return await _mutate_memory(
+        "block_merge",
+        {"src": src, "dst": dst},
+        auth,
     )
-    return {"success": True, "merged": moved, "src": src, "dst": dst}
 
 
 # ── Audit & Conflicts ──
@@ -472,52 +506,7 @@ async def memory_embedder_recover(
     auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Manually trigger embedder recovery probe."""
-    agent = get_agent()
-    # Attempt 1: rebuild from scratch
-    try:
-        new_embedder = await asyncio.to_thread(agent._setup_embedder)
-        from js.memory.embeddings import KeywordEmbedder
-
-        if not isinstance(new_embedder, KeywordEmbedder):
-            agent.memory.replace_embedder(new_embedder)
-            health = new_embedder.health()
-            return {
-                "success": True,
-                "provider": health.provider,
-                "active": health.active,
-                "fallback_provider": health.fallback_provider,
-                "failure_count": health.failure_count,
-                "recovered": True,
-                "method": "rebuild",
-            }
-    except Exception:
-        logger.warning("Operation failed", exc_info=True)
-
-    # Attempt 2: probe the existing embedder.
-    embedder = agent.memory.embedder
-    if hasattr(embedder, "force_recover"):
-        ok = embedder.force_recover()
-        health = embedder.health()
-        return {
-            "success": ok,
-            "provider": health.provider,
-            "active": health.active,
-            "fallback_provider": health.fallback_provider,
-            "failure_count": health.failure_count,
-            "recovered": ok,
-            "method": "force_recover",
-        }
-
-    health = embedder.health()
-    return {
-        "success": False,
-        "provider": health.provider,
-        "active": health.active,
-        "fallback_provider": health.fallback_provider,
-        "failure_count": health.failure_count,
-        "recovered": False,
-        "method": "none",
-    }
+    return await _mutate_memory("embedder_recover", {}, auth)
 
 
 # ------------------------------------------------------------------
@@ -527,7 +516,7 @@ async def memory_embedder_recover(
 
 @router.get("/api/sessions/{session_id}/capsule")
 async def get_session_capsule(
-    session_id: str,
+    session_id: str = Depends(require_path_session_id),
     auth: dict[str, Any] = Depends(require_auth_dep),
 ) -> dict[str, Any]:
     """Get the session capsule for the current session (owner-isolated).
@@ -569,7 +558,7 @@ async def get_session_capsule(
 
 @router.post("/api/sessions/{session_id}/capsule/refresh")
 async def refresh_session_capsule(
-    session_id: str,
+    session_id: str = Depends(require_path_session_id),
     auth: dict[str, Any] = Depends(require_user_write),
 ) -> dict[str, Any]:
     """Regenerate the session capsule from current session messages.
@@ -578,6 +567,7 @@ async def refresh_session_capsule(
     """
     agent = get_agent()
     owner = memory_owner(auth)
+    owner_key_hash = owner or "local-user"
     try:
         messages = await asyncio.to_thread(
             agent.memory.get_session_messages,
@@ -598,7 +588,15 @@ async def refresh_session_capsule(
                 "refreshed": False,
                 "reason": "no messages",
             }
-        capsule_text = await agent._summarize_context(chat_messages)
+        runtime_context = agent.echo_runtime.build_context(
+            channel="session_capsule_refresh",
+            owner_key_hash=owner_key_hash,
+            session_id=session_id,
+        )
+        capsule_text = await agent._summarize_context(
+            chat_messages,
+            runtime_context=runtime_context,
+        )
         if not capsule_text:
             return {
                 "session_id": session_id,
@@ -606,37 +604,38 @@ async def refresh_session_capsule(
                 "refreshed": False,
                 "reason": "empty summary",
             }
-        meta = await asyncio.to_thread(
-            agent.memory.store_capsule,
+        stored = await _mutate_memory(
+            "capsule_store",
+            {
+                "session_id": session_id,
+                "capsule_text": capsule_text,
+                "refresh_reason": "manual_refresh",
+            },
+            auth,
             session_id=session_id,
-            capsule_text=capsule_text,
-            owner_key_hash=owner,
-            refresh_reason="manual_refresh",
         )
         return {
             "session_id": session_id,
             "status": "success",
             "refreshed": True,
             "capsule_text": capsule_text,
-            "metadata": {k: v for k, v in meta.items() if k != "capsule_text"},
+            "metadata": stored.get("metadata", {}),
         }
     except Exception as e:
         logger.warning("Failed to refresh session capsule", exc_info=True)
         status = 503 if "No models configured" in str(e) else 500
-        raise HTTPException(status, f"Failed to refresh capsule: {e}") from e
+        raise HTTPException(status, "Failed to refresh session capsule") from e
 
 
 @router.delete("/api/sessions/{session_id}/capsule")
 async def delete_session_capsule(
-    session_id: str,
+    session_id: str = Depends(require_path_session_id),
     auth: dict[str, Any] = Depends(require_user_write),
 ) -> dict[str, Any]:
     """Clear the session capsule for the current session."""
-    agent = get_agent()
-    owner = memory_owner(auth)
-    deleted = await asyncio.to_thread(
-        agent.memory.delete_capsule,
+    return await _mutate_memory(
+        "capsule_delete",
+        {"session_id": session_id},
+        auth,
         session_id=session_id,
-        owner_key_hash=owner,
     )
-    return {"session_id": session_id, "deleted": deleted}

@@ -7,11 +7,17 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from js.agent.finalizer import FinalizerMixin
-from js.agent.runner import TurnExecutor
 from js.agent.state import AgentState
+from js.echo.turn_context import (
+    RuntimeContext,
+    reset_current_owner_key_hash,
+    reset_runtime_context,
+    set_current_owner_key_hash,
+    set_runtime_context,
+)
+from js.echo.turn_loop import EchoTurnLoop
 from js.models.providers import ChatMessage, ChatResponse
 from js.security.secrets import SecretManager
-from js.web.auth import _session_owner_hash
 
 _SECRET = "sk-test12345678901234567890"
 
@@ -58,11 +64,11 @@ async def test_store_messages_are_redacted(tmp_path):
     state.status = "completed"
     state.total_tokens = {"input": 10, "output": 10}
 
-    token = _session_owner_hash.set("owner_a")
+    token = set_current_owner_key_hash("owner_a")
     try:
         await finalizer._finalize_run(state, "s1", "r1", f"my key is {_SECRET}", 0)
     finally:
-        _session_owner_hash.reset(token)
+        reset_current_owner_key_hash(token)
 
     stored = finalizer.memory.store_messages.call_args[0][1]
     assert stored[0]["role"] == "user"
@@ -104,8 +110,11 @@ async def test_capsule_text_is_redacted(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_streaming_callback_receives_redacted_tokens():
+async def test_streaming_callback_receives_redacted_tokens(tmp_path):
+    from js.config import EchoBudgetConfig
+
     agent = MagicMock()
+    agent.settings.echo_budget = EchoBudgetConfig()
     agent.secrets = SecretManager.__new__(SecretManager)
     agent.secrets.PATTERNS = SecretManager.PATTERNS
     agent.secrets.detect_and_redact = SecretManager.detect_and_redact.__get__(
@@ -117,9 +126,9 @@ async def test_streaming_callback_receives_redacted_tokens():
     async def fake_stream(*args, **kwargs):
         yield f"token {_SECRET}"
 
-    # PR-4.3: TurnExecutor now consumes chat_stream_events(). The structured
+    # PR-4.3: EchoTurnLoop now consumes chat_stream_events(). The structured
     # equivalent of yielding "token <SECRET>" is a single text_delta event,
-    # which the executor then redacts and forwards to stream_callback.
+    # which the loop then redacts and forwards to stream_callback.
     from js.models.stream_events import StreamEvent
 
     async def fake_stream_events(*args, **kwargs):
@@ -135,12 +144,19 @@ async def test_streaming_callback_receives_redacted_tokens():
     agent.router = MagicMock()
     agent.router.select_model = AsyncMock(return_value=decision)
 
+    class _EchoRuntime:
+        async def execute_model_stream_effect(self, *_args, **_kwargs):
+            async for event in fake_stream_events():
+                yield event
+
+    agent.echo_runtime = _EchoRuntime()
+
     received: list[str] = []
 
     async def callback(token: str) -> None:
         received.append(token)
 
-    executor = TurnExecutor(
+    executor = EchoTurnLoop(
         agent=agent,
         user_input="hi",
         session_id="s1",
@@ -152,7 +168,23 @@ async def test_streaming_callback_receives_redacted_tokens():
     )
     executor.state = AgentState(session_id="s1", run_id="r1")
 
-    response = await executor._get_response([], None)
+    runtime_context = RuntimeContext(
+        product_id="js-agent",
+        channel="test",
+        owner_key_hash="owner-a",
+        session_id="s1",
+        run_id="r1",
+        role="local-user",
+        profile="default",
+        capabilities=(),
+        workspace=tmp_path / "workspace",
+        state_dir=tmp_path / "state",
+    )
+    token = set_runtime_context(runtime_context)
+    try:
+        response = await executor._get_response([], None)
+    finally:
+        reset_runtime_context(token)
     assert isinstance(response, ChatResponse)
     assert _SECRET not in response.content
     assert "[REDACTED" in response.content

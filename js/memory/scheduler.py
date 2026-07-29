@@ -83,10 +83,12 @@ class DreamScheduler:
             if exc is not None:
                 self.logger.error("DreamScheduler loop crashed: %s", exc, exc_info=True)
 
-    async def force_consolidation(self) -> None:
+    async def force_consolidation(self, *, owner_key_hash: str | None = None) -> None:
         """Immediately run an evolution cycle, bypassing idle wait.
 
         Used by the daemon's cron dream task and manual triggers.
+        When ``owner_key_hash`` is provided, consolidation is limited to that
+        owner's memory partition; otherwise all owners are processed.
         """
         self._last_activity = 0.0
         self._pending = True
@@ -102,14 +104,13 @@ class DreamScheduler:
     async def _run_once(self) -> None:
         """Execute a single evolution cycle."""
         buffer_copy = list(self._conversation_buffer)
+        snapshot_ids = {id(item) for item in buffer_copy}
         try:
             await asyncio.wait_for(
                 self.agent._run_evolution_cycle(conversation_buffer=buffer_copy),
                 timeout=120.0,
             )
         except asyncio.CancelledError:
-            self._pending = False
-            self._conversation_buffer.clear()
             raise
         except Exception as e:
             self.logger.warning("Evolution cycle failed: %s", e, exc_info=True)
@@ -119,7 +120,14 @@ class DreamScheduler:
             # items; if it failed we still drop them to avoid re-processing
             # stale conversation fragments in the next cycle.
             self._pending = False
-            self._conversation_buffer = self._conversation_buffer[len(buffer_copy):]
+            self._conversation_buffer = [
+                item
+                for item in self._conversation_buffer
+                if id(item) not in snapshot_ids
+            ]
+            if self._conversation_buffer:
+                self._pending = True
+                self._pending_since = self._last_activity
 
     async def _loop(self) -> None:
         """Main scheduling loop — checks idle time and triggers evolution."""

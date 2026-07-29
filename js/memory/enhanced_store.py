@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
 import json
+import os
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -23,6 +25,16 @@ logger = get_logger("js.memory.enhanced")
 # reliably isolate rows.  It is treated as "local / legacy" and must never be
 # used as a fallback for authenticated API-key owners.
 _LEGACY_LOCAL_OWNER = "__legacy_local__"
+_DEFAULT_MAX_SESSIONS_PER_OWNER = 1_000
+_DEFAULT_MAX_SESSIONS_GLOBAL = 10_000
+_DEFAULT_DREAM_LOG_RETENTION_DAYS = 90
+_DEFAULT_MAX_DREAM_LOGS = 1_000
+_DEFAULT_MAX_DREAM_LOGS_GLOBAL = 10_000
+_DEFAULT_MAX_DREAM_DIARY_BYTES = 256 * 1024
+_DEFAULT_PROPOSAL_RETENTION_DAYS = 90
+_DEFAULT_MAX_PROPOSALS_PER_OWNER = 1_000
+_DEFAULT_MAX_PROPOSALS_GLOBAL = 10_000
+_TERMINAL_PROPOSAL_STATUSES: frozenset[str] = frozenset({"approved", "rejected", "auto_applied"})
 
 
 @dataclass
@@ -73,9 +85,6 @@ class EnhancedMemoryStore:
         self.db_path = state_dir / "memory_enhanced.db"
         self.embedder = embedder or KeywordEmbedder()
         self._init_db()
-        from cachetools import TTLCache
-
-        self._working_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=1000, ttl=3600)
         self._last_dream: float = 0.0
 
     def close(self) -> None:
@@ -1136,6 +1145,7 @@ class EnhancedMemoryStore:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS memory_links (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner_key_hash TEXT,
                     from_id INTEGER,
                     to_id INTEGER,
                     from_table TEXT,
@@ -1150,11 +1160,35 @@ class EnhancedMemoryStore:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS dream_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner_key_hash TEXT NOT NULL DEFAULT '__legacy_local__',
                     phase TEXT,
                     summary TEXT,
                     changes TEXT,
                     created_at REAL NOT NULL
                 )
+            """)
+            # Dream logs created before owner isolation cannot be attributed
+            # safely. Keep them in the local legacy partition instead of
+            # making authenticated owners able to read them.
+            dream_log_cols = {
+                row[1] for row in conn.execute("PRAGMA table_info(dream_logs)").fetchall()
+            }
+            if "owner_key_hash" not in dream_log_cols:
+                conn.execute(
+                    "ALTER TABLE dream_logs "
+                    "ADD COLUMN owner_key_hash TEXT NOT NULL DEFAULT '__legacy_local__'"
+                )
+            conn.execute(
+                """
+                UPDATE dream_logs
+                SET owner_key_hash = ?
+                WHERE owner_key_hash IS NULL OR owner_key_hash = ''
+                """,
+                (_LEGACY_LOCAL_OWNER,),
+            )
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_dream_logs_owner_created
+                ON dream_logs(owner_key_hash, created_at DESC)
             """)
 
             # Session messages: full conversation history per session
@@ -1268,6 +1302,84 @@ class EnhancedMemoryStore:
             for col, dtype in block_migrations:
                 with contextlib.suppress(sqlite3.OperationalError):
                     conn.execute(f"ALTER TABLE semantic_memories ADD COLUMN {col} {dtype}")
+
+            # Legacy REM links predate owner isolation and had no uniqueness
+            # constraint. Backfill their owner from the source memory, remove
+            # unsafe cross-owner edges, then collapse duplicates before adding
+            # the expression index (NULL is the legacy/local owner partition).
+            memory_link_cols = {
+                row[1] for row in conn.execute("PRAGMA table_info(memory_links)").fetchall()
+            }
+            if "owner_key_hash" not in memory_link_cols:
+                conn.execute("ALTER TABLE memory_links ADD COLUMN owner_key_hash TEXT")
+            conn.execute(
+                """
+                UPDATE memory_links
+                SET owner_key_hash = (
+                    SELECT source.owner_key_hash
+                    FROM semantic_memories AS source
+                    WHERE source.id = memory_links.from_id
+                )
+                WHERE from_table = 'semantic_memories'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM semantic_memories AS source
+                      WHERE source.id = memory_links.from_id
+                  )
+                """
+            )
+            conn.execute(
+                """
+                DELETE FROM memory_links
+                WHERE from_table = 'semantic_memories'
+                  AND to_table = 'semantic_memories'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM semantic_memories AS source
+                      JOIN semantic_memories AS target
+                        ON target.id = memory_links.to_id
+                      WHERE source.id = memory_links.from_id
+                        AND COALESCE(source.owner_key_hash, '')
+                            <> COALESCE(target.owner_key_hash, '')
+                  )
+                """
+            )
+            conn.execute(
+                """
+                WITH ranked_links AS (
+                    SELECT
+                        id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY
+                                COALESCE(owner_key_hash, ''),
+                                COALESCE(from_table, ''),
+                                COALESCE(from_id, -1),
+                                COALESCE(to_table, ''),
+                                COALESCE(to_id, -1),
+                                COALESCE(link_type, '')
+                            ORDER BY created_at DESC, id DESC
+                        ) AS duplicate_rank
+                    FROM memory_links
+                )
+                DELETE FROM memory_links
+                WHERE id IN (
+                    SELECT id FROM ranked_links WHERE duplicate_rank > 1
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_links_owner_edge
+                ON memory_links(
+                    COALESCE(owner_key_hash, ''),
+                    COALESCE(from_table, ''),
+                    COALESCE(from_id, -1),
+                    COALESCE(to_table, ''),
+                    COALESCE(to_id, -1),
+                    COALESCE(link_type, '')
+                )
+                """
+            )
 
             # Indexes for block-based queries
             conn.execute("""
@@ -1523,18 +1635,6 @@ class EnhancedMemoryStore:
         _start = _time.perf_counter()
         now = _time.time()
         owner = self._session_owner(owner_key_hash)
-        cache_key = f"{owner}:{session_id}:{key}"
-        self._working_cache[cache_key] = {
-            "session_id": session_id,
-            "owner_key_hash": owner,
-            "key": key,
-            "value": value,
-            "category": category,
-            "importance": importance,
-            "created_at": now,
-            "access_count": 0,
-            "last_accessed": now,
-        }
         with db_connection(self.db_path) as conn:
             conn.execute(
                 """
@@ -1895,17 +1995,24 @@ class EnhancedMemoryStore:
             for r in rows
         ]
 
-    def cleanup_empty_sessions(self) -> int:
+    def cleanup_empty_sessions(self, *, owner_key_hash: str | None = None) -> int:
         """Remove episode records for sessions that have no messages.
 
         Owner-scoped: only the partition for a given (session_id, owner) is
-        removed when that owner has no messages left.
+        removed when that owner has no messages left.  When ``owner_key_hash``
+        is provided, only that owner's empty sessions are cleaned up.
         """
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT DISTINCT session_id, owner_key_hash FROM episodes"
-            ).fetchall()
+            if owner_key_hash is not None:
+                rows = conn.execute(
+                    "SELECT DISTINCT session_id, owner_key_hash FROM episodes WHERE owner_key_hash = ?",
+                    (owner_key_hash,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT DISTINCT session_id, owner_key_hash FROM episodes"
+                ).fetchall()
             deleted = 0
             for row in rows:
                 sid = row["session_id"]
@@ -1930,6 +2037,370 @@ class EnhancedMemoryStore:
                     deleted += 1
             conn.commit()
         logger.info(f"Cleaned up {deleted} empty sessions")
+        return deleted
+
+    def maintain_session_bounds(
+        self,
+        max_sessions_per_owner: int = _DEFAULT_MAX_SESSIONS_PER_OWNER,
+        max_sessions_global: int = _DEFAULT_MAX_SESSIONS_GLOBAL,
+        protected_sessions: set[tuple[str | None, str]] | None = None,
+    ) -> int:
+        """Delete oldest complete sessions until owner and global limits are met.
+
+        A session is the owner-isolated ``(owner_key_hash, session_id)`` pair
+        present in any session-scoped table. Its last activity is the newest
+        timestamp found across messages, episodes, working memories, and the
+        session capsule. Per-owner limits are applied before the global hard
+        limit. Protected pairs count toward both limits but are never deleted.
+
+        All four tables are pruned in one write transaction. Any failure rolls
+        back the complete maintenance batch. The return value is the number of
+        owner/session pairs deleted, not the number of rows removed.
+        """
+        if max_sessions_per_owner < 0:
+            raise ValueError("max_sessions_per_owner must be non-negative")
+        if max_sessions_global < 0:
+            raise ValueError("max_sessions_global must be non-negative")
+
+        protected = {
+            (self._session_owner(owner_key_hash), session_id)
+            for owner_key_hash, session_id in protected_sessions or set()
+        }
+
+        with db_connection(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    """
+                    WITH activity_rows AS (
+                        SELECT owner_key_hash, session_id,
+                               MAX(created_at) AS last_activity
+                        FROM session_messages
+                        GROUP BY owner_key_hash, session_id
+                        UNION ALL
+                        SELECT owner_key_hash, session_id,
+                               MAX(created_at) AS last_activity
+                        FROM episodes
+                        GROUP BY owner_key_hash, session_id
+                        UNION ALL
+                        SELECT owner_key_hash, session_id,
+                               MAX(
+                                   CASE
+                                       WHEN last_accessed > created_at THEN last_accessed
+                                       ELSE created_at
+                                   END
+                               ) AS last_activity
+                        FROM working_memories
+                        GROUP BY owner_key_hash, session_id
+                        UNION ALL
+                        SELECT owner_key_hash, session_id,
+                               MAX(
+                                   CASE
+                                       WHEN COALESCE(last_accessed, 0) > updated_at
+                                           THEN last_accessed
+                                       ELSE updated_at
+                                   END
+                               ) AS last_activity
+                        FROM session_capsules
+                        GROUP BY owner_key_hash, session_id
+                    )
+                    SELECT owner_key_hash, session_id,
+                           MAX(last_activity) AS last_activity
+                    FROM activity_rows
+                    GROUP BY owner_key_hash, session_id
+                    ORDER BY last_activity ASC, owner_key_hash ASC, session_id ASC
+                    """
+                ).fetchall()
+
+                sessions = [
+                    (
+                        str(row["owner_key_hash"]),
+                        str(row["session_id"]),
+                        float(row["last_activity"]),
+                    )
+                    for row in rows
+                ]
+                sessions_by_owner: dict[str, list[tuple[str, str, float]]] = {}
+                for session in sessions:
+                    sessions_by_owner.setdefault(session[0], []).append(session)
+
+                delete_keys: set[tuple[str, str]] = set()
+                for owner_sessions in sessions_by_owner.values():
+                    excess = max(0, len(owner_sessions) - max_sessions_per_owner)
+                    for owner, session_id, _last_activity in owner_sessions:
+                        key = (owner, session_id)
+                        if excess == 0:
+                            break
+                        if key in protected:
+                            continue
+                        delete_keys.add(key)
+                        excess -= 1
+
+                remaining = [
+                    session for session in sessions if (session[0], session[1]) not in delete_keys
+                ]
+                global_excess = max(0, len(remaining) - max_sessions_global)
+                for owner, session_id, _last_activity in remaining:
+                    key = (owner, session_id)
+                    if global_excess == 0:
+                        break
+                    if key in protected:
+                        continue
+                    delete_keys.add(key)
+                    global_excess -= 1
+
+                delete_order = [
+                    (owner, session_id)
+                    for owner, session_id, _last_activity in sessions
+                    if (owner, session_id) in delete_keys
+                ]
+                if delete_order:
+                    conn.execute(
+                        """
+                        CREATE TEMP TABLE session_prune_candidates (
+                            owner_key_hash TEXT NOT NULL,
+                            session_id TEXT NOT NULL,
+                            PRIMARY KEY (owner_key_hash, session_id)
+                        ) WITHOUT ROWID
+                        """
+                    )
+                    conn.executemany(
+                        """
+                        INSERT INTO session_prune_candidates (owner_key_hash, session_id)
+                        VALUES (?, ?)
+                        """,
+                        delete_order,
+                    )
+                    conn.execute(
+                        """
+                        DELETE FROM session_messages
+                        WHERE EXISTS (
+                            SELECT 1
+                            FROM session_prune_candidates candidates
+                            WHERE candidates.owner_key_hash = session_messages.owner_key_hash
+                              AND candidates.session_id = session_messages.session_id
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        DELETE FROM episodes
+                        WHERE EXISTS (
+                            SELECT 1
+                            FROM session_prune_candidates candidates
+                            WHERE candidates.owner_key_hash = episodes.owner_key_hash
+                              AND candidates.session_id = episodes.session_id
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        DELETE FROM working_memories
+                        WHERE EXISTS (
+                            SELECT 1
+                            FROM session_prune_candidates candidates
+                            WHERE candidates.owner_key_hash = working_memories.owner_key_hash
+                              AND candidates.session_id = working_memories.session_id
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        DELETE FROM session_capsules
+                        WHERE EXISTS (
+                            SELECT 1
+                            FROM session_prune_candidates candidates
+                            WHERE candidates.owner_key_hash = session_capsules.owner_key_hash
+                              AND candidates.session_id = session_capsules.session_id
+                        )
+                        """
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+        remaining_count = len(sessions) - len(delete_order)
+        if remaining_count > max_sessions_global:
+            logger.warning(
+                "Protected memory sessions prevented the global limit: %d remain (limit %d)",
+                remaining_count,
+                max_sessions_global,
+            )
+        if delete_order:
+            logger.info("Pruned %d complete memory sessions", len(delete_order))
+        self.maintain_long_term_bounds()
+        return len(delete_order)
+
+    def maintain_long_term_bounds(
+        self,
+        dream_log_retention_days: float = _DEFAULT_DREAM_LOG_RETENTION_DAYS,
+        max_dream_logs: int = _DEFAULT_MAX_DREAM_LOGS,
+        proposal_retention_days: float = _DEFAULT_PROPOSAL_RETENTION_DAYS,
+        max_proposals_per_owner: int = _DEFAULT_MAX_PROPOSALS_PER_OWNER,
+        max_proposals_global: int = _DEFAULT_MAX_PROPOSALS_GLOBAL,
+        max_dream_logs_global: int = _DEFAULT_MAX_DREAM_LOGS_GLOBAL,
+    ) -> int:
+        """Prune long-term records without deleting unresolved proposals.
+
+        Dream logs are bounded per owner and globally. Proposal retention is
+        owner-aware: age and hard-cap deletes are limited to terminal statuses,
+        leaving pending or otherwise unresolved proposals available for review.
+        All changes use one write transaction and the return value is the number
+        of rows deleted.
+        """
+        limits = (
+            ("dream_log_retention_days", dream_log_retention_days),
+            ("max_dream_logs", max_dream_logs),
+            ("proposal_retention_days", proposal_retention_days),
+            ("max_proposals_per_owner", max_proposals_per_owner),
+            ("max_proposals_global", max_proposals_global),
+            ("max_dream_logs_global", max_dream_logs_global),
+        )
+        for name, value in limits:
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative")
+
+        now = time.time()
+        dream_cutoff = now - dream_log_retention_days * 86_400
+        proposal_cutoff = now - proposal_retention_days * 86_400
+        terminal_statuses = tuple(sorted(_TERMINAL_PROPOSAL_STATUSES))
+        status_placeholders = ", ".join("?" for _ in terminal_statuses)
+        global_excess = 0
+
+        with db_connection(self.db_path) as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                deleted = conn.execute(
+                    "DELETE FROM dream_logs WHERE created_at < ?", (dream_cutoff,)
+                ).rowcount
+                dream_log_ids = conn.execute(
+                    """
+                    SELECT id
+                    FROM (
+                        SELECT
+                            id,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY owner_key_hash
+                                ORDER BY created_at DESC, id DESC
+                            ) AS owner_rank
+                        FROM dream_logs
+                    )
+                    WHERE owner_rank > ?
+                    """,
+                    (max_dream_logs,),
+                ).fetchall()
+                if dream_log_ids:
+                    conn.executemany(
+                        "DELETE FROM dream_logs WHERE id = ?",
+                        ((row[0],) for row in dream_log_ids),
+                    )
+                    deleted += len(dream_log_ids)
+                global_dream_log_ids = conn.execute(
+                    """
+                    SELECT id
+                    FROM dream_logs
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT -1 OFFSET ?
+                    """,
+                    (max_dream_logs_global,),
+                ).fetchall()
+                if global_dream_log_ids:
+                    conn.executemany(
+                        "DELETE FROM dream_logs WHERE id = ?",
+                        ((row[0],) for row in global_dream_log_ids),
+                    )
+                    deleted += len(global_dream_log_ids)
+                deleted += conn.execute(
+                    f"""
+                    DELETE FROM proposed_changes
+                    WHERE status IN ({status_placeholders})
+                      AND created_at < ?
+                    """,
+                    (*terminal_statuses, proposal_cutoff),
+                ).rowcount
+
+                owner_counts = conn.execute(
+                    """
+                    SELECT owner_key_hash, COUNT(*) AS proposal_count
+                    FROM proposed_changes
+                    GROUP BY owner_key_hash
+                    """
+                ).fetchall()
+                terminal_rows = conn.execute(
+                    f"""
+                    SELECT id, owner_key_hash
+                    FROM proposed_changes
+                    WHERE status IN ({status_placeholders})
+                    ORDER BY owner_key_hash ASC, created_at ASC, id ASC
+                    """,
+                    terminal_statuses,
+                ).fetchall()
+
+                terminal_by_owner: dict[str | None, list[int]] = {}
+                for proposal_id, owner_key_hash in terminal_rows:
+                    terminal_by_owner.setdefault(owner_key_hash, []).append(proposal_id)
+
+                cap_candidate_ids: set[int] = set()
+                for owner_key_hash, proposal_count in owner_counts:
+                    owner_excess = max(0, proposal_count - max_proposals_per_owner)
+                    cap_candidate_ids.update(
+                        terminal_by_owner.get(owner_key_hash, [])[:owner_excess]
+                    )
+
+                remaining_count = sum(proposal_count for _, proposal_count in owner_counts)
+                remaining_count -= len(cap_candidate_ids)
+                global_excess = max(0, remaining_count - max_proposals_global)
+                if global_excess:
+                    global_candidates = conn.execute(
+                        f"""
+                        SELECT id
+                        FROM proposed_changes
+                        WHERE status IN ({status_placeholders})
+                        ORDER BY created_at ASC, id ASC
+                        """,
+                        terminal_statuses,
+                    ).fetchall()
+                    for (proposal_id,) in global_candidates:
+                        if proposal_id in cap_candidate_ids:
+                            continue
+                        cap_candidate_ids.add(proposal_id)
+                        global_excess -= 1
+                        if global_excess == 0:
+                            break
+
+                if cap_candidate_ids:
+                    conn.execute(
+                        """
+                        CREATE TEMP TABLE proposal_prune_candidates (
+                            id INTEGER PRIMARY KEY
+                        ) WITHOUT ROWID
+                        """
+                    )
+                    conn.executemany(
+                        "INSERT INTO proposal_prune_candidates (id) VALUES (?)",
+                        ((proposal_id,) for proposal_id in cap_candidate_ids),
+                    )
+                    deleted += conn.execute(
+                        """
+                        DELETE FROM proposed_changes
+                        WHERE id IN (SELECT id FROM proposal_prune_candidates)
+                        """
+                    ).rowcount
+
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+        if global_excess:
+            logger.warning(
+                "Unresolved memory proposals prevented the global limit: %d excess remain",
+                global_excess,
+            )
+        if deleted:
+            logger.info("Pruned %d long-term memory maintenance rows", deleted)
         return deleted
 
     # ------------------------------------------------------------------
@@ -3357,11 +3828,13 @@ class EnhancedMemoryStore:
 
     _VALID_MEMORY_FILES = {"identity", "user", "dreams"}
 
-    def _read_memory_file(self, name: str) -> str:
+    def _read_memory_file(self, name: str, owner_key_hash: str | None = None) -> str:
         """Read a memory markdown file from state_dir/memory/."""
         if name not in self._VALID_MEMORY_FILES:
             raise ValueError(f"Invalid memory file name: {name}")
-        path = self.state_dir / "memory" / f"{name}.md"
+        from js.memory.profile_scope import scoped_profile_path
+
+        path = scoped_profile_path(self.state_dir, name, owner_key_hash)
         if not path.exists():
             return ""
         return path.read_text(encoding="utf-8")
@@ -3422,10 +3895,10 @@ class EnhancedMemoryStore:
             return False
 
         # 0. Profile prose (IDENTITY.md / USER.md) — highest priority.
-        identity = self._read_memory_file("identity")
+        identity = self._read_memory_file("identity", owner_key_hash)
         if identity and not self._is_mostly_template(identity):
             _add("## AI Identity\n" + identity[:500] + "\n\n")
-        user_profile = self._read_memory_file("user")
+        user_profile = self._read_memory_file("user", owner_key_hash)
         if user_profile and not self._is_mostly_template(user_profile):
             _add("## About User\n" + user_profile[:500] + "\n\n")
 
@@ -3505,58 +3978,156 @@ class EnhancedMemoryStore:
     # Dreaming: consolidation pipeline
     # ------------------------------------------------------------------
 
-    async def dream(self, llm_summarizer: Any | None = None) -> dict[str, Any]:
-        """Run full dreaming cycle: light -> rem -> deep (owner-scoped)."""
+    async def dream(
+        self,
+        llm_summarizer: Any | None = None,
+        *,
+        propagate_summarizer_errors: bool = False,
+    ) -> dict[str, Any]:
+        """Run full dreaming cycle, optionally surfacing summarizer failures."""
         logger.info("Starting dreaming cycle")
         report: dict[str, Any] = {"phases": []}
 
         # Phase 1: Light Sleep - deduplicate working memories
         light = self._light_sleep()
         report["phases"].append({"phase": "light", "summary": light})
-        self._log_dream("light", light)
+        maintenance_light = "Working-memory deduplication completed."
+        self._log_dream("light", maintenance_light)
 
         # Phase 2: REM Sleep - build associations
         rem = self._rem_sleep()
         report["phases"].append({"phase": "rem", "summary": rem})
-        self._log_dream("rem", rem)
+        maintenance_rem = "Association maintenance completed."
+        self._log_dream("rem", maintenance_rem)
 
         # Phase 3: Deep Sleep - promote to semantic / episode, scoped per owner.
         # Without owner scoping, one user's working memories leak into the
         # shared semantic pool.
         with db_connection(self.db_path) as conn:
-            rows = conn.execute("SELECT DISTINCT owner_key_hash FROM working_memories").fetchall()
-            owners = [r[0] for r in rows]
-        deep_summaries: list[str] = []
+            rows = conn.execute(
+                """
+                SELECT DISTINCT owner_key_hash
+                FROM working_memories
+                WHERE owner_key_hash IS NOT NULL AND owner_key_hash <> ''
+                """
+            ).fetchall()
+            owners = [str(row[0]) for row in rows]
+        diary_maintenance = [
+            {"phase": "light", "summary": maintenance_light},
+            {"phase": "rem", "summary": maintenance_rem},
+        ]
         for owner in owners:
-            deep_summaries.append(await self._deep_sleep(llm_summarizer, owner_key_hash=owner))
-        deep = "\n".join(deep_summaries) if deep_summaries else "No working memories to promote."
-        report["phases"].append({"phase": "deep", "summary": deep})
-        self._log_dream("deep", deep)
+            deep_summary = await self._deep_sleep(
+                llm_summarizer,
+                owner_key_hash=owner,
+                propagate_summarizer_errors=propagate_summarizer_errors,
+            )
+            self._log_dream("deep", deep_summary, owner_key_hash=owner)
+            self._append_dream_diary(
+                {"phases": [*diary_maintenance, {"phase": "deep", "summary": deep_summary}]},
+                owner_key_hash=owner,
+            )
 
-        # Write dream report to DREAMS.md diary
-        self._append_dream_diary(report)
+        # The caller is not an owner-scoped read surface. Do not return one
+        # user's generated insight alongside another owner's result.
+        deep = (
+            f"Processed {len(owners)} owner partitions."
+            if owners
+            else "No working memories to promote."
+        )
+        report["phases"].append({"phase": "deep", "summary": deep})
+        if not owners:
+            self._log_dream("deep", deep)
+            self._append_dream_diary({"phases": [*diary_maintenance, report["phases"][-1]]})
 
         self._last_dream = time.time()
         logger.info("Dreaming cycle complete")
         return report
 
-    def _append_dream_diary(self, report: dict[str, Any]) -> None:
-        """Append the dream cycle report to DREAMS.md."""
-        diary_path = self.state_dir / "memory" / "dreams.md"
+    def _append_dream_diary(
+        self,
+        report: dict[str, Any],
+        owner_key_hash: str | None = None,
+        max_bytes: int = _DEFAULT_MAX_DREAM_DIARY_BYTES,
+    ) -> None:
+        """Atomically retain complete recent owner-scoped dream cycles."""
+        from js.memory.profile_scope import scoped_profile_path
+
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+
+        diary_path = scoped_profile_path(self.state_dir, "dreams", owner_key_hash)
         diary_path.parent.mkdir(parents=True, exist_ok=True)
 
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        lines = [f"\n## Dream Cycle — {timestamp}\n"]
+        lines = [f"## Dream Cycle - {timestamp}"]
         for phase in report.get("phases", []):
             pname = phase.get("phase", "unknown").capitalize()
             summary = phase.get("summary", "")
             lines.append(f"### {pname} Sleep")
             lines.append(summary)
             lines.append("")
+        lines.append("<!-- dreaming:cycle:end -->")
 
-        entry = "\n".join(lines) + "\n"
-        with diary_path.open("a", encoding="utf-8") as f:
-            f.write(entry)
+        entry = "\n".join(lines).rstrip() + "\n\n"
+        if len(entry.encode("utf-8")) > max_bytes:
+            raise ValueError("Dream cycle exceeds diary byte limit")
+
+        existing = diary_path.read_text(encoding="utf-8") if diary_path.exists() else ""
+        preamble, cycles = self._split_dream_diary(existing)
+        cycles.append(entry)
+
+        if preamble and not preamble.endswith("\n"):
+            preamble += "\n"
+        if len((preamble + entry).encode("utf-8")) > max_bytes:
+            preamble = "# Dream Diary\n\n"
+        if len((preamble + entry).encode("utf-8")) > max_bytes:
+            preamble = ""
+
+        selected_reversed: list[str] = []
+        used_bytes = len(preamble.encode("utf-8"))
+        for cycle in reversed(cycles):
+            cycle_bytes = len(cycle.encode("utf-8"))
+            if used_bytes + cycle_bytes > max_bytes:
+                break
+            selected_reversed.append(cycle)
+            used_bytes += cycle_bytes
+
+        content = preamble + "".join(reversed(selected_reversed))
+        self._atomic_write_text(diary_path, content)
+
+    @staticmethod
+    def _split_dream_diary(content: str) -> tuple[str, list[str]]:
+        """Split a diary without slicing inside a generated cycle."""
+        preamble: list[str] = []
+        cycles: list[str] = []
+        current: list[str] | None = None
+        for line in content.splitlines(keepends=True):
+            if line.startswith("## Dream Cycle "):
+                if current is not None:
+                    cycles.append("".join(current))
+                current = [line]
+            elif current is None:
+                preamble.append(line)
+            else:
+                current.append(line)
+        if current is not None:
+            cycles.append("".join(current))
+        return "".join(preamble), cycles
+
+    @staticmethod
+    def _atomic_write_text(path: Path, content: str) -> None:
+        """Replace a UTF-8 text file only after its complete bytes are durable."""
+        temp_path = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+        try:
+            with temp_path.open("xb") as file_handle:
+                file_handle.write(content.encode("utf-8"))
+                file_handle.flush()
+                os.fsync(file_handle.fileno())
+            os.replace(temp_path, path)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                temp_path.unlink()
 
     def _light_sleep(self) -> str:
         """Deduplicate and compress working memories.
@@ -3567,39 +4138,37 @@ class EnhancedMemoryStore:
         other's.  The dedup key is ``(owner_key_hash, key, value)``.
         """
         with db_connection(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT * FROM working_memories ORDER BY created_at DESC"
-            ).fetchall()
-
-        if not rows:
-            return "No working memories to consolidate."
-
-        # Simple dedup: remove entries with identical (owner, key, value),
-        # keep newest.  Mixing owners into the same dedup key would let one
-        # user's write erase another's row with the same text.
-        seen: set[tuple[str, str, str]] = set()
-        duplicates: list[int] = []
-        for r in rows:
-            # working_memories.owner_key_hash is NOT NULL (default
-            # __legacy_local__), so this is always a real string and safe
-            # to use as a tuple element.
-            k = (r["owner_key_hash"], r["key"], r["value"])
-            if k in seen:
-                duplicates.append(r["id"])
-            else:
-                seen.add(k)
-
-        if duplicates:
-            with db_connection(self.db_path) as conn:
-                placeholders = ",".join("?" * len(duplicates))
+            # The old implementation fetched every row into Python and retained
+            # allocator high-water memory as the table grew. Keep the sort and
+            # duplicate selection inside SQLite, with temporary data on disk.
+            conn.execute("PRAGMA temp_store = FILE")
+            conn.execute("BEGIN IMMEDIATE")
+            try:
                 conn.execute(
-                    f"DELETE FROM working_memories WHERE id IN ({placeholders})",
-                    duplicates,
+                    """
+                    WITH ranked AS (
+                        SELECT
+                            id,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY owner_key_hash, key, value
+                                ORDER BY created_at DESC, id DESC
+                            ) AS duplicate_rank
+                        FROM working_memories
+                    )
+                    DELETE FROM working_memories
+                    WHERE id IN (
+                        SELECT id FROM ranked WHERE duplicate_rank > 1
+                    )
+                    """
                 )
+                changed = conn.execute("SELECT changes()").fetchone()
                 conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
-        return f"Removed {len(duplicates)} duplicate working memories."
+        removed = int(changed[0]) if changed is not None else 0
+        return f"Removed {removed} duplicate working memories."
 
     # Common English stop-words to ignore when computing keyword overlap.
     _STOP_WORDS: frozenset[str] = frozenset(
@@ -3721,10 +4290,15 @@ class EnhancedMemoryStore:
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             sem = conn.execute(
-                "SELECT id, key, value FROM semantic_memories ORDER BY created_at DESC LIMIT 100"
+                """
+                SELECT id, key, value, owner_key_hash
+                FROM semantic_memories
+                ORDER BY created_at DESC
+                LIMIT 100
+                """
             ).fetchall()
 
-        links: list[tuple[int, int, str, str, float, str, float]] = []
+        links: list[tuple[str | None, int, int, str, str, float, str, float]] = []
         now = time.time()
         # Simple overlap: if two entries share significant (non stop-word) words, link them
         for i, a in enumerate(sem):
@@ -3736,6 +4310,8 @@ class EnhancedMemoryStore:
             if not words_a:
                 continue
             for b in sem[i + 1 :]:
+                if a["owner_key_hash"] != b["owner_key_hash"]:
+                    continue
                 words_b = {
                     w.strip(".,!?;:\"'()")
                     for w in (b["key"] + " " + b["value"]).lower().split()
@@ -3747,6 +4323,7 @@ class EnhancedMemoryStore:
                 if overlap >= 3:
                     links.append(
                         (
+                            a["owner_key_hash"],
                             a["id"],
                             b["id"],
                             "semantic_memories",
@@ -3762,10 +4339,10 @@ class EnhancedMemoryStore:
                 conn.executemany(
                     """
                     INSERT INTO memory_links (
-                        from_id, to_id, from_table, to_table,
+                        owner_key_hash, from_id, to_id, from_table, to_table,
                         strength, link_type, created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT DO NOTHING
                     """,
                     links,
@@ -3775,7 +4352,11 @@ class EnhancedMemoryStore:
         return f"Created {len(links)} associative links."
 
     async def _deep_sleep(
-        self, llm_summarizer: Any | None = None, owner_key_hash: str | None = None
+        self,
+        llm_summarizer: Any | None = None,
+        owner_key_hash: str | None = None,
+        *,
+        propagate_summarizer_errors: bool = False,
     ) -> str:
         """Promote important working memories to semantic / episodic,
         with LLM insight generation. Scoped to a single owner so promoted
@@ -3816,7 +4397,16 @@ class EnhancedMemoryStore:
                 f"[{r['category']}] {r['key']}: {r['value'][:200]}" for r in rows
             )
             try:
-                insight = await llm_summarizer(memory_text)
+                if self._summarizer_accepts_owner(llm_summarizer):
+                    insight = await llm_summarizer(memory_text, owner_key_hash)
+                elif is_legacy:
+                    # Legacy local callers may retain the pre-isolation
+                    # callback shape because no authenticated data is sent.
+                    insight = await llm_summarizer(memory_text)
+                else:
+                    logger.warning(
+                        "Skipping authenticated dream summarization: callback lacks owner context"
+                    )
                 if insight:
                     # Use nanosecond timestamp to avoid collisions when dream()
                     # is called multiple times within the same second.
@@ -3830,6 +4420,8 @@ class EnhancedMemoryStore:
                     )
             except Exception:
                 logger.warning("LLM summarizer failed during deep sleep", exc_info=True)
+                if propagate_summarizer_errors:
+                    raise
 
         owner_label = owner_key_hash or "legacy"
         base = f"Promoted {promoted} important memories to long-term storage ({owner_label})."
@@ -3837,20 +4429,50 @@ class EnhancedMemoryStore:
             base += f"\nInsight: {insight[:300]}"
         return base
 
-    def _log_dream(self, phase: str, summary: str) -> None:
+    @staticmethod
+    def _summarizer_accepts_owner(llm_summarizer: Any) -> bool:
+        """Return whether a dream callback accepts the required owner argument."""
+        try:
+            signature = inspect.signature(llm_summarizer)
+        except (TypeError, ValueError):
+            # Let an opaque callable receive the required arguments; it must
+            # fail rather than causing authenticated data to use an unscoped
+            # callback shape.
+            return True
+        try:
+            signature.bind("memory", "owner")
+        except TypeError:
+            return False
+        return True
+
+    def _log_dream(self, phase: str, summary: str, owner_key_hash: str | None = None) -> None:
+        owner = self._session_owner(owner_key_hash)
         with db_connection(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO dream_logs (phase, summary, changes, created_at) VALUES (?, ?, ?, ?)",
-                (phase, summary, "", time.time()),
+                """
+                INSERT INTO dream_logs (owner_key_hash, phase, summary, changes, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (owner, phase, summary, "", time.time()),
             )
             conn.commit()
 
-    def get_dream_logs(self, limit: int = 20) -> list[dict[str, Any]]:
+    def get_dream_logs(
+        self, limit: int = 20, owner_key_hash: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return only the requesting owner's dream logs."""
+        owner = self._session_owner(owner_key_hash)
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT * FROM dream_logs ORDER BY created_at DESC LIMIT ?",
-                (limit,),
+                """
+                SELECT *
+                FROM dream_logs
+                WHERE owner_key_hash = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (owner, limit),
             ).fetchall()
         return [dict(r) for r in rows]
 

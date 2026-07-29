@@ -11,16 +11,18 @@ applied immediately.  A one-line conversation summary is always written to
 This builds on the existing infrastructure rather than replacing it:
 * auto block-classification + conflict/eviction live in ``EnhancedMemoryStore``
 * the proposal gate (``_should_auto_apply``) lives in ``store_semantic`` land
-* LLM calls reuse the same ``router.chat`` pattern as ``_auto_update_profiles``
+* LLM calls go through the agent-provided authorized chat callable in production.
 """
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
 
-from js.models.providers import ChatMessage
+from js.models.providers import ChatMessage, ChatResponse
 from js.utils.log import get_logger
 
 logger = get_logger("js.memory.organizer")
@@ -59,10 +61,30 @@ _INSTRUCTIONS = (
 class MemoryOrganizer:
     """Extracts structured memories from conversations into the proposal queue."""
 
-    def __init__(self, memory: Any, router: Any, config: Any | None = None) -> None:
+    def __init__(self, memory: Any, llm_chat: Any, config: Any | None = None) -> None:
         self.memory = memory
-        self.router = router
+        self._llm_chat, self._llm_chat_parameters = self._coerce_llm_chat(llm_chat)
         self.config = config
+
+    @staticmethod
+    def _coerce_llm_chat(
+        llm_chat: Any,
+    ) -> tuple[Callable[..., Awaitable[ChatResponse]], frozenset[str]]:
+        if callable(llm_chat) and not hasattr(llm_chat, "chat"):
+            target = llm_chat
+        else:
+            target = getattr(llm_chat, "chat", None)
+        if callable(target):
+            try:
+                parameters = frozenset(inspect.signature(target).parameters)
+            except (TypeError, ValueError):
+                parameters = frozenset()
+
+            async def _call(*args: Any, **kwargs: Any) -> ChatResponse:
+                return cast("ChatResponse", await target(*args, **kwargs))
+
+            return _call, parameters
+        raise TypeError("MemoryOrganizer requires an llm chat callable or router")
 
     # ------------------------------------------------------------------
     # Public API
@@ -94,7 +116,11 @@ class MemoryOrganizer:
             return report
 
         try:
-            content = await self._call_llm(transcript)
+            content = await self._call_llm(
+                transcript,
+                session_id=session_id,
+                owner_key_hash=owner_key_hash,
+            )
         except Exception as e:  # noqa: BLE001 — background task must not crash
             logger.warning("记忆整理 LLM 调用失败，已降级跳过：%s", e)
             report["error"] = str(e)
@@ -215,12 +241,23 @@ class MemoryOrganizer:
             buffer.append({"user": pending_user, "assistant": ""})
         return buffer
 
-    async def _call_llm(self, transcript: str) -> str:
+    async def _call_llm(
+        self,
+        transcript: str,
+        *,
+        session_id: str,
+        owner_key_hash: str | None,
+    ) -> str:
         messages = [
             ChatMessage(role="system", content=_SYSTEM_PROMPT),
             ChatMessage(role="user", content=f"{_INSTRUCTIONS}\n\nConversation:\n{transcript}"),
         ]
-        resp = await self.router.chat(messages, temperature=0.2)
+        kwargs: dict[str, Any] = {"temperature": 0.2}
+        if "tenant_id" in self._llm_chat_parameters:
+            kwargs["tenant_id"] = owner_key_hash or "local"
+        if "run_id" in self._llm_chat_parameters:
+            kwargs["run_id"] = f"memory:{session_id or 'bootstrap'}"
+        resp = await self._llm_chat(messages, **kwargs)
         return resp.content or ""
 
     @staticmethod

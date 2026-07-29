@@ -21,12 +21,18 @@ or pruned only by its own owner_key_hash.
 
 from __future__ import annotations
 
+import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
-from js.config import MemoryConfig
+from js.agent import JSAgent
+from js.config import JSSettings, MemoryConfig
 from js.memory.enhanced_store import EnhancedMemoryStore
+from js.models.providers import ChatResponse
 
 ALICE = "owner-alice"
 BOB = "owner-bob"
@@ -155,6 +161,75 @@ class TestEvictOwnerGuard:
 
 
 class TestLightSleepOwnerPartition:
+    def test_light_sleep_does_not_materialize_the_working_memory_table(
+        self,
+        store: EnhancedMemoryStore,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        for index in range(50):
+            store.store_working(
+                f"session-{index}",
+                "topic",
+                "same-text",
+                owner_key_hash=ALICE,
+            )
+
+        real_connect = sqlite3.connect
+
+        class CursorProxy:
+            def __init__(self, cursor: sqlite3.Cursor) -> None:
+                self._cursor = cursor
+
+            def fetchall(self) -> Any:
+                raise AssertionError("light sleep must not fetch the complete table")
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._cursor, name)
+
+        class ConnectionProxy:
+            def __init__(self, connection: sqlite3.Connection) -> None:
+                object.__setattr__(self, "_connection", connection)
+
+            def execute(self, *args: Any, **kwargs: Any) -> CursorProxy:
+                return CursorProxy(self._connection.execute(*args, **kwargs))
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._connection, name)
+
+            def __setattr__(self, name: str, value: Any) -> None:
+                setattr(self._connection, name, value)
+
+        @contextmanager
+        def no_fetchall_connection(path: Path, **_kwargs: Any):
+            connection = real_connect(path)
+            try:
+                yield ConnectionProxy(connection)
+            finally:
+                connection.close()
+
+        monkeypatch.setattr(
+            "js.memory.enhanced_store.db_connection",
+            no_fetchall_connection,
+        )
+
+        report = store._light_sleep()
+
+        assert report == "Removed 49 duplicate working memories."
+
+    def test_working_memory_has_no_write_only_process_cache(
+        self, store: EnhancedMemoryStore
+    ) -> None:
+        for index in range(20):
+            store.store_working(
+                f"session-{index}",
+                "topic",
+                f"value-{index}",
+                owner_key_hash=ALICE,
+            )
+
+        assert not hasattr(store, "_working_cache")
+        assert len(store.get_all_working(limit=100, owner_key_hash=ALICE)) == 20
+
     def test_same_key_value_across_owners_both_survive(self, store: EnhancedMemoryStore) -> None:
         # Alice and Bob both write the same (key, value) into working memory.
         # Pre-fix the older one would have been deleted as a "duplicate".
@@ -203,3 +278,94 @@ class TestLightSleepOwnerPartition:
         assert len(store.get_working("sess-shared", limit=10, owner_key_hash=None)) == 1
         assert len(store.get_working("sess-alice", limit=10, owner_key_hash=ALICE)) == 1
         assert "Removed 0 duplicate" in report
+
+
+@pytest.mark.asyncio
+async def test_profile_update_partitions_mixed_authenticated_owners(tmp_path: Path) -> None:
+    """Each owner's private turns must update only that owner's profile."""
+    agent = JSAgent(
+        JSSettings(
+            workspace=tmp_path / "workspace",
+            state_dir=tmp_path / "state",
+        )
+    )
+    agent.memory.write_memory_file("user", "shared user profile")
+    agent.memory.write_memory_file("identity", "shared identity profile")
+    runtime = AsyncMock(
+        side_effect=[
+            ChatResponse(
+                content="===USER===\nalice profile\n===IDENTITY===\nalice identity",
+                tool_calls=[],
+                model="mock",
+                usage={},
+                finish_reason="stop",
+            ),
+            ChatResponse(
+                content="===USER===\nbob profile\n===IDENTITY===\nbob identity",
+                tool_calls=[],
+                model="mock",
+                usage={},
+                finish_reason="stop",
+            ),
+        ]
+    )
+    forbidden_adapter = AsyncMock(
+        side_effect=AssertionError("background entry bypassed EchoRuntime")
+    )
+    agent.echo_runtime.execute_model_effect = runtime  # type: ignore[method-assign]
+    agent.authorized_model_chat = forbidden_adapter  # type: ignore[method-assign]
+
+    try:
+        await agent._auto_update_profiles(
+            [
+                {
+                    "user": "Alice private preference",
+                    "assistant": "Alice private reply",
+                    "owner_key_hash": ALICE,
+                    "session_id": "alice-session",
+                },
+                {
+                    "user": "Bob private preference",
+                    "assistant": "Bob private reply",
+                    "owner_key_hash": BOB,
+                    "session_id": "bob-session",
+                },
+            ]
+        )
+    finally:
+        await agent.close()
+
+    assert runtime.await_count == 2
+    assert forbidden_adapter.await_count == 0
+    first_effect, first_context = runtime.await_args_list[0].args
+    second_effect, second_context = runtime.await_args_list[1].args
+    first_prompt = first_effect.messages[1].content
+    second_prompt = second_effect.messages[1].content
+    assert "Alice private preference" in first_prompt
+    assert "Bob private preference" not in first_prompt
+    assert "Bob private preference" in second_prompt
+    assert "Alice private preference" not in second_prompt
+    assert [first_context.owner_key_hash, second_context.owner_key_hash] == [ALICE, BOB]
+    assert [first_context.session_id, second_context.session_id] == [
+        "alice-session",
+        "bob-session",
+    ]
+    for context in (first_context, second_context):
+        assert context.product_id == "js-agent"
+        assert context.channel == "profile_update"
+        assert context.run_id.startswith("profile:")
+        assert context.role == "local-user"
+        assert context.profile == "default"
+        assert context.capabilities == ()
+        assert context.workspace == agent.settings.workspace
+        assert context.state_dir == agent.settings.state_dir
+    for effect in (first_effect, second_effect):
+        assert effect.before_model_attempt is not None
+        assert effect.completion_budget_callback is not None
+        assert effect.max_tokens == agent.settings.echo_budget.max_completion_tokens
+    assert agent.memory.read_memory_file("user") == "shared user profile"
+    assert agent.memory.read_memory_file("identity") == "shared identity profile"
+    assert agent.memory.read_memory_file("user", owner_key_hash=ALICE) == "alice profile"
+    assert agent.memory.read_memory_file("identity", owner_key_hash=ALICE) == "alice identity"
+    assert agent.memory.read_memory_file("user", owner_key_hash=BOB) == "bob profile"
+    assert agent.memory.read_memory_file("identity", owner_key_hash=BOB) == "bob identity"
