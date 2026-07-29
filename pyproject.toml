@@ -1,7 +1,7 @@
 [project]
 name = "js-agent"
 version = "0.1.5"
-description = "A stable, secure, and convenient AI agent framework"
+description = "Local personal Agent Harness — local release candidate for controlled trial"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 license = {text = "MIT"}
@@ -10,28 +10,35 @@ authors = [
 ]
 dependencies = [
     "pydantic>=2.10,<3",
-    "pydantic-settings>=2.6",
+    "pydantic-settings>=2.14.2",
     "rich>=13.9",
     "textual>=0.70",
     "aiosqlite>=0.20",
     "cachetools>=5.5",
     "click>=8.1",
-    "httpx>=0.27",
+    "httpx[http2]>=0.27",
     "openai>=1.55,<3",
     "prompt-toolkit>=3.0",
     "structlog>=24.4",
     "platformdirs>=4.3",
     "python-dotenv>=1.0",
-    "cryptography>=44.0,<49",
+    "cryptography>=48.0.1,<49",
     "packaging>=24.2",
     "psutil>=6.1",
     "watchdog>=6.0",
     "anyio>=4.7",
     "tenacity>=9.0",
     "pyyaml>=6.0",
-    "fastapi>=0.115",
-    "python-multipart>=0.0.20",
+    "fastapi>=0.139,<1",
+    "starlette>=1.3.1,<2",
+    "python-multipart>=0.0.32",
     "uvicorn>=0.32",
+    "openpyxl>=3.1",
+    "rfc8785==0.1.4",
+    "xlrd==2.0.2",
+    "pypdf>=6.14.2",
+    "python-docx>=1.2",
+    "reportlab>=4.0",
 ]
 
 [project.optional-dependencies]
@@ -50,18 +57,19 @@ monitor = [
     "opentelemetry-instrumentation-httpx>=0.50",
 ]
 office = [
-    "openpyxl>=3.1",
     "pandas>=2.2",
 ]
+echo-tokenizer = [
+    "tiktoken>=0.7,<1",
+]
 pdf = [
-    "pypdf>=5.0",
     "pdfplumber>=0.11",
-    "reportlab>=4.0",
 ]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "pytest-cov>=6.0",
+    "hatchling>=1.27",
     "mypy>=1.13",
     "ruff>=0.8",
     "build>=1.2",
@@ -70,18 +78,37 @@ dev = [
     "types-PyYAML>=6.0",
     "types-psutil>=6.1",
     "types-reportlab>=4.0",
+    "websockets>=12",
+    "playwright>=1.52,<2",
     "httpx2>=2.4",  # Starlette TestClient prefers httpx2 over plain httpx
     "js-agent[office,pdf]",
 ]
 [project.scripts]
 js = "js.__main__:main"
+js-work = "js_work.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["js"]
+packages = ["js", "js_work"]
+force-include = { "js/security/secrets.py" = "js/security/secrets.py", "resources/tokenizer" = "resources/tokenizer" }
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/js/**",
+    "/js_work/**",
+    "/LICENSE",
+    "/ORIGIN_LEDGER.md",
+    "/README.md",
+    "/README_en.md",
+    "/THIRD_PARTY_NOTICES.md",
+    "/pyproject.toml",
+    "/resources/**",
+    "/uv.lock",
+]
+force-include = { "js/security/secrets.py" = "js/security/secrets.py", "README_en.md" = "README_en.md" }
 
 [tool.ruff]
 line-length = 100
@@ -100,7 +127,7 @@ warn_unused_ignores = false
 exclude = []
 
 [[tool.mypy.overrides]]
-module = ["pypdf.*", "pdfplumber.*", "pandas.*", "openpyxl.*"]
+module = ["docx.*", "pypdf.*", "pdfplumber.*", "pandas.*", "openpyxl.*", "rfc8785.*", "tiktoken", "xlrd.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -110,4 +137,5 @@ testpaths = ["tests"]
 addopts = "-m 'not playwright'"
 markers = [
     "playwright: Browser automation tests (run separately)",
+    "t8s3a_gate: T8-S3A real-tokenizer threshold gate; requires echo-tokenizer extra",
 ]

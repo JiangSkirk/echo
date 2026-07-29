@@ -1,0 +1,114 @@
+"""M5: capability manifest drives Work/Personal nav + API permissions."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+import yaml
+from httpx import ASGITransport, AsyncClient
+
+
+def test_personal_manifest_enables_skills_and_evolution() -> None:
+    from js.config import JSSettings
+    from js.web.capability_manifest import build_capability_manifest
+
+    settings = JSSettings(
+        workspace=Path("/tmp/ws"),
+        state_dir=Path("/tmp/st"),
+        providers=[],
+    )
+    manifest = build_capability_manifest(settings)
+    assert manifest["product_id"] == "js-agent"
+    assert manifest["tabs"]["skills"]["enabled"] is True
+    assert manifest["tabs"]["evolution"]["enabled"] is True
+    assert "skills" in manifest["enabled_tabs"]
+    assert manifest["api"]["skills_mutations"] is True
+
+
+def test_work_manifest_hides_skills_evolution_and_personal_extras() -> None:
+    from js.web.capability_manifest import build_capability_manifest
+    from js_work.config import WorkSettings, work_feature_config
+
+    home = Path("/tmp/work-home-m5")
+    settings = WorkSettings(
+        workspace=home / "workspace",
+        state_dir=home / "state",
+        work_home=home,
+        providers=[],
+    )
+    settings.features = work_feature_config()
+    manifest = build_capability_manifest(settings)
+    assert manifest["product_id"] == "js-work"
+    assert manifest["tabs"]["skills"]["enabled"] is False
+    assert manifest["tabs"]["evolution"]["enabled"] is False
+    assert manifest["tabs"]["agents"]["enabled"] is False
+    assert "skills" not in manifest["enabled_tabs"]
+    assert manifest["api"]["skills_mutations"] is False
+    assert manifest["api"]["evolution_actions"] is False
+
+
+@pytest.mark.asyncio
+async def test_capabilities_api_matches_work_backend_gates(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from js_work.web import create_work_web_app
+
+    home = tmp_path / "work-home"
+    home.mkdir()
+    cfg = tmp_path / "work.yaml"
+    cfg.write_text(
+        yaml.safe_dump(
+            {
+                "work_home": str(home),
+                "workspace": str(home / "workspace"),
+                "state_dir": str(home / "state"),
+                "echo_engine": "on",
+                "first_run_completed": True,
+                "providers": [],
+                "models": [],
+                "security": {"api_key_required": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (home / "workspace").mkdir()
+    (home / "state").mkdir()
+    monkeypatch.delenv("JS_WORK_CONFIG_PATH", raising=False)
+
+    app = create_work_web_app(config=str(cfg), home=home)
+    transport = ASGITransport(app=app)
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=transport, base_url="http://test") as client,
+    ):
+        caps = await client.get("/api/capabilities")
+        assert caps.status_code == 200
+        body = caps.json()
+        assert body["product_id"] == "js-work"
+        assert body["tabs"]["skills"]["enabled"] is False
+        assert body["tabs"]["evolution"]["enabled"] is False
+
+        skills = await client.get("/api/skills")
+        assert skills.status_code == 200
+        skills_body = skills.json()
+        # Backend must not pretend skills are available on Work.
+        assert skills_body.get("disabled") is True or skills_body.get("skills") in ([], None)
+
+        # HTML shell still loads; frontend uses data-capability-enabled from manifest.
+        index = await client.get("/")
+        assert index.status_code == 200
+        html = index.text
+        assert 'id="nav-skills"' in html
+        assert 'id="nav-evolution"' in html
+        assert 'id="product-switcher"' in html
+        assert "switchProductWorkspace" in (await client.get("/static/app.js")).text
+
+        # Mutations must be denied for Work — not merely CSS-hidden.
+        mutate = await client.delete("/api/skills/planted-skill")
+        assert mutate.status_code == 403
+        # Product gate: Work agents have skills=None, so list is disabled and
+        # capability API refuses skills_mutations.
+        assert body["api"]["skills_mutations"] is False
+        assert body["api"]["evolution_actions"] is False

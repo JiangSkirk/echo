@@ -1,5 +1,5 @@
 import { state } from './state/store.js';
-import { escapeHtml, showToast, toggleSidebar, showLoading, showError } from './utils/dom.js';
+import { escapeHtml, showToast, toggleSidebar, showLoading, showError, el, onDataClick, onDataChange, sanitizeRuntimeId } from './utils/dom.js';
 import { renderMarkdown } from './utils/markdown.js';
 import { loadStats } from './tabs/stats.js';
 import { loadSearch, doSearch } from './tabs/search.js';
@@ -15,6 +15,7 @@ import {
 import { loadFiles } from './tabs/files.js';
 import { loadStatus, refreshSessionCapsule, clearSessionCapsule } from './tabs/status.js';
 import { loadAudit } from './tabs/audit.js';
+import { loadApprovals, startApprovalsPolling, stopApprovalsPolling } from './tabs/approvals.js';
 import { loadTasks, pauseTask, resumeTask, deleteTask, startTasksPolling } from './tabs/tasks.js';
 import { loadScenarios, startScenario, fillScenarioPrompt } from './tabs/scenarios.js';
 import { loadAgents } from './tabs/agents.js';
@@ -53,35 +54,43 @@ window.fetch = async function(url, options = {}) {
   return _origFetch(url, options);
 };
 
-function saveApiKey(key) {
-  state.apiKey = key.trim();
-  localStorage.setItem('js-api-key', state.apiKey);
-  // Mirror to cookie so WebSocket can authenticate without
-  // leaking the key in the URL (browser history, server logs, referrers).
-  if (state.apiKey) {
-    document.cookie = 'x-api-key=' + encodeURIComponent(state.apiKey) + '; path=/; SameSite=Strict';
-  } else {
-    document.cookie = 'x-api-key=; path=/; SameSite=Strict; expires=Thu, 01 Jan 1970 00:00:00 GMT';
-  }
+async function saveApiKey(key) {
+  const trimmed = (key || '').trim();
   const input = document.getElementById('api-key-input');
-  if (input) input.value = state.apiKey;
-  showToast(state.apiKey ? 'API Key 已保存' : 'API Key 已清除');
+  if (!trimmed) {
+    // Clearing the key revokes the server-side session; the server also
+    // expires the HttpOnly cookie in its response.
+    state.apiKey = '';
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch (e) { /* best effort */ }
+    if (input) input.value = '';
+    showToast('API Key 已清除');
+    return;
+  }
+  try {
+    // The server verifies the key and sets an HttpOnly; SameSite=Strict
+    // session cookie. The plaintext key is kept only in memory — never in
+    // localStorage or a JS-readable cookie.
+    const res = await fetch('/api/auth/session', {
+      method: 'POST',
+      headers: { 'X-API-Key': trimmed },
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    state.apiKey = trimmed;
+    if (input) input.value = state.apiKey;
+    showToast('API Key 已保存');
+  } catch (e) {
+    showToast('API Key 登录失败: ' + e.message, 'error');
+  }
 }
 
 function restoreApiKey() {
-  // Prefer localStorage, fall back to cookie (e.g. after hard refresh)
-  if (!state.apiKey) {
-    const m = document.cookie.match(/(?:^|; )x-api-key=([^;]*)/);
-    if (m) {
-      try {
-        state.apiKey = decodeURIComponent(m[1]);
-      } catch (e) {
-        state.apiKey = m[1];
-      }
-    }
-  }
-  const input = document.getElementById('api-key-input');
-  if (input && state.apiKey) input.value = state.apiKey;
+  // Credentials are no longer persisted in web storage: the server-issued
+  // HttpOnly session cookie re-authenticates returning browsers. Purge any
+  // legacy copies written by older versions.
+  try { localStorage.removeItem('js-api-key'); } catch (e) { /* ignore */ }
+  document.cookie = 'x-api-key=; path=/; SameSite=Strict; expires=Thu, 01 Jan 1970 00:00:00 GMT';
 }
 
 async function checkFirstStart() {
@@ -173,7 +182,7 @@ async function wizardComplete() {
       // If the server minted an admin key on completion (and we don't already
       // have one), persist it so the now-closed bootstrap window stays usable.
       if (data && data.admin_key && !state.apiKey) {
-        saveApiKey(data.admin_key);
+        await saveApiKey(data.admin_key);
       }
     } catch (_) {}
     localStorage.setItem('js-wizard-completed', 'true');
@@ -237,25 +246,65 @@ async function loadWizardModels() {
       loadWizardCloudPresets();
       return;
     }
-    container.innerHTML = flatModels.map(m => `
-      <div class="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-2 border border-transparent ${wizardSelectedModel === m.id ? 'border-blue-500' : ''}" data-model-id="${escapeHtml(m.id)}">
-        <label class="flex items-center gap-3 flex-1 cursor-pointer hover:bg-gray-700 transition rounded px-1 py-1">
-          <input type="radio" name="wizard-model" value="${escapeHtml(m.id)}" ${wizardSelectedModel === m.id ? 'checked' : ''} onchange="wizardSelectModel('${escapeHtml(m.id)}')" class="accent-blue-500">
-          <div class="flex-1 min-w-0">
-            <div class="text-sm font-medium">${m.statusIcon} ${escapeHtml(m.name)}</div>
-            <div class="text-xs text-gray-500">Provider: ${escapeHtml(m.provider)} · 上下文: ${m.contextWindow || '--'} tokens ${m.isPreset ? '· 未配置' : ''}</div>
-          </div>
-        </label>
-        ${!m.isPreset ? `<button onclick="testWizardModel('${escapeHtml(m.id)}', this)" class="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded transition whitespace-nowrap" title="测试连接">
-          <i class="fas fa-bolt"></i> 测试
-        </button>` : ''}
-        <span id="test-result-${escapeHtml(m.id.replace(/[^a-zA-Z0-9]/g, '-'))}" class="text-xs hidden whitespace-nowrap"></span>
-      </div>
-    `).join('');
+    container.replaceChildren();
+    for (const m of flatModels) {
+      const modelId = sanitizeRuntimeId(m.id);
+      if (!modelId) continue;
+      const row = el('div', {
+        className: `flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-2 border border-transparent ${wizardSelectedModel === modelId ? 'border-blue-500' : ''}`,
+        dataset: { modelId },
+      });
+      const label = el('label', {
+        className: 'flex items-center gap-3 flex-1 cursor-pointer hover:bg-gray-700 transition rounded px-1 py-1',
+      });
+      const radio = el('input', {
+        className: 'accent-blue-500',
+        attrs: {
+          type: 'radio',
+          name: 'wizard-model',
+          value: modelId,
+          ...(wizardSelectedModel === modelId ? { checked: true } : {}),
+        },
+        dataset: { modelId },
+      });
+      onDataChange(radio, 'modelId', (id) => wizardSelectModel(id));
+      const meta = el('div', { className: 'flex-1 min-w-0' });
+      meta.appendChild(el('div', {
+        className: 'text-sm font-medium',
+        text: `${m.statusIcon || ''} ${m.name || modelId}`,
+      }));
+      meta.appendChild(el('div', {
+        className: 'text-xs text-gray-500',
+        text: `Provider: ${m.provider || ''} · 上下文: ${m.contextWindow || '--'} tokens${m.isPreset ? ' · 未配置' : ''}`,
+      }));
+      label.appendChild(radio);
+      label.appendChild(meta);
+      row.appendChild(label);
+      if (!m.isPreset) {
+        const testBtn = el('button', {
+          className: 'text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded transition whitespace-nowrap',
+          attrs: { type: 'button', title: '测试连接' },
+          dataset: { modelId },
+        });
+        testBtn.appendChild(el('i', { className: 'fas fa-bolt' }));
+        testBtn.appendChild(document.createTextNode(' 测试'));
+        onDataClick(testBtn, 'modelId', (id, event) => testWizardModel(id, event.currentTarget));
+        row.appendChild(testBtn);
+      }
+      const resultSpan = el('span', {
+        className: 'text-xs hidden whitespace-nowrap',
+        attrs: { id: `test-result-${modelId.replace(/[^a-zA-Z0-9]/g, '-')}` },
+      });
+      row.appendChild(resultSpan);
+      container.appendChild(row);
+    }
     document.getElementById('wizard-next-2').disabled = !wizardSelectedModel;
     loadWizardCloudPresets();
   } catch (e) {
-    container.innerHTML = '<div class="text-red-400 text-sm">加载模型失败: ' + escapeHtml(e.message) + '</div>';
+    container.replaceChildren(el('div', {
+      className: 'text-red-400 text-sm',
+      text: `加载模型失败: ${e.message || e}`,
+    }));
     document.getElementById('wizard-next-2').disabled = false;
   }
 }
@@ -488,8 +537,8 @@ function connectWS() {
       // PR-4.3: stash the structured usage for diagnostics; UI display
       // is intentionally deferred so we don't churn the chat surface.
       state.lastUsage = data.usage || {};
-    } else if (data.type === 'channel_error') {
-      appendMessage('system', '流式通道错误: ' + (data.content || ''));
+    } else if (data.type === 'stream_diagnostic') {
+      state.lastStreamDiagnostic = data.content || '';
     } else if (data.type === 'response') {
       state.sessionId = data.session_id;
       finishResponse(data.content, data.model);
@@ -501,6 +550,7 @@ function connectWS() {
     } else if (data.type === 'progress') {
       showProgress(data.tool, data.preview);
     } else if (data.type === 'error') {
+      abortStream();
       appendMessage('system', '错误: ' + data.content);
     }
   };
@@ -610,6 +660,24 @@ function _ensureThinkingBlock() {
   }
 }
 
+function _setThinkingContent(text) {
+  _ensureThinkingBlock();
+  if (!state.thinkingBlock) return;
+  const tc = state.thinkingBlock.querySelector('.thinking-content');
+  if (tc) tc.textContent = text;
+  const status = state.thinkingBlock.querySelector('.thinking-status');
+  if (status) status.textContent = text ? '生成中' : '';
+}
+
+function _ensureResponseSpan() {
+  if (!state.responseSpan && state.currentBubble) {
+    state.responseSpan = document.createElement('span');
+    state.responseSpan.className = 'response-span';
+    state.currentBubble.appendChild(state.responseSpan);
+  }
+  return state.responseSpan;
+}
+
 function _flushTokenQueue() {
   state.tokenRAF = null;
   const indicator = document.getElementById('typing-indicator');
@@ -631,18 +699,11 @@ function _flushTokenQueue() {
     if (!trans) {
       if (state.inThinking) {
         state.thinkingBuffer += remaining;
-        if (state.thinkingBlock) {
-          const tc = state.thinkingBlock.querySelector('.thinking-content');
-          if (tc) tc.textContent = state.thinkingBuffer;
-        }
+        _setThinkingContent(state.thinkingBuffer);
       } else {
         state.responseBuffer += remaining;
-        if (!state.responseSpan) {
-          state.responseSpan = document.createElement('span');
-          state.responseSpan.className = 'response-span';
-          state.currentBubble.appendChild(state.responseSpan);
-        }
-        state.responseSpan.textContent = state.responseBuffer;
+        const responseSpan = _ensureResponseSpan();
+        if (responseSpan) responseSpan.textContent = state.responseBuffer;
       }
       break;
     }
@@ -650,18 +711,11 @@ function _flushTokenQueue() {
     const before = remaining.slice(0, trans.index);
     if (state.inThinking) {
       state.thinkingBuffer += before;
-      if (state.thinkingBlock) {
-        const tc = state.thinkingBlock.querySelector('.thinking-content');
-        if (tc) tc.textContent = state.thinkingBuffer;
-      }
+      _setThinkingContent(state.thinkingBuffer);
     } else {
       state.responseBuffer += before;
-      if (!state.responseSpan) {
-        state.responseSpan = document.createElement('span');
-        state.responseSpan.className = 'response-span';
-        state.currentBubble.appendChild(state.responseSpan);
-      }
-      state.responseSpan.textContent = state.responseBuffer;
+      const responseSpan = _ensureResponseSpan();
+      if (responseSpan) responseSpan.textContent = state.responseBuffer;
     }
 
     if (trans.type === 'start') {
@@ -673,6 +727,8 @@ function _flushTokenQueue() {
       state.inThinking = false;
       if (state.thinkingBlock) {
         state.thinkingBlock.open = false;
+        const status = state.thinkingBlock.querySelector('.thinking-status');
+        if (status) status.textContent = '已完成';
       }
       remaining = remaining.slice(trans.index + trans.tag.length);
     }
@@ -686,6 +742,16 @@ function appendToken(token) {
   state.streamBuffer += token;
   if (!state.tokenRAF) {
     state.tokenRAF = requestAnimationFrame(_flushTokenQueue);
+  }
+}
+
+function _flushPendingTokensNow() {
+  if (state.tokenRAF) {
+    cancelAnimationFrame(state.tokenRAF);
+    state.tokenRAF = null;
+  }
+  if (state.streamBuffer) {
+    _flushTokenQueue();
   }
 }
 
@@ -703,10 +769,7 @@ function appendThinkingDelta(text) {
   }
   _ensureThinkingBlock();
   state.thinkingBuffer += text;
-  if (state.thinkingBlock) {
-    const tc = state.thinkingBlock.querySelector('.thinking-content');
-    if (tc) tc.textContent = state.thinkingBuffer;
-  }
+  _setThinkingContent(state.thinkingBuffer);
   const container = document.getElementById('chat-messages');
   if (container) container.scrollTop = container.scrollHeight;
 }
@@ -716,18 +779,23 @@ function _finalizeStreamBubble(model) {
   state.currentBubble.classList.remove('typing-cursor');
   state.currentBubble.id = '';
 
-  // Combine thinking + response and render as markdown
-  let fullText = '';
   if (state.thinkingBlock) {
-    const tc = state.thinkingBlock.querySelector('.thinking-content');
-    if (tc) {
-      const thinkText = tc.textContent;
-      if (thinkText) fullText += '<think>\n' + thinkText + '\n</think>\n\n';
-    }
+    const status = state.thinkingBlock.querySelector('.thinking-status');
+    if (status) status.textContent = '已完成';
+    state.thinkingBlock.open = false;
   }
-  fullText += state.responseBuffer;
 
-  state.currentBubble.innerHTML = renderMarkdown(fullText);
+  if (state.responseSpan) {
+    const responseEl = document.createElement('div');
+    responseEl.className = 'response-content markdown';
+    responseEl.innerHTML = renderMarkdown(state.responseBuffer);
+    state.responseSpan.replaceWith(responseEl);
+  } else if (state.responseBuffer) {
+    const responseEl = document.createElement('div');
+    responseEl.className = 'response-content markdown';
+    responseEl.innerHTML = renderMarkdown(state.responseBuffer);
+    state.currentBubble.appendChild(responseEl);
+  }
 
   // Add model label
   if (model && state.currentBubble.parentElement) {
@@ -752,13 +820,15 @@ function _finalizeStreamBubble(model) {
 function finishResponse(content, model) {
   const indicator = document.getElementById('typing-indicator');
   if (indicator) indicator.remove();
-  if (state.tokenRAF) {
-    cancelAnimationFrame(state.tokenRAF);
-    state.tokenRAF = null;
-  }
+  _flushPendingTokensNow();
   if (!state.currentBubble) {
     appendMessage('assistant', content, model);
   } else {
+    if (content && !state.responseBuffer) {
+      state.responseBuffer = content;
+      const responseSpan = _ensureResponseSpan();
+      if (responseSpan) responseSpan.textContent = state.responseBuffer;
+    }
     _finalizeStreamBubble(model);
   }
   const container = document.getElementById('chat-messages');
@@ -768,10 +838,16 @@ function finishResponse(content, model) {
 function finishStream() {
   const indicator = document.getElementById('typing-indicator');
   if (indicator) indicator.remove();
-  if (state.tokenRAF) {
-    cancelAnimationFrame(state.tokenRAF);
-    state.tokenRAF = null;
+  _flushPendingTokensNow();
+  if (state.currentBubble) {
+    _finalizeStreamBubble();
   }
+}
+
+function abortStream() {
+  const indicator = document.getElementById('typing-indicator');
+  if (indicator) indicator.remove();
+  _flushPendingTokensNow();
   if (state.currentBubble) {
     _finalizeStreamBubble();
   }
@@ -885,11 +961,12 @@ function sendMessage() {
   showTyping();
 
   state.ws.send(JSON.stringify({
-    type: 'message',
+    type: 'stream',
     content: text,
     session_id: state.sessionId,
     model: state.selectedModel || null,
     attachments: state.pendingAttachments.map(a => a.path),
+    enable_tools: true,
   }));
 
   // Clear attachments after sending
@@ -967,8 +1044,14 @@ function formatFileSize(size) {
 }
 
 async function uploadFileInternal(file) {
+  if (!state.sessionId) {
+    state.sessionId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
+      ? globalThis.crypto.randomUUID()
+      : 'session-' + Date.now() + '-' + Math.random().toString(36).slice(2, 14);
+  }
   const formData = new FormData();
   formData.append('file', file);
+  formData.append('session_id', state.sessionId);
 
   try {
     const res = await fetch('/api/upload', { method: 'POST', body: formData });
@@ -1201,24 +1284,54 @@ async function loadSessions() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     const sessions = data.sessions || [];
+    container.replaceChildren();
     if (sessions.length === 0) {
-      container.innerHTML = '<div class="px-6 py-1 text-xs text-gray-600">暂无历史会话</div>';
+      container.appendChild(el('div', {
+        className: 'px-6 py-1 text-xs text-gray-600',
+        text: '暂无历史会话',
+      }));
       return;
     }
-    container.innerHTML = sessions.map(s => {
-      const summary = (s.summary || '无摘要').replace(/\n/g, ' ').slice(0, 40);
-      const isActive = s.session_id === state.sessionId;
+    for (const s of sessions) {
+      const sessionId = sanitizeRuntimeId(s.session_id);
+      if (!sessionId) continue;
+      const summary = String(s.summary || '无摘要').replace(/\n/g, ' ').slice(0, 40);
+      const isActive = sessionId === state.sessionId;
       const msgCount = s.message_count || 0;
-      const countBadge = msgCount > 0 ? `<span class="text-[10px] text-gray-600 ml-1">(${msgCount})</span>` : '';
-      return `<div class="session-item mx-2 px-3 py-1.5 rounded text-xs flex items-center justify-between gap-1 ${isActive ? 'bg-blue-900/40 text-blue-300' : 'text-gray-400'}" title="${escapeHtml(summary)}">
-        <span class="truncate flex-1 cursor-pointer" onclick='switchSession(${JSON.stringify(s.session_id)})'>${escapeHtml(summary)}${summary.length >= 40 ? '...' : ''}${countBadge}</span>
-        <button onclick='event.stopPropagation(); deleteSession(${JSON.stringify(s.session_id)})' class="text-gray-600 hover:text-red-400 px-1 rounded transition" title="删除会话">
-          <i class="fas fa-times text-[10px]"></i>
-        </button>
-      </div>`;
-    }).join('');
+      const row = el('div', {
+        className: `session-item mx-2 px-3 py-1.5 rounded text-xs flex items-center justify-between gap-1 ${isActive ? 'bg-blue-900/40 text-blue-300' : 'text-gray-400'}`,
+        attrs: { title: summary },
+        dataset: { sessionId },
+      });
+      const label = el('span', {
+        className: 'truncate flex-1 cursor-pointer',
+        text: summary + (summary.length >= 40 ? '...' : ''),
+        dataset: { sessionId },
+      });
+      if (msgCount > 0) {
+        label.appendChild(el('span', {
+          className: 'text-[10px] text-gray-600 ml-1',
+          text: `(${msgCount})`,
+        }));
+      }
+      onDataClick(label, 'sessionId', (sid) => { switchSession(sid); });
+      const delBtn = el('button', {
+        className: 'text-gray-600 hover:text-red-400 px-1 rounded transition',
+        attrs: { title: '删除会话', type: 'button' },
+        dataset: { sessionId },
+      });
+      delBtn.appendChild(el('i', { className: 'fas fa-times text-[10px]' }));
+      onDataClick(delBtn, 'sessionId', (sid) => { deleteSession(sid); });
+      row.appendChild(label);
+      row.appendChild(delBtn);
+      container.appendChild(row);
+    }
   } catch (e) {
-    container.innerHTML = '<div class="px-6 py-1 text-xs text-gray-600">加载失败</div>';
+    container.replaceChildren();
+    container.appendChild(el('div', {
+      className: 'px-6 py-1 text-xs text-gray-600',
+      text: '加载失败',
+    }));
   }
 }
 
@@ -1278,7 +1391,131 @@ async function deleteSession(sid) {
   }
 }
 
+async function applyCapabilityManifest() {
+  try {
+    const res = await fetch('/api/capabilities');
+    if (!res.ok) return;
+    const manifest = await res.json();
+    state.capabilities = manifest;
+    if (manifest.product_id) {
+      state.activeProduct = manifest.product_id;
+      localStorage.setItem('js-appshell-active-product', manifest.product_id);
+    }
+    updateProductSwitcherUI();
+    const enabled = new Set(manifest.enabled_tabs || []);
+    document.querySelectorAll('nav button[id^="nav-"]').forEach((btn) => {
+      const tabId = btn.id.slice(4);
+      if (!tabId || tabId === 'chat') return;
+      const allowed = enabled.has(tabId);
+      btn.classList.toggle('hidden', !allowed);
+      btn.setAttribute('aria-disabled', allowed ? 'false' : 'true');
+      btn.dataset.capabilityEnabled = allowed ? '1' : '0';
+    });
+  } catch (err) {
+    console.error('[capabilities] failed to apply manifest', err);
+  }
+}
+
+function updateProductSwitcherUI() {
+  const personalBtn = document.getElementById('product-personal-btn');
+  const workBtn = document.getElementById('product-work-btn');
+  if (!personalBtn || !workBtn) return;
+  const active = state.activeProduct || (state.capabilities && state.capabilities.product_id) || 'js-agent';
+  const mark = (btn, on) => {
+    btn.classList.toggle('bg-gray-800', on);
+    btn.classList.toggle('text-blue-300', on);
+    btn.classList.toggle('font-medium', on);
+    btn.classList.toggle('text-gray-400', !on);
+  };
+  mark(personalBtn, active === 'js-agent');
+  mark(workBtn, active === 'js-work');
+}
+
+function clearAppShellUiCache(keys) {
+  const list = Array.isArray(keys) ? keys : [];
+  // Drop in-memory transient state for the departing product.
+  state.sessionId = null;
+  state.streamBuffer = '';
+  state.pendingAttachments = [];
+  state.currentBubble = null;
+  state.currentFleetSessionId = null;
+  state.fleetAgents = {};
+  if (state.ws) {
+    try { state.ws.onclose = null; state.ws.close(); } catch (e) { /* ignore */ }
+    state.ws = null;
+  }
+  if (state.fleetWS) {
+    try { state.fleetWS.onclose = null; state.fleetWS.close(); } catch (e) { /* ignore */ }
+    state.fleetWS = null;
+  }
+  const messages = document.getElementById('messages');
+  if (messages) messages.innerHTML = '';
+  list.forEach((key) => {
+    if (typeof key === 'string' && key.startsWith('product:')) {
+      /* departing product marker — already cleared above */
+    }
+  });
+}
+
+async function switchProductWorkspace(toProduct) {
+  const current = state.activeProduct || (state.capabilities && state.capabilities.product_id) || 'js-agent';
+  if (toProduct === current) return;
+  if (toProduct !== 'js-agent' && toProduct !== 'js-work') {
+    showToast('不支持的产品工作区', 'error');
+    return;
+  }
+  try {
+    const prefsRes = await fetch('/api/appshell/prefs');
+    if (prefsRes.ok) {
+      const prefs = await prefsRes.json();
+      if (prefs.personal_base_url) {
+        state.personalBaseUrl = prefs.personal_base_url;
+        localStorage.setItem('js-appshell-personal-url', prefs.personal_base_url);
+      }
+      if (prefs.work_base_url) {
+        state.workBaseUrl = prefs.work_base_url;
+        localStorage.setItem('js-appshell-work-url', prefs.work_base_url);
+      }
+    }
+  } catch (e) { /* optional */ }
+
+  let switchBody;
+  try {
+    const res = await fetch('/api/workspace/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        to_product: toProduct,
+        session_id: state.sessionId || null,
+      }),
+    });
+    switchBody = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showToast((switchBody && switchBody.error) || '工作区切换失败，已留在当前产品', 'error');
+      updateProductSwitcherUI();
+      return;
+    }
+  } catch (err) {
+    showToast('工作区切换请求失败', 'error');
+    updateProductSwitcherUI();
+    return;
+  }
+
+  clearAppShellUiCache(switchBody.clear_ui_cache_keys || []);
+  const targetUrl = (switchBody.rebind && switchBody.rebind.target_base_url)
+    || (toProduct === 'js-work' ? state.workBaseUrl : state.personalBaseUrl);
+  localStorage.setItem('js-appshell-active-product', toProduct);
+  state.activeProduct = toProduct;
+  // Navigate to the isolated backend host — data planes stay separate.
+  window.location.href = targetUrl.replace(/\/$/, '') + '/';
+}
+
 function switchTab(tab) {
+  const caps = state.capabilities;
+  if (caps && Array.isArray(caps.enabled_tabs) && !caps.enabled_tabs.includes(tab)) {
+    showToast(`当前产品未启用「${tab}」能力`, 'error');
+    return;
+  }
   // Hide all tabs, remove flex from chat
   document.querySelectorAll('.tab-content').forEach(el => {
     el.classList.add('hidden');
@@ -1303,6 +1540,7 @@ function switchTab(tab) {
   if (tab === 'files') loadFiles();
   if (tab === 'memory') loadMemory();
   if (tab === 'audit') loadAudit();
+  if (tab === 'approvals') loadApprovals();
   if (tab === 'status') loadStatus();
   if (tab === 'dashboard') loadDashboard();
   if (tab === 'skills') loadSkills();
@@ -1646,16 +1884,37 @@ async function loadFleetSessionDetail(sessionId) {
         <div class="text-xs text-gray-300">${escapeHtml(session.review.substring(0, 300))}${session.review.length > 300 ? '...' : ''}</div>
       </div>`;
     }
-    html += `<div class="mt-3 flex gap-2">
-      <button onclick="loadFleetSessionToChat('${escapeHtml(session.session_id)}'); document.getElementById('fleet-session-detail').classList.add('hidden');" class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded transition">
-        <i class="fas fa-reply mr-1"></i>继续对话
-      </button>
-      <button onclick="deleteFleetSession('${escapeHtml(session.session_id)}'); document.getElementById('fleet-session-detail').classList.add('hidden');" class="text-xs bg-red-900/40 hover:bg-red-900/60 text-red-300 px-3 py-1.5 rounded transition">
-        <i class="fas fa-trash mr-1"></i>删除
-      </button>
-    </div>`;
 
     content.innerHTML = html;
+    const actions = el('div', { className: 'mt-3 flex gap-2' });
+    const sessionIdSafe = sanitizeRuntimeId(session.session_id);
+    if (sessionIdSafe) {
+      const continueBtn = el('button', {
+        className: 'text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded transition',
+        attrs: { type: 'button' },
+        dataset: { sessionId: sessionIdSafe },
+      });
+      continueBtn.appendChild(el('i', { className: 'fas fa-reply mr-1' }));
+      continueBtn.appendChild(document.createTextNode('继续对话'));
+      onDataClick(continueBtn, 'sessionId', (id) => {
+        loadFleetSessionToChat(id);
+        detail.classList.add('hidden');
+      });
+      const deleteBtn = el('button', {
+        className: 'text-xs bg-red-900/40 hover:bg-red-900/60 text-red-300 px-3 py-1.5 rounded transition',
+        attrs: { type: 'button' },
+        dataset: { sessionId: sessionIdSafe },
+      });
+      deleteBtn.appendChild(el('i', { className: 'fas fa-trash mr-1' }));
+      deleteBtn.appendChild(document.createTextNode('删除'));
+      onDataClick(deleteBtn, 'sessionId', (id) => {
+        deleteFleetSession(id);
+        detail.classList.add('hidden');
+      });
+      actions.appendChild(continueBtn);
+      actions.appendChild(deleteBtn);
+    }
+    content.appendChild(actions);
     detail.classList.remove('hidden');
   } catch (e) {
     showToast('加载详情失败', 'error');
@@ -1997,10 +2256,12 @@ const _windowFuncs = {
   loadCronTemplates, renderCronJobs, triggerFileSelect, handleFileSelect,
   loadSessions, switchSession, deleteSession, setCurrentModel,
   loadCloudPresets, loadAudit, loadStatus, loadModels,
+  loadApprovals, startApprovalsPolling, stopApprovalsPolling,
   loadTasks, pauseTask, resumeTask, deleteTask,
   loadScenarios, startScenario, fillScenarioPrompt,
   saveApiKey,
   updateProviderKey, hideProviderKeyModal, submitProviderKeyUpdate,
+  switchProductWorkspace, updateProductSwitcherUI, clearAppShellUiCache,
 };
 Object.entries(_windowFuncs).forEach(([k, v]) => { if (typeof v === 'function') window[k] = v; });
 
@@ -2015,21 +2276,34 @@ window.switchTab = function(tab) {
 
 // ---- Bootstrap: initialize on page load ----
 restoreApiKey();
-// First run: adopt the server-injected bootstrap admin key so a fresh install
-// is usable immediately without manual key entry. Only when we have none yet.
-if (!state.apiKey && typeof window.__BOOTSTRAP_API_KEY__ === 'string' && window.__BOOTSTRAP_API_KEY__) {
-  state.apiKey = window.__BOOTSTRAP_API_KEY__;
-  localStorage.setItem('js-api-key', state.apiKey);
-  document.cookie = 'x-api-key=' + encodeURIComponent(state.apiKey) + '; path=/; SameSite=Strict';
-  const keyInput = document.getElementById('api-key-input');
-  if (keyInput) keyInput.value = state.apiKey;
+// ``js open`` places the local bootstrap key in the URL fragment. Fragments
+// never enter the HTTP request or proxy logs; remove it immediately after use.
+const bootstrapParams = new URLSearchParams(window.location.hash.slice(1));
+const bootstrapKey = bootstrapParams.get('bootstrap-api-key');
+async function initApp() {
+  if (bootstrapKey) {
+    // Exchange the one-time bootstrap key for an HttpOnly session cookie
+    // BEFORE opening the WebSocket, which authenticates via that cookie.
+    await saveApiKey(bootstrapKey);
+    bootstrapParams.delete('bootstrap-api-key');
+    const remainingHash = bootstrapParams.toString();
+    history.replaceState(
+      null,
+      '',
+      window.location.pathname + window.location.search + (remainingHash ? '#' + remainingHash : '')
+    );
+  }
+  connectWS();
+  initDragDrop();
+  checkFirstStart();
+  await applyCapabilityManifest();
+  loadApprovals();
+  startApprovalsPolling();
+  // Load model list eagerly so the top-bar dropdown is usable immediately
+  // without requiring the user to visit the Models tab first.
+  loadModels();
 }
-connectWS();
-initDragDrop();
-checkFirstStart();
-// Load model list eagerly so the top-bar dropdown is usable immediately
-// without requiring the user to visit the Models tab first.
-loadModels();
+initApp();
 
 // Bind Enter key on chat input
 const chatInput = document.getElementById('chat-input');
@@ -2040,4 +2314,14 @@ if (chatInput) {
       sendMessage();
     }
   });
+}
+
+const chatSendButton = document.getElementById('chat-send-button');
+if (chatSendButton) {
+  const submitFromButton = (e) => {
+    e.preventDefault();
+    sendMessage();
+  };
+  chatSendButton.addEventListener('pointerdown', submitFromButton);
+  chatSendButton.addEventListener('click', submitFromButton);
 }

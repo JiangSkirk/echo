@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com; font-src https://cdnjs.cloudflare.com; connect-src 'self' ws: wss:;">
-<title>JS Agent</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; connect-src 'self' ws: wss:;">
+<title>{{PRODUCT_NAME}}</title>
+<link href="/static/vendor/tailwind.css" rel="stylesheet">
+<link href="/static/vendor/fontawesome/css/all.min.css" rel="stylesheet">
 <style>
 @keyframes pulse-glow {
   0%, 100% { box-shadow: 0 0 5px rgba(59,130,246,0.3); }
@@ -229,7 +229,7 @@
     <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
       <i class="fas fa-robot text-white text-sm"></i>
     </div>
-    <h1 class="font-bold text-lg">JS Agent</h1>
+    <h1 class="font-bold text-lg">{{PRODUCT_NAME}}</h1>
   </div>
   <nav class="flex-1 p-2 space-y-1 overflow-y-auto">
     <!-- 常用：普通用户日常主线 -->
@@ -282,6 +282,10 @@
     <button onclick="switchTab('audit')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-audit">
       <i class="fas fa-shield-alt w-5"></i> 审计
     </button>
+    <button onclick="switchTab('approvals')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-approvals">
+      <i class="fas fa-user-check w-5"></i> 审批
+      <span id="approvals-pending-count" class="hidden ml-auto min-w-5 px-1.5 py-0.5 rounded-full bg-yellow-500/20 text-yellow-300 text-[10px] text-center" aria-label="待审批数量">0</span>
+    </button>
     <button onclick="switchTab('stats')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-stats">
       <i class="fas fa-coins w-5"></i> 用量统计
     </button>
@@ -316,6 +320,10 @@
       <i class="fas fa-bars"></i>
     </button>
     <div class="flex items-center gap-3">
+      <div id="product-switcher" class="flex items-center rounded-lg border border-gray-700 overflow-hidden text-xs" role="group" aria-label="Product workspace">
+        <button type="button" id="product-personal-btn" onclick="switchProductWorkspace('js-agent')" class="px-3 py-1.5 bg-gray-800 text-blue-300 font-medium">Personal</button>
+        <button type="button" id="product-work-btn" onclick="switchProductWorkspace('js-work')" class="px-3 py-1.5 text-gray-400 hover:text-white hover:bg-gray-800">Work</button>
+      </div>
       <select id="current-model" onchange="switchModel(this.value)" class="text-xs bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-300 focus:outline-none focus:border-blue-500">
         <option value="">默认模型</option>
       </select>
@@ -334,7 +342,7 @@
           <div class="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
             <i class="fas fa-robot text-white text-2xl"></i>
           </div>
-          <h2 class="text-2xl font-bold mb-2">欢迎使用 JS Agent</h2>
+          <h2 class="text-2xl font-bold mb-2">欢迎使用 {{PRODUCT_NAME}}</h2>
           <p class="text-gray-400">只需几步即可完成初始设置，开始您的 AI 助手之旅。</p>
         </div>
         <div class="bg-gray-800 rounded-xl p-4 mb-6 text-sm text-gray-300 space-y-2">
@@ -400,7 +408,7 @@
             <i class="fas fa-check text-white text-2xl"></i>
           </div>
           <h2 class="text-2xl font-bold mb-2">设置完成</h2>
-          <p class="text-gray-400">您已完成初始设置，可以开始使用 JS Agent 了。</p>
+          <p class="text-gray-400">您已完成初始设置，可以开始使用 {{PRODUCT_NAME}} 了。</p>
         </div>
         <div class="bg-gray-800 rounded-xl p-4 mb-6 text-sm">
           <div class="flex items-center justify-between mb-2">
@@ -452,7 +460,7 @@
             <i class="fas fa-paperclip text-xs"></i>
           </button>
           <!-- Send button -->
-          <button onclick="sendMessage()" class="absolute right-3 bottom-3 w-8 h-8 bg-blue-600 hover:bg-blue-700 rounded-lg flex items-center justify-center transition">
+          <button id="chat-send-button" type="button" class="absolute right-3 bottom-3 z-10 w-8 h-8 bg-blue-600 hover:bg-blue-700 rounded-lg flex items-center justify-center transition">
             <i class="fas fa-paper-plane text-xs"></i>
           </button>
         </div>
@@ -631,6 +639,21 @@
     <div class="max-w-4xl mx-auto">
       <h2 class="text-xl font-bold mb-4">审计日志</h2>
       <div id="audit-content" class="space-y-2"></div>
+    </div>
+  </div>
+
+  <div id="tab-approvals" class="tab-content flex-1 hidden p-4 overflow-y-auto">
+    <div class="max-w-4xl mx-auto">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 class="text-xl font-bold"><i class="fas fa-user-check text-yellow-400 mr-2"></i>工具审批</h2>
+          <p class="text-sm text-gray-500 mt-1">确认、修改或回复待执行的工具调用。</p>
+        </div>
+        <button onclick="loadApprovals()" class="w-8 h-8 bg-gray-800 hover:bg-gray-700 rounded flex items-center justify-center transition" title="刷新审批队列" aria-label="刷新审批队列">
+          <i class="fas fa-sync-alt" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div id="approvals-list" class="space-y-3" aria-live="polite"></div>
     </div>
   </div>
 
