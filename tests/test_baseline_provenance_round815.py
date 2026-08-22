@@ -67,7 +67,7 @@ def _clean_detached_archive_export(tmp_path: Path) -> tuple[Path, str]:
 
 
 def _detached_clone_at_old_commit(tmp_path: Path) -> tuple[Path, str]:
-    """Clone the committed old tree locally; never mutate the live checkout or its refs."""
+    """Clone the old commit into a temp worktree; never mutate the live checkout."""
     measured = tmp_path / "measured-old"
     subprocess.run(
         ["git", "clone", "--no-local", "--quiet", str(REPO_ROOT), str(measured)],
@@ -79,8 +79,8 @@ def _detached_clone_at_old_commit(tmp_path: Path) -> tuple[Path, str]:
         "--verify",
         "65cc545e3ec893f5bab62d356514643f14456a58^{commit}",
     )
-    # The clone already contains these bytes. Detach without checkout/reset.
-    _git(measured, "update-ref", "--no-deref", "HEAD", commit)
+    # Materialize the old tree so worktree bytes match HEAD^{tree}.
+    _git(measured, "checkout", "--quiet", "--detach", commit)
     assert (
         subprocess.run(
             ["git", "symbolic-ref", "--quiet", "HEAD"], cwd=measured, check=False

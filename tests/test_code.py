@@ -37,6 +37,47 @@ class TestCodeTool:
         assert "Disallowed" in result.error
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "code",
+        [
+            # operator.attrgetter("__traceback__") chain must be rejected.
+            "import operator",
+            "import operator as op",
+            "from operator import attrgetter",
+            "import operator\noperator.attrgetter('__traceback__')",
+            # Frame / traceback / generator / coroutine introspection attrs.
+            "x.__traceback__",
+            "x.tb_frame",
+            "x.f_globals",
+            "x.f_locals",
+            "x.f_builtins",
+            "x.gi_frame",
+            "x.gi_code",
+            "x.cr_frame",
+            "x.cr_await",
+            "x.__closure__",
+            "x.__func__",
+            "x.__self__",
+            # Dangerous builtins in attribute-call form.
+            "x.open('f')",
+            "x.eval('1+1')",
+            "x.exec('1+1')",
+            "x.compile('1', 'f', 'exec')",
+            "x.input()",
+            "x.__import__('os')",
+        ],
+    )
+    async def test_blacklist_bypass_payloads_blocked(
+        self, code_tool: CodeTool, code: str
+    ) -> None:
+        result = await code_tool.execute(code)
+        assert not result.success
+        assert "Disallowed" in result.error
+
+    def test_scan_allows_benign_code(self, code_tool: CodeTool) -> None:
+        assert code_tool._scan_code("print('a b'.upper())\nprint(len([1, 2]))") is None
+
+    @pytest.mark.asyncio
     async def test_syntax_error(self, code_tool: CodeTool) -> None:
         result = await code_tool.execute("print(")
         assert not result.success

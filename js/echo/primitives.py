@@ -23,6 +23,14 @@ _SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b"),
     re.compile(r"\bBearer\s+[A-Za-z0-9._=-]{10,}\b", re.IGNORECASE),
     re.compile(r"\b(api[_-]?key|secret|token)\s*[:=]\s*[A-Za-z0-9._=-]{8,}\b", re.IGNORECASE),
+    # AWS access key IDs.
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    # GitHub personal access tokens.
+    re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"),
+    # Google API keys.
+    re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"),
+    # PEM-encoded private key headers (RSA/EC/OPENSSH/ENCRYPTED/generic).
+    re.compile(r"-----BEGIN[A-Z0-9 ]*PRIVATE KEY-----"),
 )
 
 
@@ -106,11 +114,11 @@ class ScopeGate:
         secret_text = "\n".join(_strings_from_value(request))
         if _contains_secret(secret_text):
             raise PermissionError("secret data cannot enter Echo 2.0 model path")
-        prompt_text = "\n".join(_strings_from_value(request.messages))
-        if _prompt_appears_to_grant_scope(prompt_text) and any(
-            scope != "model:invoke" for scope in request.requested_scopes
-        ):
-            raise PermissionError("prompt text cannot grant scope escalation")
+        # Scope grants come only from the structured ``requested_scopes``
+        # (signed lease/permit context).  Prompt text is data, not authority:
+        # no in-band phrase can grant scope, and scanning message bodies for
+        # grant-like wording let any message containing "grant"/"授权"
+        # permanently block the session's model calls.
 
         messages_hash = canonical_payload_hash(request.messages)
         tools_schema_hash = canonical_payload_hash(request.tools_schema)
@@ -272,16 +280,6 @@ class ContextVault:
 
 def _contains_secret(text: str) -> bool:
     return any(pattern.search(text) for pattern in _SECRET_PATTERNS)
-
-
-def _prompt_appears_to_grant_scope(text: str) -> bool:
-    lowered = text.casefold()
-    return (
-        "ignore prior rules" in lowered
-        or "user approved" in lowered
-        or "grant" in lowered
-        or "授权" in lowered
-    )
 
 
 def _strings_from_value(value: Any) -> list[str]:

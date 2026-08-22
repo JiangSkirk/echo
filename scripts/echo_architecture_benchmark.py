@@ -102,7 +102,9 @@ HISTORY_MARKER_PREFIX = "benchmark long history message "
 EXPECTED_PROVIDER_HISTORY_MESSAGES = 14
 EXPECTED_HISTORY_MARKERS = tuple(
     f"{HISTORY_MARKER_PREFIX}{index}"
-    for index in range(LONG_HISTORY_MESSAGES - EXPECTED_PROVIDER_HISTORY_MESSAGES, LONG_HISTORY_MESSAGES)
+    for index in range(
+        LONG_HISTORY_MESSAGES - EXPECTED_PROVIDER_HISTORY_MESSAGES, LONG_HISTORY_MESSAGES
+    )
 )
 EXPECTED_HISTORY_MARKER_SHA256 = hashlib.sha256(
     json.dumps(
@@ -731,6 +733,7 @@ def _build_ws_client(settings: JSSettings, agent: Any) -> ExitStack:
 
     stack = ExitStack()
     stack.enter_context(patch("js.web.server.lifespan", _noop_lifespan))
+    from js.web.auth import AuthManager
     from js.web.server import create_app
 
     app = create_app()
@@ -739,9 +742,15 @@ def _build_ws_client(settings: JSSettings, agent: Any) -> ExitStack:
     stack.enter_context(patch("js.web.server.get_agent", return_value=agent))
     stack.enter_context(patch("js.web.deps._settings", settings))
     stack.enter_context(patch("js.web.deps._agent", agent))
-    client = TestClient(app, base_url="http://localhost", headers={"Origin": "http://localhost"})
+    user_key = AuthManager(settings.state_dir).create_key("echo-ws-benchmark", role="user")
+    client = TestClient(
+        app,
+        base_url="http://localhost",
+        headers={"Origin": "http://localhost", "X-API-Key": user_key},
+    )
     stack.enter_context(client)
     stack.client = client  # type: ignore[attr-defined]
+    stack.user_key = user_key  # type: ignore[attr-defined]
     return stack
 
 
@@ -1295,7 +1304,9 @@ def _run_ws_message_wrapper(
         client: TestClient = stack.client  # type: ignore[attr-defined]
 
         def one(index: int) -> list[dict[str, Any]]:
-            with client.websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+            with client.websocket_connect(
+                "/ws", headers={"Origin": "http://localhost", "X-API-Key": stack.user_key}
+            ) as ws:
                 ws.send_json(
                     {
                         "type": "message",
@@ -1346,7 +1357,9 @@ def _run_ws_stream_wrapper(
         client: TestClient = stack.client  # type: ignore[attr-defined]
 
         def one(index: int) -> list[dict[str, Any]]:
-            with client.websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+            with client.websocket_connect(
+                "/ws", headers={"Origin": "http://localhost", "X-API-Key": stack.user_key}
+            ) as ws:
                 ws.send_json(
                     {
                         "type": "stream",
@@ -1401,7 +1414,8 @@ def _receive_ws_stream_timing(
     """Capture one monotonic send-to-frame receipt from the real WS edge."""
 
     frames: list[dict[str, Any]] = []
-    with client.websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    # Client default headers already carry Origin + X-API-Key from _build_ws_client.
+    with client.websocket_connect("/ws") as ws:
         send_monotonic_ns = time.perf_counter_ns()
         ws.send_json(
             {
@@ -1506,7 +1520,9 @@ def _run_ws_stream_resilience_probes(base: Path, mode: ModeSpec) -> dict[str, An
     provider_started = False
     with _build_ws_client(disconnect_settings, disconnect_agent) as stack:
         client: TestClient = stack.client  # type: ignore[attr-defined]
-        with client.websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+        with client.websocket_connect(
+            "/ws", headers={"Origin": "http://localhost", "X-API-Key": stack.user_key}
+        ) as ws:
             ws.send_json(
                 {
                     "type": "stream",
@@ -1892,8 +1908,7 @@ def _verify_compaction_semantics(
         "active_payload_sha256": active_sha256,
         "active_payload_equivalent": active_semantics == expected_tail,
         "post_compaction_bad_tail_recovery_ok": (
-            len(active_records) == COMPACTION_ACTIVE_RECORD_COUNT
-            and recovered_archive_report.ok
+            len(active_records) == COMPACTION_ACTIVE_RECORD_COUNT and recovered_archive_report.ok
         ),
         "corrupt_tail_quarantine_count": int(corrupt_tail_path.is_file()),
         "active_journal_sha256": hashlib.sha256(compaction_path.read_bytes()).hexdigest(),
@@ -2319,9 +2334,7 @@ def run_benchmark_suite(
     echo["ws_stream_timing"]["first_text_token_latency"]["group_p95_ms"] = aggregate[
         "ws_first_token_p95_runs_ms"
     ]
-    echo["ws_stream_timing"]["terminal_latency"]["p95_ms"] = aggregate[
-        "ws_terminal_p95_median_ms"
-    ]
+    echo["ws_stream_timing"]["terminal_latency"]["p95_ms"] = aggregate["ws_terminal_p95_median_ms"]
     echo["ws_stream_timing"]["terminal_latency"]["group_p95_ms"] = aggregate[
         "ws_terminal_p95_runs_ms"
     ]
@@ -2662,7 +2675,9 @@ def _evaluate_ws_stream_timing(
             for name in ("status", "thinking", "first_text_token", "usage", "terminal")
         ]
         numeric_offsets = [
-            value for value in (_finite_float(item) for item in ordered_offsets) if value is not None
+            value
+            for value in (_finite_float(item) for item in ordered_offsets)
+            if value is not None
         ]
         if (
             len(numeric_offsets) != len(ordered_offsets)
@@ -2727,8 +2742,7 @@ def _evaluate_compaction_semantics(recovery: object, *, label: str) -> list[str]
         "logical_record_count": COMPACTION_LOGICAL_RECORD_COUNT,
         "expected_active_record_count": COMPACTION_ACTIVE_RECORD_COUNT,
         "active_record_count": COMPACTION_ACTIVE_RECORD_COUNT,
-        "active_record_types": ["snapshot_anchor"]
-        + ["decision"] * COMPACTION_RETAIN_RECORDS,
+        "active_record_types": ["snapshot_anchor"] + ["decision"] * COMPACTION_RETAIN_RECORDS,
         "expected_retained_record_count": COMPACTION_RETAIN_RECORDS,
         "retained_record_count": COMPACTION_RETAIN_RECORDS,
         "archive_chain_verified": True,
@@ -2830,9 +2844,7 @@ def evaluate_slo_failures(result: dict[str, Any]) -> list[str]:
         if p95_ms > max_p95:
             failures.append(f"{scenario}: echo p95 {p95_ms:.3f}ms exceeds {max_p95:.3f}ms")
     aggregate_first_text = (
-        aggregate.get("ws_first_token_p95_median_ms")
-        if isinstance(aggregate, dict)
-        else None
+        aggregate.get("ws_first_token_p95_median_ms") if isinstance(aggregate, dict) else None
     )
     aggregate_terminal = (
         aggregate.get("ws_terminal_p95_median_ms") if isinstance(aggregate, dict) else None

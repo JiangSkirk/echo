@@ -9,12 +9,12 @@ from __future__ import annotations
 import hashlib
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import Cookie, Depends, HTTPException, Request, Security, WebSocket, status
+from fastapi import Depends, HTTPException, Request, Security, WebSocket, status
 from fastapi.security import APIKeyHeader
 
 from js.echo import turn_context as _echo_turn_context
@@ -38,6 +38,9 @@ __all__ = [
     "require_auth_dep",
     "check_origin",
     "memory_owner",
+    "resolve_session_cookie",
+    "request_is_direct_loopback",
+    "session_cookie_name",
     "runtime_owner",
 ]
 
@@ -47,14 +50,55 @@ _ADMIN_ROLE = "admin"
 _USER_ROLE = "user"
 _GUEST_ROLE = "guest"
 
-# Name of the HttpOnly session cookie minted by POST /api/auth/session.  The
-# plaintext API key is never stored client-side; the cookie carries a random
-# token whose SHA-256 hash is persisted server-side with an expiry.
+# Legacy unscoped session cookie name. Kept only as a Personal migration
+# fallback: browsers treat cookies as host-scoped (not port-scoped), so a
+# shared ``js_session`` on 127.0.0.1:8000 and :8765 clobbers AppShell
+# Personal↔Work logins. New cookies are product-scoped via
+# ``session_cookie_name``.
 _SESSION_COOKIE = "js_session"
 _SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 
+
+def session_cookie_name(product_id: str | None = None) -> str:
+    """Return the HttpOnly session cookie name for a product backend."""
+    raw = (product_id or "js-agent").strip() or "js-agent"
+    safe = "".join(ch if (ch.isalnum() or ch in "-_") else "-" for ch in raw)
+    return f"js_session_{safe}"
+
+
+def resolve_session_cookie(
+    cookies: Mapping[str, str],
+    product_id: str | None = None,
+) -> str | None:
+    """Read the product session token from a cookie mapping.
+
+    Prefer the product-scoped cookie. Bare ``js_session`` is accepted only for
+    the Personal product (``js-agent``) so older installs keep working; Work
+    must never accept it, or a Personal login would authenticate Work.
+    """
+    primary = cookies.get(session_cookie_name(product_id))
+    if isinstance(primary, str) and primary:
+        return primary
+    if (product_id or "js-agent") == "js-agent":
+        legacy = cookies.get(_SESSION_COOKIE)
+        if isinstance(legacy, str) and legacy:
+            return legacy
+    return None
+
+
 # Client hosts allowed to use the unauthenticated setup bootstrap window.
 _LOOPBACK_CLIENT_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+# Presence of any of these means a reverse proxy may be rewriting the peer;
+# bootstrap must not trust request.client.host alone in that case.
+_FORWARDED_CLIENT_HEADERS = frozenset(
+    {
+        "forwarded",
+        "x-forwarded-for",
+        "x-real-ip",
+        "x-forwarded-host",
+    }
+)
 
 # Operator-configured origin allowlist (e.g. real domains behind a reverse
 # proxy).  Set via JS_ALLOWED_ORIGINS (comma-separated).  When unset, allowed
@@ -69,6 +113,19 @@ _LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
 # HTTP methods that mutate state and therefore require CSRF/Origin protection.
 _STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _request_has_forwarded_client_headers(request: Request) -> bool:
+    """True when the request carries reverse-proxy client-identity headers."""
+    return any(name in request.headers for name in _FORWARDED_CLIENT_HEADERS)
+
+
+def request_is_direct_loopback(request: Request) -> bool:
+    """Return whether the peer is loopback with no forwarded-client headers."""
+    client_host = request.client.host if request.client is not None else None
+    return client_host in _LOOPBACK_CLIENT_HOSTS and not _request_has_forwarded_client_headers(
+        request
+    )
 
 
 def _load_allowed_origins() -> frozenset[str]:
@@ -113,6 +170,67 @@ def _origin_host(value: str) -> str:
     return value.rstrip("/")
 
 
+def _state_dirs_for_origin_key(request: Request | WebSocket) -> tuple[Path, ...]:
+    """Collect AuthManager state dirs reachable from this request.
+
+    Used only to decide whether a presented ``X-API-Key`` may skip Origin
+    (CLI clients).  An unverified header must not grant that exemption.
+    """
+    dirs: list[Path] = []
+    scope = getattr(request, "scope", None)
+    app = scope.get("app") if isinstance(scope, Mapping) else None
+    state = getattr(app, "state", None) if app is not None else None
+    if state is not None:
+        settings = getattr(state, "runtime_settings", None)
+        state_dir = getattr(settings, "state_dir", None) if settings is not None else None
+        if state_dir is not None:
+            dirs.append(Path(state_dir))
+        for attr in ("personal_app", "work_app"):
+            child = getattr(state, attr, None)
+            child_settings = getattr(getattr(child, "state", None), "runtime_settings", None)
+            child_dir = (
+                getattr(child_settings, "state_dir", None) if child_settings is not None else None
+            )
+            if child_dir is not None:
+                dirs.append(Path(child_dir))
+    if not dirs:
+        try:
+            from js.web.runtime_context import current_web_runtime
+
+            runtime = current_web_runtime()
+            if runtime is not None:
+                dirs.append(Path(runtime.settings.state_dir))
+        except Exception:
+            pass
+    if not dirs:
+        try:
+            from js.web.server import _settings as fallback_settings
+
+            if fallback_settings is not None:
+                dirs.append(Path(fallback_settings.state_dir))
+        except Exception:
+            pass
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for item in dirs:
+        marker = str(item)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        unique.append(item)
+    return tuple(unique)
+
+
+def _api_key_verified_for_origin_exempt(request: Request | WebSocket, key: str) -> bool:
+    for state_dir in _state_dirs_for_origin_key(request):
+        try:
+            AuthManager(state_dir).verify(key)
+            return True
+        except Exception:
+            continue
+    return False
+
+
 def check_origin(request: Request | WebSocket) -> None:
     """Validate the Origin/Referer against the server's own Host (anti-CSRF).
 
@@ -126,9 +244,10 @@ def check_origin(request: Request | WebSocket) -> None:
     headers = request.headers
     origin_raw = headers.get("origin") or headers.get("referer")
     if not origin_raw:
-        # Non-browser clients (CLI, curl) send no Origin — allow if an API key
-        # is present, otherwise reject.
-        if not headers.get("x-api-key"):
+        # Non-browser clients (CLI, curl) send no Origin — allow only when a
+        # presented API key verifies. An unverified header must not skip CSRF.
+        _presented_key = headers.get("x-api-key")
+        if not _presented_key or not _api_key_verified_for_origin_exempt(request, _presented_key):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Origin header required for browser-based requests",
@@ -179,8 +298,11 @@ class AuthManager:
     _SHARED_VERIFY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
     _SHARED_LAST_USED: dict[str, float] = {}
     _INITIALIZED_DBS: set[str] = set()
-    _VERIFY_CACHE_TTL_SECONDS = 5.0
+    _VERIFY_CACHE_TTL_SECONDS = 5.0  # positive cache only; revoke calls _invalidate_verify_cache
     _LAST_USED_MIN_INTERVAL_SECONDS = 60.0
+    # Hard cap on the shared positive caches. Entries are keyed by distinct
+    # key-hash, so without a bound the dicts grow for the life of the process.
+    _VERIFY_CACHE_MAX_ENTRIES = 10_000
 
     def __init__(self, state_dir: Path) -> None:
         self._db_path = state_dir / "api_keys.db"
@@ -204,6 +326,30 @@ class AuthManager:
         cache_key = self._cache_key(key_hash)
         self._SHARED_VERIFY_CACHE.pop(cache_key, None)
         self._SHARED_LAST_USED.pop(cache_key, None)
+
+    @classmethod
+    def _enforce_verify_cache_bounds(cls, now: float) -> None:
+        """Keep the process-wide shared caches bounded.
+
+        Entries are keyed by distinct key-hash, so the dicts would otherwise
+        grow for the life of the process. Expired entries are purged first;
+        if the cache still exceeds the cap, both caches are cleared — they
+        are positive caches only, so a clear costs one extra DB lookup per
+        key and nothing more.
+        """
+        if len(cls._SHARED_VERIFY_CACHE) <= cls._VERIFY_CACHE_MAX_ENTRIES:
+            return
+        expired = [
+            cached_key
+            for cached_key, (ts, _) in cls._SHARED_VERIFY_CACHE.items()
+            if (now - ts) >= cls._VERIFY_CACHE_TTL_SECONDS
+        ]
+        for cached_key in expired:
+            cls._SHARED_VERIFY_CACHE.pop(cached_key, None)
+            cls._SHARED_LAST_USED.pop(cached_key, None)
+        if len(cls._SHARED_VERIFY_CACHE) > cls._VERIFY_CACHE_MAX_ENTRIES:
+            cls._SHARED_VERIFY_CACHE.clear()
+            cls._SHARED_LAST_USED.clear()
 
     def _init_db(self) -> None:
         # Schema bootstrap once per DB path — CREATE IF NOT EXISTS is not free on
@@ -239,6 +385,31 @@ class AuthManager:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS managed_api_keys (
+                    key_hash TEXT PRIMARY KEY,
+                    issuer TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            managed_columns = [
+                (str(row[1]), str(row[2]).upper(), int(row[3]), int(row[5]))
+                for row in conn.execute("PRAGMA table_info(managed_api_keys)")
+            ]
+            if managed_columns != [
+                ("key_hash", "TEXT", 0, 1),
+                ("issuer", "TEXT", 1, 0),
+                ("created_at", "REAL", 1, 0),
+            ]:
+                raise RuntimeError("managed API key provenance schema is invalid")
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_managed_api_keys_issuer
+                ON managed_api_keys(issuer)
+                """
+            )
             conn.commit()
         self._INITIALIZED_DBS.add(self._cache_ns)
 
@@ -259,6 +430,196 @@ class AuthManager:
             conn.commit()
         logger.info(f"Created API key '{name}' with role '{role}'")
         return plaintext
+
+    def provision_existing_key(
+        self,
+        key: str,
+        *,
+        name: str,
+        role: str,
+    ) -> dict[str, Any]:
+        """Install one already-generated key into this isolated role store.
+
+        Only the trusted AppShell bootstrap broker calls this method to bind
+        one plaintext credential to both Personal and Work. Existing rows are
+        never widened, re-enabled, or overwritten.
+        """
+        if not isinstance(key, str) or not key.startswith("js_") or len(key) < 16:
+            raise ValueError("shared API key is invalid")
+        if role not in {_ADMIN_ROLE, _USER_ROLE}:
+            raise ValueError("shared API key role is invalid")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("shared API key name is required")
+        key_hash = _hash_key(key)
+        now = time.time()
+        with db_connection(self._db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT name, role, enabled FROM api_keys WHERE key_hash = ?",
+                (key_hash,),
+            ).fetchone()
+            if row is None:
+                connection.execute(
+                    "INSERT INTO api_keys "
+                    "(key_hash, name, role, created_at, enabled) VALUES (?, ?, ?, ?, 1)",
+                    (key_hash, name.strip(), role, now),
+                )
+                connection.commit()
+                identity = {"name": name.strip(), "role": role, "key_hash": key_hash}
+            else:
+                existing_name, existing_role, enabled = row
+                connection.rollback()
+                if not enabled:
+                    raise AuthRequiredError("API key has been revoked")
+                if existing_role != role:
+                    raise PermissionError("existing API key role cannot be widened")
+                identity = {
+                    "name": existing_name,
+                    "role": existing_role,
+                    "key_hash": key_hash,
+                }
+        self._invalidate_verify_cache(key_hash)
+        return identity
+
+    def provision_managed_key(
+        self,
+        key: str,
+        *,
+        name: str,
+        role: str,
+        issuer: str,
+    ) -> dict[str, Any]:
+        """Create a new key and trusted provenance marker atomically.
+
+        A pre-existing key is never adopted as managed. This prevents a caller
+        from attaching trusted cleanup authority to an ordinary user key.
+        """
+        if not isinstance(key, str) or not key.startswith("js_") or len(key) < 16:
+            raise ValueError("managed API key is invalid")
+        if role not in {_ADMIN_ROLE, _USER_ROLE}:
+            raise ValueError("managed API key role is invalid")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("managed API key name is required")
+        if not isinstance(issuer, str) or not issuer.strip():
+            raise ValueError("managed API key issuer is required")
+
+        normalized_name = name.strip()
+        normalized_issuer = issuer.strip()
+        key_hash = _hash_key(key)
+        now = time.time()
+        with db_connection(self._db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing_key = connection.execute(
+                "SELECT 1 FROM api_keys WHERE key_hash = ?",
+                (key_hash,),
+            ).fetchone()
+            existing_marker = connection.execute(
+                "SELECT 1 FROM managed_api_keys WHERE key_hash = ?",
+                (key_hash,),
+            ).fetchone()
+            if existing_key is not None or existing_marker is not None:
+                connection.rollback()
+                raise ValueError("managed API key identity already exists")
+            connection.execute(
+                "INSERT INTO api_keys "
+                "(key_hash, name, role, created_at, enabled) VALUES (?, ?, ?, ?, 1)",
+                (key_hash, normalized_name, role, now),
+            )
+            connection.execute(
+                "INSERT INTO managed_api_keys (key_hash, issuer, created_at) VALUES (?, ?, ?)",
+                (key_hash, normalized_issuer, now),
+            )
+            connection.commit()
+        self._invalidate_verify_cache(key_hash)
+        return {"name": normalized_name, "role": role, "key_hash": key_hash}
+
+    @staticmethod
+    def _validate_managed_hash(key_hash: str) -> None:
+        if (
+            not isinstance(key_hash, str)
+            or len(key_hash) != 64
+            or any(ch not in "0123456789abcdef" for ch in key_hash)
+        ):
+            raise ValueError("managed API key hash is invalid")
+
+    @staticmethod
+    def _validate_managed_issuer(issuer: str) -> str:
+        if not isinstance(issuer, str) or not issuer.strip():
+            raise ValueError("managed API key issuer is required")
+        return issuer.strip()
+
+    def revoke_managed_key(self, key_hash: str, *, issuer: str) -> bool:
+        """Remove one identity only when its exact trusted marker is present."""
+        self._validate_managed_hash(key_hash)
+        normalized_issuer = self._validate_managed_issuer(issuer)
+        with db_connection(self._db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            marked = connection.execute(
+                "SELECT 1 FROM managed_api_keys WHERE key_hash = ? AND issuer = ?",
+                (key_hash, normalized_issuer),
+            ).fetchone()
+            if marked is None:
+                connection.rollback()
+                return False
+            connection.execute(
+                "DELETE FROM auth_sessions WHERE key_hash = ?",
+                (key_hash,),
+            )
+            connection.execute(
+                "DELETE FROM api_keys WHERE key_hash = ?",
+                (key_hash,),
+            )
+            connection.execute(
+                "DELETE FROM managed_api_keys WHERE key_hash = ? AND issuer = ?",
+                (key_hash, normalized_issuer),
+            )
+            connection.commit()
+        self._invalidate_verify_cache(key_hash)
+        return True
+
+    def purge_managed_keys(
+        self,
+        *,
+        issuer: str,
+        preserve_key_hashes: set[str] | None = None,
+    ) -> list[str]:
+        """Remove exact issuer-marked identities except active parent owners."""
+        normalized_issuer = self._validate_managed_issuer(issuer)
+        preserved = set(preserve_key_hashes or ())
+        for key_hash in preserved:
+            self._validate_managed_hash(key_hash)
+
+        with db_connection(self._db_path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            marked_hashes = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT key_hash FROM managed_api_keys WHERE issuer = ?",
+                    (normalized_issuer,),
+                )
+            }
+            removed = sorted(marked_hashes - preserved)
+            for key_hash in removed:
+                connection.execute(
+                    "DELETE FROM auth_sessions WHERE key_hash = ? "
+                    "AND EXISTS (SELECT 1 FROM managed_api_keys "
+                    "WHERE key_hash = ? AND issuer = ?)",
+                    (key_hash, key_hash, normalized_issuer),
+                )
+                connection.execute(
+                    "DELETE FROM api_keys WHERE key_hash = ? "
+                    "AND EXISTS (SELECT 1 FROM managed_api_keys "
+                    "WHERE key_hash = ? AND issuer = ?)",
+                    (key_hash, key_hash, normalized_issuer),
+                )
+                connection.execute(
+                    "DELETE FROM managed_api_keys WHERE key_hash = ? AND issuer = ?",
+                    (key_hash, normalized_issuer),
+                )
+            connection.commit()
+        for key_hash in removed:
+            self._invalidate_verify_cache(key_hash)
+        return removed
 
     def list_keys(self) -> list[dict[str, Any]]:
         """Return metadata for all keys (plaintext is never returned)."""
@@ -295,6 +656,17 @@ class AuthManager:
         # Exact prefix match: the prefix is compared literally (never as a
         # LIKE pattern), so "%"/"_" cannot widen the match to other keys.
         with db_connection(self._db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            key_hashes = [
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT key_hash FROM api_keys WHERE substr(key_hash, 1, ?) = ?",
+                    (len(key_hash_prefix), key_hash_prefix),
+                )
+            ]
+            for key_hash in key_hashes:
+                conn.execute("DELETE FROM auth_sessions WHERE key_hash = ?", (key_hash,))
+                conn.execute("DELETE FROM managed_api_keys WHERE key_hash = ?", (key_hash,))
             cur = conn.execute(
                 "DELETE FROM api_keys WHERE substr(key_hash, 1, ?) = ?",
                 (len(key_hash_prefix), key_hash_prefix),
@@ -338,9 +710,34 @@ class AuthManager:
             raise AuthRequiredError("API key has been revoked")
 
         identity = {"name": name, "role": role, "key_hash": key_hash}
+        self._enforce_verify_cache_bounds(now)
         self._SHARED_VERIFY_CACHE[cache_key] = (now, identity)
         self._maybe_touch_last_used(key_hash, now)
         return dict(identity)
+
+    def verify_key_hash(self, key_hash: str) -> dict[str, Any]:
+        """Revalidate a server-held identity binding without plaintext input.
+
+        This is intentionally for trusted parent session brokers only. Browser
+        callers never receive the full hash and cannot authenticate with it.
+        """
+        if (
+            not isinstance(key_hash, str)
+            or len(key_hash) != 64
+            or any(ch not in "0123456789abcdef" for ch in key_hash)
+        ):
+            raise AuthRequiredError("Invalid API key identity")
+        with db_connection(self._db_path) as connection:
+            row = connection.execute(
+                "SELECT name, role, enabled FROM api_keys WHERE key_hash = ?",
+                (key_hash,),
+            ).fetchone()
+        if row is None:
+            raise AuthRequiredError("Invalid API key identity")
+        name, role, enabled = row
+        if not enabled:
+            raise AuthRequiredError("API key has been revoked")
+        return {"name": name, "role": role, "key_hash": key_hash}
 
     def _maybe_touch_last_used(self, key_hash: str, now: float) -> None:
         """Best-effort last_used update, throttled to limit SQLite churn."""
@@ -594,23 +991,56 @@ async def authenticate_credentials(
 
 
 async def require_auth(
+    request: Request,
     api_key: str | None = Security(api_key_header),
-    session_cookie: str | None = Cookie(
-        default=None, alias=_SESSION_COOKIE, include_in_schema=False
-    ),
 ) -> dict[str, Any]:
     """FastAPI dependency: verify API key or HttpOnly session cookie.
 
     If authentication is disabled in settings, a valid credential is still
     honoured (so admin endpoints work when an admin key is explicitly
     supplied).  Without any credential, a low-privilege guest context is
-    returned.
+    returned.  For state-changing methods (POST/PUT/PATCH/DELETE) the
+    Origin/Host is validated before any credential is resolved, so cross-site
+    browser requests fail closed even in auth-optional mode.
     """
+    from js.appshell.principal import appshell_auth_context_from_scope
+
+    managed, appshell_auth = appshell_auth_context_from_scope(request.scope)
+    if managed:
+        if appshell_auth is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="AppShell session is required",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        # In parent-managed scopes client API keys and child cookies are never
+        # consulted; this injected context is the sole identity authority.
+        return appshell_auth
+
+    # Anti-CSRF: state-changing requests pass the Origin/Host check before any
+    # credential is resolved (mirrors require_user_write), so a cross-site page
+    # cannot ride the guest context or a victim's session cookie.
+    if request.method.upper() in _STATE_CHANGING_METHODS:
+        check_origin(request)
+
     # Direct (non-DI) callers receive the unresolved parameter defaults.
     if not isinstance(api_key, str):
         api_key = None
-    if not isinstance(session_cookie, str):
-        session_cookie = None
+
+    from js.web.runtime_context import current_web_runtime
+
+    runtime = current_web_runtime()
+    if runtime is not None:
+        effective_settings = runtime.settings
+    else:
+        from js.web.server import _settings as effective_settings
+
+    product_id = (
+        str(getattr(effective_settings, "product_id", "js-agent") or "js-agent")
+        if effective_settings is not None
+        else "js-agent"
+    )
+    session_cookie = resolve_session_cookie(request.cookies, product_id)
     return await authenticate_credentials(api_key, session_cookie)
 
 
@@ -680,9 +1110,6 @@ async def require_admin_write(
 async def require_setup_auth(
     request: Request,
     api_key: str | None = Security(api_key_header),
-    session_cookie: str | None = Cookie(
-        default=None, alias=_SESSION_COOKIE, include_in_schema=False
-    ),
 ) -> dict[str, Any]:
     """FastAPI dependency: for setup wizard endpoints.
 
@@ -692,6 +1119,18 @@ async def require_setup_auth(
     complete, requires valid credentials.  This prevents re-entering bootstrap
     by deleting all admin keys.
     """
+    from js.appshell.principal import appshell_auth_context_from_scope
+
+    managed, appshell_auth = appshell_auth_context_from_scope(request.scope)
+    if managed:
+        if appshell_auth is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="AppShell session is required",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return appshell_auth
+
     from js.web.server import _settings as global_settings
 
     effective_settings = global_settings
@@ -704,18 +1143,20 @@ async def require_setup_auth(
     # Direct (non-DI) callers receive the unresolved parameter defaults.
     if not isinstance(api_key, str):
         api_key = None
-    if not isinstance(session_cookie, str):
-        session_cookie = None
+
+    product_id = str(getattr(effective_settings, "product_id", "js-agent") or "js-agent")
+    session_cookie = resolve_session_cookie(request.cookies, product_id)
 
     auth_mgr = AuthManager(effective_settings.state_dir)
 
-    # When auth is disabled, honour explicit credentials but allow anonymous access
+    # When auth is disabled, honour explicit credentials but keep anonymous
+    # callers read-only (guest) — same posture as authenticate_credentials.
     if not effective_settings.security.api_key_required:
         if api_key or session_cookie:
             return await authenticate_credentials(api_key, session_cookie)
         return {
             "name": "anonymous",
-            "role": _USER_ROLE,
+            "role": _GUEST_ROLE,
             "key_hash": _hash_key(secrets.token_urlsafe(16)),
         }
 
@@ -725,6 +1166,8 @@ async def require_setup_auth(
     # This prevents the "delete all admin keys → re-enter bootstrap" attack.
     # The window is additionally restricted to loopback clients: bootstrap
     # grants admin, so a remote requester must never reach it.
+    # Forwarded-client headers mean a reverse proxy sits in front — peer is
+    # then always loopback and cannot prove the original client. Fail closed.
     if (
         not api_key
         and not session_cookie
@@ -737,8 +1180,22 @@ async def require_setup_auth(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Setup bootstrap is restricted to loopback clients",
             )
+        if not request_is_direct_loopback(request):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Setup bootstrap is unavailable behind reverse-proxy forwarded-client headers"
+                ),
+            )
+        # Anti-rebinding/CSRF: the bootstrap window grants ADMIN with no
+        # credentials, so a state-changing request must also prove it came
+        # from the operator's own browser session (Origin bound to a loopback
+        # Host).  Without this, a DNS-rebinding page (or any cross-site form
+        # POST) could complete setup and steal the one-time admin key that
+        # /api/setup/complete returns in its response body.
+        if request.method.upper() in _STATE_CHANGING_METHODS:
+            check_origin(request)
         return {"name": "bootstrap", "role": _ADMIN_ROLE}
-
     return await authenticate_credentials(api_key, session_cookie)
 
 

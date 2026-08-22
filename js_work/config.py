@@ -7,7 +7,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import SettingsConfigDict
 
 from js.config import (
@@ -15,7 +15,13 @@ from js.config import (
     JSSettings,
     PipelineConfig,
     SecurityConfig,
+    _ensure_private_directory,
     _normalise_echo_engine,
+)
+from js.product_storage import (
+    StorageRoots,
+    assert_disjoint,
+    assert_work_path_not_in_personal_namespace,
 )
 
 _MAIN_AGENT_HOME_NAME = ".js"
@@ -88,6 +94,7 @@ class WorkSettings(JSSettings):
             allow_private_model_providers=False,
         )
     )
+    _personal_roots: StorageRoots | None = PrivateAttr(default=None)
 
     @field_validator("product_id")
     @classmethod
@@ -140,8 +147,9 @@ class WorkSettings(JSSettings):
         never created on disk.
         """
         self._validate_work_isolation()
-        self.workspace.mkdir(parents=True, exist_ok=True)
-        self.state_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_private_directory(self.work_home, label="Work storage root")
+        _ensure_private_directory(self.workspace, label="Work workspace")
+        _ensure_private_directory(self.state_dir, label="Work state directory")
         return self
 
     def apply_runtime_engine_env(self) -> None:
@@ -188,6 +196,17 @@ class WorkSettings(JSSettings):
         else:
             target = default_work_config_path()
 
+        assert_work_path_not_in_personal_namespace(target)
+        if self._personal_roots is not None:
+            assert_disjoint(
+                personal=self._personal_roots,
+                work=StorageRoots(
+                    config_path=target,
+                    workspace=self.workspace,
+                    state_dir=self.state_dir,
+                ),
+            )
+
         new_data = self.model_dump(mode="json", exclude={"providers": {"__all__": {"api_key"}}})
 
         for provider in new_data.get("providers", []):
@@ -203,6 +222,7 @@ def load_work_settings(
     config_path: str | Path | None = None,
     *,
     home: Path | None = None,
+    personal_roots: StorageRoots | None = None,
 ) -> WorkSettings:
     """Load JS Agent Work settings without touching the regular ``~/.js`` state.
 
@@ -224,6 +244,15 @@ def load_work_settings(
     else:
         resolved_config = default_work_config_path(base_home)
 
+    assert_work_path_not_in_personal_namespace(resolved_config)
+    candidate_roots = StorageRoots(
+        config_path=resolved_config,
+        workspace=work_home / "workspace",
+        state_dir=work_home / "state",
+    )
+    if personal_roots is not None:
+        assert_disjoint(personal=personal_roots, work=candidate_roots)
+
     if resolved_config.exists():
         data: dict[str, Any] = {}
         if resolved_config.suffix in (".yaml", ".yml"):
@@ -239,6 +268,15 @@ def load_work_settings(
         data.setdefault("state_dir", work_home / "state")
         data["product_id"] = _WORK_PRODUCT_ID
         data["echo_engine"] = "on"
+        final_roots = StorageRoots(
+            config_path=resolved_config,
+            workspace=Path(data["workspace"]),
+            state_dir=Path(data["state_dir"]),
+        )
+        for value in final_roots.__dict__.values():
+            assert_work_path_not_in_personal_namespace(value)
+        if personal_roots is not None:
+            assert_disjoint(personal=personal_roots, work=final_roots)
         settings = WorkSettings(**data)
     else:
         settings = WorkSettings(
@@ -249,11 +287,12 @@ def load_work_settings(
             echo_engine="on",
         )
 
-    settings.workspace.mkdir(parents=True, exist_ok=True)
-    settings.state_dir.mkdir(parents=True, exist_ok=True)
-    settings.work_home.mkdir(parents=True, exist_ok=True)
+    _ensure_private_directory(settings.work_home, label="Work storage root")
+    _ensure_private_directory(settings.workspace, label="Work workspace")
+    _ensure_private_directory(settings.state_dir, label="Work state directory")
     settings.features = work_feature_config()
     settings.pipeline = PipelineConfig(enabled=False)
     settings.echo_engine = "on"
     settings._config_path = resolved_config  # type: ignore[attr-defined]
+    settings._personal_roots = personal_roots
     return settings.with_runtime_engine_env()

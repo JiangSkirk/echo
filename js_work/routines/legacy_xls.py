@@ -16,9 +16,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import xlrd
-from openpyxl import Workbook
-
 from js_work.safe_output import ensure_absent, publish_no_clobber, staged_path
 
 MAX_LEGACY_XLS_BYTES = 50 * 1024 * 1024
@@ -37,6 +34,11 @@ class LegacyXlsError(ValueError):
 
 def convert_legacy_xls_to_xlsx(source: Path, output: Path) -> Path:
     """Read BIFF values with pinned xlrd and write a sanitized XLSX copy."""
+    # Lazy imports keep desktop sidecar cold-start free of Office deps until
+    # an actual .xls conversion is requested.
+    import xlrd
+    from openpyxl import Workbook
+
     output = output.resolve()
     if output.suffix.lower() != ".xlsx":
         raise LegacyXlsError("legacy .xls output must be an .xlsx file")
@@ -87,7 +89,11 @@ def convert_legacy_xls_to_xlsx(source: Path, output: Path) -> Path:
             for row_index in range(sheet.nrows):
                 row_length = min(sheet.row_len(row_index), sheet.ncols)
                 for column_index in range(row_length):
-                    value = _cell_value(book, sheet.cell(row_index, column_index))
+                    value = _cell_value(
+                        book,
+                        sheet.cell(row_index, column_index),
+                        xlrd_module=xlrd,
+                    )
                     if isinstance(value, str):
                         total_text_chars += len(value)
                         if total_text_chars > MAX_LEGACY_XLS_TEXT_CHARS:
@@ -158,29 +164,34 @@ def _read_source_bytes(source: Path) -> bytes:
     return payload
 
 
-def _cell_value(book: Any, cell: Any) -> str | int | float | bool | datetime | None:
+def _cell_value(
+    book: Any,
+    cell: Any,
+    *,
+    xlrd_module: Any,
+) -> str | int | float | bool | datetime | None:
     cell_type = int(cell.ctype)
     value = cell.value
-    if cell_type in {xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK}:
+    if cell_type in {xlrd_module.XL_CELL_EMPTY, xlrd_module.XL_CELL_BLANK}:
         return None
-    if cell_type == xlrd.XL_CELL_TEXT:
+    if cell_type == xlrd_module.XL_CELL_TEXT:
         return str(value)
-    if cell_type == xlrd.XL_CELL_NUMBER:
+    if cell_type == xlrd_module.XL_CELL_NUMBER:
         number = float(value)
         if not math.isfinite(number):
             raise LegacyXlsError("legacy .xls contains a non-finite number")
         return int(number) if number.is_integer() else number
-    if cell_type == xlrd.XL_CELL_DATE:
+    if cell_type == xlrd_module.XL_CELL_DATE:
         try:
-            converted = xlrd.xldate.xldate_as_datetime(value, book.datemode)
+            converted = xlrd_module.xldate.xldate_as_datetime(value, book.datemode)
         except (OverflowError, TypeError, ValueError) as exc:
             raise LegacyXlsError("legacy .xls contains an invalid date") from exc
         if not isinstance(converted, datetime):
             raise LegacyXlsError("legacy .xls contains an invalid date")
         return converted
-    if cell_type == xlrd.XL_CELL_BOOLEAN:
+    if cell_type == xlrd_module.XL_CELL_BOOLEAN:
         return bool(value)
-    if cell_type == xlrd.XL_CELL_ERROR:
+    if cell_type == xlrd_module.XL_CELL_ERROR:
         raise LegacyXlsError("legacy .xls contains a cell error")
     raise LegacyXlsError("legacy .xls contains an unsupported cell type")
 

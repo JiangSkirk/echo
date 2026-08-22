@@ -17,8 +17,9 @@ the classic bypasses:
   them) rather than the hostname.
 
 Cloud metadata endpoints (``169.254.169.254`` and friends) and link-local /
-reserved / multicast / unspecified ranges are ALWAYS rejected, regardless of
-the ``allow_loopback`` / ``allow_private`` policy flags.
+reserved / multicast / unspecified / non-global (e.g. CGNAT ``100.64.0.0/10``)
+ranges are ALWAYS rejected, regardless of the ``allow_loopback`` /
+``allow_private`` policy flags.
 """
 
 from __future__ import annotations
@@ -94,7 +95,10 @@ def is_blocked_ip(
     """Return a rejection reason for *addr*, or ``None`` if it is permitted.
 
     Link-local, reserved, multicast, unspecified and known metadata addresses
-    are always rejected.  Loopback and private (RFC1918 / ULA) ranges are
+    are always rejected, and so is every address that is not globally
+    reachable per the IANA special-purpose registries (CGNAT ``100.64.0.0/10``
+    and similar shared space are neither private nor reserved, yet must never
+    be an outbound target).  Loopback and private (RFC1918 / ULA) ranges are
     rejected unless explicitly allowed by the policy flags.
     """
     # Normalize IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) to its IPv4 form so
@@ -116,8 +120,14 @@ def is_blocked_ip(
     # is also True for loopback; an allowed loopback must not fall through.
     if addr.is_loopback:
         return None if allow_loopback else "loopback address is blocked"
-    if addr.is_private and not allow_private:
-        return "private/internal address is blocked"
+    if addr.is_private:
+        return None if allow_private else "private/internal address is blocked"
+    # Fail closed on everything else that is not globally reachable per the
+    # IANA special-purpose registries — e.g. the CGNAT shared address space
+    # 100.64.0.0/10, which is neither private nor reserved and therefore
+    # slipped past the explicit checks above.
+    if not addr.is_global:
+        return "non-global (shared/special-purpose) address is blocked"
     return None
 
 

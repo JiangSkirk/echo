@@ -531,9 +531,11 @@ class ContextCompressor:
             if any(message.role == "system" for message in unit):
                 replacement.extend(unit)
             elif summary and not summary_inserted:
+                # The summary is untrusted handoff content: emit it as a user-role
+                # message so it can never gain system-message privilege downstream.
                 replacement.append(
                     ChatMessage(
-                        role="system",
+                        role="user",
                         content=SUMMARY_PREFIX + summary,
                         name=_SUMMARY_MESSAGE_NAME,
                     )
@@ -559,7 +561,7 @@ class ContextCompressor:
             (
                 index
                 for index, message in enumerate(messages)
-                if message.role == "system"
+                if message.role == "user"
                 and message.name == _SUMMARY_MESSAGE_NAME
                 and isinstance(message.content, str)
                 and message.content.startswith(SUMMARY_PREFIX)
@@ -579,7 +581,7 @@ class ContextCompressor:
             candidate_length = (lower + upper) // 2
             candidate = list(messages)
             candidate[summary_index] = ChatMessage(
-                role="system",
+                role="user",
                 content=SUMMARY_PREFIX + summary[:candidate_length],
                 name=_SUMMARY_MESSAGE_NAME,
             )
@@ -600,7 +602,7 @@ class ContextCompressor:
             return messages
         result = list(messages)
         result[summary_index] = ChatMessage(
-            role="system",
+            role="user",
             content=SUMMARY_PREFIX + summary[:best_length],
             name=_SUMMARY_MESSAGE_NAME,
         )
@@ -739,13 +741,23 @@ class ContextCompressor:
 
         Some local models (e.g. Qwen via LM Studio) have strict jinja templates
         that raise errors when no user message is found in the conversation.
+
+        The generated summary itself is a user-role message
+        (``_SUMMARY_MESSAGE_NAME``) but carries untrusted handoff content — it
+        must not count as a real user turn, and the latest user request is
+        re-inserted after any leading system/summary messages.
         """
-        if any(m.role == "user" for m in result):
+        if any(m.role == "user" and m.name != _SUMMARY_MESSAGE_NAME for m in result):
             return result
         # Find the most recent user message from original and inject it
         for msg in reversed(original):
             if msg.role == "user":
-                insert_idx = 1 if result and result[0].role == "system" else 0
+                insert_idx = 0
+                while insert_idx < len(result) and (
+                    result[insert_idx].role == "system"
+                    or result[insert_idx].name == _SUMMARY_MESSAGE_NAME
+                ):
+                    insert_idx += 1
                 result.insert(insert_idx, msg)
                 logger.warning(
                     f"Injected missing user message into compressed context "

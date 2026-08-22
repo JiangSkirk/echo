@@ -18,10 +18,13 @@ class ConnectorConfig:
     max_items_per_fetch: int = 50
     mock_mode: bool = False
     # Auth / connection params (subclass-specific)
+    # R4-B: plaintext credential fields are parse-only legacy keys.
+    # Non-empty values raise a migration error before connector construction.
     api_key: str = ""
     base_url: str = ""
     token: str = ""
     credentials_path: str = ""
+    vault_ref: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
 

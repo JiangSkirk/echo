@@ -11,6 +11,7 @@ from js.echo.ledger.types import EffectIntent, IntakeEvent, KernelSnapshot
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 LEDGER_DIR = REPO_ROOT / "js" / "echo" / "ledger"
+MODE_CONTRACT_PATH = REPO_ROOT / "js" / "echo" / "mode_contract.py"
 
 
 def test_decide_is_deterministic_and_does_not_sample_time() -> None:
@@ -106,6 +107,11 @@ def test_echo_ledger_package_avoids_legacy_runtime_imports_except_echo_primitive
         (LEDGER_DIR / "release_gates.py", "js.echo.release_probes"),
         (LEDGER_DIR / "sandbox_backend.py", "js.echo.os_sandbox"),
         (LEDGER_DIR / "service.py", "js.echo.execution_contract"),
+        # Task 4 intentionally binds durable receipt replay to the frozen R1
+        # projection DTO.  mode_contract is a pure leaf, not a legacy runtime.
+        (LEDGER_DIR / "effects.py", "js.echo.mode_contract"),
+        (LEDGER_DIR / "partition_retention.py", "js.echo.mode_contract"),
+        (LEDGER_DIR / "service.py", "js.echo.mode_contract"),
         (LEDGER_DIR / "service.py", "js.echo.primitives"),
     }
     offenders: list[str] = []
@@ -141,6 +147,68 @@ def test_echo_ledger_package_avoids_legacy_runtime_imports_except_echo_primitive
 
     assert scanned > 0, f"No Python files scanned under {LEDGER_DIR}"
     assert not offenders
+
+
+def test_task4_projection_contract_edges_are_exact_and_leaf_remains_runtime_free() -> None:
+    expected_edges = {
+        (LEDGER_DIR / "effects.py", ("ArtifactRefV1",)),
+        (
+            LEDGER_DIR / "partition_retention.py",
+            ("AppMode", "ArtifactRefV1"),
+        ),
+        (LEDGER_DIR / "service.py", ("AppMode", "ArtifactRefV1")),
+    }
+    actual_edges: set[tuple[pathlib.Path, tuple[str, ...]]] = set()
+    for source_path in (
+        LEDGER_DIR / "effects.py",
+        LEDGER_DIR / "partition_retention.py",
+        LEDGER_DIR / "service.py",
+    ):
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "js.echo.mode_contract":
+                assert node.level == 0
+                assert all(alias.asname is None and alias.name != "*" for alias in node.names)
+                actual_edges.add((source_path, tuple(alias.name for alias in node.names)))
+            assert not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "__import__"
+            )
+    assert actual_edges == expected_edges
+
+    runtime_prefixes = (
+        "js.agent",
+        "js.appshell",
+        "js.config",
+        "js.echo.ledger",
+        "js.echo.turn_context",
+        "js.echo.turn_runtime",
+        "js.memory",
+        "js.models",
+        "js.security",
+        "js.tools",
+        "js.web",
+        "js_work",
+    )
+    tree = ast.parse(
+        MODE_CONTRACT_PATH.read_text(encoding="utf-8"),
+        filename=str(MODE_CONTRACT_PATH),
+    )
+    imported_modules: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_modules.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported_modules.append(node.module or "")
+    assert not [
+        module
+        for module in imported_modules
+        if any(
+            module == prefix or module.startswith(prefix + ".")
+            for prefix in runtime_prefixes
+        )
+    ]
 
 
 def test_decide_requires_non_empty_input_for_user_request() -> None:

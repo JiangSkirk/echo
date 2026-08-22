@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import re
 import shlex
@@ -22,7 +23,54 @@ logger = get_logger("js.skills.executor")
 LLMCaller = Callable[[str, str | None], Awaitable[str]]
 
 
-SkillResolver = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+# Type alias for sub-skill resolver (workflow/meta skill steps).
+# Resolvers may additionally accept the keyword-only recursion-guard
+# parameters ``_depth`` (current nesting depth) and ``_ancestors`` (skill IDs
+# higher up the call chain); the executor passes them only to resolvers whose
+# signature supports them, so plain two-argument resolvers keep working.
+SkillResolver = Callable[..., Awaitable[dict[str, Any]]]
+
+# Fail-closed guard against recursive workflow/meta skills: a self-referencing
+# meta skill used to recurse via the resolver until RecursionError, with
+# exponentially growing output. Sub-skill invocations deeper than this are
+# rejected with an error instead of being executed.
+MAX_SUBSKILL_DEPTH = 8
+
+
+def _resolver_guard_kwargs(
+    resolver: SkillResolver, depth: int, ancestors: tuple[str, ...]
+) -> dict[str, Any]:
+    """Build recursion-guard kwargs for resolvers whose signature accepts them.
+
+    Legacy two-argument resolvers keep working unchanged; they simply cannot
+    carry the guard context into deeper nesting levels.
+    """
+    try:
+        params = inspect.signature(resolver).parameters
+    except (TypeError, ValueError):
+        return {}
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return {"_depth": depth, "_ancestors": ancestors}
+    if "_depth" in params and "_ancestors" in params:
+        return {"_depth": depth, "_ancestors": ancestors}
+    return {}
+
+
+def _check_subskill_guard(
+    sub_skill_id: str,
+    spec: SkillSpec,
+    depth: int,
+    ancestors: tuple[str, ...],
+) -> str | None:
+    """Return an error message when a sub-skill call must be blocked, else None."""
+    if sub_skill_id in (*ancestors, spec.id):
+        return (
+            f"Recursive skill reference blocked: "
+            f"'{sub_skill_id}' is already in the call chain"
+        )
+    if depth + 1 > MAX_SUBSKILL_DEPTH:
+        return f"Maximum skill nesting depth ({MAX_SUBSKILL_DEPTH}) exceeded"
+    return None
 
 
 async def execute_skill(
@@ -32,6 +80,9 @@ async def execute_skill(
     llm_caller: LLMCaller | None = None,
     sandbox: SandboxExecutor | None = None,
     skill_resolver: SkillResolver | None = None,
+    *,
+    _depth: int = 0,
+    _ancestors: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Execute a skill based on its type.
 
@@ -42,15 +93,21 @@ async def execute_skill(
         llm_caller: Optional async function(text, context) -> str for PROMPT skills
         sandbox: Optional sandbox executor for CODE skills
         skill_resolver: Optional function to resolve sub-skills for workflow/meta types
+        _depth: Internal recursion-guard: current sub-skill nesting depth
+        _ancestors: Internal recursion-guard: skill IDs higher up the call chain
     """
     if spec.type == SkillType.CODE:
         return await _execute_code(spec, args, workspace, sandbox)
     elif spec.type == SkillType.PROMPT:
         return await _execute_prompt(spec, args, llm_caller)
     elif spec.type == SkillType.WORKFLOW:
-        return await _execute_workflow(spec, args, workspace, llm_caller, sandbox, skill_resolver)
+        return await _execute_workflow(
+            spec, args, workspace, llm_caller, sandbox, skill_resolver, _depth, _ancestors
+        )
     elif spec.type == SkillType.META:
-        return await _execute_meta(spec, args, workspace, llm_caller, sandbox, skill_resolver)
+        return await _execute_meta(
+            spec, args, workspace, llm_caller, sandbox, skill_resolver, _depth, _ancestors
+        )
     else:
         return {"success": False, "error": f"Unknown skill type: {spec.type}"}
 
@@ -126,17 +183,13 @@ async def _execute_code(
         from js.skills.hermes_bridge import _get_hermes_home
         env["HERMES_HOME"] = str(_get_hermes_home())
 
-    # Determine interpreter (prefer skill-local venv if available)
+    # Determine interpreter.  Always the current Python: a skill-local
+    # .venv/bin/python is attacker-controlled (the integrity hash excludes
+    # .venv), so trusting it would let a skill swap the interpreter.
     is_python = spec.entry.endswith(".py")
     is_shell = spec.entry.endswith(".sh") or spec.entry.endswith(".bash")
 
     python_exe = str(Path(sys.executable).resolve())
-    if spec.path:
-        venv_python = spec.path / ".venv" / "bin" / "python"
-        if sys.platform == "win32":
-            venv_python = spec.path / ".venv" / "Scripts" / "python.exe"
-        if venv_python.exists():
-            python_exe = str(venv_python.resolve())
 
     if is_python:
         cmd = [python_exe, str(entry_path.resolve())]
@@ -305,11 +358,15 @@ async def _execute_workflow(
     llm_caller: LLMCaller | None,
     sandbox: SandboxExecutor | None = None,
     skill_resolver: SkillResolver | None = None,
+    _depth: int = 0,
+    _ancestors: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Execute a workflow skill — a lightweight chain of steps.
 
     Workflow skills use YAML metadata to define a sequence of actions.
     Now with proper error handling and step-level reporting.
+    Sub-skill steps fail closed on reference cycles or when the nesting
+    depth exceeds MAX_SUBSKILL_DEPTH.
     """
     workflow_steps = spec.metadata.get("workflow", {}).get("steps", [])
     if not workflow_steps:
@@ -410,26 +467,39 @@ async def _execute_workflow(
             # Reference another skill by ID
             sub_skill_id = step.get("skill_id")
             if sub_skill_id and skill_resolver:
-                try:
-                    sub_result = await skill_resolver(sub_skill_id, {**args, **step.get("args", {})})
-                    step_result.update({
-                        "status": "success" if sub_result.get("success") else "error",
-                        "skill_id": sub_skill_id,
-                        "output": sub_result.get("output", ""),
-                        "error": sub_result.get("error"),
-                    })
-                    if not sub_result.get("success"):
-                        any_failed = True
-                except Exception as exc:
-                    logger.warning(
-                        "Workflow child skill failed for %s: %s",
-                        spec.id,
-                        type(exc).__name__,
-                    )
+                guard_error = _check_subskill_guard(sub_skill_id, spec, _depth, _ancestors)
+                if guard_error is not None:
                     step_result.update(
-                        {"status": "error", "error": "Workflow step failed safely"}
+                        {"status": "error", "skill_id": sub_skill_id, "error": guard_error}
                     )
                     any_failed = True
+                else:
+                    try:
+                        sub_result = await skill_resolver(
+                            sub_skill_id,
+                            {**args, **step.get("args", {})},
+                            **_resolver_guard_kwargs(
+                                skill_resolver, _depth + 1, (*_ancestors, spec.id)
+                            ),
+                        )
+                        step_result.update({
+                            "status": "success" if sub_result.get("success") else "error",
+                            "skill_id": sub_skill_id,
+                            "output": sub_result.get("output", ""),
+                            "error": sub_result.get("error"),
+                        })
+                        if not sub_result.get("success"):
+                            any_failed = True
+                    except Exception as exc:
+                        logger.warning(
+                            "Workflow child skill failed for %s: %s",
+                            spec.id,
+                            type(exc).__name__,
+                        )
+                        step_result.update(
+                            {"status": "error", "error": "Workflow step failed safely"}
+                        )
+                        any_failed = True
             elif sub_skill_id:
                 step_result.update({
                     "status": "pending",
@@ -459,11 +529,15 @@ async def _execute_meta(
     llm_caller: LLMCaller | None,
     sandbox: SandboxExecutor | None = None,
     skill_resolver: SkillResolver | None = None,
+    _depth: int = 0,
+    _ancestors: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Execute a meta skill by delegating to its dependency DAG.
 
     Meta skills are composed of other skills executed in order.
     The workflow in metadata defines the execution plan.
+    Sub-skill delegations fail closed on reference cycles or when the
+    nesting depth exceeds MAX_SUBSKILL_DEPTH.
     """
     workflow_steps = spec.metadata.get("workflow", {}).get("steps", [])
     if not workflow_steps:
@@ -501,8 +575,26 @@ async def _execute_meta(
         step_args = {k: args.get(v, v) for k, v in arg_mapping.items()} if arg_mapping else args
 
         if skill_resolver:
+            guard_error = _check_subskill_guard(sub_skill_id, spec, _depth, _ancestors)
+            if guard_error is not None:
+                results.append({
+                    "step": i,
+                    "type": "skill",
+                    "skill_id": sub_skill_id,
+                    "args": step_args,
+                    "status": "error",
+                    "error": guard_error,
+                })
+                any_failed = True
+                continue
             try:
-                sub_result = await skill_resolver(sub_skill_id, step_args)
+                sub_result = await skill_resolver(
+                    sub_skill_id,
+                    step_args,
+                    **_resolver_guard_kwargs(
+                        skill_resolver, _depth + 1, (*_ancestors, spec.id)
+                    ),
+                )
                 results.append({
                     "step": i,
                     "type": "skill",

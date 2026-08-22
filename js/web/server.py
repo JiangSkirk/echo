@@ -673,14 +673,30 @@ class _AdminOnlyASGIMount:
         if scope.get("type") != "http":
             await self._inner(scope, receive, send)
             return
-        from js.web.auth import _ADMIN_ROLE, _SESSION_COOKIE, authenticate_credentials
+        from js.web.auth import _ADMIN_ROLE, authenticate_credentials, resolve_session_cookie
 
         request = Request(scope, receive)
         try:
-            auth_ctx = await authenticate_credentials(
-                request.headers.get("x-api-key"),
-                request.cookies.get(_SESSION_COOKIE),
-            )
+            from js.appshell.principal import appshell_auth_context_from_scope
+
+            managed, injected_auth = appshell_auth_context_from_scope(scope)
+            if managed:
+                if injected_auth is None:
+                    raise HTTPException(status_code=401, detail="AppShell session is required")
+                auth_ctx = injected_auth
+            else:
+                product_id = "js-agent"
+                runtime_settings = getattr(request.app.state, "runtime_settings", None)
+                if runtime_settings is not None:
+                    product_id = str(
+                        getattr(runtime_settings, "product_id", "js-agent") or "js-agent"
+                    )
+                elif _settings is not None:
+                    product_id = str(getattr(_settings, "product_id", "js-agent") or "js-agent")
+                auth_ctx = await authenticate_credentials(
+                    request.headers.get("x-api-key"),
+                    resolve_session_cookie(request.cookies, product_id),
+                )
             if auth_ctx.get("role") != _ADMIN_ROLE:
                 raise HTTPException(
                     status_code=403,
@@ -747,7 +763,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     set_globals(_agent, _settings, _stats_store, _echo_safety_service)
     # Guarantee a usable admin key exists so a fresh install lands usable and
     # we never get stuck in a keyless, fully-401-locked state.
-    _bootstrap_admin_key = _provision_bootstrap_admin_key(_settings)
+    _bootstrap_admin_key = (
+        None
+        if bool(getattr(_settings, "_appshell_managed", False))
+        else _provision_bootstrap_admin_key(_settings)
+    )
     runtime.bootstrap_admin_key = _bootstrap_admin_key
     # Restore the persisted active model from the configured state dir, but
     # only adopt it if it still maps to a real configured provider/model.
@@ -885,7 +905,16 @@ def create_app(
                 cast("Any", runtime).model_refresh_state = app.state.model_refresh_state
             yield
 
-    app = FastAPI(title=title, lifespan=app_lifespan)
+    app = FastAPI(
+        title=title,
+        lifespan=app_lifespan,
+        # Do not expose /docs, /redoc, or /openapi.json without auth — the full
+        # API schema is reconnaissance value.  app.openapi() remains available
+        # to in-process consumers (e.g. system diagnostics).
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
     app.state.runtime_settings = runtime_settings
     app.state.agent_config_state = AgentConfigState()
     app.state.model_refresh_state = model_refresh.ModelRefreshState()
@@ -906,12 +935,10 @@ def create_app(
         f"http://127.0.0.1:{_bind_port}",
         f"http://localhost:{_bind_port}",
     ]
-    # Deduplicate and keep the bare loopback forms for convenience
+    # Port-less http://127.0.0.1 and http://localhost mean :80. SameSite
+    # cookies ignore ports, so listing those origins would let a page on :80
+    # read credentialed GET responses from this bind port.
     _cors_origins = list(dict.fromkeys(_cors_origins))
-    if "http://127.0.0.1" not in _cors_origins:
-        _cors_origins.insert(0, "http://127.0.0.1")
-    if "http://localhost" not in _cors_origins:
-        _cors_origins.insert(0, "http://localhost")
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins,
@@ -995,6 +1022,7 @@ def create_app(
             _SESSION_TTL_SECONDS,
             AuthManager,
             check_origin,
+            session_cookie_name,
         )
 
         check_origin(request)
@@ -1017,9 +1045,12 @@ def create_app(
             token, expires_at = AuthManager(settings.state_dir).create_session(api_key)
         except AuthRequiredError as exc:
             raise HTTPException(401, str(exc), headers={"WWW-Authenticate": "Bearer"}) from exc
+        cookie_name = session_cookie_name(
+            str(getattr(settings, "product_id", "js-agent") or "js-agent")
+        )
         response = JSONResponse({"success": True, "expires_at": expires_at})
         response.set_cookie(
-            _SESSION_COOKIE,
+            cookie_name,
             token,
             max_age=_SESSION_TTL_SECONDS,
             httponly=True,
@@ -1027,27 +1058,70 @@ def create_app(
             secure=request.url.scheme == "https",
             path="/",
         )
+        # Drop the pre-AppShell host-wide cookie so a stale Personal/Work token
+        # cannot keep failing closed as "Invalid session" / HTTP 401.
+        if cookie_name != _SESSION_COOKIE:
+            response.delete_cookie(_SESSION_COOKIE, path="/")
         return response
 
     @app.post("/api/auth/logout")
     async def revoke_auth_session(request: Request) -> JSONResponse:
         """Revoke the current session server-side and clear the cookie."""
-        from js.web.auth import _SESSION_COOKIE, AuthManager, check_origin
+        from js.web.auth import (
+            _SESSION_COOKIE,
+            AuthManager,
+            check_origin,
+            resolve_session_cookie,
+            session_cookie_name,
+        )
 
         check_origin(request)
         settings = app.state.runtime_settings or _settings
-        if settings is not None:
-            AuthManager(settings.state_dir).revoke_session(request.cookies.get(_SESSION_COOKIE))
+        product_id = (
+            str(getattr(settings, "product_id", "js-agent") or "js-agent")
+            if settings is not None
+            else "js-agent"
+        )
+        cookie_name = session_cookie_name(product_id)
+        token = resolve_session_cookie(request.cookies, product_id)
+        if settings is not None and token:
+            AuthManager(settings.state_dir).revoke_session(token)
         response = JSONResponse({"success": True})
-        response.delete_cookie(_SESSION_COOKIE, path="/")
+        response.delete_cookie(cookie_name, path="/")
+        # Also clear the legacy unscoped cookie so Personal migrations don't
+        # leave a stale host-wide token that Work would ignore but confuse UX.
+        if cookie_name != _SESSION_COOKIE:
+            response.delete_cookie(_SESSION_COOKIE, path="/")
         return response
 
     @app.post("/api/cancel/{session_id}")
     async def cancel_session(
-        session_id: str, auth: dict[str, Any] = Depends(require_user_write)
+        session_id: str,
+        request_id: str | None = None,
+        run_id: str | None = None,
+        auth: dict[str, Any] = Depends(require_user_write),
     ) -> dict[str, Any]:
         """Request cancellation of an active agent run for *session_id*."""
         session_id = _require_path_session_id(session_id)
+        if request_id is not None or run_id is not None:
+            if request_id is not None and (not request_id.strip() or len(request_id) > 128):
+                raise HTTPException(400, "invalid request_id")
+            if run_id is not None and (not run_id.strip() or len(run_id) > 128):
+                raise HTTPException(400, "invalid run_id")
+            cancelled = get_agent().request_cancel(
+                session_id,
+                owner_key_hash=runtime_owner(auth),
+                expected_request_id=request_id,
+                expected_run_id=run_id,
+            )
+            if not cancelled:
+                raise HTTPException(409, "active run identity mismatch or already finished")
+            return {
+                "session_id": session_id,
+                "request_id": request_id,
+                "run_id": run_id,
+                "cancelled": True,
+            }
         result = await _execute_session_mutation("cancel", session_id, auth)
         _raise_session_mutation_error(result)
         return {"session_id": session_id, "cancelled": True}
@@ -1200,6 +1274,7 @@ def create_app(
                         {
                             "id": m.id,
                             "name": m.name or m.id,
+                            "provider": p.name,
                             "context_window": m.context_window,
                             "max_tokens": m.max_tokens,
                             "cost_input": m.cost_input,
@@ -1207,6 +1282,38 @@ def create_app(
                         }
                         for m in p.models
                     ],
+                }
+            )
+
+        # Merge router-only dynamic models, but only when the binding uses an
+        # exact full ID and its provider is present in settings.providers.
+        # This keeps the UI aligned with activation validation without
+        # exposing stale bindings for unconfigured providers.
+        configured_names = {p.name for p in agent.settings.providers}
+        providers_by_name = {p["name"]: p for p in providers_out}
+        get_model_bindings = getattr(agent.router, "get_model_bindings", None)
+        try:
+            router_bindings = get_model_bindings() if callable(get_model_bindings) else ()
+        except Exception:
+            logger.warning("Router model binding listing failed", exc_info=True)
+            router_bindings = ()
+        for provider_name, config in router_bindings:
+            if provider_name not in configured_names or not isinstance(config, ModelConfig):
+                continue
+            provider_out = providers_by_name.get(provider_name)
+            if provider_out is None:
+                continue
+            if any(model["id"] == config.id for model in provider_out["models"]):
+                continue
+            provider_out["models"].append(
+                {
+                    "id": config.id,
+                    "name": config.name or config.id,
+                    "provider": provider_name,
+                    "context_window": config.context_window,
+                    "max_tokens": config.max_tokens,
+                    "cost_input": config.cost_input,
+                    "cost_output": config.cost_output,
                 }
             )
 
@@ -1227,7 +1334,6 @@ def create_app(
         # so users can see what's available
         from js.models.cloud_providers import ALL_PRESETS
 
-        configured_names = {p.name for p in agent.settings.providers}
         presets_out = []
         for preset in ALL_PRESETS:
             if preset.id not in configured_names:
@@ -1270,25 +1376,41 @@ def create_app(
             raise HTTPException(400, str(exc)) from exc
         agent = get_agent()
 
-        # Valid = configured providers + all cloud presets
-        valid_models = {f"{p.name}/{m.id}" for p in agent.settings.providers for m in p.models}
-        from js.models.cloud_providers import ALL_PRESETS
+        # A model may only become active when its provider is actually
+        # configured AND the model is explicitly declared.  Cloud presets
+        # are templates, not live providers, so they must never legitimise
+        # a switch on their own.  Router mappings alone are insufficient:
+        # a stale or dynamic mapping does not prove configuration.
+        from js.models.router import ModelSwitchValidationError, validate_model_for_activation
 
-        for preset in ALL_PRESETS:
-            for m in preset.models:
-                valid_models.add(f"{preset.id}/{m.id}")
+        configured_providers = {p.name for p in agent.settings.providers}
 
-        # Also accept models that the router knows about (catches stale
-        # mappings and dynamically-discovered models that may not yet be
-        # reflected in settings.providers).
-        if model_id not in valid_models and agent.router.get_model_config(model_id) is None:
-            logger.warning(
-                "Model switch rejected: model_id=%r not in valid_models (count=%d) "
-                "and not in router._model_map",
+        def _get_preset(name: str) -> Any:
+            from js.models.cloud_providers import get_preset
+
+            return get_preset(name)
+
+        try:
+            validate_model_for_activation(
                 model_id,
-                len(valid_models),
+                configured_providers,
+                get_model_binding=getattr(agent.router, "get_model_binding", None),
+                get_preset=_get_preset,
+                provider_models={
+                    p.name: {m.id for m in p.models} for p in agent.settings.providers
+                },
             )
-            raise HTTPException(400, f"Invalid model '{model_id}'")
+        except ModelSwitchValidationError as exc:
+            if exc.needs_config:
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail={"needs_config": True, "error": exc.detail},
+                ) from exc
+            logger.warning(
+                "Model switch rejected: model_id=%r not configured",
+                model_id,
+            )
+            raise HTTPException(exc.status_code, exc.detail) from exc
 
         result = await _execute_web_tool_effect(
             agent,
@@ -1300,16 +1422,7 @@ def create_app(
         )
         _raise_control_tool_error(result, default_status=500)
 
-        # Warn if the provider is not yet configured
-        provider_name = model_id.split("/", 1)[0] if "/" in model_id else ""
-        configured_providers = {p.name for p in agent.settings.providers}
-        warning = None
-        if provider_name and provider_name not in configured_providers:
-            warning = (
-                f"Provider '{provider_name}' 尚未配置 API Key，调用时会报错。请先添加该云模型。"
-            )
-
-        return {"success": True, "model_id": model_id, "warning": warning}
+        return {"success": True, "model_id": model_id, "warning": None}
 
     def _validate_provider_name(name: str) -> None:
         from js.web.ids import InvalidRuntimeIdError, validate_provider_name
@@ -2300,7 +2413,7 @@ def create_app(
     async def file_preview(
         path: str,
         session_id: str | None = None,
-        auth: dict[str, Any] = Depends(require_auth_dep),
+        auth: dict[str, Any] = Depends(require_user_write),
     ) -> dict[str, Any]:
         """Preview a file's content or metadata."""
         agent = get_agent()
@@ -2392,55 +2505,90 @@ def create_app(
         # cookie (the legacy key cookie still works); native clients may use
         # the header. Query-string credentials are deliberately unsupported
         # because URLs leak into proxy/access logs and history.
-        from js.web.auth import _SESSION_COOKIE
+        from js.web.auth import resolve_session_cookie
 
-        api_key = websocket.cookies.get("x-api-key", "") or websocket.headers.get("x-api-key", "")
-        session_token = websocket.cookies.get(_SESSION_COOKIE, "")
         agent = get_agent()
         settings = agent.settings
         ws_owner_hash: str | None = None
-        auth_ctx: dict[str, Any] = {"name": "anonymous"}
+        auth_ctx: dict[str, Any] = {"name": "anonymous", "role": "guest"}
+        ws_can_turn = False
 
-        if settings.security.api_key_required or api_key or session_token:
-            # Credentials, when presented, must be valid — an invalid key or
-            # session closes the socket instead of silently downgrading the
-            # connection to anonymous. Defer AuthManager construction until a
-            # credential (or require-auth) path actually needs the DB.
-            auth_mgr = AuthManager(settings.state_dir)
-            try:
-                if api_key:
-                    auth_ctx = auth_mgr.verify(api_key)
-                else:
-                    auth_ctx = auth_mgr.verify_session(session_token)
-                ws_owner_hash = auth_ctx.get("key_hash")
-            except AuthRequiredError:
+        from js.appshell.principal import appshell_auth_context_from_scope
+
+        managed, injected_auth = appshell_auth_context_from_scope(websocket.scope)
+        if managed:
+            if injected_auth is None:
                 await websocket.close(code=1008, reason="Authentication failed")
                 return
+            auth_ctx = injected_auth
+            ws_owner_hash = auth_ctx.get("key_hash")
+            ws_can_turn = auth_ctx.get("role") != "guest"
+        else:
+            api_key = websocket.cookies.get("x-api-key", "") or websocket.headers.get(
+                "x-api-key", ""
+            )
+            session_token = (
+                resolve_session_cookie(
+                    websocket.cookies,
+                    str(getattr(settings, "product_id", "js-agent") or "js-agent"),
+                )
+                or ""
+            )
+            if settings.security.api_key_required or api_key or session_token:
+                # Standalone compatibility keeps the legacy child auth path.
+                auth_mgr = AuthManager(settings.state_dir)
+                try:
+                    if api_key:
+                        auth_ctx = auth_mgr.verify(api_key)
+                    else:
+                        auth_ctx = auth_mgr.verify_session(session_token)
+                    ws_owner_hash = auth_ctx.get("key_hash")
+                    ws_can_turn = auth_ctx.get("role") != "guest"
+                except AuthRequiredError:
+                    await websocket.close(code=1008, reason="Authentication failed")
+                    return
 
         ws_owner_hash = ws_owner_hash or runtime_owner(auth_ctx)
 
         await websocket.accept()
-        # Provisional session + connection-owned cancel token BEFORE lane admission.
+        # The socket may carry many turns; cancellation and routing identity
+        # are turn-owned, never connection-owned.
         session_id: str | None = f"ws-{secrets.token_hex(16)}"
-        connection_cancel = asyncio.Event()
         connection_closed = asyncio.Event()
-        connection_run_id = f"ws-conn-{secrets.token_hex(8)}"
         turn_task: asyncio.Task[Any] | None = None
+        active_turn: dict[str, Any] | None = None
         max_msg_bytes = 1024 * 1024  # 1MB
         ping_interval = 30.0
         # Per-connection pending budget (independent of the 1MB single-frame cap).
         max_inbox_messages = 32
         max_inbox_bytes = 4 * 1024 * 1024
 
-        def _bind_connection_cancel(target_session: str) -> None:
+        def _bind_turn_cancel(
+            target_session: str,
+            cancel_event: asyncio.Event,
+            *,
+            run_id: str,
+            request_id: str,
+        ) -> None:
             bind = getattr(agent, "bind_cancel_token", None)
             if callable(bind):
-                bind(
-                    target_session,
-                    connection_cancel,
-                    owner_key_hash=ws_owner_hash,
-                    run_id=connection_run_id,
-                )
+                try:
+                    bind(
+                        target_session,
+                        cancel_event,
+                        owner_key_hash=ws_owner_hash,
+                        run_id=run_id,
+                        request_id=request_id,
+                    )
+                except TypeError:
+                    # Compatibility for narrow test/extension doubles. Real
+                    # JSAgent always binds client identity fail-closed.
+                    bind(
+                        target_session,
+                        cancel_event,
+                        owner_key_hash=ws_owner_hash,
+                        run_id=run_id,
+                    )
                 return
             # Test doubles without bind helpers still expose the cancel map.
             from js.echo.turn_context import runtime_partition_key
@@ -2453,19 +2601,23 @@ def create_app(
             tokens = getattr(agent, "_cancel_tokens", None)
             if isinstance(tokens, dict):
                 tokens[partition_key] = (
-                    connection_cancel,
-                    connection_run_id,
+                    cancel_event,
+                    run_id,
                     ws_owner_hash,
+                    target_session,
                 )
 
-        def _unbind_connection_cancel(target_session: str | None) -> None:
-            if not target_session:
+        def _unbind_turn_cancel(
+            target_session: str | None,
+            cancel_event: asyncio.Event | None,
+        ) -> None:
+            if not target_session or cancel_event is None:
                 return
             unbind = getattr(agent, "unbind_cancel_token", None)
             if callable(unbind):
                 unbind(
                     target_session,
-                    connection_cancel,
+                    cancel_event,
                     owner_key_hash=ws_owner_hash,
                 )
                 return
@@ -2479,17 +2631,42 @@ def create_app(
             tokens = getattr(agent, "_cancel_tokens", None)
             if isinstance(tokens, dict):
                 entry = tokens.get(partition_key)
-                if entry is not None and entry[0] is connection_cancel:
+                if entry is not None and entry[0] is cancel_event:
                     tokens.pop(partition_key, None)
 
-        def _cancel_connection_work() -> None:
-            """Cancel the active turn even when request_cancel has no token yet."""
-            connection_closed.set()
-            connection_cancel.set()
+        def _cancel_active_turn(expected: dict[str, Any] | None = None) -> bool:
+            turn = active_turn
+            if turn is None:
+                return False
+            if expected is not None and any(
+                expected.get(key) != turn.get(key)
+                for key in ("request_id", "turn_id", "run_id", "session_id")
+            ):
+                return False
+            cancel_event = turn["cancel_event"]
+            cancel_event.set()
             cancelled = False
-            if session_id:
+            target_session = turn["session_id"]
+            if target_session:
                 try:
-                    cancelled = bool(agent.request_cancel(session_id, owner_key_hash=ws_owner_hash))
+                    try:
+                        cancelled = bool(
+                            agent.request_cancel(
+                                target_session,
+                                owner_key_hash=ws_owner_hash,
+                                expected_run_id=turn["run_id"],
+                                expected_request_id=turn["request_id"],
+                            )
+                        )
+                    except TypeError:
+                        if expected is not None:
+                            raise
+                        cancelled = bool(
+                            agent.request_cancel(
+                                target_session,
+                                owner_key_hash=ws_owner_hash,
+                            )
+                        )
                 except (PermissionError, RuntimeError):
                     logger.warning(
                         "Failed to cancel WebSocket turn via request_cancel",
@@ -2499,15 +2676,24 @@ def create_app(
                 task = turn_task
                 if task is not None and not task.done():
                     task.cancel()
+            return True
+
+        def _cancel_connection_work() -> None:
+            """Cancel the active turn when the socket itself is lost."""
+            connection_closed.set()
+            _cancel_active_turn()
 
         def _adopt_session_id(next_session: str) -> None:
             nonlocal session_id
-            if session_id and session_id != next_session:
-                _unbind_connection_cancel(session_id)
             session_id = next_session
-            _bind_connection_cancel(next_session)
 
-        async def _run_ws_turn(agent: Any, message: str, **turn_kwargs: Any) -> Any:
+        async def _run_ws_turn(
+            agent: Any,
+            message: str,
+            *,
+            cancel_event: asyncio.Event | None = None,
+            **turn_kwargs: Any,
+        ) -> Any:
             """Run one Echo turn as a cancellable child task.
 
             The turn must be a distinct Task so ``turn_task.cancel()`` (used when
@@ -2517,10 +2703,11 @@ def create_app(
             nonlocal turn_task
 
             async def _execute() -> Any:
+                effective_cancel = cancel_event or asyncio.Event()
                 return await run_echo_turn(
                     agent,
                     message,
-                    cancel_token=connection_cancel,
+                    cancel_token=effective_cancel,
                     **turn_kwargs,
                 )
 
@@ -2529,12 +2716,62 @@ def create_app(
                 return await turn_task
             finally:
                 turn_task = None
-                if session_id and not connection_closed.is_set():
-                    # Turn cleanup may have popped the token; restore connection ownership.
-                    _bind_connection_cancel(session_id)
 
-        assert session_id is not None
-        _bind_connection_cancel(session_id)
+        seen_request_ids: set[str] = set()
+
+        def _start_turn(payload: dict[str, Any], target_session: str) -> dict[str, Any]:
+            nonlocal active_turn
+            raw_request_id = payload.get("request_id")
+            request_id = (
+                raw_request_id.strip()
+                if isinstance(raw_request_id, str) and raw_request_id.strip()
+                else f"request-{secrets.token_hex(16)}"
+            )
+            if len(request_id) > 128:
+                raise ValueError("invalid request_id")
+            if request_id in seen_request_ids:
+                raise ValueError("duplicate request_id")
+            seen_request_ids.add(request_id)
+            if len(seen_request_ids) > 512:
+                seen_request_ids.pop()
+            raw_turn_id = payload.get("turn_id")
+            turn_id = (
+                raw_turn_id.strip()
+                if isinstance(raw_turn_id, str) and raw_turn_id.strip()
+                else f"turn-{secrets.token_hex(16)}"
+            )
+            if len(turn_id) > 128:
+                raise ValueError("invalid turn_id")
+            turn: dict[str, Any] = {
+                "request_id": request_id,
+                "turn_id": turn_id,
+                "run_id": f"ws-run-{secrets.token_hex(16)}",
+                "session_id": target_session,
+                "cancel_event": asyncio.Event(),
+            }
+            active_turn = turn
+            _bind_turn_cancel(
+                target_session,
+                turn["cancel_event"],
+                run_id=turn["run_id"],
+                request_id=request_id,
+            )
+            return turn
+
+        def _turn_frame(turn: dict[str, Any], **payload: Any) -> dict[str, Any]:
+            return {
+                **payload,
+                "request_id": turn["request_id"],
+                "turn_id": turn["turn_id"],
+                "run_id": turn["run_id"],
+                "session_id": turn["session_id"],
+            }
+
+        def _finish_turn(turn: dict[str, Any]) -> None:
+            nonlocal active_turn
+            _unbind_turn_cancel(turn["session_id"], turn["cancel_event"])
+            if active_turn is turn:
+                active_turn = None
 
         async def _receive_with_limit() -> tuple[dict[str, Any], int]:
             raw = await websocket.receive()
@@ -2571,6 +2808,18 @@ def create_app(
             try:
                 while True:
                     payload, nbytes = await _receive_with_limit()
+                    if payload.get("type") == "cancel":
+                        cancelled = _cancel_active_turn(payload)
+                        await websocket.send_json(
+                            {
+                                "type": "cancelled" if cancelled else "cancel_rejected",
+                                "request_id": payload.get("request_id"),
+                                "turn_id": payload.get("turn_id"),
+                                "run_id": payload.get("run_id"),
+                                "session_id": payload.get("session_id"),
+                            }
+                        )
+                        continue
                     try:
                         await inbox.put_data(payload, nbytes=nbytes)
                     except InboxOverloadError as overload:
@@ -2614,6 +2863,16 @@ def create_app(
 
                 msg_type = data.get("type", "message")
 
+                if msg_type in ("message", "stream") and not ws_can_turn:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "content": ("Guest role is read-only; authenticate to send chat turns"),
+                            "session_id": session_id,
+                        }
+                    )
+                    continue
+
                 if msg_type == "message":
                     user_msg = data.get("content", "")
                     try:
@@ -2629,6 +2888,14 @@ def create_app(
                         )
                         await websocket.close(code=1008, reason="invalid session_id")
                         return
+                    assert session_id is not None
+                    try:
+                        turn = _start_turn(data, session_id)
+                    except ValueError as exc:
+                        await websocket.send_json(
+                            {"type": "error", "content": str(exc), "session_id": session_id}
+                        )
+                        continue
                     model = data.get("model") or get_active_model() or None
                     attachments = data.get("attachments", [])
 
@@ -2644,29 +2911,38 @@ def create_app(
                         )
                     except HTTPException as exc:
                         await websocket.send_json(
-                            {
-                                "type": "error",
-                                "content": str(exc.detail),
-                                "session_id": session_id,
-                            }
+                            _turn_frame(
+                                turn,
+                                type="error",
+                                terminal=True,
+                                content=str(exc.detail),
+                            )
                         )
+                        _finish_turn(turn)
                         continue
 
-                    await websocket.send_json({"type": "status", "content": "thinking..."})
+                    await websocket.send_json(
+                        _turn_frame(turn, type="status", content="thinking...")
+                    )
 
                     # Progress callback: notify frontend of each tool execution
-                    async def _progress(tool_name: str, result: Any) -> None:
+                    async def _progress(
+                        tool_name: str,
+                        result: Any,
+                        _turn: dict[str, Any] = turn,
+                    ) -> None:
                         try:
                             output_preview = (
                                 result.output[:200] if getattr(result, "output", None) else ""
                             )
                             await websocket.send_json(
-                                {
-                                    "type": "progress",
-                                    "tool": tool_name,
-                                    "success": getattr(result, "success", False),
-                                    "preview": output_preview,
-                                }
+                                _turn_frame(
+                                    _turn,
+                                    type="progress",
+                                    tool=tool_name,
+                                    success=getattr(result, "success", False),
+                                    preview=output_preview,
+                                )
                             )
                         except Exception:
                             pass
@@ -2682,6 +2958,7 @@ def create_app(
                             state = await _run_ws_turn(
                                 agent,
                                 prepare_web_message(settings, user_msg),
+                                cancel_event=turn["cancel_event"],
                                 channel=web_channel(settings, "ws_message"),
                                 owner_key_hash=ws_owner_hash,
                                 session_id=session_id,
@@ -2694,39 +2971,55 @@ def create_app(
                                 raise WebSocketDisconnect(
                                     code=1001, reason="client disconnected"
                                 ) from None
+                            if turn["cancel_event"].is_set():
+                                await websocket.send_json(
+                                    _turn_frame(
+                                        turn,
+                                        type="cancelled",
+                                        terminal=True,
+                                        content="Run cancelled",
+                                    )
+                                )
+                                _finish_turn(turn)
+                                continue
                             raise
                         except EchoBlockedError:
                             await websocket.send_json(
-                                {
-                                    "type": "error",
-                                    "content": (
-                                        "Echo blocked sensitive input before model execution"
-                                    ),
-                                    "session_id": session_id,
-                                }
+                                _turn_frame(
+                                    turn,
+                                    type="error",
+                                    terminal=True,
+                                    content=("Echo blocked sensitive input before model execution"),
+                                )
                             )
+                            _finish_turn(turn)
                             continue
                         except EchoUnavailableError:
                             await websocket.send_json(
-                                {
-                                    "type": "error",
-                                    "content": (
+                                _turn_frame(
+                                    turn,
+                                    type="error",
+                                    terminal=True,
+                                    content=(
                                         "Echo safety layer is unavailable; request was not executed"
                                     ),
-                                    "session_id": session_id,
-                                }
+                                )
                             )
+                            _finish_turn(turn)
                             continue
                         except PermissionError as exc:
                             await websocket.send_json(
-                                {
-                                    "type": "error",
-                                    "content": humanize_error(str(exc)),
-                                    "session_id": session_id,
-                                }
+                                _turn_frame(
+                                    turn,
+                                    type="error",
+                                    terminal=True,
+                                    content=humanize_error(str(exc)),
+                                )
                             )
+                            _finish_turn(turn)
                             continue
                     session_id = state.session_id
+                    turn["session_id"] = session_id
 
                     if connection_closed.is_set():
                         raise WebSocketDisconnect(code=1001, reason="client disconnected")
@@ -2737,32 +3030,33 @@ def create_app(
 
                     if state.status != "completed":
                         await websocket.send_json(
-                            {
-                                "type": "error",
-                                "terminal": True,
-                                "content": humanize_error(state.error_message),
-                                "session_id": session_id,
-                                "turns": state.turn_count,
-                                "tokens": state.total_tokens,
-                                "cost": round(state.cost_estimate, 6),
-                                "model": state.model or model or "unknown",
-                            }
+                            _turn_frame(
+                                turn,
+                                type="error",
+                                terminal=True,
+                                content=humanize_error(state.error_message),
+                                turns=state.turn_count,
+                                tokens=state.total_tokens,
+                                cost=round(state.cost_estimate, 6),
+                                model=state.model or model or "unknown",
+                            )
                         )
                     else:
                         await websocket.send_json(
-                            {
-                                "type": "response",
-                                "terminal": True,
-                                "content": assistant_msg,
-                                "session_id": session_id,
-                                "turns": state.turn_count,
-                                "tokens": state.total_tokens,
-                                "cost": round(state.cost_estimate, 6),
-                                "status": state.status,
-                                "compression": state.compression_stats,
-                                "model": state.model or model or "unknown",
-                            }
+                            _turn_frame(
+                                turn,
+                                type="response",
+                                terminal=True,
+                                content=assistant_msg,
+                                turns=state.turn_count,
+                                tokens=state.total_tokens,
+                                cost=round(state.cost_estimate, 6),
+                                status=state.status,
+                                compression=state.compression_stats,
+                                model=state.model or model or "unknown",
+                            )
                         )
+                    _finish_turn(turn)
 
                 elif msg_type == "stream":
                     user_msg = data.get("content", "")
@@ -2779,6 +3073,14 @@ def create_app(
                         )
                         await websocket.close(code=1008, reason="invalid session_id")
                         return
+                    assert session_id is not None
+                    try:
+                        turn = _start_turn(data, session_id)
+                    except ValueError as exc:
+                        await websocket.send_json(
+                            {"type": "error", "content": str(exc), "session_id": session_id}
+                        )
+                        continue
                     model = data.get("model")
                     attachments = data.get("attachments", [])
                     raw_enable_tools = data.get("enable_tools", True)
@@ -2803,28 +3105,43 @@ def create_app(
                         )
                     except HTTPException as exc:
                         await websocket.send_json(
-                            {
-                                "type": "error",
-                                "content": str(exc.detail),
-                                "session_id": session_id,
-                            }
+                            _turn_frame(
+                                turn,
+                                type="error",
+                                terminal=True,
+                                content=str(exc.detail),
+                            )
                         )
+                        _finish_turn(turn)
                         continue
 
-                    await websocket.send_json({"type": "status", "content": "streaming..."})
+                    await websocket.send_json(
+                        _turn_frame(turn, type="status", content="streaming...")
+                    )
 
                     # Native token-level streaming for the final assistant response.
                     # Tool-calling turns remain non-streaming (parsed atomically).
                     streamed = False
 
-                    async def _send_token(token: str) -> None:
+                    async def _send_token(
+                        token: str,
+                        _turn: dict[str, Any] = turn,
+                    ) -> None:
                         nonlocal streamed
                         streamed = True
                         await websocket.send_json(
-                            {"type": "token", "content": token, "provisional": True}
+                            _turn_frame(
+                                _turn,
+                                type="token",
+                                content=token,
+                                provisional=True,
+                            )
                         )
 
-                    async def _send_event(payload: dict[str, Any]) -> None:
+                    async def _send_event(
+                        payload: dict[str, Any],
+                        _turn: dict[str, Any] = turn,
+                    ) -> None:
                         """PR-4.3 side-channel: structured StreamEvent → WS frame.
 
                         Maps:
@@ -2840,25 +3157,30 @@ def create_app(
                             if kind == "thinking_delta":
                                 text = payload.get("text") or ""
                                 if text:
-                                    await websocket.send_json({"type": "thinking", "content": text})
+                                    await websocket.send_json(
+                                        _turn_frame(_turn, type="thinking", content=text)
+                                    )
                             elif kind == "tool_call_delta":
                                 tc = payload.get("tool_call") or {}
                                 if tc:
                                     await websocket.send_json(
-                                        {"type": "tool_call", "tool_call": tc}
+                                        _turn_frame(_turn, type="tool_call", tool_call=tc)
                                     )
                             elif kind == "usage":
                                 usage = payload.get("usage") or {}
                                 if usage:
-                                    await websocket.send_json({"type": "usage", "usage": usage})
+                                    await websocket.send_json(
+                                        _turn_frame(_turn, type="usage", usage=usage)
+                                    )
                             elif kind == "error":
                                 err = payload.get("error") or ""
                                 if err:
                                     await websocket.send_json(
-                                        {
-                                            "type": "stream_diagnostic",
-                                            "content": humanize_error(str(err)),
-                                        }
+                                        _turn_frame(
+                                            _turn,
+                                            type="stream_diagnostic",
+                                            content=humanize_error(str(err)),
+                                        )
                                     )
                         except Exception:
                             # Never let the side-channel kill the main turn.
@@ -2875,6 +3197,7 @@ def create_app(
                             state = await _run_ws_turn(
                                 agent,
                                 prepare_web_message(settings, user_msg),
+                                cancel_event=turn["cancel_event"],
                                 channel=web_channel(settings, "ws_stream"),
                                 owner_key_hash=ws_owner_hash,
                                 session_id=session_id,
@@ -2889,39 +3212,55 @@ def create_app(
                                 raise WebSocketDisconnect(
                                     code=1001, reason="client disconnected"
                                 ) from None
+                            if turn["cancel_event"].is_set():
+                                await websocket.send_json(
+                                    _turn_frame(
+                                        turn,
+                                        type="cancelled",
+                                        terminal=True,
+                                        content="Run cancelled",
+                                    )
+                                )
+                                _finish_turn(turn)
+                                continue
                             raise
                         except EchoBlockedError:
                             await websocket.send_json(
-                                {
-                                    "type": "error",
-                                    "content": (
-                                        "Echo blocked sensitive input before model execution"
-                                    ),
-                                    "session_id": session_id,
-                                }
+                                _turn_frame(
+                                    turn,
+                                    type="error",
+                                    terminal=True,
+                                    content=("Echo blocked sensitive input before model execution"),
+                                )
                             )
+                            _finish_turn(turn)
                             continue
                         except EchoUnavailableError:
                             await websocket.send_json(
-                                {
-                                    "type": "error",
-                                    "content": (
+                                _turn_frame(
+                                    turn,
+                                    type="error",
+                                    terminal=True,
+                                    content=(
                                         "Echo safety layer is unavailable; request was not executed"
                                     ),
-                                    "session_id": session_id,
-                                }
+                                )
                             )
+                            _finish_turn(turn)
                             continue
                         except PermissionError as exc:
                             await websocket.send_json(
-                                {
-                                    "type": "error",
-                                    "content": humanize_error(str(exc)),
-                                    "session_id": session_id,
-                                }
+                                _turn_frame(
+                                    turn,
+                                    type="error",
+                                    terminal=True,
+                                    content=humanize_error(str(exc)),
+                                )
                             )
+                            _finish_turn(turn)
                             continue
                     session_id = state.session_id
+                    turn["session_id"] = session_id
                     if connection_closed.is_set():
                         raise WebSocketDisconnect(code=1001, reason="client disconnected")
                     _record_usage(state, explicit_model=model)
@@ -2929,37 +3268,38 @@ def create_app(
 
                     if state.status != "completed":
                         await websocket.send_json(
-                            {
-                                "type": "error",
-                                "terminal": True,
-                                "content": humanize_error(state.error_message),
-                                "session_id": session_id,
-                                "turns": state.turn_count,
-                                "tokens": state.total_tokens,
-                                "cost": round(state.cost_estimate, 6),
-                                "model": state.model or model or "unknown",
-                            }
+                            _turn_frame(
+                                turn,
+                                type="error",
+                                terminal=True,
+                                content=humanize_error(state.error_message),
+                                turns=state.turn_count,
+                                tokens=state.total_tokens,
+                                cost=round(state.cost_estimate, 6),
+                                model=state.model or model or "unknown",
+                            )
                         )
                     else:
                         # Fallback: if streaming never fired (all tool turns or provider
                         # doesn't support streaming), send the full response in one go.
                         if not streamed and assistant_msg:
                             await websocket.send_json(
-                                {"type": "response", "content": assistant_msg}
+                                _turn_frame(turn, type="response", content=assistant_msg)
                             )
 
                         await websocket.send_json(
-                            {
-                                "type": "done",
-                                "terminal": True,
-                                "session_id": session_id,
-                                "turns": state.turn_count,
-                                "tokens": state.total_tokens,
-                                "cost": round(state.cost_estimate, 6),
-                                "status": state.status,
-                                "compression": state.compression_stats,
-                            }
+                            _turn_frame(
+                                turn,
+                                type="done",
+                                terminal=True,
+                                turns=state.turn_count,
+                                tokens=state.total_tokens,
+                                cost=round(state.cost_estimate, 6),
+                                status=state.status,
+                                compression=state.compression_stats,
+                            )
                         )
+                    _finish_turn(turn)
 
                 elif msg_type == "ping":
                     await websocket.send_json({"type": "pong"})
@@ -2978,19 +3318,25 @@ def create_app(
                 logger.warning("Failed to send error to websocket", exc_info=True)
         finally:
             connection_closed.set()
-            connection_cancel.set()
+            if active_turn is not None:
+                active_turn["cancel_event"].set()
             reader_task.cancel()
             with suppress(asyncio.CancelledError):
                 await reader_task
             with suppress(Exception):
                 await inbox.close()
-            _unbind_connection_cancel(session_id)
+            if active_turn is not None:
+                _finish_turn(active_turn)
 
     @app.websocket("/ws/fleet")
     async def fleet_websocket_endpoint(websocket: WebSocket) -> None:
         """Real-time fleet dashboard WebSocket."""
         from js.exceptions import AuthRequiredError
-        from js.orchestration.fleet import AgentFleet
+        from js.orchestration.fleet import (
+            AgentFleet,
+            bind_fleet_event_identity,
+            validate_fleet_event_identity,
+        )
         from js.web.auth import _ADMIN_ROLE, AuthManager, check_origin, memory_owner
         from js.web.routers.fleet import get_fleet
 
@@ -3004,20 +3350,37 @@ def create_app(
         # Keep credentials out of URLs. Browsers use the same-site HttpOnly
         # session cookie (or the legacy key cookie); native clients may send
         # X-API-Key during the upgrade.
-        from js.web.auth import _SESSION_COOKIE
+        from js.web.auth import resolve_session_cookie
 
-        api_key = websocket.cookies.get("x-api-key", "") or websocket.headers.get("x-api-key", "")
-        session_token = websocket.cookies.get(_SESSION_COOKIE, "")
         settings = get_agent().settings
-        auth_mgr = AuthManager(settings.state_dir)
-        try:
-            if api_key:
-                auth_ctx = auth_mgr.verify(api_key)
-            else:
-                auth_ctx = auth_mgr.verify_session(session_token)
-        except AuthRequiredError:
-            await websocket.close(code=1008, reason="Authentication failed")
-            return
+        from js.appshell.principal import appshell_auth_context_from_scope
+
+        managed, injected_auth = appshell_auth_context_from_scope(websocket.scope)
+        if managed:
+            if injected_auth is None:
+                await websocket.close(code=1008, reason="Authentication failed")
+                return
+            auth_ctx = injected_auth
+        else:
+            api_key = websocket.cookies.get("x-api-key", "") or websocket.headers.get(
+                "x-api-key", ""
+            )
+            session_token = (
+                resolve_session_cookie(
+                    websocket.cookies,
+                    str(getattr(settings, "product_id", "js-agent") or "js-agent"),
+                )
+                or ""
+            )
+            auth_mgr = AuthManager(settings.state_dir)
+            try:
+                if api_key:
+                    auth_ctx = auth_mgr.verify(api_key)
+                else:
+                    auth_ctx = auth_mgr.verify_session(session_token)
+            except AuthRequiredError:
+                await websocket.close(code=1008, reason="Authentication failed")
+                return
         if auth_ctx.get("role") != _ADMIN_ROLE:
             await websocket.close(code=1008, reason="Admin role required")
             return
@@ -3028,10 +3391,28 @@ def create_app(
         fleet = get_fleet()
         event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=500)
         background_tasks: set[asyncio.Task[None]] = set()
+        fleet_effect_tasks: dict[tuple[str, str, str], asyncio.Task[None]] = {}
 
         async def _on_event(event: dict[str, Any]) -> None:
             try:
-                event_queue.put_nowait(event)
+                request_id, turn_id, session_id = validate_fleet_event_identity(
+                    event.get("request_id"),
+                    event.get("turn_id"),
+                    event.get("session_id"),
+                )
+            except (TypeError, ValueError):
+                logger.warning("Dropped Fleet event without a valid runtime identity")
+                return
+            validated_event = dict(event)
+            validated_event.update(
+                {
+                    "request_id": request_id,
+                    "turn_id": turn_id,
+                    "session_id": session_id,
+                }
+            )
+            try:
+                event_queue.put_nowait(validated_event)
             except asyncio.QueueFull:
                 pass
 
@@ -3040,51 +3421,83 @@ def create_app(
             tool_name: str,
             arguments: dict[str, Any],
             action: str,
+            request_id: str,
+            turn_id: str,
+            session_id: str,
         ) -> None:
-            try:
-                result = await _execute_web_tool_effect(
-                    get_agent(),
-                    auth_ctx,
-                    channel=f"fleet_ws_{action}",
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    user_input=f"Run an administrator-approved Fleet {action} request",
-                )
-                if result.success:
-                    return
-                logger.warning(
-                    "Fleet WebSocket effect failed",
-                    action=action,
-                    status_code=result.metadata.get("status_code"),
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.warning(
-                    "Fleet WebSocket effect failed",
-                    action=action,
-                    exc_info=True,
-                )
-            try:
-                event_queue.put_nowait({"type": "error", "message": f"Fleet {action} failed"})
-            except asyncio.QueueFull:
-                pass
+            with bind_fleet_event_identity(request_id, turn_id, session_id):
+                try:
+                    result = await _execute_web_tool_effect(
+                        get_agent(),
+                        auth_ctx,
+                        channel=f"fleet_ws_{action}",
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        user_input=f"Run an administrator-approved Fleet {action} request",
+                    )
+                    if result.success:
+                        return
+                    logger.warning(
+                        "Fleet WebSocket effect failed",
+                        action=action,
+                        status_code=result.metadata.get("status_code"),
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning(
+                        "Fleet WebSocket effect failed",
+                        action=action,
+                        exc_info=True,
+                    )
+                try:
+                    event_queue.put_nowait(
+                        {
+                            "type": "error",
+                            "message": f"Fleet {action} failed",
+                            "request_id": request_id,
+                            "turn_id": turn_id,
+                            "session_id": session_id,
+                        }
+                    )
+                except asyncio.QueueFull:
+                    pass
 
         def _start_fleet_effect(
             *,
             tool_name: str,
             arguments: dict[str, Any],
             action: str,
+            request_id: str,
+            turn_id: str,
+            session_id: str,
         ) -> None:
+            request_id, turn_id, session_id = validate_fleet_event_identity(
+                request_id, turn_id, session_id
+            )
+            key = (request_id, turn_id, session_id)
+            existing = fleet_effect_tasks.get(key)
+            if existing is not None and not existing.done():
+                return
             task = asyncio.create_task(
                 _run_fleet_effect(
                     tool_name=tool_name,
                     arguments=arguments,
                     action=action,
+                    request_id=request_id,
+                    turn_id=turn_id,
+                    session_id=session_id,
                 )
             )
             background_tasks.add(task)
-            task.add_done_callback(background_tasks.discard)
+            fleet_effect_tasks[key] = task
+
+            def _discard(done: asyncio.Task[None]) -> None:
+                background_tasks.discard(done)
+                if fleet_effect_tasks.get(key) is done:
+                    fleet_effect_tasks.pop(key, None)
+
+            task.add_done_callback(_discard)
 
         subscription = fleet.on_event(
             _on_event,
@@ -3140,7 +3553,34 @@ def create_app(
                     msg_type = data.get("type", "")
                     if not isinstance(msg_type, str):
                         raise ValueError("invalid Fleet WebSocket message type")
-                    if msg_type == "status":
+                    if msg_type == "cancel":
+                        request_id, turn_id, session_id = validate_fleet_event_identity(
+                            data.get("request_id"),
+                            data.get("turn_id"),
+                            data.get("session_id"),
+                        )
+                        background_task = fleet_effect_tasks.get((request_id, turn_id, session_id))
+                        if background_task is None:
+                            await websocket.send_json(
+                                {
+                                    "type": "cancel_rejected",
+                                    "request_id": request_id,
+                                    "turn_id": turn_id,
+                                    "session_id": session_id,
+                                }
+                            )
+                            continue
+                        background_task.cancel()
+                        await asyncio.gather(background_task, return_exceptions=True)
+                        await websocket.send_json(
+                            {
+                                "type": "cancelled",
+                                "request_id": request_id,
+                                "turn_id": turn_id,
+                                "session_id": session_id,
+                            }
+                        )
+                    elif msg_type == "status":
                         await websocket.send_json(
                             {
                                 "type": "status",
@@ -3148,6 +3588,11 @@ def create_app(
                             }
                         )
                     elif msg_type == "collaborate":
+                        request_id, turn_id, requested_session_id = validate_fleet_event_identity(
+                            data.get("request_id"),
+                            data.get("turn_id"),
+                            data.get("session_id"),
+                        )
                         raw_subtasks = data.get("subtasks")
                         normalized_subtasks: list[str] | None = None
                         if raw_subtasks is not None:
@@ -3166,13 +3611,13 @@ def create_app(
                         (
                             task,
                             subtasks,
-                            session_id,
+                            validated_session_id,
                             role_mapping,
                             mode,
                         ) = AgentFleet._validate_collaboration_request(
                             data.get("task", ""),
                             normalized_subtasks,
-                            data.get("session_id") or None,
+                            requested_session_id,
                             data.get("role_mapping"),
                             data.get("mode", "auto"),
                         )
@@ -3182,35 +3627,46 @@ def create_app(
                             arguments={
                                 "task": task,
                                 "subtasks": subtasks,
-                                "session_id": session_id,
+                                "session_id": validated_session_id,
                                 "role_mapping": role_mapping,
                                 "mode": mode,
                             },
                             action="collaborate",
+                            request_id=request_id,
+                            turn_id=turn_id,
+                            session_id=requested_session_id,
                         )
                     elif msg_type == "continue":
+                        request_id, turn_id, requested_session_id = validate_fleet_event_identity(
+                            data.get("request_id"),
+                            data.get("turn_id"),
+                            data.get("session_id"),
+                        )
                         (
                             follow_up,
                             _subtasks,
-                            session_id,
+                            validated_session_id,
                             _role_mapping,
                             _mode,
                         ) = AgentFleet._validate_collaboration_request(
                             data.get("task", ""),
                             None,
-                            data.get("session_id"),
+                            requested_session_id,
                             None,
                             "auto",
                         )
-                        assert session_id is not None
+                        assert validated_session_id is not None
                         await websocket.send_json({"type": "ack", "action": "continue"})
                         _start_fleet_effect(
                             tool_name="control_fleet_continue",
                             arguments={
-                                "session_id": session_id,
+                                "session_id": validated_session_id,
                                 "follow_up": follow_up,
                             },
                             action="continue",
+                            request_id=request_id,
+                            turn_id=turn_id,
+                            session_id=requested_session_id,
                         )
                     elif msg_type == "spawn":
                         # Spawn is no longer supported; agents are created on-demand

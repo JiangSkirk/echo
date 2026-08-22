@@ -1,0 +1,1 @@
+"""Python AppShell sidecar entrypoints."""

@@ -1,9 +1,9 @@
 {
   "algorithm": "Ed25519",
-  "fingerprint_sha256": "2a27bc8ab0b0198235a1e977f441060f0526d899916bef5049f173bf73bfeec5",
+  "fingerprint_sha256": "85df2fe3b07e9399fd20acdeed1afef3af3cd450edb48417530ef17aa4123d27",
   "not_a_third_party_signature": true,
   "notes": "Public half of a per-freeze ephemeral keypair. Private key is stored in an external system temp directory and destroyed after signing. Anyone with the private key during the run can forge the same signatures; this is not a third-party attestation.",
-  "public_key_b64": "cX+BLhJ5RKsAgbQYpTOiC0NgK9WudzX7QqkJnjyfK5Y=",
+  "public_key_b64": "tNMawyfDGoPRwufFsDn8YqlvsWwT5cT+epbuUzo5cAo=",
   "purpose": "ephemeral-e2e-ledger-consistency-v1",
   "schema_version": "echo-e2e-ledger-pubkey-v1"
 }

@@ -208,8 +208,23 @@ function renderApproval(approval) {
   const card = element('article', 'bg-gray-900 border border-gray-800 rounded-lg p-4');
   const header = element('div', 'flex flex-wrap items-start justify-between gap-3');
   const identity = element('div', 'min-w-0');
-  const title = element('h3', 'font-mono text-sm font-semibold text-blue-300 break-all', safeText(approval.tool_name, '未知工具'));
-  identity.append(title, element('p', 'text-xs text-gray-500 mt-1', `${safeText(approval.context, '未知上下文')} · ${formatTimestamp(approval.timestamp)}`));
+  const HIGHLIGHT_TOOLS = new Set(['python', 'shell']);
+  const toolName = safeText(approval.tool_name, '未知工具');
+  const isDangerous = HIGHLIGHT_TOOLS.has(String(approval.tool_name || ''));
+  const title = element(
+    'h3',
+    isDangerous
+      ? 'font-mono text-sm font-semibold text-amber-300 break-all'
+      : 'font-mono text-sm font-semibold text-blue-300 break-all',
+    toolName,
+  );
+  identity.append(title);
+  if (isDangerous) {
+    identity.append(
+      element('p', 'text-xs text-amber-400 mt-1', '高危命令 — 请完整核对下方参数'),
+    );
+  }
+  identity.append(element('p', 'text-xs text-gray-500 mt-1', `${safeText(approval.context, '未知上下文')} · ${formatTimestamp(approval.timestamp)}`));
   const actions = element('div', 'flex gap-1 shrink-0');
   actions.append(
     createIconButton('fa-check', '批准', () => submitDecision(card, approval.id, { action: 'approve' }), 'bg-green-900/50 hover:bg-green-800 text-green-300'),
@@ -247,7 +262,11 @@ export async function loadApprovals() {
       const response = await fetch('/api/echo/approvals');
       if (!response.ok) throw new Error(await readApiError(response));
       const data = await response.json();
-      renderApprovals(Array.isArray(data.approvals) ? data.approvals : []);
+      const approvals = Array.isArray(data.approvals) ? data.approvals : [];
+      renderApprovals(approvals);
+      document.dispatchEvent(
+        new CustomEvent('js:approvals-updated', { detail: { count: approvals.length } }),
+      );
     } catch (error) {
       updatePendingCount(0);
       renderLoadError(error instanceof Error ? error.message : String(error));

@@ -11,12 +11,14 @@ import stat
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
 
 from js.config import ToolLimits
 from js.echo.turn_context import current_runtime_context
 from js.security.guard import BehaviorGuard, SecurityDecisionType
+from js.tools.files import FileTools
 from js.tools.registry import ToolParam, ToolResult, ToolSpec
 
 _OFFICE_EXTRA_MSG = "Install js-agent[office] to use Excel tools."
@@ -519,6 +521,27 @@ class OfficeTools:
         self.workspace = workspace.resolve()
         self.limits = limits
         self.guard = guard
+        self._files = FileTools(workspace, limits, guard)
+
+    def _save_bytes(self, path: str, payload: bytes) -> Path:
+        return self._files._secure_write(path, payload, append=False)
+
+    def _save_workbook(self, path: str, workbook: Any) -> tuple[Path, str]:
+        buffer = BytesIO()
+        workbook.save(buffer)
+        payload = buffer.getvalue()
+        target = self._save_bytes(path, payload)
+        return target, hashlib.sha256(payload).hexdigest()
+
+    def _write_path_or_error(self, path: str) -> str | ToolResult:
+        try:
+            logical = self._files._logical_path(path)
+        except ValueError as exc:
+            return ToolResult(success=False, error=str(exc))
+        decision = self.guard.check_path_operation(str(logical), "write")
+        if decision.decision == SecurityDecisionType.BLOCK:
+            return ToolResult(success=False, error=decision.reason)
+        return path
 
     def _resolve(self, path: str) -> Path:
         p = Path(path)
@@ -1132,13 +1155,9 @@ class OfficeTools:
         encoding: str = "utf-8",
         delimiter: str = ",",
     ) -> ToolResult:
-        try:
-            target = self._resolve(path)
-        except ValueError as e:
-            return ToolResult(success=False, error=str(e))
-        decision = self.guard.check_path_operation(str(target), "write")
-        if decision.decision == SecurityDecisionType.BLOCK:
-            return ToolResult(success=False, error=decision.reason)
+        guarded = self._write_path_or_error(path)
+        if isinstance(guarded, ToolResult):
+            return guarded
 
         try:
             import csv
@@ -1149,8 +1168,8 @@ class OfficeTools:
                 from js_work.routines.office_safety import escape_work_csv_rows
 
                 rows_data = escape_work_csv_rows(rows_data)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if _is_work_runtime():
+                target = self._resolve(path)
+                target.parent.mkdir(parents=True, exist_ok=True)
 
                 def _write_csv(staged: Path) -> None:
                     with staged.open("w", encoding=encoding, newline="") as handle:
@@ -1159,9 +1178,10 @@ class OfficeTools:
 
                 _publish_work_artifact(target, _write_csv, validate_xlsx=False)
             else:
-                with open(target, "w", encoding=encoding, newline="") as f:
-                    writer = csv.writer(f, delimiter=delimiter)
-                    writer.writerows(rows_data)
+                buf = StringIO()
+                writer = csv.writer(buf, delimiter=delimiter)
+                writer.writerows(_escape_formula_rows(rows_data))
+                target = self._save_bytes(path, buf.getvalue().encode(encoding))
 
             return ToolResult(
                 success=True,
@@ -1278,13 +1298,9 @@ class OfficeTools:
         start_cell: str = "A1",
         append: bool = False,
     ) -> ToolResult:
-        try:
-            target = self._resolve(path)
-        except ValueError as e:
-            return ToolResult(success=False, error=str(e))
-        decision = self.guard.check_path_operation(str(target), "write")
-        if decision.decision == SecurityDecisionType.BLOCK:
-            return ToolResult(success=False, error=decision.reason)
+        guarded = self._write_path_or_error(path)
+        if isinstance(guarded, ToolResult):
+            return guarded
 
         wb = None
         try:
@@ -1306,8 +1322,18 @@ class OfficeTools:
             if work_runtime:
                 rows_data = _normalize_work_cell_values(rows_data)
 
-            if target.exists() and not work_runtime:
-                wb = load_workbook(str(target))
+            existing: bytes | None = None
+            if not work_runtime:
+                try:
+                    existing, _, _, _ = self._files._secure_read_bytes(
+                        path,
+                        max_bytes=max(self.limits.file_read_max_chars * 4, 8 * 1024 * 1024),
+                    )
+                except FileNotFoundError:
+                    existing = None
+
+            if existing is not None:
+                wb = load_workbook(BytesIO(existing))
             else:
                 wb = Workbook()
                 # openpyxl default sheet title may be "Sheet" (not "Sheet1").
@@ -1332,19 +1358,20 @@ class OfficeTools:
                     if work_runtime:
                         _write_work_excel_cell(cell, value)
                     else:
-                        cell.value = value
+                        cell.value = _escape_formula_text(value)
 
-            target.parent.mkdir(parents=True, exist_ok=True)
             if work_runtime:
+                target = self._resolve(path)
+                target.parent.mkdir(parents=True, exist_ok=True)
                 _publish_work_artifact(
                     target,
                     lambda staged: wb.save(str(staged)),
                     validate_xlsx=True,
                 )
+                content_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
             else:
-                wb.save(str(target))
+                target, content_sha256 = self._save_workbook(path, wb)
 
-            content_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
             return ToolResult(
                 success=True,
                 output=f"Written {len(rows_data)} rows to {path}",
@@ -1376,7 +1403,16 @@ class OfficeTools:
         try:
             source = self._logical_input_target(source_path)
             target = self._logical_input_target(target_path)
-            output = self._resolve(output_path) if output_path else None
+            if output_path:
+                write_check = self._write_path_or_error(output_path)
+                if isinstance(write_check, ToolResult):
+                    return write_check
+                output = self._files._logical_path(output_path)
+            else:
+                output = None
+                write_check = self._write_path_or_error(target_path)
+                if isinstance(write_check, ToolResult):
+                    return write_check
         except ValueError as e:
             return ToolResult(success=False, error=str(e))
         work_runtime = _is_work_runtime()
@@ -1459,7 +1495,7 @@ class OfficeTools:
                     if work_runtime:
                         _write_work_excel_cell(cell, value)
                     else:
-                        cell.value = value
+                        cell.value = _escape_formula_text(value)
                 rows_copied += 1
 
             if work_runtime:
@@ -1470,7 +1506,10 @@ class OfficeTools:
                     validate_xlsx=True,
                 )
             else:
-                tgt_wb.save(str(target))
+                write_rel = output_path if output_path else target_path
+                written, _digest = self._save_workbook(write_rel, tgt_wb)
+                if output is not None:
+                    output = written
 
             return ToolResult(
                 success=True,
@@ -1500,13 +1539,9 @@ class OfficeTools:
         sheet_name: str = "Sheet1",
         headers: str = "",
     ) -> ToolResult:
-        try:
-            target = self._resolve(path)
-        except ValueError as e:
-            return ToolResult(success=False, error=str(e))
-        decision = self.guard.check_path_operation(str(target), "write")
-        if decision.decision == SecurityDecisionType.BLOCK:
-            return ToolResult(success=False, error=decision.reason)
+        guarded = self._write_path_or_error(path)
+        if isinstance(guarded, ToolResult):
+            return guarded
 
         wb = None
         try:
@@ -1534,17 +1569,18 @@ class OfficeTools:
                     if work_runtime:
                         _write_work_excel_cell(cell, h)
                     else:
-                        cell.value = h
+                        cell.value = _escape_formula_text(h)
 
-            target.parent.mkdir(parents=True, exist_ok=True)
             if _is_work_runtime():
+                target = self._resolve(path)
+                target.parent.mkdir(parents=True, exist_ok=True)
                 _publish_work_artifact(
                     target,
                     lambda staged: wb.save(str(staged)),
                     validate_xlsx=True,
                 )
             else:
-                wb.save(str(target))
+                self._save_workbook(path, wb)
 
             return ToolResult(success=True, output=f"Created Excel file: {path}")
         except Exception as e:
@@ -1560,13 +1596,9 @@ class OfficeTools:
         data: str = "",
         page_size: str = "A4",
     ) -> ToolResult:
-        try:
-            target = self._resolve(path)
-        except ValueError as e:
-            return ToolResult(success=False, error=str(e))
-        decision = self.guard.check_path_operation(str(target), "write")
-        if decision.decision == SecurityDecisionType.BLOCK:
-            return ToolResult(success=False, error=decision.reason)
+        guarded = self._write_path_or_error(path)
+        if isinstance(guarded, ToolResult):
+            return guarded
 
         try:
             try:
@@ -1588,7 +1620,6 @@ class OfficeTools:
                 return ToolResult(success=False, error="No data provided")
 
             size = A4 if page_size.upper() == "A4" else LETTER
-            target.parent.mkdir(parents=True, exist_ok=True)
 
             elements: list[Any] = []
             styles = getSampleStyleSheet()
@@ -1616,13 +1647,17 @@ class OfficeTools:
             )
             elements.append(table)
             if _is_work_runtime():
+                target = self._resolve(path)
+                target.parent.mkdir(parents=True, exist_ok=True)
 
                 def _write_pdf(staged: Path) -> None:
                     SimpleDocTemplate(str(staged), pagesize=size).build(elements)
 
                 _publish_work_artifact(target, _write_pdf, validate_xlsx=False)
             else:
-                SimpleDocTemplate(str(target), pagesize=size).build(elements)
+                buffer = BytesIO()
+                SimpleDocTemplate(buffer, pagesize=size).build(elements)
+                self._save_bytes(path, buffer.getvalue())
 
             return ToolResult(success=True, output=f"Generated PDF: {path}")
         except Exception as e:
@@ -1650,6 +1685,31 @@ class OfficeTools:
 def _is_work_runtime() -> bool:
     context = current_runtime_context()
     return context is not None and context.product_id == "js-work"
+
+
+# Spreadsheet formula-injection triggers, aligned with
+# js_work.routines.office_safety._CSV_FORMULA_TRIGGERS.
+_FORMULA_TRIGGERS = frozenset({"=", "+", "-", "@"})
+
+
+def _escape_formula_text(value: Any) -> Any:
+    """Prefix formula-like text with ``'`` so spreadsheet apps keep it literal.
+
+    Aligned with js_work.routines.office_safety._csv_literal_prefix: text that
+    already starts with a quote is returned unchanged (no double escaping), and
+    non-string values pass through untouched.
+    """
+    if not isinstance(value, str):
+        return value
+    if value.startswith("'"):
+        return value
+    if value.lstrip()[:1] in _FORMULA_TRIGGERS:
+        return f"'{value}"
+    return value
+
+
+def _escape_formula_rows(rows: list[list[Any]]) -> list[list[Any]]:
+    return [[_escape_formula_text(cell) for cell in row] for row in rows]
 
 
 def _normalize_work_cell_values(value: Any) -> Any:

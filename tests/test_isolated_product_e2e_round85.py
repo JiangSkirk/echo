@@ -371,8 +371,12 @@ def _step_record(
             argv = [python, "-c", "from js.echo.context_tokenizer import tiktoken_counter_factory"]
         elif suffix == "CLI js --help":
             argv = [str(venv / "bin" / "js"), "--help"]
+        elif suffix == "CLI js work --help":
+            argv = [str(venv / "bin" / "js"), "work", "--help"]
         elif suffix == "CLI js-work --help":
             argv = [str(venv / "bin" / "js-work"), "--help"]
+        elif suffix == "CLI python -m js_work --help":
+            argv = [python, "-m", "js_work", "--help"]
         else:
             argv = [python, str(cwd / "server_e2e.py")]
     import_evidence: dict[str, object] | None = None

@@ -19,6 +19,22 @@ from js.echo.ledger.evidence_export import (
 DIGEST = "d" * 64
 
 
+@pytest.fixture(autouse=True)
+def _formal_validator_for_export_mechanics(monkeypatch: pytest.MonkeyPatch) -> None:
+    import js.echo.ledger.release_gates as release_gates
+
+    report = release_gates.FinalLocalGateEvidenceReport(
+        all_local_gates_passed=False,
+        passed_gates=("ruff",),
+        blockers=("remaining_required_gates_not_seeded",),
+        product_internal_ready=False,
+    )
+    monkeypatch.setattr(release_gates, "release_source_digest", lambda _root: DIGEST)
+    monkeypatch.setattr(
+        release_gates, "validate_final_local_gate_evidence", lambda *_a, **_k: report
+    )
+
+
 def _seed(evidence: Path) -> None:
     (evidence / "final").mkdir(parents=True)
     (evidence / "gates").mkdir(parents=True)
@@ -52,10 +68,12 @@ def _seed(evidence: Path) -> None:
         archive.writestr("demo/__init__.py", "x=1\n")
     sdist = evidence / "e2e" / "artifacts" / "demo-0.0.1.tar.gz"
     sdist_content = b"x=1\n"
-    with tarfile.open(sdist, "w:gz") as archive:
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
         info = tarfile.TarInfo("demo/__init__.py")
         info.size = len(sdist_content)
         archive.addfile(info, io.BytesIO(sdist_content))
+    sdist.write_bytes(stream.getvalue())
     wheel_payload = whl.read_bytes()
     sdist_payload = sdist.read_bytes()
     (evidence / "e2e" / "ECHO_ISOLATED_VENV_E2E.json").write_text(

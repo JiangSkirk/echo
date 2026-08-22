@@ -1,5 +1,7 @@
 """Tests for context compressor."""
 
+from pathlib import Path
+
 import pytest
 
 from js.compression.compressor import (
@@ -89,15 +91,17 @@ def _tail_boundary_messages() -> list[ChatMessage]:
 class TestContextCompressor:
     @pytest.fixture
     def compressor(self) -> ContextCompressor:
-        return ContextCompressor(CompressionConfig(
-            # Leaves room for the generated summary under the vendored cl100k
-            # counter while still forcing the long-history fixture to compress.
-            max_tokens=700,
-            protect_head_messages=2,
-            protect_tail_turns=2,
-            enable_compression=True,
-            use_llm_summary=False,
-        ))
+        return ContextCompressor(
+            CompressionConfig(
+                # Leaves room for the generated summary under the vendored cl100k
+                # counter while still forcing the long-history fixture to compress.
+                max_tokens=700,
+                protect_head_messages=2,
+                protect_tail_turns=2,
+                enable_compression=True,
+                use_llm_summary=False,
+            )
+        )
 
     @pytest.mark.asyncio
     async def test_no_compression_when_under_budget(self, compressor: ContextCompressor) -> None:
@@ -207,7 +211,9 @@ class TestContextCompressor:
             ChatMessage(role="system", content="System"),
             ChatMessage(role="user", content="User" * 200),
             ChatMessage(role="assistant", content="Assistant" * 200),
-            ChatMessage(role="tool", content="Tool output" * 50, tool_call_id="tc1", name="test_tool"),
+            ChatMessage(
+                role="tool", content="Tool output" * 50, tool_call_id="tc1", name="test_tool"
+            ),
             ChatMessage(role="user", content="Latest"),
             ChatMessage(role="assistant", content="Answer"),
         ]
@@ -378,9 +384,10 @@ class TestContextCompressor:
 
         original_systems = [message for message in messages if message.role == "system"]
         assert all(message in result.messages for message in original_systems)
-        assert [
-            message.content for message in result.messages if message in original_systems
-        ] == ["primary security policy", "secondary audit policy"]
+        assert [message.content for message in result.messages if message in original_systems] == [
+            "primary security policy",
+            "secondary audit policy",
+        ]
 
     def test_summary_shrinking_never_rewrites_original_system_message(self) -> None:
         config = _full_config(max_tokens=290)
@@ -390,7 +397,7 @@ class TestContextCompressor:
             content=SUMMARY_PREFIX + "original security sentinel" + ("x" * 200),
         )
         generated_summary = ChatMessage(
-            role="system",
+            role="user",
             content=SUMMARY_PREFIX + "generated summary" + ("y" * 200),
             name="__js_context_compaction__",
         )
@@ -482,3 +489,21 @@ class TestContextCompressor:
             match="Echo budget exceeded: context_compression_postcondition",
         ):
             comp.compress_sync(messages)
+
+
+def test_agent_wires_memory_threshold_and_compression_feedback(tmp_path: Path) -> None:
+    """Memory compression_threshold and CompressionFeedback must reach the compressor."""
+    from js.agent import JSAgent
+    from js.compression.feedback import CompressionFeedback
+    from js.config import JSSettings, MemoryConfig
+
+    settings = JSSettings(
+        workspace=tmp_path / "workspace",
+        state_dir=tmp_path / "state",
+        memory=MemoryConfig(compression_threshold=0.62),
+    )
+    agent = JSAgent(settings)
+    assert agent.compressor.config.warning_threshold == pytest.approx(0.62)
+    assert agent.compressor.config.critical_threshold == pytest.approx(0.85)
+    assert isinstance(agent.compression_feedback, CompressionFeedback)
+    assert agent.compressor._feedback is agent.compression_feedback

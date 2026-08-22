@@ -1,16 +1,7 @@
-"""AppShell dual-backend launcher — Personal + Work under one operator command.
-
-Does not merge state_dirs. Starts two uvicorn processes with isolated configs
-and prints the unified chrome entry URL (Personal host by default; UI switches
-to Work via /api/workspace/switch + navigation).
-"""
+"""Compatibility launcher for the single parent AppShell host."""
 
 from __future__ import annotations
 
-import os
-import signal
-import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -32,6 +23,26 @@ def _parse_host_port(base_url: str) -> tuple[str, int]:
     return host, int(port)
 
 
+def _state_dir_from_config(config_path: str | None) -> str | None:
+    if not config_path:
+        return None
+    path = Path(config_path).expanduser()
+    if not path.is_file():
+        return None
+    try:
+        import yaml
+
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    state_dir = raw.get("state_dir")
+    if not isinstance(state_dir, str) or not state_dir.strip():
+        return None
+    return str(Path(state_dir).expanduser().resolve())
+
+
 def launch_appshell(
     *,
     personal_config: str | None = None,
@@ -41,92 +52,52 @@ def launch_appshell(
     open_browser: bool = True,
     prefs_path: Path | None = None,
 ) -> int:
-    """Spawn Personal and Work web servers; block until interrupted."""
+    """Serve both isolated runtimes behind one uvicorn process and one port.
+
+    ``work_base_url`` remains accepted only so older invocations parse; it is
+    persisted for rollback metadata but never bound or contacted.
+    """
     prefs = load_global_prefs(prefs_path)
+    host_base_url = personal_base_url or prefs.host_base_url
     prefs = GlobalPrefs(
         schema_version=prefs.schema_version,
         language=prefs.language,
         timezone=prefs.timezone,
         theme=prefs.theme,
-        personal_base_url=personal_base_url or prefs.personal_base_url,
+        host_base_url=host_base_url,
+        personal_path=prefs.personal_path,
+        work_path=prefs.work_path,
+        personal_base_url=host_base_url,
         work_base_url=work_base_url or prefs.work_base_url,
+        personal_state_dir=_state_dir_from_config(personal_config)
+        or prefs.personal_state_dir,
+        work_state_dir=_state_dir_from_config(work_config) or prefs.work_state_dir,
         credential_refs=prefs.credential_refs,
     )
     save_global_prefs(prefs, prefs_path)
 
-    personal_host, personal_port = _parse_host_port(prefs.personal_base_url)
-    work_host, work_port = _parse_host_port(prefs.work_base_url)
+    host, port = _parse_host_port(host_base_url)
+    from js.appshell.server import create_appshell_app
 
-    repo_python = sys.executable
-    env_base = os.environ.copy()
-    # Ensure child processes do not inherit a conflicting single-product override
-    # that would collapse isolation.
-    for key in ("JS_CONFIG_PATH", "JS_WORK_CONFIG_PATH", "JS_STATE_DIR", "JS_WORK_STATE_DIR"):
-        env_base.pop(key, None)
-
-    # Prefer CLI entrypoints that honor -c / runtime_settings.
-    personal_cli = [
-        repo_python,
-        "-m",
-        "js",
-        "web",
-        "--host",
-        personal_host,
-        "--port",
-        str(personal_port),
-    ]
-    if personal_config:
-        personal_cli.extend(["--config", personal_config])
-
-    # Work places --config on the parent group: `js-work -c FILE web ...`
-    work_cli = [repo_python, "-m", "js_work"]
-    if work_config:
-        work_cli.extend(["--config", work_config])
-    work_cli.extend(
-        [
-            "web",
-            "--host",
-            work_host,
-            "--port",
-            str(work_port),
-        ]
+    app = create_appshell_app(
+        personal_config=personal_config,
+        work_config=work_config,
+        host=host,
+        port=port,
     )
+    if open_browser:
+        import threading
+        import webbrowser
 
-    procs: list[subprocess.Popen[bytes]] = []
-    try:
-        procs.append(subprocess.Popen(personal_cli, env=env_base))
-        procs.append(subprocess.Popen(work_cli, env=env_base))
-        if open_browser:
-            import threading
-            import webbrowser
+        def _open() -> None:
+            time.sleep(1.5)
+            webbrowser.open(host_base_url)
 
-            def _open() -> None:
-                time.sleep(1.5)
-                webbrowser.open(prefs.personal_base_url)
+        threading.Thread(target=_open, daemon=True).start()
 
-            threading.Thread(target=_open, daemon=True).start()
+    import uvicorn
 
-        print(f"AppShell Personal: {prefs.personal_base_url}")
-        print(f"AppShell Work:     {prefs.work_base_url}")
-        print("Switch products in the header; data planes stay isolated.")
-        # Wait until either child exits or we receive SIGINT/SIGTERM.
-        while True:
-            for proc in procs:
-                code = proc.poll()
-                if code is not None:
-                    print(f"child exited pid={proc.pid} code={code}", file=sys.stderr)
-                    return int(code)
-            time.sleep(0.5)
-    except KeyboardInterrupt:
-        return 0
-    finally:
-        for proc in procs:
-            if proc.poll() is None:
-                proc.send_signal(signal.SIGTERM)
-        deadline = time.time() + 10
-        for proc in procs:
-            remaining = max(0.1, deadline - time.time())
-            try:
-                proc.wait(timeout=remaining)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+    print(f"AppShell: {host_base_url}")
+    print("Personal and Work are isolated runtimes behind this one trusted host.")
+    uvicorn.run(app, host=host, port=port)
+    return 0

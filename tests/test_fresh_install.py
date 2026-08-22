@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing
+import os
 import stat
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -29,7 +31,7 @@ from js.agent import JSAgent
 from js.config import JSSettings
 from js.ui.cli import _bootstrap_browser_url
 from js.web import server as web_server
-from js.web.auth import AuthManager, require_auth
+from js.web.auth import AuthManager, authenticate_credentials
 from js.web.server import _provision_bootstrap_admin_key, create_app
 
 
@@ -53,6 +55,141 @@ def _settings(tmp_path: Path, *, api_key_required: bool, first_run: bool = False
     s.security.api_key_required = api_key_required
     s.first_run_completed = first_run
     return s
+
+
+def _directory_mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+def test_personal_storage_roots_are_private_under_umask_022(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("JS_WORKSPACE", raising=False)
+    monkeypatch.delenv("JS_STATE_DIR", raising=False)
+    root = tmp_path / ".js"
+    previous_umask = os.umask(0o022)
+    try:
+        settings = JSSettings(providers=[])
+    finally:
+        os.umask(previous_umask)
+
+    assert [_directory_mode(path) for path in (root, settings.workspace, settings.state_dir)] == [
+        0o700,
+        0o700,
+        0o700,
+    ]
+
+
+def test_personal_storage_tightens_existing_directories(tmp_path: Path) -> None:
+    root = tmp_path / ".js"
+    workspace = root / "workspace"
+    state_dir = root / "state"
+    workspace.mkdir(parents=True)
+    state_dir.mkdir()
+    for path in (root, workspace, state_dir):
+        path.chmod(0o755)
+
+    JSSettings(workspace=workspace, state_dir=state_dir, providers=[])
+
+    assert [_directory_mode(path) for path in (root, workspace, state_dir)] == [
+        0o700,
+        0o700,
+        0o700,
+    ]
+
+
+def test_workspace_must_not_be_state_dir_or_its_ancestor(tmp_path: Path) -> None:
+    """A state directory inside the workspace is reachable by tool writes."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="workspace must not be"):
+        JSSettings(workspace=tmp_path, state_dir=tmp_path, providers=[])
+    with pytest.raises(ValidationError, match="workspace must not be"):
+        JSSettings(workspace=tmp_path, state_dir=tmp_path / "state", providers=[])
+
+    # Sibling directories remain a valid configuration.
+    JSSettings(workspace=tmp_path / "ws", state_dir=tmp_path / "state", providers=[])
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS system alias contract")
+def test_personal_storage_accepts_root_owned_macos_tmp_alias(tmp_path: Path) -> None:
+    aliases = ((Path("/tmp"), Path("/private/tmp")), (Path("/var"), Path("/private/var")))
+    try:
+        alias, private_root = next(
+            (alias, private_root)
+            for alias, private_root in aliases
+            if tmp_path.is_relative_to(private_root)
+        )
+    except StopIteration:
+        pytest.skip("pytest temp root is outside macOS private aliases")
+    relative = tmp_path.relative_to(private_root)
+    root = alias / relative / ".js"
+    workspace = root / "workspace"
+    state_dir = root / "state"
+
+    JSSettings(workspace=workspace, state_dir=state_dir, providers=[])
+
+    canonical_root = private_root / relative / ".js"
+    assert [_directory_mode(path) for path in (canonical_root, workspace, state_dir)] == [
+        0o700,
+        0o700,
+        0o700,
+    ]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS system alias contract")
+@pytest.mark.parametrize("system_alias", (Path("/tmp"), Path("/var")))
+def test_personal_storage_rejects_exact_system_alias_without_chmod(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    system_alias: Path,
+) -> None:
+    fchmod_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        os,
+        "fchmod",
+        lambda descriptor, mode: fchmod_calls.append((descriptor, mode)),
+    )
+
+    with pytest.raises(ValueError, match="private directory|workspace must not be"):
+        JSSettings(
+            workspace=system_alias,
+            state_dir=tmp_path / "state",
+            providers=[],
+        )
+
+    assert fchmod_calls == []
+
+
+@pytest.mark.parametrize("managed_name", ("root", "workspace", "state"))
+@pytest.mark.parametrize("node_kind", ("symlink", "file"))
+def test_personal_storage_rejects_unsafe_nodes_without_following_them(
+    tmp_path: Path,
+    managed_name: str,
+    node_kind: str,
+) -> None:
+    root = tmp_path / ".js"
+    workspace = root / "workspace"
+    state_dir = root / "state"
+    managed = {"root": root, "workspace": workspace, "state": state_dir}[managed_name]
+    if managed != root:
+        root.mkdir(mode=0o700)
+
+    external = tmp_path / f"external-{managed_name}-{node_kind}"
+    if node_kind == "symlink":
+        external.mkdir(mode=0o755)
+        managed.symlink_to(external, target_is_directory=True)
+    else:
+        managed.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="private directory"):
+        JSSettings(workspace=workspace, state_dir=state_dir, providers=[])
+
+    assert managed.is_symlink() if node_kind == "symlink" else managed.is_file()
+    if node_kind == "symlink":
+        assert _directory_mode(external) == 0o755
 
 
 class TestEnsureBootstrapAdminKey:
@@ -194,16 +331,16 @@ class TestAuthEnforcement:
         s = _settings(tmp_path, api_key_required=True)
         key = _provision_bootstrap_admin_key(s)
         assert key
-        # require_auth reads the module-global settings.
+        # require_auth / authenticate_credentials read the module-global settings.
         monkeypatch.setattr(web_server, "_settings", s)
 
         # No key → enforced 401 (auth is NOT silently disabled).
         with pytest.raises(HTTPException) as ei:
-            await require_auth(api_key=None)
+            await authenticate_credentials(None, None)
         assert ei.value.status_code == 401
 
         # The minted bootstrap key unlocks the site as admin.
-        ctx = await require_auth(api_key=key)
+        ctx = await authenticate_credentials(key, None)
         assert ctx["role"] == "admin"
 
 
@@ -375,15 +512,21 @@ class TestSetupCompleteProvisioning:
 
         client = TestClient(create_app(), client=("127.0.0.1", 50000))
         try:
-            resp = client.post("/api/setup/complete")
+            # The real wizard is a browser fetch, which always sends Origin;
+            # originless mutation calls are rejected as CSRF/rebinding risks.
+            resp = client.post(
+                "/api/setup/complete",
+                headers={
+                    "Host": "localhost:50000",
+                    "Origin": "http://localhost:50000",
+                },
+            )
             assert resp.status_code == 200
             data = resp.json()
             assert data["success"] is True
             # A usable admin key was minted before the bootstrap window closed.
             assert data.get("admin_key")
-            assert AuthManager(settings.state_dir).verify(data["admin_key"])["role"] == (
-                "admin"
-            )
+            assert AuthManager(settings.state_dir).verify(data["admin_key"])["role"] == ("admin")
             assert settings.first_run_completed is True
         finally:
             client.close()

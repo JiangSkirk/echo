@@ -1,0 +1,1 @@
+{"main":{"identifier":"main","description":"The remote loopback WebView receives no Tauri IPC permissions.","local":true,"windows":["main"],"permissions":[]}}

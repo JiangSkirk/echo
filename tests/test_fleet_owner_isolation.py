@@ -19,7 +19,11 @@ from js.echo.turn_context import (
     set_current_owner_key_hash,
     set_runtime_context,
 )
-from js.orchestration.fleet import AgentFleet, FleetCapacityError
+from js.orchestration.fleet import (
+    AgentFleet,
+    FleetCapacityError,
+    bind_fleet_event_identity,
+)
 
 
 class _FakeAgent:
@@ -270,10 +274,14 @@ async def test_event_subscriptions_deliver_only_to_matching_product_and_owner(
         {"type": "agent_thinking", "task_id": "task-a", "content": "thinking-a"},
         {"type": "agent_tool_call", "task_id": "task-a", "tool_name": "search"},
     ]
-    for event in sensitive_events:
-        await fleet._emit(event, product_id="js-agent", owner_key_hash="owner-a")
+    with bind_fleet_event_identity("request-a", "turn-a", "session-a"):
+        for event in sensitive_events:
+            await fleet._emit(event, product_id="js-agent", owner_key_hash="owner-a")
 
-    assert received_a == sensitive_events
+    assert received_a == [
+        {**event, "request_id": "request-a", "turn_id": "turn-a", "session_id": "session-a"}
+        for event in sensitive_events
+    ]
     assert received_b == []
     assert all("owner" not in event and "owner_key_hash" not in event for event in received_a)
 
@@ -300,16 +308,17 @@ async def test_event_subscription_token_removes_only_the_registered_scope(
     )
 
     fleet.off_event(subscription_a)
-    await fleet._emit(
-        {"type": "owner-a-event"},
-        product_id="js-agent",
-        owner_key_hash="owner-a",
-    )
-    await fleet._emit(
-        {"type": "owner-b-event"},
-        product_id="js-agent",
-        owner_key_hash="owner-b",
-    )
+    with bind_fleet_event_identity("request-a", "turn-a", "session-a"):
+        await fleet._emit(
+            {"type": "owner-a-event"},
+            product_id="js-agent",
+            owner_key_hash="owner-a",
+        )
+        await fleet._emit(
+            {"type": "owner-b-event"},
+            product_id="js-agent",
+            owner_key_hash="owner-b",
+        )
 
     assert received == ["owner-b-event"]
 
@@ -325,18 +334,74 @@ async def test_event_payload_strips_internal_owner_identity_fields(
         received.append(event)
 
     fleet.on_event(collect, product_id="js-agent", owner_key_hash="owner-a")
-    await fleet._emit(
+    with bind_fleet_event_identity("request-real", "turn-real", "session-real"):
+        await fleet._emit(
+            {
+                "type": "agent_thinking",
+                "content": "safe content",
+                "owner": "owner-a",
+                "owner_key_hash": "owner-a",
+                "request_id": "spoofed-request",
+                "turn_id": "spoofed-turn",
+                "session_id": "spoofed-session",
+            },
+            product_id="js-agent",
+            owner_key_hash="owner-a",
+        )
+
+    assert received == [
         {
             "type": "agent_thinking",
             "content": "safe content",
-            "owner": "owner-a",
-            "owner_key_hash": "owner-a",
-        },
-        product_id="js-agent",
-        owner_key_hash="owner-a",
-    )
+            "request_id": "request-real",
+            "turn_id": "turn-real",
+            "session_id": "session-real",
+        }
+    ]
 
-    assert received == [{"type": "agent_thinking", "content": "safe content"}]
+
+@pytest.mark.asyncio
+async def test_event_emission_without_complete_identity_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fleet = _fleet(tmp_path, monkeypatch)
+
+    with pytest.raises(RuntimeError, match="identity context is required"):
+        await fleet._emit(
+            {"type": "agent_start"},
+            product_id="js-agent",
+            owner_key_hash="owner-a",
+        )
+
+
+@pytest.mark.asyncio
+async def test_internal_collaboration_generates_one_stable_complete_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fleet = _fleet(tmp_path, monkeypatch)
+    received: list[dict[str, Any]] = []
+
+    async def collect(event: dict[str, Any]) -> None:
+        received.append(event)
+
+    async def collaborate_scoped(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        await fleet._emit({"type": "agent_start"})
+        await fleet._emit({"type": "agent_done"})
+        return {"session_id": kwargs["session_id"], "final": "ok", "subtasks": {}}
+
+    fleet.on_event(collect, product_id="js-agent", owner_key_hash="owner-a")
+    monkeypatch.setattr(fleet, "_collaborate_scoped", collaborate_scoped)
+
+    result = await fleet.collaborate("task", owner_key_hash="owner-a")
+
+    identities = [
+        (event["request_id"], event["turn_id"], event["session_id"])
+        for event in received
+    ]
+    assert len(identities) == 2
+    assert identities[0] == identities[1]
+    assert all(isinstance(part, str) and part for part in identities[0])
+    assert result["session_id"] == identities[0][2]
 
 
 @pytest.mark.asyncio

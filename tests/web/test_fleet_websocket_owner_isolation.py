@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from functools import partial
@@ -18,7 +19,12 @@ from starlette.websockets import WebSocketDisconnect
 
 from js.config import JSSettings, SecurityConfig
 from js.models.providers import ChatMessage
-from js.orchestration.fleet import AgentFleet, AgentInstance, AgentRole
+from js.orchestration.fleet import (
+    AgentFleet,
+    AgentInstance,
+    AgentRole,
+    bind_fleet_event_identity,
+)
 from js.tools.registry import ToolResult
 from js.web.auth import AuthManager
 from js.web.runtime_context import WebRuntime, bind_web_runtime, clear_web_runtime
@@ -93,6 +99,24 @@ def _add_worker(
     )
 
 
+async def _emit_with_identity(
+    fleet: AgentFleet,
+    event: dict[str, Any],
+    *,
+    product_id: str,
+    owner_key_hash: str,
+    request_id: str,
+    turn_id: str,
+    session_id: str,
+) -> None:
+    with bind_fleet_event_identity(request_id, turn_id, session_id):
+        await fleet._emit(
+            event,
+            product_id=product_id,
+            owner_key_hash=owner_key_hash,
+        )
+
+
 @pytest.mark.parametrize("product_id", ["js-agent", "js-work"])
 def test_fleet_websocket_scopes_status_events_and_unsubscribe(
     tmp_path: Path,
@@ -156,17 +180,34 @@ def test_fleet_websocket_scopes_status_events_and_unsubscribe(
                 "tool_name": "search",
             },
         ]
+        event_identity = {
+            "request_id": "request-a",
+            "turn_id": "turn-a",
+            "session_id": "session-a",
+        }
         for event in events_a:
             client.portal.call(
                 partial(
-                    fleet._emit,
+                    _emit_with_identity,
+                    fleet,
                     event,
                     product_id=product_id,
                     owner_key_hash=owner_a,
+                    **event_identity,
                 )
             )
 
-        assert [ws_a.receive_json() for _ in events_a] == events_a
+        assert [ws_a.receive_json() for _ in events_a] == [
+            {**event, **event_identity} for event in events_a
+        ]
+        subscription_a = next(
+            item for item in fleet._event_callbacks if item.owner_key_hash == owner_a
+        )
+        client.portal.call(
+            partial(subscription_a.callback, {"type": "agent_start", "task_id": "missing"})
+        )
+        ws_a.send_json({"type": "ping"})
+        assert ws_a.receive_json() == {"type": "pong"}
         ws_b.send_json({"type": "ping"})
         assert ws_b.receive_json() == {"type": "pong"}
 
@@ -217,10 +258,24 @@ def test_fleet_websocket_scopes_status_events_and_unsubscribe(
         app.state.test_agent.echo_runtime.execute_tool_effect.side_effect = (
             execute_fleet_effect
         )
-        ws_a.send_json({"type": "collaborate", "task": "owner A task"})
+        ws_a.send_json(
+            {
+                "type": "collaborate",
+                "task": "owner A task",
+                "request_id": "request-collaborate",
+                "turn_id": "turn-collaborate",
+                "session_id": "session-a",
+            }
+        )
         assert ws_a.receive_json() == {"type": "ack", "action": "collaborate"}
         ws_a.send_json(
-            {"type": "continue", "session_id": "session-a", "task": "owner A follow-up"}
+            {
+                "type": "continue",
+                "session_id": "session-a",
+                "task": "owner A follow-up",
+                "request_id": "request-continue",
+                "turn_id": "turn-continue",
+            }
         )
         assert ws_a.receive_json() == {"type": "ack", "action": "continue"}
         client.portal.call(partial(asyncio.sleep, 0.01))
@@ -318,3 +373,171 @@ def test_fleet_websocket_rejects_malformed_collaboration_before_echo(
         }
 
     app.state.test_agent.echo_runtime.execute_tool_effect.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {"request_id": "", "turn_id": "turn", "session_id": "session"},
+        {"request_id": "request", "turn_id": " ", "session_id": "session"},
+        {"request_id": "request", "turn_id": "turn", "session_id": "../session"},
+        {"request_id": "r" * 129, "turn_id": "turn", "session_id": "session"},
+    ],
+)
+def test_fleet_websocket_rejects_invalid_runtime_identity_before_echo(
+    tmp_path: Path,
+    identity: dict[str, str],
+) -> None:
+    app, _fleet, admin_key, _key_b, _user_key = _websocket_app(
+        tmp_path,
+        product_id="js-agent",
+    )
+
+    with (
+        TestClient(app, base_url="http://localhost") as client,
+        client.websocket_connect(
+            "/ws/fleet",
+            headers={
+                "Host": "localhost",
+                "Origin": "http://localhost",
+                "X-API-Key": admin_key,
+            },
+        ) as websocket,
+    ):
+        assert websocket.receive_json()["type"] == "status"
+        websocket.send_json(
+            {"type": "collaborate", "task": "must reject identity", **identity}
+        )
+        assert websocket.receive_json() == {
+            "type": "error",
+            "message": "Invalid Fleet request",
+        }
+
+    app.state.test_agent.echo_runtime.execute_tool_effect.assert_not_awaited()
+
+
+def test_fleet_websocket_cancel_stops_inflight_effect(tmp_path: Path) -> None:
+    app, _fleet, admin_key, _key_b, _user_key = _websocket_app(
+        tmp_path,
+        product_id="js-agent",
+    )
+    started = threading.Event()
+    cancelled = threading.Event()
+
+    async def blocking_effect(_effect: Any, _context: Any) -> tuple[Any, ToolResult]:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        raise AssertionError("unreachable")
+
+    app.state.test_agent.echo_runtime.execute_tool_effect.side_effect = blocking_effect
+    identity = {
+        "request_id": "fleet-request-cancel",
+        "turn_id": "fleet-turn-cancel",
+        "session_id": "fleet-session-cancel",
+    }
+    with (
+        TestClient(app, base_url="http://localhost") as client,
+        client.websocket_connect(
+            "/ws/fleet",
+            headers={
+                "Host": "localhost",
+                "Origin": "http://localhost",
+                "X-API-Key": admin_key,
+            },
+        ) as websocket,
+    ):
+        assert websocket.receive_json()["type"] == "status"
+        websocket.send_json(
+            {
+                "type": "collaborate",
+                "task": "blocking fake Fleet tool",
+                **identity,
+            }
+        )
+        assert websocket.receive_json() == {"type": "ack", "action": "collaborate"}
+        assert started.wait(1.0)
+        websocket.send_json({"type": "cancel", **identity})
+        assert websocket.receive_json() == {"type": "cancelled", **identity}
+        assert cancelled.wait(1.0)
+
+        successor_started = threading.Event()
+        successor_cancelled = threading.Event()
+
+        async def successor_effect(
+            _effect: Any,
+            _context: Any,
+        ) -> tuple[Any, ToolResult]:
+            successor_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                successor_cancelled.set()
+                raise
+            raise AssertionError("unreachable")
+
+        app.state.test_agent.echo_runtime.execute_tool_effect.side_effect = successor_effect
+        successor = {
+            "request_id": "fleet-request-successor",
+            "turn_id": "fleet-turn-successor",
+            "session_id": "fleet-session-successor",
+        }
+        websocket.send_json(
+            {"type": "collaborate", "task": "successor fake Fleet tool", **successor}
+        )
+        assert websocket.receive_json() == {"type": "ack", "action": "collaborate"}
+        assert successor_started.wait(1.0)
+
+        websocket.send_json({"type": "cancel", **identity})
+        assert websocket.receive_json() == {
+            "type": "cancel_rejected",
+            "request_id": identity["request_id"],
+            "turn_id": identity["turn_id"],
+            "session_id": identity["session_id"],
+        }
+        assert not successor_cancelled.is_set()
+
+        websocket.send_json({"type": "cancel", **successor})
+        assert websocket.receive_json() == {"type": "cancelled", **successor}
+        assert successor_cancelled.wait(1.0)
+
+
+def test_fleet_websocket_effect_error_keeps_exact_runtime_identity(tmp_path: Path) -> None:
+    app, _fleet, admin_key, _key_b, _user_key = _websocket_app(
+        tmp_path,
+        product_id="js-agent",
+    )
+    app.state.test_agent.echo_runtime.execute_tool_effect.return_value = (
+        ChatMessage(role="tool", content="failed", name="fleet_collaborate"),
+        ToolResult(success=False, error="failed"),
+    )
+    identity = {
+        "request_id": "fleet-request-error",
+        "turn_id": "fleet-turn-error",
+        "session_id": "fleet-session-error",
+    }
+
+    with (
+        TestClient(app, base_url="http://localhost") as client,
+        client.websocket_connect(
+            "/ws/fleet",
+            headers={
+                "Host": "localhost",
+                "Origin": "http://localhost",
+                "X-API-Key": admin_key,
+            },
+        ) as websocket,
+    ):
+        assert websocket.receive_json()["type"] == "status"
+        websocket.send_json(
+            {"type": "collaborate", "task": "fail safely", **identity}
+        )
+        assert websocket.receive_json() == {"type": "ack", "action": "collaborate"}
+        assert websocket.receive_json() == {
+            "type": "error",
+            "message": "Fleet collaborate failed",
+            **identity,
+        }

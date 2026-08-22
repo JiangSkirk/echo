@@ -6,12 +6,14 @@ from typing import TYPE_CHECKING
 
 from click.testing import CliRunner
 
+from js.agent import JSAgent
 from js.config import JSSettings
 from js.echo.attachment_gate import owner_slug, session_slug
 from js.orchestration.fleet import AgentFleet
 from js_work.agent_factory import WORK_SYSTEM_APPENDIX, create_work_agent
 from js_work.cli import main as work_main
 from js_work.config import default_work_config_path, load_work_settings
+from js_work.routines.tools import ROUTINE_TOOL_NAMES
 from js_work.tools import WorkToolProfile
 from js_work.workflows import WorkIntent, WorkIntentRouter
 
@@ -22,7 +24,7 @@ if TYPE_CHECKING:
 def test_pyproject_exposes_js_work_script_and_package() -> None:
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert data["project"]["scripts"]["js-work"] == "js_work.cli:main"
+    assert data["project"]["scripts"]["js-work"] == "js_work.cli:compat_main"
     assert "js_work" in data["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
     dependencies = {item.split(">=", 1)[0] for item in data["project"]["dependencies"]}
     assert {"openpyxl", "pypdf", "python-docx", "reportlab"} <= dependencies
@@ -220,6 +222,34 @@ def test_work_tool_profiles_filter_visible_tools(tmp_path: Path) -> None:
         assert agent._current_allowed_tools == tool_names
 
 
+def test_personal_registry_and_work_profiles_keep_routine_tools_isolated(tmp_path: Path) -> None:
+    personal = JSAgent(
+        JSSettings(
+            workspace=tmp_path / "personal-workspace",
+            state_dir=tmp_path / "personal-state",
+            providers=[],
+        )
+    )
+    personal_names = {tool.name for tool in personal.registry.list_tools()}
+    assert personal_names.isdisjoint(ROUTINE_TOOL_NAMES)
+
+    profile_names = {
+        profile: {
+            tool.name
+            for tool in create_work_agent(
+                settings=load_work_settings(home=tmp_path / profile.value),
+                profile=profile,
+            ).registry.list_tools()
+        }
+        for profile in WorkToolProfile
+    }
+    assert profile_names[WorkToolProfile.OFFICE] >= ROUTINE_TOOL_NAMES
+    for profile in (WorkToolProfile.SAFE, WorkToolProfile.EXECUTE):
+        assert "work_routine_run" not in profile_names[profile]
+        assert "work_routine_preview" not in profile_names[profile]
+        assert "excel_write" not in profile_names[profile]
+
+
 def test_fleet_can_disable_skill_inheritance(monkeypatch, tmp_path: Path) -> None:
     registered: list[str] = []
 
@@ -279,7 +309,7 @@ def test_js_work_cli_supports_init_and_no_provider_message(tmp_path: Path) -> No
         ["--home", str(tmp_path), "--profile", "safe", "run", "hello"],
     )
     assert no_provider_result.exit_code == 0
-    assert "js-work init" in no_provider_result.output
+    assert "js work init" in no_provider_result.output
 
 
 def test_js_work_run_uses_echo_turn_runtime(monkeypatch, tmp_path: Path) -> None:
@@ -338,7 +368,7 @@ def test_js_work_run_uses_echo_turn_runtime(monkeypatch, tmp_path: Path) -> None
     monkeypatch.setattr("js_work.cli.run_echo_turn", fake_run_echo_turn)
     monkeypatch.setattr(
         "js_work.cli.load_work_settings",
-        lambda config=None, *, home=None: JSSettings(
+        lambda config=None, *, home=None, personal_roots=None: JSSettings(
             state_dir=tmp_path / ".js-work" / "state",
             workspace=tmp_path / ".js-work" / "workspace",
             providers=[

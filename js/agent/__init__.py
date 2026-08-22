@@ -21,6 +21,7 @@ import secrets
 import threading
 import uuid
 from collections.abc import Callable
+from enum import StrEnum
 from typing import Any, cast
 
 from cachetools import TTLCache
@@ -74,7 +75,15 @@ from js.skills.promotion_store import PromotionStore
 from js.tools.registry import ToolRegistry
 from js.utils.log import get_logger
 
-__all__ = ["AgentState", "JSAgent"]
+__all__ = ["AgentState", "JSAgent", "OwnedCancelResult"]
+
+
+class OwnedCancelResult(StrEnum):
+    """Fail-closed result for an owner-bound AppShell cancellation request."""
+
+    CANCELLED = "cancelled"
+    IDLE = "idle"
+    DENIED = "denied"
 
 
 _SUMMARY_TENANT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -187,13 +196,23 @@ class JSAgent(
         self.evolver = None  # type: ignore[assignment]
         self.composer = None  # type: ignore[assignment]
         self._clawhub: Any | None = None
-        self.compression_config = CompressionConfig()
+        warning = float(settings.memory.compression_threshold)
+        if warning >= 0.85:
+            critical = min(0.95, warning + 0.05)
+        else:
+            critical = max(warning, 0.85)
+        self.compression_config = CompressionConfig(
+            warning_threshold=warning,
+            critical_threshold=critical,
+        )
+        self.compression_feedback = CompressionFeedback(settings.state_dir)
         self.compressor = ContextCompressor(
-            self.compression_config, summarizer=self._summarize_context
+            self.compression_config,
+            summarizer=self._summarize_context,
+            feedback=self.compression_feedback,
         )
         self._model_token_counters: dict[tuple[str, str], TokenCounter] = {}
         self._model_token_counter_lock = threading.Lock()
-        self.compression_feedback = CompressionFeedback(settings.state_dir)
         self.metacognition = None  # type: ignore[assignment]
         self.curator = None  # type: ignore[assignment]
         if features.evolution_enabled:
@@ -249,11 +268,22 @@ class JSAgent(
         self._init_default_prompt_variant()
 
         # Cancel & checkpoint support
-        # Cancel-token storage: session_id -> (asyncio.Event, run_id, owner_key_hash)
+        # Cancel-token storage: partition -> (event, run_id, owner, session_id).
+        # The plaintext session id is retained only in the trusted in-process
+        # registry so AppShell can enumerate every departing-owner resource.
         # The run_id guards against concurrent runs on the same session
         # popping each other's tokens.
         # The owner_key_hash prevents users from cancelling other users' sessions.
-        self._cancel_tokens: dict[str, tuple[asyncio.Event, str, str | None]] = {}
+        self._cancel_tokens: dict[
+            str,
+            tuple[asyncio.Event, str, str | None, str],
+        ] = {}
+        # Browser request identity is kept separately because Echo replaces
+        # the provisional wire run id with its authoritative runtime run id.
+        self._cancel_client_identity: dict[
+            str,
+            tuple[asyncio.Event, str, str],
+        ] = {}
         self._active_run_tasks: dict[
             str,
             tuple[asyncio.Task[Any], str, str | None],
@@ -335,6 +365,7 @@ class JSAgent(
         *,
         owner_key_hash: str | None = None,
         run_id: str | None = None,
+        request_id: str | None = None,
     ) -> None:
         """Register a connection-owned cancel token before lane admission."""
         from js.echo.turn_context import runtime_partition_key
@@ -344,11 +375,42 @@ class JSAgent(
             owner_key_hash,
             session_id,
         )
+        logical_run_id = run_id or f"conn-{secrets.token_hex(8)}"
         self._cancel_tokens[partition_key] = (
             token,
-            run_id or f"conn-{secrets.token_hex(8)}",
+            logical_run_id,
             owner_key_hash,
+            session_id,
         )
+        if request_id:
+            self._cancel_client_identity[partition_key] = (
+                token,
+                request_id,
+                logical_run_id,
+            )
+
+    def owned_active_session_ids(self, *, owner_key_hash: str) -> tuple[str, ...]:
+        """Snapshot active cancel-token sessions for one verified runtime owner."""
+        if not isinstance(owner_key_hash, str) or not owner_key_hash.strip():
+            raise ValueError("owner_key_hash must be a non-empty string")
+        sessions: set[str] = set()
+        for entry in tuple(self._cancel_tokens.values()):
+            if not isinstance(entry, tuple) or len(entry) < 3:
+                continue
+            event, _run_id, entry_owner = entry[:3]
+            if event.is_set() or not isinstance(entry_owner, str):
+                continue
+            if len(entry_owner) != len(owner_key_hash) or not secrets.compare_digest(
+                entry_owner,
+                owner_key_hash,
+            ):
+                continue
+            if len(entry) < 4:
+                raise RuntimeError("active cancel token lacks trusted session binding")
+            session_id = entry[3]
+            if isinstance(session_id, str) and session_id.strip():
+                sessions.add(session_id)
+        return tuple(sorted(sessions))
 
     def unbind_cancel_token(
         self,
@@ -368,8 +430,18 @@ class JSAgent(
         entry = self._cancel_tokens.get(partition_key)
         if entry is not None and entry[0] is token:
             self._cancel_tokens.pop(partition_key, None)
+        identity = self._cancel_client_identity.get(partition_key)
+        if identity is not None and identity[0] is token:
+            self._cancel_client_identity.pop(partition_key, None)
 
-    def request_cancel(self, session_id: str, owner_key_hash: str | None = None) -> bool:
+    def request_cancel(
+        self,
+        session_id: str,
+        owner_key_hash: str | None = None,
+        *,
+        expected_run_id: str | None = None,
+        expected_request_id: str | None = None,
+    ) -> bool:
         """Request cancellation of an active run.
 
         If owner_key_hash is provided, only cancel sessions owned by that key.
@@ -384,7 +456,40 @@ class JSAgent(
         entry = self._cancel_tokens.get(partition_key)
         if entry is None:
             return False
-        _, run_id, session_owner = entry
+        identity_registry = getattr(self, "_cancel_client_identity", None)
+        if identity_registry is not None and not isinstance(identity_registry, dict):
+            return False
+        client_identity = (
+            identity_registry.get(partition_key)
+            if isinstance(identity_registry, dict)
+            else None
+        )
+        if client_identity is not None:
+            if not isinstance(client_identity, tuple) or len(client_identity) != 3:
+                return False
+            identity_token, request_id, logical_run_id = client_identity
+            if not isinstance(request_id, str) or not isinstance(logical_run_id, str):
+                return False
+            if identity_token is not entry[0]:
+                return False
+            if expected_run_id is None and expected_request_id is None:
+                return False
+            if expected_run_id is not None and not secrets.compare_digest(
+                logical_run_id,
+                expected_run_id,
+            ):
+                return False
+            if expected_request_id is not None and not secrets.compare_digest(
+                request_id,
+                expected_request_id,
+            ):
+                return False
+        elif expected_run_id is not None and not secrets.compare_digest(
+            str(entry[1]),
+            expected_run_id,
+        ):
+            return False
+        _, run_id, session_owner = entry[:3]
         expected_owner = owner_key_hash or "local-user"
         if (session_owner or "local-user") != expected_owner:
             raise PermissionError("Cannot cancel another user's session")
@@ -409,6 +514,82 @@ class JSAgent(
             if task is not asyncio.current_task() and not task.done():
                 task.cancel()
         return True
+
+    def request_owned_cancel(
+        self,
+        session_id: str,
+        *,
+        owner_key_hash: str,
+    ) -> OwnedCancelResult:
+        """Cancel exactly one owner/session or distinguish idle from cross-owner denial."""
+        from js.echo.turn_context import runtime_partition_key
+
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError("session_id must be a non-empty string")
+        if not isinstance(owner_key_hash, str) or not owner_key_hash.strip():
+            raise ValueError("owner_key_hash must be a non-empty string")
+
+        product_id = str(getattr(self.settings, "product_id", "js-agent") or "js-agent")
+        partition_key = runtime_partition_key(product_id, owner_key_hash, session_id)
+        entry = self._cancel_tokens.get(partition_key)
+        if entry is None:
+            for candidate_key, candidate in self._cancel_tokens.items():
+                if not isinstance(candidate, tuple) or len(candidate) < 3:
+                    continue
+                candidate_owner = candidate[2]
+                if candidate_owner is not None and (
+                    not isinstance(candidate_owner, str) or not candidate_owner
+                ):
+                    continue
+                candidate_partition = runtime_partition_key(
+                    product_id,
+                    candidate_owner,
+                    session_id,
+                )
+                if secrets.compare_digest(candidate_partition, candidate_key):
+                    return OwnedCancelResult.DENIED
+            return OwnedCancelResult.IDLE
+
+        session_owner = entry[2]
+        if (
+            not isinstance(session_owner, str)
+            or len(session_owner) != len(owner_key_hash)
+            or not secrets.compare_digest(session_owner, owner_key_hash)
+        ):
+            return OwnedCancelResult.DENIED
+        expected_identity: dict[str, str] = {"expected_run_id": str(entry[1])}
+        identity_registry = getattr(self, "_cancel_client_identity", None)
+        if identity_registry is not None and not isinstance(identity_registry, dict):
+            return OwnedCancelResult.IDLE
+        client_identity = (
+            identity_registry.get(partition_key)
+            if isinstance(identity_registry, dict)
+            else None
+        )
+        if client_identity is not None:
+            if not isinstance(client_identity, tuple) or len(client_identity) != 3:
+                return OwnedCancelResult.IDLE
+            identity_token, request_id, logical_run_id = client_identity
+            if identity_token is not entry[0]:
+                return OwnedCancelResult.IDLE
+            if (
+                not isinstance(request_id, str)
+                or not request_id
+                or not isinstance(logical_run_id, str)
+                or not logical_run_id
+            ):
+                return OwnedCancelResult.IDLE
+            expected_identity = {
+                "expected_request_id": request_id,
+                "expected_run_id": logical_run_id,
+            }
+        if not self.request_cancel(
+            session_id,
+            owner_key_hash=owner_key_hash,
+            **expected_identity,
+        ):
+            return OwnedCancelResult.IDLE
+        return OwnedCancelResult.CANCELLED
 
     async def _check_degraded(self) -> None:
         """Check provider health and update degraded status."""
@@ -1162,8 +1343,8 @@ class JSAgent(
         """Clean up resources: HTTP clients, DB connections, etc."""
         # Signal cancellation for all active runs
         self._shutdown_requested = True
-        for event, _run_id, _ in self._cancel_tokens.values():
-            event.set()
+        for entry in self._cancel_tokens.values():
+            entry[0].set()
         current_task = asyncio.current_task()
         active_tasks: set[asyncio.Task[Any]] = set()
         cancellable_tasks: set[asyncio.Task[Any]] = set()

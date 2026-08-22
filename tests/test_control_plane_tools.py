@@ -111,9 +111,7 @@ class _ControlExecutor(ToolExecutorMixin):
         self.provider_manager = SimpleNamespace(
             discover_models=AsyncMock(
                 return_value={
-                    "models": [
-                        {"id": "model-a", "name": "Model A", "context_window": 4096}
-                    ]
+                    "models": [{"id": "model-a", "name": "Model A", "context_window": 4096}]
                 }
             ),
             get_all=MagicMock(return_value=[]),
@@ -145,9 +143,7 @@ class _ControlExecutor(ToolExecutorMixin):
                     }
                 ]
             ),
-            get_skill_source=MagicMock(
-                return_value="https://github.com/example/example-skill.git"
-            ),
+            get_skill_source=MagicMock(return_value="https://github.com/example/example-skill.git"),
         )
 
 
@@ -211,19 +207,13 @@ def test_private_control_handoff_is_partitioned_by_product_owner_and_session(
 
     token = set_runtime_context(context_b)
     try:
-        assert (
-            executor.take_memory_mutation_payload(reference, "admin-owner")
-            is None
-        )
+        assert executor.take_memory_mutation_payload(reference, "admin-owner") is None
     finally:
         reset_runtime_context(token)
 
     token = set_runtime_context(context_other_product)
     try:
-        assert (
-            executor.take_memory_mutation_payload(reference, "admin-owner")
-            is None
-        )
+        assert executor.take_memory_mutation_payload(reference, "admin-owner") is None
     finally:
         reset_runtime_context(token)
 
@@ -393,9 +383,7 @@ def test_control_plane_tools_are_registered_but_hidden_from_model_schema(
     registered = {tool.name: tool for tool in executor.registry.list_tools()}
     assert control_names <= registered.keys()
     assert all(registered[name].model_visible is False for name in control_names)
-    model_names = {
-        schema["function"]["name"] for schema in executor.registry.to_openai_schemas()
-    }
+    model_names = {schema["function"]["name"] for schema in executor.registry.to_openai_schemas()}
     assert control_names.isdisjoint(model_names)
 
 
@@ -502,7 +490,10 @@ async def test_setup_completion_runs_inside_echo_and_hands_key_off_once(
 
     assert result.success is True
     assert executor.settings.first_run_completed is True
-    executor.settings.save.assert_called_once_with(fields=["first_run_completed"])
+    assert executor.settings.onboarding_status == "completed"
+    executor.settings.save.assert_called_once_with(
+        fields=["first_run_completed", "onboarding_status"]
+    )
     key_ref = result.metadata["admin_key_ref"]
     assert isinstance(key_ref, str) and key_ref
     assert "js_" not in result.output
@@ -924,6 +915,49 @@ async def test_memory_control_reserves_result_capacity_before_mutation(
 
 
 @pytest.mark.asyncio
+async def test_memory_file_put_rejects_names_outside_allowlist(tmp_path: Path) -> None:
+    executor = _ControlExecutor(tmp_path)
+    executor.memory = SimpleNamespace(write_memory_file=MagicMock())
+    executor._register_control_plane_tools()
+    payload_ref = executor.stage_memory_mutation_payload(
+        "admin-owner",
+        {"name": "notes", "content": "synthetic"},
+        session_id="admin-control-plane",
+    )
+    arguments = {"action": "file_put", "payload_ref": payload_ref}
+    run_id = "memory-file-allowlist"
+    token = set_runtime_context(
+        _network_runtime_context(
+            executor,
+            tool_name="control_memory_mutate",
+            arguments=arguments,
+            run_id=run_id,
+        )
+    )
+    try:
+        _message, result = await executor._execute_tool_call(
+            {
+                "id": "memory-allowlist-call",
+                "function": {
+                    "name": "control_memory_mutate",
+                    "arguments": json.dumps(arguments),
+                },
+            },
+            session_id="admin-control-plane",
+            run_id=run_id,
+            user_input="Store synthetic memory",
+            allowed_tools={"control_memory_mutate"},
+            owner_key_hash="admin-owner",
+        )
+    finally:
+        reset_runtime_context(token)
+
+    assert result.success is False
+    assert result.error == "Invalid memory file payload"
+    executor.memory.write_memory_file.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_embedder_recovery_falls_back_when_rebuild_raises(
     tmp_path: Path,
 ) -> None:
@@ -1130,9 +1164,7 @@ async def test_evolution_control_sanitizes_internal_exception_receipt(
     executor.optimizer = MagicMock()
     executor.evolver = MagicMock()
     executor._dream_scheduler = SimpleNamespace(snapshot_buffer=MagicMock(return_value=[]))
-    executor._run_evolution_cycle = AsyncMock(
-        side_effect=RuntimeError(private_error)
-    )
+    executor._run_evolution_cycle = AsyncMock(side_effect=RuntimeError(private_error))
     executor._register_control_plane_tools()
     arguments = {"action": "run"}
     run_id = "evolution-error"
@@ -1499,9 +1531,7 @@ async def test_provider_mutation_runs_inside_echo_and_consumes_opaque_key_once(
             "name": "custom",
             "base_url": "https://models.example/v1",
             "default_model": "model-a",
-            "models": [
-                {"id": "model-a", "name": "Model A", "provider": "custom"}
-            ],
+            "models": [{"id": "model-a", "name": "Model A", "provider": "custom"}],
         },
         "api_key_ref": key_ref,
     }
@@ -1764,6 +1794,288 @@ async def test_model_switch_persists_and_publishes_inside_echo(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_model_switch_rejects_unconfigured_preset_and_does_not_persist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """control_model_switch must reject a preset model whose provider is not configured.
+
+    It must not write active_model.txt, not change preferred_model, and not
+    publish an active model.  The failure must carry needs_config=true and a
+    409 status code.  ``write_text_state`` must never be called (no transient
+    writes) - the handler's internal ``from import`` receives the patch.
+    """
+    from js.models.cloud_providers import ALL_PRESETS
+    from js.utils import atomic_state as _atomic_state
+    from js.utils.atomic_state import write_text_state
+
+    executor = _ControlExecutor(tmp_path)
+    # Zero configured providers – only presets exist.
+    executor.settings.providers = []
+    executor.router.preferred_model = ""
+    executor.router.get_model_config = MagicMock(return_value=None)
+    # Use a normal MagicMock (no side_effect) so the old implementation can
+    # actually succeed - the RED must be on the target behaviour (409 +
+    # no side effects), not on an accidental publisher exception.
+    executor._active_model_publisher = MagicMock()
+    # Pre-write a valid old value so read_text_state succeeds.
+    state_path = Path(executor.settings.state_dir) / "active_model.txt"
+    write_text_state(state_path, "previous/model", max_bytes=512)
+    executor._register_control_plane_tools()
+    # After pre-writing the old file, patch write_text_state so the handler's
+    # internal ``from js.utils.atomic_state import write_text_state`` receives
+    # the mock.  A rejection must not cause any transient write.
+    write_mock = MagicMock()
+    monkeypatch.setattr(_atomic_state, "write_text_state", write_mock)
+
+    preset = ALL_PRESETS[0]
+    preset_model_id = f"{preset.id}/{preset.models[0].id}"
+    arguments = {"model_id": preset_model_id}
+    run_id = "model-switch-preset-reject"
+    token = set_runtime_context(
+        _network_runtime_context(
+            executor,
+            tool_name="control_model_switch",
+            arguments=arguments,
+            run_id=run_id,
+        )
+    )
+    try:
+        _message, result = await executor._execute_tool_call(
+            {
+                "id": "model-switch-preset-call",
+                "function": {
+                    "name": "control_model_switch",
+                    "arguments": json.dumps(arguments),
+                },
+            },
+            session_id="admin-control-plane",
+            run_id=run_id,
+            user_input="Switch to unconfigured preset",
+            allowed_tools={"control_model_switch"},
+            owner_key_hash="admin-owner",
+        )
+    finally:
+        reset_runtime_context(token)
+
+    assert result.success is False
+    assert result.metadata.get("status_code") == 409
+    assert result.metadata.get("needs_config") is True
+    # active_model.txt must still hold the old value, not the preset.
+    assert state_path.read_text(encoding="utf-8") == "previous/model"
+    assert executor.router.preferred_model == ""
+    executor._active_model_publisher.assert_not_called()
+    write_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_model_switch_rejects_router_mapping_when_provider_not_configured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """control_model_switch must NOT trust a router mapping alone.
+
+    Even if ``router.get_model_config`` returns a non-None value for the
+    model_id, the tool must reject when the provider is not in
+    ``settings.providers``.  Router mapping cannot prove configuration.
+    It must not write active_model.txt, not change preferred_model, and
+    not publish.  ``write_text_state`` must never be called (no transient
+    writes) — the handler's internal ``from import`` receives the patch.
+    """
+    from js.utils import atomic_state as _atomic_state
+    from js.utils.atomic_state import write_text_state
+
+    executor = _ControlExecutor(tmp_path)
+    executor.settings.providers = []
+    executor.router.preferred_model = ""
+    fake_config = ModelConfig(id="dynamic-model", provider="stale")
+    executor.router.get_model_config = MagicMock(return_value=fake_config)
+    executor.router.get_model_binding = MagicMock(return_value=("stale", fake_config))
+    executor._active_model_publisher = MagicMock()
+    state_path = Path(executor.settings.state_dir) / "active_model.txt"
+    write_text_state(state_path, "previous/model", max_bytes=512)
+    executor._register_control_plane_tools()
+    # After pre-writing the old file, patch write_text_state so the handler's
+    # internal ``from js.utils.atomic_state import write_text_state`` receives
+    # the mock.  A rejection must not cause any transient write.
+    write_mock = MagicMock()
+    monkeypatch.setattr(_atomic_state, "write_text_state", write_mock)
+
+    arguments = {"model_id": "stale/dynamic-model"}
+    run_id = "model-switch-router-stale"
+    token = set_runtime_context(
+        _network_runtime_context(
+            executor,
+            tool_name="control_model_switch",
+            arguments=arguments,
+            run_id=run_id,
+        )
+    )
+    try:
+        _message, result = await executor._execute_tool_call(
+            {
+                "id": "model-switch-router-stale-call",
+                "function": {
+                    "name": "control_model_switch",
+                    "arguments": json.dumps(arguments),
+                },
+            },
+            session_id="admin-control-plane",
+            run_id=run_id,
+            user_input="Switch via stale router mapping",
+            allowed_tools={"control_model_switch"},
+            owner_key_hash="admin-owner",
+        )
+    finally:
+        reset_runtime_context(token)
+
+    assert result.success is False
+    assert result.metadata.get("status_code") == 400
+    assert state_path.read_text(encoding="utf-8") == "previous/model"
+    assert executor.router.preferred_model == ""
+    executor._active_model_publisher.assert_not_called()
+    write_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_model_switch_rejects_unknown_model_on_configured_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """control_model_switch must reject an unknown model on a configured provider.
+
+    The provider is configured, but the model is not declared in the
+    provider's ``settings.models`` and the router has no binding for it.
+    It must return 400 and not persist/publish.  ``write_text_state`` must
+    never be called (no transient writes) — the handler's internal
+    ``from import`` receives the patch.
+    """
+    from js.utils import atomic_state as _atomic_state
+    from js.utils.atomic_state import write_text_state
+
+    executor = _ControlExecutor(tmp_path)
+    executor.settings.providers = [
+        ModelProviderConfig(
+            name="provider",
+            base_url="https://models.example/v1",
+            models=[ModelConfig(id="model-a", provider="provider")],
+        )
+    ]
+    executor.router.preferred_model = ""
+    executor.router.get_model_config = MagicMock(return_value=None)
+    executor.router.get_model_binding = MagicMock(return_value=None)
+    executor._active_model_publisher = MagicMock()
+    state_path = Path(executor.settings.state_dir) / "active_model.txt"
+    write_text_state(state_path, "provider/model-a", max_bytes=512)
+    executor._register_control_plane_tools()
+    # After pre-writing the old file, patch write_text_state so the handler's
+    # internal ``from js.utils.atomic_state import write_text_state`` receives
+    # the mock.  A rejection must not cause any transient write.
+    write_mock = MagicMock()
+    monkeypatch.setattr(_atomic_state, "write_text_state", write_mock)
+
+    arguments = {"model_id": "provider/unknown-model"}
+    run_id = "model-switch-unknown-model"
+    token = set_runtime_context(
+        _network_runtime_context(
+            executor,
+            tool_name="control_model_switch",
+            arguments=arguments,
+            run_id=run_id,
+        )
+    )
+    try:
+        _message, result = await executor._execute_tool_call(
+            {
+                "id": "model-switch-unknown-model-call",
+                "function": {
+                    "name": "control_model_switch",
+                    "arguments": json.dumps(arguments),
+                },
+            },
+            session_id="admin-control-plane",
+            run_id=run_id,
+            user_input="Switch to unknown model on configured provider",
+            allowed_tools={"control_model_switch"},
+            owner_key_hash="admin-owner",
+        )
+    finally:
+        reset_runtime_context(token)
+
+    assert result.success is False
+    assert result.metadata.get("status_code") == 400
+    assert state_path.read_text(encoding="utf-8") == "provider/model-a"
+    assert executor.router.preferred_model == ""
+    executor._active_model_publisher.assert_not_called()
+    write_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_model_switch_allows_configured_provider_with_router_binding(
+    tmp_path: Path,
+) -> None:
+    """control_model_switch must allow a model backed by a router binding.
+
+    The provider is configured and ``router.get_model_binding`` returns a
+    tuple whose provider matches and whose model id matches the requested
+    model suffix.  This covers dynamically discovered models that are not
+    in ``settings.models`` but were added at runtime.
+    """
+    from js.utils.atomic_state import write_text_state
+
+    executor = _ControlExecutor(tmp_path)
+    executor.settings.providers = [
+        ModelProviderConfig(
+            name="provider",
+            base_url="https://models.example/v1",
+            models=[ModelConfig(id="model-a", provider="provider")],
+        )
+    ]
+    executor.router.preferred_model = ""
+    dynamic_config = ModelConfig(id="dynamic-model", provider="provider")
+    executor.router.get_model_config = MagicMock(return_value=dynamic_config)
+    executor.router.get_model_binding = MagicMock(return_value=("provider", dynamic_config))
+    executor.router._routing_cache = {}
+    executor._active_model_publisher = MagicMock()
+    state_path = Path(executor.settings.state_dir) / "active_model.txt"
+    write_text_state(state_path, "provider/model-a", max_bytes=512)
+    executor._register_control_plane_tools()
+
+    arguments = {"model_id": "provider/dynamic-model"}
+    run_id = "model-switch-dynamic-binding"
+    token = set_runtime_context(
+        _network_runtime_context(
+            executor,
+            tool_name="control_model_switch",
+            arguments=arguments,
+            run_id=run_id,
+        )
+    )
+    try:
+        _message, result = await executor._execute_tool_call(
+            {
+                "id": "model-switch-dynamic-binding-call",
+                "function": {
+                    "name": "control_model_switch",
+                    "arguments": json.dumps(arguments),
+                },
+            },
+            session_id="admin-control-plane",
+            run_id=run_id,
+            user_input="Switch to dynamically discovered model",
+            allowed_tools={"control_model_switch"},
+            owner_key_hash="admin-owner",
+        )
+    finally:
+        reset_runtime_context(token)
+
+    assert result.success is True
+    assert state_path.read_text(encoding="utf-8") == "provider/dynamic-model"
+    assert executor.router.preferred_model == "provider/dynamic-model"
+    executor._active_model_publisher.assert_called_once_with("provider/dynamic-model")
+
+
+@pytest.mark.asyncio
 async def test_control_plane_effects_get_one_time_network_lease_without_filesystem_grants(
     tmp_path: Path,
 ) -> None:
@@ -1924,9 +2236,7 @@ def test_control_skill_install_rejects_non_exact_remote_sources_before_lease(
 ) -> None:
     executor = _ControlExecutor(tmp_path)
 
-    error, _arguments = executor._normalize_control_skill_install_arguments(
-        {"source": source}
-    )
+    error, _arguments = executor._normalize_control_skill_install_arguments({"source": source})
 
     assert error is not None
     assert "remote skill source" in error.lower()

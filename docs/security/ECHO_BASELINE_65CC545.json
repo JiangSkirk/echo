@@ -11,8 +11,8 @@
     "source_digest_algorithm": "ECHO-RELEASE-SOURCE-V2",
     "source_digest": "3774de07b6652deeef91535a11730da860bf2d8572a81374c07d0b258b4effe5",
     "uv_lock_sha256": "ff448bc032a8bf5dc4dd85ddaf3e1b495a95acd1f9ac9a5a7dae83dd94a0c1c8",
-    "measured_root": "/private/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/pt006-final-baseline-u7g2kux9/measured-old",
-    "import_root": "/private/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/pt006-final-baseline-u7g2kux9/measured-old/js/__init__.py",
+    "measured_root": "/private/tmp/js-agent-baseline-clone",
+    "import_root": "/private/tmp/js-agent-baseline-clone/js/__init__.py",
     "harness_root": "/Users/jiangxuanzhen/titan-agent",
     "baseline_script_sha256": "6a9ac87fa2e0e4f6639f9a0a2322429da2509d536fc2af3c5da5be504494271a",
     "harness_sha256": "6a9ac87fa2e0e4f6639f9a0a2322429da2509d536fc2af3c5da5be504494271a",
@@ -36,8 +36,8 @@
       "executable_sha256": "fe46716a94d8efa4514feb3c39ba3e270deee2187556986f6ddcff54aba7bb9a"
     },
     "platform": {
-      "identity": "macOS-26.5.2-arm64-arm-64bit",
-      "identity_sha256": "1f41bfc0c9b50f2d6a4194f89b45697eb2cbc0ceb751c9097a0fba50851d37fd"
+      "identity": "macOS-26.6-arm64-arm-64bit",
+      "identity_sha256": "11bcc4e1bb08805aff26d1a2aec6c5b3452adae8f514e4193349c3cd7e7bf751"
     }
   },
   "iterations": 50,
@@ -46,24 +46,24 @@
   "paid_provider_calls": 0,
   "failures": [],
   "script_sha256": "6a9ac87fa2e0e4f6639f9a0a2322429da2509d536fc2af3c5da5be504494271a",
-  "import_root": "/private/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/pt006-final-baseline-u7g2kux9/measured-old/js/__init__.py",
+  "import_root": "/private/tmp/js-agent-baseline-clone/js/__init__.py",
   "environment": {
     "python": "3.12.13",
-    "platform": "macOS-26.5.2-arm64-arm-64bit"
+    "platform": "macOS-26.6-arm64-arm-64bit"
   },
   "methodology": "External trusted harness over the measured tree's real /api/chat path; deterministic local fake provider; old architecture sends all 40 fixed history messages; fresh-session short prompts; cl100k_base canonical provider payload. Current Echo's separate benchmark intentionally verifies only its latest-14 history window.",
   "limitations": "Local single-process evidence only; tokenizer counts are not provider billing tokens and latency excludes network/provider variance.",
   "api_full_agent": {
-    "mean_ms": 43.752,
-    "p50_ms": 43.324,
-    "p95_ms": 46.964,
-    "max_ms": 82.563,
+    "mean_ms": 43.786,
+    "p50_ms": 43.463,
+    "p95_ms": 47.398,
+    "max_ms": 58.042,
     "group_p95_ms": [
-      46.353,
-      45.879,
-      47.636,
-      46.964,
-      47.052
+      46.838,
+      46.303,
+      47.97,
+      47.525,
+      47.398
     ]
   },
   "prompt_tokens": {
@@ -82,10 +82,10 @@
     {
       "group": 1,
       "api_full_agent": {
-        "mean_ms": 43.75,
-        "p50_ms": 43.163,
-        "p95_ms": 46.353,
-        "max_ms": 63.586
+        "mean_ms": 43.502,
+        "p50_ms": 43.364,
+        "p95_ms": 46.838,
+        "max_ms": 47.654
       },
       "prompt_tokens": {
         "source": "tokenizer",
@@ -2958,10 +2958,10 @@
     {
       "group": 2,
       "api_full_agent": {
-        "mean_ms": 43.467,
-        "p50_ms": 43.247,
-        "p95_ms": 45.879,
-        "max_ms": 46.948
+        "mean_ms": 43.786,
+        "p50_ms": 43.508,
+        "p95_ms": 46.303,
+        "max_ms": 52.175
       },
       "prompt_tokens": {
         "source": "tokenizer",
@@ -5834,10 +5834,10 @@
     {
       "group": 3,
       "api_full_agent": {
-        "mean_ms": 44.393,
-        "p50_ms": 43.324,
-        "p95_ms": 47.636,
-        "max_ms": 82.563
+        "mean_ms": 44.122,
+        "p50_ms": 43.792,
+        "p95_ms": 47.97,
+        "max_ms": 50.171
       },
       "prompt_tokens": {
         "source": "tokenizer",
@@ -8710,10 +8710,10 @@
     {
       "group": 4,
       "api_full_agent": {
-        "mean_ms": 44.05,
-        "p50_ms": 43.486,
-        "p95_ms": 46.964,
-        "max_ms": 55.934
+        "mean_ms": 43.666,
+        "p50_ms": 43.149,
+        "p95_ms": 47.525,
+        "max_ms": 49.09
       },
       "prompt_tokens": {
         "source": "tokenizer",
@@ -11586,10 +11586,10 @@
     {
       "group": 5,
       "api_full_agent": {
-        "mean_ms": 43.752,
-        "p50_ms": 43.376,
-        "p95_ms": 47.052,
-        "max_ms": 49.583
+        "mean_ms": 43.891,
+        "p50_ms": 43.463,
+        "p95_ms": 47.398,
+        "max_ms": 58.042
       },
       "prompt_tokens": {
         "source": "tokenizer",

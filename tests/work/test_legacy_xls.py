@@ -73,7 +73,7 @@ def test_pure_python_legacy_reader_copies_values_and_neutralizes_formula_text(
         observed.update(kwargs)
         return fake_book
 
-    monkeypatch.setattr(legacy_xls.xlrd, "open_workbook", fake_open_workbook)
+    monkeypatch.setattr(xlrd, "open_workbook", fake_open_workbook)
 
     assert convert_legacy_xls_to_xlsx(source, output) == output
 
@@ -103,7 +103,7 @@ def test_legacy_reader_never_overwrites_existing_output(
     output = tmp_path / "sanitized.xlsx"
     _stub_xls(source)
     output.write_bytes(b"keep-output")
-    monkeypatch.setattr(legacy_xls.xlrd, "open_workbook", lambda **_kwargs: _FakeBook())
+    monkeypatch.setattr(xlrd, "open_workbook", lambda **_kwargs: _FakeBook())
 
     with pytest.raises(LegacyXlsError, match="already exists"):
         convert_legacy_xls_to_xlsx(source, output)
@@ -121,7 +121,7 @@ def test_legacy_reader_rejects_non_ole_input_before_parser(
     def forbidden_open(**_kwargs: Any) -> Any:
         raise AssertionError("parser received a non-OLE file")
 
-    monkeypatch.setattr(legacy_xls.xlrd, "open_workbook", forbidden_open)
+    monkeypatch.setattr(xlrd, "open_workbook", forbidden_open)
 
     with pytest.raises(LegacyXlsError, match="not an OLE BIFF"):
         convert_legacy_xls_to_xlsx(source, tmp_path / "out.xlsx")
@@ -139,7 +139,7 @@ def test_legacy_reader_rejects_symlink_source_before_parser(
     def forbidden_open(**_kwargs: Any) -> Any:
         raise AssertionError("parser received a symlinked file")
 
-    monkeypatch.setattr(legacy_xls.xlrd, "open_workbook", forbidden_open)
+    monkeypatch.setattr(xlrd, "open_workbook", forbidden_open)
 
     with pytest.raises(LegacyXlsError, match="regular file"):
         convert_legacy_xls_to_xlsx(source, tmp_path / "out.xlsx")
@@ -152,7 +152,7 @@ def test_legacy_reader_enforces_cell_limit_before_iteration(
     source = tmp_path / "source.xls"
     _stub_xls(source)
     fake_book = _FakeBook()
-    monkeypatch.setattr(legacy_xls.xlrd, "open_workbook", lambda **_kwargs: fake_book)
+    monkeypatch.setattr(xlrd, "open_workbook", lambda **_kwargs: fake_book)
     monkeypatch.setattr(legacy_xls, "MAX_LEGACY_XLS_CELLS", 7)
 
     with pytest.raises(LegacyXlsError, match="cell limit"):

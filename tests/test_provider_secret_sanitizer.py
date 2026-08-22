@@ -768,18 +768,18 @@ async def test_router_raw_stream_exception_is_safe_before_after_hook(
 async def test_http_ws_echo_router_stream_omits_secret(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Real HTTP+WS path through Echo→router streaming must not leak secrets."""
-    import os
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
 
     from starlette.websockets import WebSocketDisconnect
 
-    os.environ["JS_ALLOWED_ORIGINS"] = "http://localhost"
+    monkeypatch.setenv("JS_ALLOWED_ORIGINS", "http://localhost")
     import js.web.auth as auth_mod
 
-    auth_mod._ALLOWED_ORIGINS = None
+    monkeypatch.setattr(auth_mod, "_ALLOWED_ORIGINS", None)
 
     settings = JSSettings(
         workspace=tmp_path / "workspace",

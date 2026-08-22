@@ -272,7 +272,15 @@ class TestWebRestartRecovery:
             # The setup bootstrap window is loopback-only; simulate a local client.
             client = TestClient(create_app(), client=("127.0.0.1", 50000))
             try:
-                resp = client.post("/api/setup/complete")
+                # Browser wizard fetch always sends Origin bound to the
+                # loopback Host; originless mutation posts are CSRF-rejected.
+                resp = client.post(
+                    "/api/setup/complete",
+                    headers={
+                        "Host": "localhost:50000",
+                        "Origin": "http://localhost:50000",
+                    },
+                )
                 assert resp.status_code == 200
                 assert resp.json()["success"] is True
                 assert settings.first_run_completed is True

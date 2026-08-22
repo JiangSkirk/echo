@@ -196,7 +196,7 @@ class DesktopController:
             parts = []
             if point: parts.append(f"m:{point.x},{point.y}")
             parts.extend([action] * clicks)
-            subprocess.run([self._cliclick_path, " ".join(parts)], capture_output=True, text=True, timeout=5)
+            subprocess.run([self._cliclick_path, *parts], capture_output=True, text=True, timeout=5)
             return {"action": "mouse_click", "button": button.value,
                     "point": f"{point.x},{point.y}" if point else "current", "clicks": clicks}
 
@@ -227,7 +227,7 @@ class DesktopController:
             if not self._cliclick_path: raise
             b = {"left": ("dd", "dm", "du"), "right": ("rd", "rm", "ru"), "middle": ("md", "mm", "mu")}[button.value]
             parts = [f"{b[0]}:{start.x},{start.y}", f"{b[1]}:{end.x},{end.y}", f"{b[2]}:{end.x},{end.y}"]
-            subprocess.run([self._cliclick_path, " ".join(parts)], capture_output=True, text=True, timeout=5)
+            subprocess.run([self._cliclick_path, *parts], capture_output=True, text=True, timeout=5)
             return {"action": "mouse_drag", "button": button.value,
                     "start": f"{start.x},{start.y}", "end": f"{end.x},{end.y}"}
 

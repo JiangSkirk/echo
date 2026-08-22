@@ -139,6 +139,7 @@ _RELEASE_SOURCE_DIGEST_SURFACES = (
     Path("docs/security/ECHO_SOAK_INTEGRITY_PUBKEY.json"),
     Path("docs/security/LICENSE_SCAN.md"),
     Path("docs/security/SBOM.spdx.json"),
+    Path("desktop"),
     Path("js"),
     Path("js_work"),
     Path("pyproject.toml"),
@@ -160,9 +161,26 @@ _RELEASE_SOURCE_DIGEST_EXCLUDE = frozenset(
     }
 )
 _RELEASE_SOURCE_ALLOWED_EMPTY_FILES = frozenset({Path("tests/echo/__init__.py")})
-_RELEASE_SOURCE_BINARY_SUFFIXES = frozenset({".ttf", ".woff2"})
+_RELEASE_SOURCE_BINARY_SUFFIXES = frozenset({".icns", ".png", ".ttf", ".woff2"})
+_RELEASE_SOURCE_DESKTOP_GENERATED_PARTS = frozenset(
+    {
+        ".cache",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "__pycache__",
+        "binaries",
+        "cache",
+        "caches",
+        "node_modules",
+        "target",
+    }
+)
+_RELEASE_SOURCE_DESKTOP_GENERATED_ROOTS = (
+    Path("desktop/src-tauri/gen"),
+)
 _ISOLATED_VENV_E2E_EVIDENCE = Path("docs/security/ECHO_ISOLATED_VENV_E2E.json")
-_ISOLATED_VENV_E2E_SCHEMA_VERSION = "isolated-venv-e2e-v7"
+_ISOLATED_VENV_E2E_SCHEMA_VERSION = "isolated-venv-e2e-v8"
 _WORK_LEDGER_CHAIN_TYPES: tuple[str, ...] = (
     "permit",
     "outbox",
@@ -179,7 +197,9 @@ _ISOLATED_VENV_E2E_REQUIRED_STEPS: tuple[str, ...] = (
     "wheel: import js/js_work from venv site-packages",
     "wheel: tokenizer loads offline from vendored cache",
     "wheel: CLI js --help",
+    "wheel: CLI js work --help",
     "wheel: CLI js-work --help",
+    "wheel: CLI python -m js_work --help",
     f"wheel: {_ISOLATED_VENV_E2E_SERVER_STEP}",
     "sdist: create venv",
     "sdist: pip install build backends offline",
@@ -188,7 +208,9 @@ _ISOLATED_VENV_E2E_REQUIRED_STEPS: tuple[str, ...] = (
     "sdist: import js/js_work from venv site-packages",
     "sdist: tokenizer loads offline from vendored cache",
     "sdist: CLI js --help",
+    "sdist: CLI js work --help",
     "sdist: CLI js-work --help",
+    "sdist: CLI python -m js_work --help",
     f"sdist: {_ISOLATED_VENV_E2E_SERVER_STEP}",
 )
 _AUDIT_REPORT_EVIDENCE = (
@@ -217,6 +239,7 @@ _RELEASE_CANDIDATE_SURFACES = (
 
 _ECHO_IP_CODE_ROOTS = (Path("js/echo"),)
 _ECHO_IP_CODE_ALLOWLIST = (Path("js/echo/ledger/release_gates.py"),)
+_scan_root: Path = Path(".")
 _ECHO_IP_TEXT_ROOTS = (
     Path("ORIGIN_LEDGER.md"),
     Path("THIRD_PARTY_NOTICES.md"),
@@ -393,7 +416,7 @@ def _iter_release_source_files(root: Path) -> list[Path]:
         candidate = resolved_root / relative
         if candidate.is_file() and not candidate.is_symlink():
             key = candidate.relative_to(resolved_root).as_posix()
-            if key not in seen and Path(key) not in _RELEASE_SOURCE_DIGEST_EXCLUDE:
+            if key not in seen and _release_source_member_included(Path(key)):
                 seen.add(key)
                 files.append(candidate)
         elif candidate.is_dir():
@@ -401,13 +424,10 @@ def _iter_release_source_files(root: Path) -> list[Path]:
                 if (
                     not path.is_file()
                     or path.is_symlink()
-                    or "__pycache__" in path.parts
-                    or path.suffix in {".pyc", ".pyo"}
-                    or path.name == ".DS_Store"
                 ):
                     continue
                 key = path.relative_to(resolved_root).as_posix()
-                if key in seen or Path(key) in _RELEASE_SOURCE_DIGEST_EXCLUDE:
+                if key in seen or not _release_source_member_included(Path(key)):
                     continue
                 seen.add(key)
                 files.append(path)
@@ -427,12 +447,7 @@ def validate_release_source_integrity(root: Path) -> None:
         return path.relative_to(resolved_root)
 
     def is_ignored(relative: Path) -> bool:
-        return (
-            relative in _RELEASE_SOURCE_DIGEST_EXCLUDE
-            or "__pycache__" in relative.parts
-            or relative.suffix in {".pyc", ".pyo"}
-            or relative.name == ".DS_Store"
-        )
+        return not _release_source_member_included(relative)
 
     def validate_file(path: Path) -> None:
         relative = relative_path(path)
@@ -591,6 +606,8 @@ def verify_echo_ip_boundary(root: Path) -> EchoIPBoundaryReport:
     unverifiable public claims such as "100% self-developed" or "no
     infringement".
     """
+    global _scan_root
+    _scan_root = root
     findings: list[str] = []
     for path in _iter_echo_ip_code_files(root):
         _scan_for_project_api_tokens(path, findings)
@@ -629,11 +646,33 @@ def _iter_echo_ip_text_files(root: Path) -> tuple[Path, ...]:
     return tuple(sorted(files))
 
 
+# Narrow per-file token exemptions for false positives caused by generic
+# English words that collide with disallowed framework API names.
+# Each entry is (relative_path, token, reason).  The file is still scanned
+# for ALL other disallowed tokens; only the named token is suppressed.
+#
+# handoff_vault.py defines an internal MAC domain constant
+# "js-agent:handoff-vault:v1" — "handoff" here is a generic English noun
+# meaning "transfer of responsibility", not the AutoGen/AgentScope
+# "handoff()" registration API that the IP gate is designed to block.
+_TOKEN_EXEMPTIONS: dict[tuple[str, str], str] = {
+    ("js/echo/handoff_vault.py", "handoff"): (
+        "internal vault MAC domain; not a framework handoff() registration API"
+    ),
+}
+
+
 def _scan_for_project_api_tokens(path: Path, findings: list[str]) -> None:
     text = path.read_text(encoding="utf-8")
+    try:
+        rel = str(path.relative_to(_scan_root))
+    except ValueError:
+        rel = str(path)
     for line_no, line in enumerate(text.splitlines(), start=1):
         for token in _DISALLOWED_PROJECT_API_TOKENS:
             if _project_api_token_present(token, line):
+                if (rel, token) in _TOKEN_EXEMPTIONS:
+                    continue
                 findings.append(f"{path}:{line_no}: disallowed project API token {token}")
 
 
@@ -2084,8 +2123,14 @@ def _valid_isolated_venv_e2e_step(
         elif suffix == "CLI js --help":
             if argv != [str(venv_dir / "bin" / "js"), "--help"]:
                 return False
+        elif suffix == "CLI js work --help":
+            if argv != [str(venv_dir / "bin" / "js"), "work", "--help"]:
+                return False
         elif suffix == "CLI js-work --help":
             if argv != [str(venv_dir / "bin" / "js-work"), "--help"]:
+                return False
+        elif suffix == "CLI python -m js_work --help":
+            if argv != [venv_python, "-m", "js_work", "--help"]:
                 return False
         elif suffix == _ISOLATED_VENV_E2E_SERVER_STEP:
             if argv != [venv_python, str(cwd_path / "server_e2e.py")]:
@@ -2308,6 +2353,7 @@ def _verify_work_ledger_receipt_binding(
     receipt: Mapping[str, object],
     *,
     evidence_root: Path | None = None,
+    repo_root: Path | None = None,
 ) -> bool:
     owner = receipt.get("owner")
     session = receipt.get("session")
@@ -2435,13 +2481,19 @@ def _verify_work_ledger_receipt_binding(
         ):
             return False
         previous = record.record_hash
-    public_key_path = evidence_root.parent
-    while (
-        public_key_path != public_key_path.parent
-        and not (public_key_path / "docs" / "security" / "ECHO_E2E_LEDGER_PUBKEY.json").is_file()
-    ):
-        public_key_path = public_key_path.parent
-    frozen_path = public_key_path / "docs" / "security" / "ECHO_E2E_LEDGER_PUBKEY.json"
+    frozen_path: Path | None = None
+    if repo_root is not None:
+        candidate = repo_root.resolve() / "docs" / "security" / "ECHO_E2E_LEDGER_PUBKEY.json"
+        if candidate.is_file():
+            frozen_path = candidate
+    if frozen_path is None:
+        public_key_path = evidence_root.parent
+        while (
+            public_key_path != public_key_path.parent
+            and not (public_key_path / "docs" / "security" / "ECHO_E2E_LEDGER_PUBKEY.json").is_file()
+        ):
+            public_key_path = public_key_path.parent
+        frozen_path = public_key_path / "docs" / "security" / "ECHO_E2E_LEDGER_PUBKEY.json"
     try:
         frozen = strict_load_object(frozen_path)
         raw_public = base64.b64decode(str(frozen["public_key_b64"]), validate=True)
@@ -2582,6 +2634,7 @@ def _valid_isolated_venv_e2e_work_receipt(
     *,
     evidence_root: Path | None = None,
     work_output: Mapping[str, object] | None = None,
+    repo_root: Path | None = None,
 ) -> bool:
     if not isinstance(receipt, dict):
         return False
@@ -2624,7 +2677,7 @@ def _valid_isolated_venv_e2e_work_receipt(
     owner_root = f"owners/{_owner_path_slug(str(owner))}/{_session_path_slug(str(session))}"
     if owner_root not in output_path.replace("\\", "/"):
         return False
-    if not _verify_work_ledger_receipt_binding(receipt, evidence_root=evidence_root):
+    if not _verify_work_ledger_receipt_binding(receipt, evidence_root=evidence_root, repo_root=repo_root):
         return False
     if work_output is None or evidence_root is None:
         return True
@@ -2691,6 +2744,7 @@ def _valid_isolated_venv_e2e_provider_detail(
     *,
     evidence_root: Path | None = None,
     work_output: Mapping[str, object] | None = None,
+    repo_root: Path | None = None,
 ) -> bool:
     if not isinstance(detail, dict):
         return False
@@ -2735,6 +2789,7 @@ def _valid_isolated_venv_e2e_provider_detail(
         detail.get("work_receipt"),
         evidence_root=evidence_root,
         work_output=work_output,
+        repo_root=repo_root,
     )
 
 
@@ -2742,12 +2797,15 @@ def _resolve_isolated_e2e_evidence_root(root: Path, data: Mapping[str, object]) 
     evidence_root = data.get("evidence_root")
     if not isinstance(evidence_root, str) or not evidence_root.strip():
         return None
-    candidate = (root / evidence_root).resolve()
-    resolved_root = root.resolve()
-    try:
-        candidate.relative_to(resolved_root)
-    except ValueError:
-        return None
+    # Accept both relative (within repo) and absolute (external evidence) paths
+    candidate = Path(evidence_root)
+    if not candidate.is_absolute():
+        candidate = (root / evidence_root).resolve()
+        resolved_root = root.resolve()
+        try:
+            candidate.relative_to(resolved_root)
+        except ValueError:
+            return None
     return candidate if candidate.is_dir() else None
 
 
@@ -2920,6 +2978,7 @@ def _valid_isolated_venv_e2e(root: Path, path: Path) -> bool:
             detail,
             evidence_root=evidence_root,
             work_output=work_outputs[kind],
+            repo_root=root,
         ):
             return False
 
@@ -3329,10 +3388,39 @@ def _release_source_member_included(relative: Path) -> bool:
         or relative.name == ".DS_Store"
     ):
         return False
+    if relative.parts and relative.parts[0] == "desktop":
+        if relative.name == ".embedded_source_digest":
+            return False
+        if any(part in _RELEASE_SOURCE_DESKTOP_GENERATED_PARTS for part in relative.parts[1:]):
+            return False
+        if any(
+            relative == generated or generated in relative.parents
+            for generated in _RELEASE_SOURCE_DESKTOP_GENERATED_ROOTS
+        ):
+            return False
     return any(
         relative == surface or surface in relative.parents
         for surface in _RELEASE_SOURCE_DIGEST_SURFACES
     )
+
+
+def _canonical_git_archive_member(name: str) -> Path | None:
+    """Return one unambiguous repository-relative POSIX archive path."""
+    if (
+        not name
+        or name.startswith("/")
+        or "\\" in name
+        or "\x00" in name
+        or re.match(r"[A-Za-z]:", name) is not None
+    ):
+        return None
+    parts = name.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return None
+    relative = Path(*parts)
+    if relative.is_absolute() or relative.as_posix() != name:
+        return None
+    return relative
 
 
 def _git_release_source_digest(root: Path, commit: str) -> str | None:
@@ -3343,20 +3431,30 @@ def _git_release_source_digest(root: Path, commit: str) -> str | None:
     digest = hashlib.sha256(_RELEASE_SOURCE_DIGEST_VERSION)
     try:
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as stream:
+            seen: set[str] = set()
+            included_files: list[tuple[tarfile.TarInfo, Path]] = []
+            for member in stream.getmembers():
+                relative = _canonical_git_archive_member(member.name)
+                if relative is None or member.name in seen:
+                    return None
+                seen.add(member.name)
+                if not _release_source_member_included(relative):
+                    continue
+                if member.isdir():
+                    continue
+                if not member.isfile():
+                    return None
+                included_files.append((member, relative))
             members = sorted(
-                (
-                    member
-                    for member in stream.getmembers()
-                    if member.isfile() and _release_source_member_included(Path(member.name))
-                ),
-                key=lambda member: Path(member.name).as_posix(),
+                included_files,
+                key=lambda item: item[1].as_posix(),
             )
-            for member in members:
+            for member, relative in members:
                 extracted = stream.extractfile(member)
                 if extracted is None:
                     return None
                 payload = extracted.read()
-                relative_bytes = Path(member.name).as_posix().encode("utf-8")
+                relative_bytes = relative.as_posix().encode("utf-8")
                 digest.update(len(relative_bytes).to_bytes(8, "big"))
                 digest.update(relative_bytes)
                 digest.update(len(payload).to_bytes(8, "big"))
@@ -4229,6 +4327,12 @@ READINESS_RESULT_SCHEMA_VERSION = "js-agent-readiness-result-v1"
 RELEASE_RESULT_SENTINEL = "JS_AGENT_RELEASE_RESULT_V1="
 RELEASE_RESULT_SCHEMA_VERSION = "js-agent-release-result-v1"
 RELEASE_RESULT_FIELDS = frozenset({"schema_version", "ok", "gate"})
+_DESKTOP_RELEASE_BINDING_FIELDS = frozenset(
+    {"desktop_manifest_sha256", "app_tree_sha256", "app_sha256"}
+)
+_TAURI_RELEASE_BINDING_FIELDS = _DESKTOP_RELEASE_BINDING_FIELDS | frozenset(
+    {"result_sha256", "harness_sha256"}
+)
 READINESS_RESULT_FIELDS = frozenset(
     {"schema_version", "source_digest", "internal_ready", "internal_blockers"}
 )
@@ -4270,6 +4374,96 @@ _SOAK_WALL_DURATION_TOLERANCE_SECONDS = _SOAK_COVERAGE_TOLERANCE_SECONDS
 _SOAK_GATE_RECEIPT_MIN_SECONDS = 3600.0 - _SOAK_COVERAGE_TOLERANCE_SECONDS
 _SOAK_FINAL_CLEANUP_MAX_SECONDS = 30.0
 _SOAK_SETUP_BIAS_MAX_SECONDS = 30.0
+_SUPERVISED_SOAK_SCHEMA_VERSION = "js-agent-supervised-soak-v1"
+_SUPERVISED_OVERLAY_SCHEMA_VERSION = "js-agent-tauri-overlay-v1"
+_SUPERVISED_SOAK_COMBINED_RELATIVE = Path("soak/supervised_soak.combined.json")
+_SUPERVISED_SOAK_CORE_RAW_RELATIVE = Path("soak/echo_core_soak.raw.json")
+_SUPERVISED_SOAK_OVERLAY_RAW_RELATIVE = Path("soak/tauri_overlay.raw.json")
+_SUPERVISED_COUNTER_KEYS = frozenset(
+    {
+        "mode_switches",
+        "app_restarts",
+        "sidecar_recoveries",
+        "ws_cancel_cycles",
+        "r4_ops",
+        "r6_ops",
+    }
+)
+_SUPERVISED_COMBINED_FIELDS = frozenset(
+    {
+        "schema_version",
+        "ok",
+        "started_utc",
+        "finished_utc",
+        "duration_seconds",
+        "elapsed_seconds",
+        "source_digest",
+        "metadata_fingerprint",
+        "core",
+        "overlay",
+        "combined_sha256",
+    }
+)
+_SUPERVISED_CORE_FIELDS = frozenset({"exit_code", "raw_sha256", "ok"})
+_SUPERVISED_OVERLAY_SUMMARY_FIELDS = frozenset(
+    {
+        "exit_code",
+        "raw_sha256",
+        "ok",
+        "targets",
+        "counters",
+        "targets_met",
+        "cycles",
+        "heartbeat_count",
+        "max_heartbeat_gap_s",
+        "max_heartbeat_gap_limit_s",
+        "chain_root",
+        "desktop_manifest_sha256",
+        "app_tree_sha256",
+        "app_sha256",
+    }
+)
+_SUPERVISED_OVERLAY_FIELDS = frozenset(
+    {
+        "schema_version",
+        "ok",
+        "started_utc",
+        "finished_utc",
+        "duration_seconds",
+        "elapsed_seconds",
+        "source_digest",
+        "metadata_fingerprint",
+        "acceptance_pid",
+        "targets",
+        "counters",
+        "targets_met",
+        "cycles",
+        "heartbeats",
+        "heartbeat_count",
+        "max_heartbeat_gap_s",
+        "max_heartbeat_gap_limit_s",
+        "chain_root",
+        "errors",
+        "app_path",
+        "harness_exec",
+        "desktop_manifest_path",
+        "desktop_manifest_sha256",
+        "app_tree_sha256",
+        "app_sha256",
+    }
+)
+_SUPERVISED_HEARTBEAT_FIELDS = frozenset(
+    {
+        "index",
+        "monotonic_s",
+        "wall_utc",
+        "note",
+        "counters",
+        "source_digest",
+        "prev_chain",
+        "chain",
+    }
+)
 _LOCAL_GATE_DURATION_TOLERANCE_SECONDS = 1.0
 _EVIDENCE_DIR_TOKEN = "{evidence_dir}"
 _REPO_ROOT_TOKEN = "{repo_root}"
@@ -4684,10 +4878,17 @@ def _canonical_json_text(payload: Mapping[str, object]) -> str:
     return canonical_json_text(payload)
 
 
-_RELEASE_MARKER_GATES: frozenset[str] = frozenset({"release_smoke", "echo_full_audit"})
+_RELEASE_MARKER_GATES: frozenset[str] = frozenset(
+    {"release_smoke", "echo_full_audit", "desktop_build", "tauri_webview_lifecycle"}
+)
 
 
-def format_release_result_line(*, gate: str, ok: bool = True) -> str:
+def format_release_result_line(
+    *,
+    gate: str,
+    ok: bool = True,
+    bindings: Mapping[str, str] | None = None,
+) -> str:
     """Emit the unique trailing release-marker sentinel for smoke/audit gates."""
     if gate not in _RELEASE_MARKER_GATES:
         raise ValueError(f"gate {gate!r} is not a registered release_markers gate")
@@ -4698,6 +4899,24 @@ def format_release_result_line(*, gate: str, ok: bool = True) -> str:
         "ok": bool(ok),
         "gate": gate,
     }
+    if bindings is not None:
+        expected = (
+            _TAURI_RELEASE_BINDING_FIELDS
+            if gate == "tauri_webview_lifecycle"
+            else _DESKTOP_RELEASE_BINDING_FIELDS
+            if gate == "desktop_build"
+            else frozenset()
+        )
+        if not ok or set(bindings) != expected:
+            raise ValueError("release marker artifact bindings are not exact for gate")
+        if any(
+            not isinstance(value, str)
+            or _SHA256_PATTERN.fullmatch(value) is None
+            or value != value.lower()
+            for value in bindings.values()
+        ):
+            raise ValueError("release marker artifact binding must be lowercase SHA-256")
+        payload["bindings"] = dict(bindings)
     return RELEASE_RESULT_SENTINEL + _canonical_json_text(payload)
 
 
@@ -4724,7 +4943,7 @@ def _parse_release_result_payload(
         payload = strict_loads(encoded)
     except (StrictJSONError, ValueError, TypeError):
         return None
-    if not isinstance(payload, dict) or set(payload) != RELEASE_RESULT_FIELDS:
+    if not isinstance(payload, dict):
         return None
     if encoded != _canonical_json_text(payload):
         return None
@@ -4735,11 +4954,36 @@ def _parse_release_result_payload(
     gate = payload.get("gate")
     if not isinstance(gate, str) or gate != expected_gate:
         return None
-    return {
+    expected_binding_fields = (
+        _TAURI_RELEASE_BINDING_FIELDS
+        if gate == "tauri_webview_lifecycle"
+        else _DESKTOP_RELEASE_BINDING_FIELDS
+        if gate == "desktop_build"
+        else None
+    )
+    expected_fields = RELEASE_RESULT_FIELDS | (
+        {"bindings"} if payload.get("ok") is True and expected_binding_fields is not None else set()
+    )
+    if set(payload) != expected_fields:
+        return None
+    parsed: dict[str, object] = {
         "schema_version": payload["schema_version"],
         "ok": payload["ok"],
         "gate": gate,
     }
+    if expected_binding_fields is not None and payload.get("ok") is True:
+        bindings = payload.get("bindings")
+        if not isinstance(bindings, dict) or set(bindings) != expected_binding_fields:
+            return None
+        if any(
+            not isinstance(value, str)
+            or _SHA256_PATTERN.fullmatch(value) is None
+            or value != value.lower()
+            for value in bindings.values()
+        ):
+            return None
+        parsed["bindings"] = dict(bindings)
+    return parsed
 
 
 def _loads_reject_duplicate_keys(text: str) -> object:
@@ -4796,6 +5040,337 @@ def _parse_readiness_result_payload(stdout_text: str) -> dict[str, object] | Non
     }
 
 
+def _is_lower_sha256(value: object) -> bool:
+    return bool(
+        isinstance(value, str)
+        and value == value.lower()
+        and _SHA256_PATTERN.fullmatch(value) is not None
+    )
+
+
+def _is_single_link_regular_file(path: Path) -> bool:
+    try:
+        file_stat = path.lstat()
+    except OSError:
+        return False
+    return bool(stat.S_ISREG(file_stat.st_mode) and file_stat.st_nlink == 1)
+
+
+def _supervised_targets(duration_seconds: float) -> dict[str, int]:
+    scale = max(duration_seconds / 3600.0, 0.0)
+    return {
+        "mode_switches": max(1, int(30 * scale)) if duration_seconds >= 60 else 1,
+        "app_restarts": max(1, int(6 * scale)) if duration_seconds >= 120 else 1,
+        "sidecar_recoveries": max(1, int(3 * scale)) if duration_seconds >= 180 else 0,
+        "ws_cancel_cycles": max(1, int(30 * scale)) if duration_seconds >= 60 else 1,
+        "r4_ops": max(1, int(12 * scale)) if duration_seconds >= 120 else 0,
+        "r6_ops": max(1, int(12 * scale)) if duration_seconds >= 180 else 0,
+    }
+
+
+def _valid_supervised_counters(value: object) -> bool:
+    return bool(
+        isinstance(value, dict)
+        and set(value) == _SUPERVISED_COUNTER_KEYS
+        and all(
+            isinstance(item, int) and not isinstance(item, bool) and item >= 0
+            for item in value.values()
+        )
+    )
+
+
+def _valid_supervised_overlay_report(
+    data: object,
+    *,
+    root: Path,
+    evidence_dir: Path,
+    expected_source_digest: str,
+    expected_metadata_fingerprint: str,
+) -> bool:
+    if not isinstance(data, dict) or set(data) != _SUPERVISED_OVERLAY_FIELDS:
+        return False
+    duration = _safe_finite_float(data.get("duration_seconds"))
+    elapsed = _safe_finite_float(data.get("elapsed_seconds"))
+    started = _parse_utc_timestamp(data.get("started_utc"))
+    finished = _parse_utc_timestamp(data.get("finished_utc"))
+    acceptance_pid = data.get("acceptance_pid")
+    if (
+        data.get("schema_version") != _SUPERVISED_OVERLAY_SCHEMA_VERSION
+        or data.get("ok") is not True
+        or data.get("errors") != []
+        or duration != 3600.0
+        or elapsed is None
+        or elapsed < duration - _SOAK_COVERAGE_TOLERANCE_SECONDS
+        or started is None
+        or finished is None
+        or finished < started
+        or (finished - started).total_seconds()
+        < duration - _SOAK_COVERAGE_TOLERANCE_SECONDS
+        or not isinstance(acceptance_pid, int)
+        or isinstance(acceptance_pid, bool)
+        or acceptance_pid <= 0
+        or data.get("source_digest") != expected_source_digest
+        or data.get("metadata_fingerprint") != expected_metadata_fingerprint
+        or not _is_lower_sha256(data.get("source_digest"))
+        or not _is_lower_sha256(data.get("metadata_fingerprint"))
+    ):
+        return False
+
+    expected_targets = _supervised_targets(duration)
+    targets = data.get("targets")
+    counters = data.get("counters")
+    if (
+        not isinstance(targets, dict)
+        or not isinstance(counters, dict)
+        or not _valid_supervised_counters(targets)
+        or targets != expected_targets
+        or not _valid_supervised_counters(counters)
+        or data.get("targets_met") is not True
+        or any(counters[key] < expected_targets[key] for key in _SUPERVISED_COUNTER_KEYS)
+    ):
+        return False
+    cycles = data.get("cycles")
+    if not isinstance(cycles, int) or isinstance(cycles, bool) or cycles <= 0:
+        return False
+
+    resolved_evidence = evidence_dir.resolve()
+    app_path = resolved_evidence / "desktop-build/artifacts/JS Agent.app"
+    manifest_path = resolved_evidence / "desktop-build/manifest.json"
+    harness_path = (
+        resolved_evidence
+        / "harness/JS Agent UI Test Harness.app/Contents/MacOS/js-agent-ui-test-harness"
+    )
+    if (
+        data.get("app_path") != str(app_path)
+        or data.get("desktop_manifest_path") != str(manifest_path)
+        or data.get("harness_exec") != str(harness_path)
+    ):
+        return False
+    try:
+        from scripts.run_tauri_webview_gate import _manifest_bindings
+
+        bindings = _manifest_bindings(
+            app_path=app_path,
+            manifest_path=manifest_path,
+            repo_root=root.resolve(),
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+    if bindings is None or any(
+        not _is_lower_sha256(data.get(field))
+        or not hmac.compare_digest(str(data.get(field)), bindings[field])
+        for field in ("desktop_manifest_sha256", "app_tree_sha256", "app_sha256")
+    ):
+        return False
+
+    heartbeats = data.get("heartbeats")
+    heartbeat_count = data.get("heartbeat_count")
+    gap_limit = _safe_finite_float(data.get("max_heartbeat_gap_limit_s"))
+    declared_max_gap = _safe_finite_float(data.get("max_heartbeat_gap_s"))
+    if (
+        not isinstance(heartbeats, list)
+        or not isinstance(heartbeat_count, int)
+        or isinstance(heartbeat_count, bool)
+        or heartbeat_count != len(heartbeats)
+        or heartbeat_count < 2
+        or gap_limit != 15.0
+        or declared_max_gap is None
+        or declared_max_gap < 0
+        or declared_max_gap > gap_limit + 0.5
+    ):
+        return False
+
+    running_chain = bytes(32)
+    prior_monotonic: float | None = None
+    prior_wall: datetime | None = None
+    setup_bias: float | None = None
+    prior_counters = dict.fromkeys(_SUPERVISED_COUNTER_KEYS, 0)
+    computed_max_gap = 0.0
+    for index, heartbeat in enumerate(heartbeats, start=1):
+        if not isinstance(heartbeat, dict) or set(heartbeat) != _SUPERVISED_HEARTBEAT_FIELDS:
+            return False
+        monotonic_s = _safe_finite_float(heartbeat.get("monotonic_s"))
+        wall_utc = _parse_utc_timestamp(heartbeat.get("wall_utc"))
+        note = heartbeat.get("note")
+        heartbeat_counters = heartbeat.get("counters")
+        if (
+            heartbeat.get("index") != index
+            or monotonic_s is None
+            or monotonic_s < 0
+            or wall_utc is None
+            or wall_utc < started
+            or wall_utc > finished
+            or not isinstance(note, str)
+            or not note
+            or len(note) > 128
+            or heartbeat.get("source_digest") != expected_source_digest
+            or not isinstance(heartbeat_counters, dict)
+            or not _valid_supervised_counters(heartbeat_counters)
+            or heartbeat.get("prev_chain") != running_chain.hex()
+        ):
+            return False
+        if index == 1:
+            if note != "overlay_start" or monotonic_s > _SOAK_SETUP_BIAS_MAX_SECONDS:
+                return False
+            if any(heartbeat_counters[key] != 0 for key in _SUPERVISED_COUNTER_KEYS):
+                return False
+            setup_bias = (wall_utc - started).total_seconds() - monotonic_s
+            if (
+                setup_bias < -_SOAK_WALL_MONO_ALIGN_TOLERANCE_SECONDS
+                or setup_bias > _SOAK_SETUP_BIAS_MAX_SECONDS
+            ):
+                return False
+        elif setup_bias is None or abs(
+            (wall_utc - started).total_seconds() - monotonic_s - setup_bias
+        ) > _SOAK_WALL_MONO_ALIGN_TOLERANCE_SECONDS:
+            return False
+        if any(
+            heartbeat_counters[key] < prior_counters[key] for key in _SUPERVISED_COUNTER_KEYS
+        ):
+            return False
+        if prior_monotonic is not None:
+            gap = monotonic_s - prior_monotonic
+            if gap < 0 or gap > gap_limit + 0.5:
+                return False
+            computed_max_gap = max(computed_max_gap, gap)
+        if prior_wall is not None and wall_utc < prior_wall:
+            return False
+        if prior_wall is not None and prior_monotonic is not None:
+            wall_gap = (wall_utc - prior_wall).total_seconds()
+            if abs(wall_gap - (monotonic_s - prior_monotonic)) > (
+                _SOAK_WALL_MONO_ALIGN_TOLERANCE_SECONDS
+            ):
+                return False
+        canonical = {
+            field: heartbeat[field] for field in _SUPERVISED_HEARTBEAT_FIELDS if field != "chain"
+        }
+        running_chain = hashlib.sha256(
+            json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).digest()
+        if heartbeat.get("chain") != running_chain.hex():
+            return False
+        prior_monotonic = monotonic_s
+        prior_wall = wall_utc
+        prior_counters = dict(heartbeat_counters)
+
+    cleanup_seconds = (
+        (finished - prior_wall).total_seconds() if prior_wall is not None else math.inf
+    )
+    return not (
+        prior_monotonic is None
+        or prior_monotonic < duration - _SOAK_COVERAGE_TOLERANCE_SECONDS
+        or cleanup_seconds < -_SOAK_WALL_MONO_ALIGN_TOLERANCE_SECONDS
+        or cleanup_seconds > _SOAK_FINAL_CLEANUP_MAX_SECONDS
+        or prior_counters != counters
+        or data.get("chain_root") != running_chain.hex()
+        or not _is_lower_sha256(data.get("chain_root"))
+        or abs(round(computed_max_gap, 3) - declared_max_gap) > 0.001
+    )
+
+
+def _valid_supervised_soak_artifact(
+    *,
+    root: Path,
+    evidence_dir: Path,
+    path: Path,
+    expected_source_digest: str,
+) -> bool:
+    resolved_evidence = evidence_dir.resolve()
+    expected_path = resolved_evidence / _SUPERVISED_SOAK_COMBINED_RELATIVE
+    core_raw_path = resolved_evidence / _SUPERVISED_SOAK_CORE_RAW_RELATIVE
+    overlay_raw_path = resolved_evidence / _SUPERVISED_SOAK_OVERLAY_RAW_RELATIVE
+    if path.resolve() != expected_path or not all(
+        _is_single_link_regular_file(candidate)
+        for candidate in (expected_path, core_raw_path, overlay_raw_path)
+    ):
+        return False
+    try:
+        combined = strict_load_object(expected_path)
+        overlay_raw = strict_load_object(overlay_raw_path)
+    except (OSError, ValueError, StrictJSONError):
+        return False
+    if set(combined) != _SUPERVISED_COMBINED_FIELDS:
+        return False
+    claimed_combined_sha = combined.get("combined_sha256")
+    unsigned_combined = {
+        key: value for key, value in combined.items() if key != "combined_sha256"
+    }
+    actual_combined_sha = hashlib.sha256(
+        json.dumps(
+            unsigned_combined,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    duration = _safe_finite_float(combined.get("duration_seconds"))
+    elapsed = _safe_finite_float(combined.get("elapsed_seconds"))
+    started = _parse_utc_timestamp(combined.get("started_utc"))
+    finished = _parse_utc_timestamp(combined.get("finished_utc"))
+    current_metadata = release_source_surface_metadata_fingerprint(root.resolve())
+    if (
+        combined.get("schema_version") != _SUPERVISED_SOAK_SCHEMA_VERSION
+        or combined.get("ok") is not True
+        or not _is_lower_sha256(claimed_combined_sha)
+        or not hmac.compare_digest(str(claimed_combined_sha), actual_combined_sha)
+        or duration != 3600.0
+        or elapsed is None
+        or elapsed < duration - _SOAK_COVERAGE_TOLERANCE_SECONDS
+        or started is None
+        or finished is None
+        or finished < started
+        or (finished - started).total_seconds()
+        < duration - _SOAK_COVERAGE_TOLERANCE_SECONDS
+        or combined.get("source_digest") != expected_source_digest
+        or release_source_digest(root.resolve()) != expected_source_digest
+        or combined.get("metadata_fingerprint") != current_metadata
+        or not _is_lower_sha256(current_metadata)
+    ):
+        return False
+
+    core = combined.get("core")
+    overlay = combined.get("overlay")
+    if (
+        not isinstance(core, dict)
+        or set(core) != _SUPERVISED_CORE_FIELDS
+        or core.get("exit_code") != 0
+        or core.get("ok") is not True
+        or not _is_lower_sha256(core.get("raw_sha256"))
+        or core.get("raw_sha256") != _sha256_file(core_raw_path)
+        or not isinstance(overlay, dict)
+        or set(overlay) != _SUPERVISED_OVERLAY_SUMMARY_FIELDS
+        or overlay.get("exit_code") != 0
+        or overlay.get("ok") is not True
+        or not _is_lower_sha256(overlay.get("raw_sha256"))
+        or overlay.get("raw_sha256") != _sha256_file(overlay_raw_path)
+    ):
+        return False
+    if not _valid_echo_live_acceptance(root.resolve(), core_raw_path):
+        return False
+    if not _valid_supervised_overlay_report(
+        overlay_raw,
+        root=root.resolve(),
+        evidence_dir=resolved_evidence,
+        expected_source_digest=expected_source_digest,
+        expected_metadata_fingerprint=current_metadata,
+    ):
+        return False
+    overlay_summary_fields = _SUPERVISED_OVERLAY_SUMMARY_FIELDS - {
+        "exit_code",
+        "raw_sha256",
+    }
+    if any(overlay.get(field) != overlay_raw.get(field) for field in overlay_summary_fields):
+        return False
+    overlay_started = _parse_utc_timestamp(overlay_raw.get("started_utc"))
+    overlay_finished = _parse_utc_timestamp(overlay_raw.get("finished_utc"))
+    return bool(
+        overlay_started is not None
+        and overlay_finished is not None
+        and started <= overlay_started
+        and finished >= overlay_finished
+    )
+
+
 def _artifact_path_from_argv(
     argv: Sequence[str],
     spec: LocalGateSpec,
@@ -4806,6 +5381,8 @@ def _artifact_path_from_argv(
 ) -> Path | None:
     parser = spec.output_parse.parser
     argv_list = list(argv)
+    if spec.gate_name == "soak_3600" and parser == "soak_json":
+        return evidence_dir.resolve() / _SUPERVISED_SOAK_COMBINED_RELATIVE
     if parser in {"slo_json", "soak_json"}:
         flag = "--output"
     elif parser == "e2e_json":
@@ -4989,6 +5566,13 @@ def _valid_gate_artifact(
     if parser == "slo_json":
         return _valid_echo_slo_benchmark(artifact_path, root=root)
     if parser == "soak_json":
+        if spec.gate_name == "soak_3600":
+            return _valid_supervised_soak_artifact(
+                root=root,
+                evidence_dir=evidence_dir,
+                path=artifact_path,
+                expected_source_digest=source_digest,
+            )
         return _valid_echo_live_acceptance(root, artifact_path)
     if parser == "e2e_json":
         return _valid_isolated_venv_e2e(root, artifact_path)
@@ -5370,18 +5954,30 @@ def build_local_gate_specs(*, evidence_dir: Path) -> dict[str, LocalGateSpec]:
         ),
         "soak_3600": LocalGateSpec(
             gate_name="soak_3600",
+            # Parent-supervised Echo core soak + Tauri lifecycle overlay.
+            # Core still writes docs/security/ECHO_LIVE_ACCEPTANCE.json for soak_json.
             argv=(
                 ".venv/bin/python",
                 "-u",
-                "scripts/echo_live_acceptance.py",
+                "scripts/run_supervised_soak.py",
                 "--duration-seconds",
                 "3600",
                 "--concurrency",
                 "2",
                 "--output",
                 f"{_REPO_ROOT_TOKEN}/docs/security/ECHO_LIVE_ACCEPTANCE.json",
+                "--evidence-dir",
+                _EVIDENCE_DIR_TOKEN,
+                "--app-path",
+                f"{_EVIDENCE_DIR_TOKEN}/desktop-build/artifacts/JS Agent.app",
+                "--harness-path",
+                f"{_EVIDENCE_DIR_TOKEN}/harness/JS Agent UI Test Harness.app",
             ),
-            coverage_scope=("scripts/echo_live_acceptance.py",),
+            coverage_scope=(
+                "scripts/run_supervised_soak.py",
+                "scripts/echo_live_acceptance.py",
+                "desktop/tests/harness/",
+            ),
             output_parse=LocalGateOutputParseRules(parser="soak_json", stderr_must_be_empty=True),
         ),
         "isolated_venv_e2e": LocalGateSpec(
@@ -5421,6 +6017,33 @@ def build_local_gate_specs(*, evidence_dir: Path) -> dict[str, LocalGateSpec]:
             ),
             coverage_scope=("js/echo/ledger/release_gates.py",),
             output_parse=LocalGateOutputParseRules(parser="readiness_json"),
+        ),
+        "desktop_build": LocalGateSpec(
+            gate_name="desktop_build",
+            argv=(
+                ".venv/bin/python",
+                "scripts/run_desktop_build_gate.py",
+                "--evidence-dir",
+                _EVIDENCE_DIR_TOKEN,
+            ),
+            coverage_scope=("desktop/", "scripts/run_desktop_build_gate.py"),
+            output_parse=LocalGateOutputParseRules(parser="release_markers"),
+        ),
+        "tauri_webview_lifecycle": LocalGateSpec(
+            gate_name="tauri_webview_lifecycle",
+            argv=(
+                ".venv/bin/python",
+                "scripts/run_tauri_webview_gate.py",
+                "--evidence-dir",
+                _EVIDENCE_DIR_TOKEN,
+                "--app-path",
+                f"{_EVIDENCE_DIR_TOKEN}/desktop-build/artifacts/JS Agent.app",
+            ),
+            coverage_scope=(
+                "desktop/src-tauri/",
+                "scripts/run_tauri_webview_gate.py",
+            ),
+            output_parse=LocalGateOutputParseRules(parser="release_markers"),
         ),
     }
     for index, output_path in enumerate(slo_output, start=1):
@@ -5549,6 +6172,9 @@ REQUIRED_FINAL_LOCAL_GATES: tuple[str, ...] = (
     "soak_3600",
     "isolated_venv_e2e",
     "release_smoke",
+    # Desktop build and real Tauri WebView lifecycle must pass for product readiness.
+    "desktop_build",
+    "tauri_webview_lifecycle",
     # Audit after soak/e2e so Internal release ready reflects live acceptance.
     "echo_full_audit",
     "strict_readiness",
@@ -5561,6 +6187,8 @@ _INDEPENDENT_GATE_RECEIPTS: frozenset[str] = frozenset(
         "pytest_full_not_playwright",
         "pytest_work",
         "pytest_playwright",
+        "desktop_build",
+        "tauri_webview_lifecycle",
     }
 )
 
@@ -5570,6 +6198,7 @@ class FinalLocalGateEvidenceReport:
     all_local_gates_passed: bool
     passed_gates: tuple[str, ...]
     blockers: tuple[str, ...]
+    product_internal_ready: bool = False
 
 
 def snapshot_final_gate_inputs(root: Path, evidence_dir: Path) -> dict[str, object]:
@@ -5641,6 +6270,162 @@ def _sha256_file(path: Path) -> str | None:
         return None
 
 
+def _valid_desktop_release_bindings(
+    parse_result: object,
+    *,
+    gate_name: str,
+    root: Path,
+    evidence_dir: Path,
+    expected_source_digest: str,
+) -> bool:
+    if gate_name not in {"desktop_build", "tauri_webview_lifecycle"}:
+        return True
+    if not isinstance(parse_result, dict):
+        return False
+    payload = parse_result.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    bindings = payload.get("bindings")
+    expected_fields = (
+        _TAURI_RELEASE_BINDING_FIELDS
+        if gate_name == "tauri_webview_lifecycle"
+        else _DESKTOP_RELEASE_BINDING_FIELDS
+    )
+    if not isinstance(bindings, dict) or set(bindings) != expected_fields:
+        return False
+
+    manifest_path = evidence_dir.resolve() / "desktop-build/manifest.json"
+    app_path = evidence_dir.resolve() / "desktop-build/artifacts/JS Agent.app"
+    executable = app_path / "Contents/MacOS/js-agent-desktop"
+    try:
+        from desktop.build_driver import _sha256_tree, verify_manifest
+
+        if verify_manifest(manifest_path, repo_root=root.resolve()):
+            return False
+        manifest = strict_load_object(manifest_path)
+        artifacts = manifest.get("artifacts")
+        if not isinstance(artifacts, dict):
+            return False
+        rust_main = artifacts.get("rust_main")
+        app_tree = artifacts.get("app_tree")
+        if not isinstance(rust_main, dict) or not isinstance(app_tree, dict):
+            return False
+        if (
+            manifest.get("source_digest") != expected_source_digest
+            or rust_main.get("path") != "artifacts/JS Agent.app/Contents/MacOS/js-agent-desktop"
+            or app_tree.get("path") != "artifacts/JS Agent.app"
+        ):
+            return False
+        actual_app_sha = _sha256_file(executable)
+        actual_tree_sha = _sha256_tree(app_path)
+        actual_manifest_sha = _sha256_file(manifest_path)
+        import plistlib
+
+        info = plistlib.loads((app_path / "Contents/Info.plist").read_bytes())
+    except (OSError, RuntimeError, TypeError, ValueError, StrictJSONError):
+        return False
+    actual = {
+        "desktop_manifest_sha256": actual_manifest_sha,
+        "app_tree_sha256": actual_tree_sha,
+        "app_sha256": actual_app_sha,
+    }
+    if (
+        info.get("CFBundleIdentifier") != "com.titan.js-agent"
+        or info.get("CFBundleExecutable") != "js-agent-desktop"
+        or rust_main.get("sha256") != actual_app_sha
+        or app_tree.get("sha256") != actual_tree_sha
+        or any(
+            not isinstance(value, str)
+            or not hmac.compare_digest(value, str(bindings.get(field, "")))
+            for field, value in actual.items()
+        )
+    ):
+        return False
+    if gate_name == "desktop_build":
+        return True
+
+    result_path = evidence_dir.resolve() / "tauri-webview/result.json"
+    harness_path = (
+        evidence_dir.resolve()
+        / "harness/JS Agent UI Test Harness.app/Contents/MacOS/js-agent-ui-test-harness"
+    )
+    try:
+        result = strict_load_object(result_path)
+        from scripts.run_tauri_webview_gate import (
+            _RESULT_FIELDS,
+            EXPECTED_BUNDLE_IDENTIFIER,
+            RESULT_SCHEMA_VERSION,
+            _trusted_harness_hash,
+            _valid_scenarios,
+        )
+
+        result_sha = _sha256_file(result_path)
+        harness_sha = _trusted_harness_hash(
+            harness_bundle=harness_path.parent.parent.parent,
+            harness_exec=harness_path,
+            repo_root=root.resolve(),
+        )
+    except (OSError, ValueError, StrictJSONError):
+        return False
+    if (
+        set(result) != _RESULT_FIELDS
+        or result.get("schema_version") != RESULT_SCHEMA_VERSION
+        or result.get("ok") is not True
+        or result.get("status") != "passed"
+        or result.get("accessibility_authorized") is not True
+        or result.get("bundle_identifier") != EXPECTED_BUNDLE_IDENTIFIER
+        or result.get("app_sha256") != actual_app_sha
+        or result.get("app_tree_sha256") != actual_tree_sha
+        or result.get("desktop_manifest_sha256") != actual_manifest_sha
+        or result.get("harness_sha256") != harness_sha
+        or not _valid_scenarios(result.get("scenarios"))
+        or result_sha != bindings.get("result_sha256")
+        or harness_sha != bindings.get("harness_sha256")
+    ):
+        return False
+    nonce = result.get("nonce")
+    started = _parse_utc_timestamp(result.get("started_utc"))
+    finished = _parse_utc_timestamp(result.get("finished_utc"))
+    return bool(
+        isinstance(nonce, str)
+        and re.fullmatch(r"[0-9a-f]{64}", nonce)
+        and started is not None
+        and finished is not None
+        and started <= finished
+    )
+
+
+_RECEIPT_REQUIRED_KEYS: frozenset[str] = frozenset(
+    {
+        "schema_version",
+        "gate_spec_version",
+        "gate_name",
+        "argv",
+        "normalized_argv",
+        "coverage_scope",
+        "output_parse",
+        "toolchain",
+        "toolchain_lock_sha256",
+        "toolchain_before",
+        "toolchain_after",
+        "parse_result",
+        "cwd",
+        "evidence_dir",
+        "start_utc",
+        "end_utc",
+        "duration_seconds",
+        "source_digest_before",
+        "source_digest_after",
+        "exit_code",
+        "stdout_path",
+        "stderr_path",
+        "stdout_sha256",
+        "stderr_sha256",
+        "passed",
+    }
+)
+
+
 def _valid_local_gate_receipt(
     receipt: object,
     *,
@@ -5661,6 +6446,17 @@ def _valid_local_gate_receipt(
         return False
     spec = gate_spec or get_local_gate_spec(gate_name, evidence_dir=evidence_dir)
     if spec is None or spec.gate_name != gate_name:
+        return False
+    # Closed-set key validation: reject receipts with unknown fields.
+    required_keys = _RECEIPT_REQUIRED_KEYS.copy()
+    artifact_sha = receipt.get("artifact_sha256")
+    if artifact_sha is not None:
+        required_keys = required_keys | {"artifact_sha256"}
+    if receipt.get("source_drift") is True:
+        required_keys = required_keys | {"source_drift"}
+    if receipt.get("toolchain_drift") is True:
+        required_keys = required_keys | {"toolchain_drift"}
+    if set(receipt.keys()) != required_keys:
         return False
     coverage_scope = receipt.get("coverage_scope")
     if coverage_scope != list(spec.coverage_scope):
@@ -5844,6 +6640,14 @@ def _valid_local_gate_receipt(
         return False
     if expected_parse_result.get("ok") is not True:
         return False
+    if not _valid_desktop_release_bindings(
+        expected_parse_result,
+        gate_name=gate_name,
+        root=root,
+        evidence_dir=evidence_dir,
+        expected_source_digest=expected_source_digest,
+    ):
+        return False
     if spec.output_parse.parser == "readiness_json":
         payload = expected_parse_result.get("payload")
         if not isinstance(payload, dict):
@@ -5940,6 +6744,20 @@ def validate_final_local_gate_evidence(
         if gate_name not in receipts_by_gate:
             blockers.append(f"{gate_name}:receipt_missing")
 
+    # Envelope time-ordering: no receipt may finish after the envelope is generated.
+    envelope_path = resolved_evidence / "MANIFEST.envelope.json"
+    if envelope_path.is_file():
+        try:
+            envelope = strict_load_object(envelope_path)
+            envelope_time = _parse_utc_timestamp(envelope.get("generated_utc"))
+        except (OSError, json.JSONDecodeError, StrictJSONError, ValueError):
+            envelope_time = None
+        if envelope_time is not None:
+            for gate_name, payload in receipts_by_gate.items():
+                receipt_end = _parse_utc_timestamp(payload.get("end_utc"))
+                if receipt_end is not None and receipt_end > envelope_time:
+                    blockers.append(f"{gate_name}:receipt_after_envelope")
+
     readiness = verify_release_readiness(
         root,
         require_audit_reports=False,
@@ -5960,10 +6778,16 @@ def validate_final_local_gate_evidence(
     blockers = list(dict.fromkeys(blockers))
     required_passed = all(gate in passed for gate in REQUIRED_FINAL_LOCAL_GATES)
     all_local_gates_passed = required_passed and not blockers
+    # product_internal_ready requires Echo internal_ready AND desktop build AND
+    # real Tauri WebView lifecycle. This prevents echo_internal_ready from
+    # producing a false-green for the desktop product.
+    desktop_ready = "desktop_build" in passed and "tauri_webview_lifecycle" in passed
+    product_internal_ready = all_local_gates_passed and readiness.internal_ready and desktop_ready
     return FinalLocalGateEvidenceReport(
         all_local_gates_passed=all_local_gates_passed,
         passed_gates=tuple(passed),
         blockers=tuple(blockers),
+        product_internal_ready=product_internal_ready,
     )
 
 

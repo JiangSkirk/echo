@@ -35,6 +35,27 @@ _SAFE_ENV_KEYS = frozenset(
     }
 )
 
+# Bounded scan for nested repositories: noisy dependency directories are
+# skipped and both depth and result count are capped so building the sandbox
+# profile stays cheap even on huge workspaces.
+_GIT_SCAN_SKIP_DIRS = frozenset({"node_modules", ".venv", ".echo-tmp"})
+_GIT_SCAN_MAX_DEPTH = 6
+_GIT_SCAN_MAX_ENTRIES = 128
+# Path-shaped writers whose positional args must not name a ``.git``
+# component.  Interpreters (python/node/...) are excluded: their argv
+# can mention ``.git`` in a script without planting metadata.
+_GIT_METADATA_FS_WRITE_COMMANDS = frozenset(
+    {
+        "cp",
+        "install",
+        "mkdir",
+        "mv",
+        "rm",
+        "tee",
+        "touch",
+    }
+)
+
 
 @dataclass(frozen=True)
 class SandboxResult:
@@ -143,6 +164,11 @@ class SandboxExecutor:
         self._has_sandbox_exec = shutil.which("sandbox-exec") is not None
         self._has_unshare = shutil.which("unshare") is not None
         self._has_bwrap = shutil.which("bwrap") is not None
+        # Lazily probed once per executor: git env overrides that neutralize
+        # repo-level config execution hooks (core.hooksPath / core.fsmonitor /
+        # diff.external / core.pager / core.editor / core.sshCommand /
+        # core.gitProxy / credential.helper). ``None`` means "not probed yet".
+        self._git_env_overrides: dict[str, str] | None = None
 
     def network_isolation_available(self) -> bool:
         """Return whether the current platform has an enforced network backend."""
@@ -156,6 +182,30 @@ class SandboxExecutor:
         system = platform.system()
         return (system == "Darwin" and self._has_sandbox_exec) or (
             system == "Linux" and self._has_bwrap
+        )
+
+    def _reject_if_new_git_metadata(
+        self,
+        result: SandboxResult,
+        snapshot: tuple[tuple[Path, ...], tuple[Path, ...]] | None,
+    ) -> SandboxResult:
+        """Fail closed if the command planted a ``.git`` tree mid-invocation.
+
+        Linux bwrap can only ro-bind ``.git`` paths that existed at wrap
+        time.  Interpreters are excluded from argv ``.git`` token scans, so
+        a CODE skill could otherwise leave host-executing git metadata.
+        """
+        if snapshot is None:
+            return result
+        planted = _purge_new_git_components(self.workspace, snapshot)
+        if not planted:
+            return result
+        return SandboxResult(
+            returncode=-1,
+            stdout="",
+            stderr="Sandbox rejected newly created .git metadata: " + ", ".join(planted[:8]),
+            duration_ms=result.duration_ms,
+            killed=True,
         )
 
     def _build_env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -175,9 +225,7 @@ class SandboxExecutor:
         if homebrew_bin.is_dir():
             trusted_path_dirs.append(homebrew_bin)
         trusted_path_dirs.extend(executable.parent for executable in self._trusted_executables)
-        env["PATH"] = os.pathsep.join(
-            dict.fromkeys(str(path) for path in trusted_path_dirs)
-        )
+        env["PATH"] = os.pathsep.join(dict.fromkeys(str(path) for path in trusted_path_dirs))
         # HOME is a sandbox-private directory, never the real user home and
         # never the workspace root itself, so dotfiles/ssh/agent config under
         # the host HOME cannot leak into (or be written by) sandboxed runs.
@@ -192,7 +240,90 @@ class SandboxExecutor:
         temp_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(temp_dir, 0o700)
         env["TMPDIR"] = str(temp_dir)
+        env.update(self._git_sandbox_env_overrides())
         return env
+
+    def _git_sandbox_env_overrides(self) -> dict[str, str]:
+        """Env overrides that neutralize repo-level git config execution hooks.
+
+        The sandbox-private HOME already hides ``~/.gitconfig``, but a repo
+        inside the workspace can still carry a hostile ``.git/config``
+        (``core.hooksPath``, ``core.fsmonitor``, ``diff.external``,
+        ``core.pager``, ``core.editor``, ``core.sshCommand``, ``core.gitProxy``,
+        ``credential.helper``) that an innocent-looking ``git status`` would
+        execute.  Injecting fixed ``GIT_CONFIG_*`` environment pairs overrides
+        the on-disk values.
+        """
+        if self._git_env_overrides is None:
+            self._git_env_overrides = self._probe_git_env_overrides()
+        return dict(self._git_env_overrides)
+
+    def _probe_git_env_overrides(self) -> dict[str, str]:
+        """Build the git override set, gated on git >= 2.31.
+
+        ``GIT_CONFIG_NOSYSTEM`` / ``GIT_CONFIG_GLOBAL`` / the
+        ``GIT_CONFIG_COUNT``+``GIT_CONFIG_KEY_n``/``GIT_CONFIG_VALUE_n``
+        mechanism all require git 2.31+.  Older or missing git keeps the
+        previous behavior (no injection) — fail-open here means status quo,
+        with the OS sandbox still containing any hook that does fire.
+        GIT_CONFIG_COUNT must exactly match the number of KEY/VALUE pairs or
+        every git invocation errors out, so the pairs are built from one list.
+        """
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["git", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return {}
+        version = self._parse_git_version(result.stdout)
+        if version is None or version < (2, 31):
+            logger.info(
+                "git >= 2.31 not found (detected: %s); sandbox git config overrides disabled",
+                result.stdout.strip() or "unavailable",
+            )
+            return {}
+
+        forced_pairs = [
+            # Repo hooks (pre-commit et al.) never execute inside the sandbox.
+            ("core.hooksPath", os.devnull),
+            # A repo-configured fsmonitor hook command must not run on status.
+            ("core.fsmonitor", ""),
+            # A repo-configured external diff driver must not run on diff.
+            ("diff.external", ""),
+            # A repo-configured pager/editor must never spawn inside the sandbox.
+            ("core.pager", ""),
+            ("core.editor", ""),
+            # Repo-configured rebase -i editor / mergetool must not run either.
+            ("sequence.editor", ""),
+            ("merge.tool", ""),
+            # Repo-configured SSH/proxy wrappers must not run on fetch/clone.
+            ("core.sshCommand", ""),
+            ("core.gitProxy", ""),
+            # Repo-configured credential helpers must not run (credential theft).
+            ("credential.helper", ""),
+        ]
+        overrides: dict[str, str] = {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_COUNT": str(len(forced_pairs)),
+        }
+        for index, (key, value) in enumerate(forced_pairs):
+            overrides[f"GIT_CONFIG_KEY_{index}"] = key
+            overrides[f"GIT_CONFIG_VALUE_{index}"] = value
+        return overrides
+
+    @staticmethod
+    def _parse_git_version(text: str) -> tuple[int, int] | None:
+        """Parse ``git version 2.39.3 (Apple Git-145)`` into ``(2, 39)``."""
+        match = re.search(r"(\d+)\.(\d+)", text)
+        if match is None:
+            return None
+        return int(match.group(1)), int(match.group(2))
 
     def _sandbox_temp_dir(self) -> Path:
         """Private temp directory shared by every sandboxed run."""
@@ -261,8 +392,7 @@ class SandboxExecutor:
         system = platform.system()
         if system == "Darwin" and self._has_sandbox_exec:
             read_rules = "\n".join(
-                f'            (subpath "{_sandbox_profile_path(path)}")'
-                for path in read_only_paths
+                f'            (subpath "{_sandbox_profile_path(path)}")' for path in read_only_paths
             )
             traversal_rules = "\n".join(
                 f'            (literal "{_sandbox_profile_path(path)}")'
@@ -281,6 +411,42 @@ class SandboxExecutor:
                 sandbox_tmp=_sandbox_profile_path(self._sandbox_temp_dir()),
                 extra_read_paths=extra_read_paths,
             )
+            # R3-2: never let the sandboxed process write the workspace's
+            # .git tree — a planted hook or core.fsmonitor config would
+            # execute OUTSIDE the sandbox on the host's next git invocation.
+            # SBPL evaluates later rules first, so this trailing deny wins
+            # over the broad workspace write allow above.
+            profile += (
+                '\n(deny file-write* (subpath "'
+                + _sandbox_profile_path(self.workspace / ".git")
+                + '"))\n'
+            )
+            # R3-2 extended: the root-only deny left nested repositories
+            # (e.g. sub/.git/config) writable for the same host-executing
+            # plant attack, so deny every .git component found under the
+            # workspace (bounded walk).  These trailing denies keep the
+            # later-rule-wins ordering over the workspace write allow.
+            git_dirs, git_files = _workspace_git_components(self.workspace)
+            for nested_git_dir in git_dirs:
+                profile += (
+                    '\n(deny file-write* (subpath "'
+                    + _sandbox_profile_path(nested_git_dir)
+                    + '"))\n'
+                )
+            for nested_git_file in git_files:
+                profile += (
+                    '\n(deny file-write* (literal "'
+                    + _sandbox_profile_path(nested_git_file)
+                    + '"))\n'
+                )
+            # Snapshot subpath/literal denies only cover `.git` trees that
+            # already exist when the profile is built.  A same-invocation
+            # ``mkdir nested/.git && mv cfg nested/.git/config`` (or tar
+            # extract) would otherwise plant host-executing git metadata.
+            # This trailing regex matches any `.git` component under the
+            # workspace, including directories created mid-command.
+            profile += _macos_deny_any_git_write_rule(self.workspace)
+            profile += _macos_deny_runtime_tcb_write_rules(self.workspace)
             return [
                 "sandbox-exec",
                 "-p",
@@ -321,10 +487,31 @@ class SandboxExecutor:
                     "--setenv",
                     "HOME",
                     str(self._sandbox_home_dir()),
-                    "--",
-                    *cmd,
                 )
             )
+            # R3-2: remount every .git component under the workspace read-only
+            # (root and nested repositories, directories and gitfiles alike)
+            # so a sandboxed process cannot plant hooks/config that would
+            # execute on the host's next git invocation.  The ro-binds must
+            # come after the rw workspace bind to take precedence on Linux.
+            git_dirs, git_files = _workspace_git_components(self.workspace)
+            for git_component in (*git_dirs, *git_files):
+                if git_component.exists():
+                    wrapped.extend(("--ro-bind", str(git_component), str(git_component)))
+            from js.security.runtime_tcb import (
+                workspace_tcb_allow_targets,
+                workspace_tcb_deny_targets,
+            )
+
+            for tcb_path, _is_dir in workspace_tcb_deny_targets(self.workspace):
+                if tcb_path.exists():
+                    wrapped.extend(("--ro-bind", str(tcb_path), str(tcb_path)))
+            # Later binds win: re-open dogfood static as writable after the
+            # package-wide read-only remount.
+            for allow_path, _is_dir in workspace_tcb_allow_targets(self.workspace):
+                if allow_path.exists():
+                    wrapped.extend(("--bind", str(allow_path), str(allow_path)))
+            wrapped.extend(("--", *cmd))
             return wrapped
         # Fail-closed: when strict isolation is required, block execution
         if self.strict_isolation:
@@ -355,12 +542,11 @@ class SandboxExecutor:
     ) -> SandboxResult:
         """Execute a command in sandboxed environment."""
         import time
+
         start_time = time.monotonic()
         effective_timeout = timeout if timeout is not None else self.timeout
 
-        normalized_read_paths, read_path_error = self._normalize_read_only_paths(
-            read_only_paths
-        )
+        normalized_read_paths, read_path_error = self._normalize_read_only_paths(read_only_paths)
         if read_path_error is not None:
             return SandboxResult(
                 returncode=-1,
@@ -401,6 +587,8 @@ class SandboxExecutor:
                 duration_ms=(time.monotonic() - start_time) * 1000,
                 killed=True,
             )
+
+        git_snapshot = _workspace_git_components(self.workspace) if fs_restricted else None
 
         if isinstance(command, str):
             # Use shell for complex commands, but carefully
@@ -460,9 +648,7 @@ class SandboxExecutor:
             proc = await asyncio.create_subprocess_exec(*cmd, **popen_kwargs)
 
             if self.max_memory_mb > 0:
-                memory_task = asyncio.create_task(
-                    self._monitor_memory(proc, self.max_memory_mb)
-                )
+                memory_task = asyncio.create_task(self._monitor_memory(proc, self.max_memory_mb))
 
             # Concurrent bounded readers: cap retained bytes, keep draining pipes
             # so a chatty child cannot block on a full pipe buffer.
@@ -515,13 +701,16 @@ class SandboxExecutor:
 
             duration_ms = (time.monotonic() - start_time) * 1000
 
-            return SandboxResult(
-                returncode=returncode,
-                stdout=stdout,
-                stderr=stderr,
-                duration_ms=duration_ms,
-                killed=killed,
-                oom_killed=oom_killed,
+            return self._reject_if_new_git_metadata(
+                SandboxResult(
+                    returncode=returncode,
+                    stdout=stdout,
+                    stderr=stderr,
+                    duration_ms=duration_ms,
+                    killed=killed,
+                    oom_killed=oom_killed,
+                ),
+                git_snapshot,
             )
 
         except Exception as e:
@@ -529,12 +718,15 @@ class SandboxExecutor:
             if proc is not None:
                 self._kill_process_tree(proc)
                 await self._reap_process(proc)
-            return SandboxResult(
-                returncode=-1,
-                stdout="",
-                stderr=f"Execution error: {e}",
-                duration_ms=duration_ms,
-                killed=True,
+            return self._reject_if_new_git_metadata(
+                SandboxResult(
+                    returncode=-1,
+                    stdout="",
+                    stderr=f"Execution error: {e}",
+                    duration_ms=duration_ms,
+                    killed=True,
+                ),
+                git_snapshot,
             )
         finally:
             # No task/process leaks on normal, timeout, or exception paths.
@@ -715,11 +907,23 @@ class SandboxExecutor:
             for child in children:
                 try:
                     child.terminate()
-                except (psutil.NoSuchProcess, psutil.AccessDenied, PermissionError, OSError, psutil.Error):
+                except (
+                    psutil.NoSuchProcess,
+                    psutil.AccessDenied,
+                    PermissionError,
+                    OSError,
+                    psutil.Error,
+                ):
                     pass
             try:
                 parent.terminate()
-            except (psutil.NoSuchProcess, psutil.AccessDenied, PermissionError, OSError, psutil.Error):
+            except (
+                psutil.NoSuchProcess,
+                psutil.AccessDenied,
+                PermissionError,
+                OSError,
+                psutil.Error,
+            ):
                 pass
             # Wait briefly, then force kill
             try:
@@ -727,7 +931,13 @@ class SandboxExecutor:
                 for p in alive:
                     try:
                         p.kill()
-                    except (psutil.NoSuchProcess, psutil.AccessDenied, PermissionError, OSError, psutil.Error):
+                    except (
+                        psutil.NoSuchProcess,
+                        psutil.AccessDenied,
+                        PermissionError,
+                        OSError,
+                        psutil.Error,
+                    ):
                         pass
             except (psutil.Error, OSError):
                 pass
@@ -750,6 +960,8 @@ class SandboxExecutor:
     ) -> str | None:
         if not fs_restricted:
             return None
+        from js.security.runtime_tcb import token_is_runtime_tcb_write
+
         if isinstance(command, str):
             try:
                 tokens = shlex.split(command)
@@ -760,7 +972,32 @@ class SandboxExecutor:
         if not tokens:
             return None
 
-        read_command_names = {"cat", "head", "tail", "less", "more", "grep", "sed", "awk"}
+        read_command_names = {
+            "cat",
+            "head",
+            "tail",
+            "less",
+            "more",
+            "grep",
+            "rg",
+            "sed",
+            "awk",
+            "ls",
+            "stat",
+            "du",
+            "file",
+            "readlink",
+            # Remaining allowlisted readers: every positional path they take is
+            # checked against the workspace too (metadata/content probes).
+            "cut",
+            "diff",
+            "jq",
+            "sort",
+            "test",
+            "tr",
+            "uniq",
+            "wc",
+        }
         write_command_names = {
             "cp",
             "install",
@@ -775,6 +1012,10 @@ class SandboxExecutor:
             "tee",
             "touch",
         }
+        # Interpreters stay in write_command_names (their argv may embed
+        # paths) but are not scanned for a `.git` path component: a
+        # ``python -c`` snippet that merely mentions ``.git`` is not a
+        # filesystem plant.  Path-shaped write commands are.
         shell_command_names = {"bash", "sh", "zsh"}
         redirects = {">", ">>", "1>", "1>>", "2>", "2>>", "&>"}
         command_name = Path(tokens[0]).name
@@ -792,10 +1033,23 @@ class SandboxExecutor:
             )
             if nested_rejection is not None:
                 return nested_rejection
+        if command_name == "git" and not self._git_sandbox_env_overrides():
+            return "git denied: sandbox git config overrides unavailable (git >= 2.31 required)"
         should_check_positional_paths = command_name in read_command_names | write_command_names
         for idx, token in enumerate(tokens):
             if token in {"<", "--"} | redirects:
                 continue
+            # sh expands $'...' / $"..." and $-prefixed shapes after shlex has
+            # already stripped the quotes, so an absolute path can hide behind
+            # `$/...` or `$\x..` (ANSI-C hex); ${VAR:-/abs/path} parameter
+            # expansion smuggles one inside an ordinary-looking token.  Reject
+            # every expandable shape that can resolve outside the workspace;
+            # plain $VAR references (starting with a letter/underscore) stay
+            # allowed.
+            if token.startswith(("$/", "$\\", "$'", '$"')) or "${" in token:
+                return f"Filesystem restricted command denied expandable path: {token}"
+            if command_name in _GIT_METADATA_FS_WRITE_COMMANDS and "$" in token:
+                return f"Filesystem restricted command denied expandable path: {token}"
             if idx == 0 and not should_check_positional_paths:
                 continue
             if idx == 0 and self._is_trusted_executable(token):
@@ -803,12 +1057,17 @@ class SandboxExecutor:
             if token.startswith("-"):
                 continue
             previous = tokens[idx - 1] if idx > 0 else ""
-            if (
-                not should_check_positional_paths
-                and idx > 0
-                and previous not in {"<"} | redirects
-            ):
+            if not should_check_positional_paths and idx > 0 and previous not in {"<"} | redirects:
                 continue
+            if _token_has_git_metadata_component(token) and (
+                command_name in _GIT_METADATA_FS_WRITE_COMMANDS or previous in redirects
+            ):
+                return f"Filesystem restricted command denied write into .git metadata: {token}"
+
+            if token_is_runtime_tcb_write(token, workspace=self.workspace) and (
+                command_name in _GIT_METADATA_FS_WRITE_COMMANDS or previous in redirects
+            ):
+                return f"Filesystem restricted command denied write into runtime TCB: {token}"
             if self._looks_outside_workspace(token, read_only_paths=read_only_paths):
                 return f"Filesystem restricted command denied path outside workspace: {token}"
         if command_name in write_command_names | shell_command_names:
@@ -835,9 +1094,7 @@ class SandboxExecutor:
         try:
             requested_path = Path(requested_cwd).expanduser()
             candidate = (
-                requested_path
-                if requested_path.is_absolute()
-                else self.workspace / requested_path
+                requested_path if requested_path.is_absolute() else self.workspace / requested_path
             )
             resolved = candidate.resolve()
             if not _path_is_within(resolved, self.workspace) and not any(
@@ -845,9 +1102,7 @@ class SandboxExecutor:
             ):
                 raise ValueError("cwd outside sandbox roots")
         except (OSError, RuntimeError, ValueError):
-            return None, (
-                f"Sandbox cwd denied: workspace={self.workspace} cwd={requested_cwd}"
-            )
+            return None, (f"Sandbox cwd denied: workspace={self.workspace} cwd={requested_cwd}")
         return resolved, None
 
     def _is_trusted_executable(self, token: str) -> bool:
@@ -857,10 +1112,7 @@ class SandboxExecutor:
             if not requested.is_absolute():
                 requested = self.workspace / requested
             workspace_venv = self.workspace / ".venv"
-            if (
-                requested == workspace_venv / "bin" / "python"
-                and not workspace_venv.is_symlink()
-            ):
+            if requested == workspace_venv / "bin" / "python" and not workspace_venv.is_symlink():
                 return True
             return requested.resolve() in self._trusted_executables
         except (OSError, RuntimeError):
@@ -930,6 +1182,49 @@ def _sandbox_profile_path(path: Path) -> str:
     return str(path).replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _token_has_git_metadata_component(token: str) -> bool:
+    """True when any path component is ``.git`` (case-insensitive)."""
+    if not token or token in {".", "-"}:
+        return False
+    normalized = os.path.normpath(token.replace("\\", "/"))
+    return any(part.casefold() == ".git" for part in normalized.split("/"))
+
+
+def _macos_deny_runtime_tcb_write_rules(workspace: Path) -> str:
+    """Trailing seatbelt: deny the whole package, then allow dogfood static.
+
+    SBPL evaluates later rules first, so the static allow must trail the
+    package deny, which itself trails the workspace write allow.
+    """
+    from js.security.runtime_tcb import workspace_tcb_allow_targets, workspace_tcb_deny_targets
+
+    rules: list[str] = []
+    for path, is_directory in workspace_tcb_deny_targets(workspace):
+        escaped = _sandbox_profile_path(path)
+        kind = "subpath" if is_directory else "literal"
+        rules.append(f'(deny file-write* ({kind} "{escaped}"))')
+    for path, is_directory in workspace_tcb_allow_targets(workspace):
+        escaped = _sandbox_profile_path(path)
+        kind = "subpath" if is_directory else "literal"
+        rules.append(f'(allow file-write* ({kind} "{escaped}"))')
+    if not rules:
+        return ""
+    return "\n" + "\n".join(rules) + "\n"
+
+
+def _macos_deny_any_git_write_rule(workspace: Path) -> str:
+    """SBPL regex denying writes to any ``.git`` component under workspace.
+
+    Snapshot subpath denies miss directories created in the same sandboxed
+    invocation.  The regex requires a path *component* named ``.git`` so
+    ``.github`` / ``foo.git`` stay writable.  Seatbelt regex is POSIX ERE
+    (no ``(?i)``); case-folding is enforced at the allowlist / fs-restriction
+    layer instead.
+    """
+    escaped = re.escape(str(workspace.resolve())).replace('"', '\\"')
+    return '(deny file-write* (regex #"^' + escaped + r'(/.*)?/\.git(/|$)"))' + "\n"
+
+
 def _sandbox_traversal_paths(roots: tuple[Path, ...]) -> tuple[Path, ...]:
     """Allow directory metadata needed to traverse to narrow readable roots."""
     paths: list[Path] = []
@@ -939,6 +1234,62 @@ def _sandbox_traversal_paths(roots: tuple[Path, ...]) -> tuple[Path, ...]:
                 continue
             paths.append(parent)
     return tuple(paths)
+
+
+def _workspace_git_components(workspace: Path) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    """Locate every ``.git`` directory and gitfile under the workspace.
+
+    The broad workspace write allow leaves nested repositories writable, so a
+    sandboxed process could plant hooks or a ``diff.external`` config that
+    later executes on the HOST when the user runs git in that directory.
+    Returns ``(git directories, gitfiles)``; the walk is bounded (noisy
+    dependency directories skipped, depth and result count capped) so a huge
+    workspace cannot stall sandbox profile construction.
+    """
+    git_dirs: list[Path] = []
+    git_files: list[Path] = []
+    root_depth = len(workspace.parts)
+    for dirpath, dirnames, filenames in os.walk(workspace):
+        current = Path(dirpath)
+        git_named_dirs = [name for name in dirnames if name.casefold() == ".git"]
+        for name in git_named_dirs:
+            git_dirs.append(current / name)
+            dirnames.remove(name)
+        git_named_files = [name for name in filenames if name.casefold() == ".git"]
+        for name in git_named_files:
+            git_files.append(current / name)
+        dirnames[:] = [name for name in dirnames if name not in _GIT_SCAN_SKIP_DIRS]
+        if len(current.parts) - root_depth >= _GIT_SCAN_MAX_DEPTH:
+            dirnames[:] = []
+        if len(git_dirs) + len(git_files) >= _GIT_SCAN_MAX_ENTRIES:
+            break
+    return tuple(git_dirs), tuple(git_files)
+
+
+def _purge_new_git_components(
+    workspace: Path,
+    before: tuple[tuple[Path, ...], tuple[Path, ...]],
+) -> tuple[str, ...]:
+    """Remove ``.git`` dirs/files that appeared after a sandboxed command."""
+    before_ids = {str(path.resolve()) for path in (*before[0], *before[1])}
+    after_dirs, after_files = _workspace_git_components(workspace)
+    planted: list[str] = []
+    for path in (*after_dirs, *after_files):
+        try:
+            resolved = str(path.resolve())
+        except OSError:
+            continue
+        if resolved in before_ids:
+            continue
+        planted.append(str(path))
+        try:
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+            elif path.is_dir():
+                shutil.rmtree(path)
+        except OSError:
+            planted[-1] = f"{path}:purge-failed"
+    return tuple(planted)
 
 
 def _embedded_absolute_paths(token: str) -> tuple[str, ...]:

@@ -58,20 +58,25 @@ def test_verify_wheel_uses_clean_venv_and_normal_dependency_install(
     assert "--no-index" not in install
 
     assert commands[3] == [str(venv_dir / "bin" / "js"), "--help"]
-    assert commands[4] == [str(venv_dir / "bin" / "js-work"), "--help"]
-    assert commands[5][:2] == [str(venv_dir / "bin" / "python"), "-c"]
-    import_check = commands[5][2]
+    assert commands[4] == [str(venv_dir / "bin" / "js"), "work", "--help"]
+    assert commands[5] == [str(venv_dir / "bin" / "js-work"), "--help"]
+    assert commands[6] == [str(venv_dir / "bin" / "python"), "-m", "js_work", "--help"]
+    assert commands[7][:2] == [str(venv_dir / "bin" / "python"), "-c"]
+    import_check = commands[7][2]
     assert "import js.echo" in import_check
     assert "import js_work.web" in import_check
     assert "js.rivetline" in import_check
     assert "js.agent_core" in import_check
 
-    for index, (_, kwargs) in enumerate(calls[:6]):
+    for index, (_, kwargs) in enumerate(calls[:8]):
         env = kwargs["env"]
         assert isinstance(env, dict)
         assert "PYTHONPATH" not in env
         assert "PIP_NO_INDEX" not in env
         assert "PIP_CONFIG_FILE" not in env
+        assert env["HOME"] == str(venv_dir)
+        assert env["XDG_CONFIG_HOME"] == str(venv_dir / ".config")
+        assert env["XDG_STATE_HOME"] == str(venv_dir / ".local" / "state")
         assert kwargs["cwd"] == (venv_dir.parent if index == 0 else venv_dir)
 
 

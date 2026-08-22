@@ -142,6 +142,10 @@ def test_echo_ledger_config_defaults_and_validation() -> None:
         EchoLedgerConfig(max_archives=0)
     with pytest.raises(ValidationError):
         EchoLedgerConfig(max_open_effects_per_tenant=0)
+    with pytest.raises(ValidationError):
+        EchoLedgerConfig(max_retired_artifact_refs_per_owner=0)
+    with pytest.raises(ValidationError):
+        EchoLedgerConfig(max_retired_artifact_bytes_per_owner=0)
 
 
 def test_open_effect_admission_is_bounded_per_tenant(tmp_path: Path) -> None:
@@ -677,10 +681,15 @@ def test_completed_session_partitions_are_retired_to_a_bounded_authenticated_che
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
 
     assert len(session_roots) == 3
-    assert checkpoint["schema_version"] == "echo-session-retention-v1"
+    assert checkpoint["schema_version"] == "echo-session-retention-v2"
     assert checkpoint["retired_count"] == 5
     assert checkpoint["compacted_count"] == 3
     assert len(checkpoint["receipts"]) == 2
+    assert checkpoint["legacy_unindexed_retired_count"] == 0
+    assert checkpoint["artifact_ref_count"] == 0
+    assert checkpoint["artifact_bytes"] == 0
+    assert checkpoint["artifact_catalog"] == []
+    assert checkpoint["pending_retirement"] is None
     assert checkpoint_path.stat().st_size < 16 * 1024
     assert stat.S_IMODE(owner_root.stat().st_mode) == 0o700
     assert stat.S_IMODE(checkpoint_path.stat().st_mode) == 0o600

@@ -73,4 +73,20 @@
 
 ---
 
-*最后更新：2026-06-04*
+## ⚫ 架构级遗留项（本轮安全审计明确不修，需专项设计）
+
+以下问题来自两轮安全审计，属于架构级取舍，无法以局部补丁修复；本轮记录但不改动：
+
+1. **Journal/lease ledger 截断回滚无外部锚点** —— Echo ledger 的截断（truncation）回滚仅依赖本地 MAC/hash 链，攻击者控制 state_dir 时可整体回滚到旧 tip 而不留证据。需要 tip seal 设计（外部锚点/单调计数器/签名检查点）才能闭合。
+2. **LeaseAuthority 账本 O(n²) 无 compaction** —— 每次校验都重放全量 JSONL 账本，租约量增长后校验成本平方级上升。需要 compaction/快照机制（与 tip seal 一并设计）。
+3. **os_sandbox 内存监控只看直接子进程 RSS** —— 孙进程脱离监控，进程组级内存合计未实现。需要按进程组/cgroup 聚合记账。
+4. **parser 与 `_fs_restricted_rejection` 双引擎语义不统一** —— shell 命令 AST 解析（js/security/parser.py）与文件系统受限拒绝路径各自实现一套判断，边界案例语义可能分叉。需要收敛到单一判定引擎或显式约定职责边界。
+5. **skills 签名自签即 TRUSTED** —— 当前 Ed25519 签名验证只确认"持有私钥"，自签名技能也被视为 TRUSTED。需要可信 key registry（可信公钥目录 + 轮换/吊销）才有实际约束力。
+6. **shell allowlist 层未逐 flag 覆盖 git 的写文件选项** —— 如 `git log --output=<path>` 在 allowlist 层放行，真实拦截依赖 OS 沙箱（sandbox-exec deny-default / bwrap 空命名空间），已实证无法写工作区外。若未来允许无 OS 沙箱运行（strict_isolation 放开），需补齐。
+7. **code.py 黑名单是纵深防御而非边界** —— asyncio/multiprocessing/http 等模块仍可导入（如 `loop.run_until_complete` 可触达 asyncio 子进程 API），真实边界是 OS 沙箱（无网络、fs deny-default、strict_isolation fail-closed）。pickle/_pickle/marshal/shelve 已封堵（反序列化即代码执行，纯 Python 层可确认 RCE）。
+8. **bwrap 下 `.git` 只读重挂载只在包装时 `.git` 已存在时生效** —— macOS profile 的路径 deny 无此限制；Linux 上沙箱内新建 `.git` 树理论上仍可写（需要工作区原本不是 git 仓库且用户之后在其中跑 git，场景牵强）。彻底闭合需 bwrap 对路径不存在的挂载点做占位 deny。
+9. **红队残余低危项（R3）** —— 稳态下 `/docs`、`/redoc`、`/openapi.json` 无认证暴露 API 结构（信息泄露）；user 角色密钥可翻转 setup 的 onboarding 状态标志（不触及密钥签发，reset 有 admin 卡控）。
+
+---
+
+*最后更新：2026-08-19*

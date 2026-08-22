@@ -16,9 +16,12 @@ from typing import Any
 from js.config import ToolLimits
 from js.echo.turn_context import current_runtime_context
 from js.security.guard import BehaviorGuard, SecurityDecisionType
+from js.security.runtime_tcb import runtime_tcb_write_error
 from js.tools.registry import ToolParam, ToolResult, ToolSpec
 
 _CODE_SEARCH_INCOMPLETE_METADATA = {"matches": 0, "truncated": False, "complete": False}
+
+_GIT_METADATA_COMPONENT = ".git"
 
 
 def _cancel_requested(token: Any) -> bool:
@@ -127,6 +130,35 @@ class FileTools:
     def _logical_path(self, path: str) -> Path:
         return self.workspace / self._relative_path(path)
 
+    def _reject_git_metadata_write(self, path: str) -> None:
+        """Fail closed when a write/delete targets the workspace ``.git`` tree.
+
+        Repository metadata (hooks, config, refs) must never be mutated through
+        the file tools: a hostile ``.git/config`` or hook would execute on the
+        host's next git invocation.  Reads stay allowed.  The lexical check is
+        safe because the dir_fd walk below opens every component with
+        ``O_NOFOLLOW``, so a ``.git`` component cannot be a symlink decoy.
+        The comparison is case-insensitive (``casefold``) because the default
+        macOS/Windows filesystems resolve ``.GIT`` onto ``.git``; on
+        case-sensitive filesystems this merely over-blocks a lookalike name,
+        which is the fail-closed direction.
+        """
+        relative = self._relative_path(path)
+        if _GIT_METADATA_COMPONENT in (part.casefold() for part in relative.parts):
+            raise ValueError(f"Workspace .git metadata cannot be modified: {path}")
+
+    def _reject_runtime_tcb_write(self, path: str) -> None:
+        """Fail closed when a write/delete targets the installed ``js/`` package.
+
+        Only applies when the workspace contains the live package (dogfood).
+        ``js/web/static/`` is the sole write exception; everything else under
+        the package is TCB.
+        """
+        logical = self.workspace / self._relative_path(path)
+        error = runtime_tcb_write_error(logical, workspace=self.workspace)
+        if error is not None:
+            raise ValueError(error)
+
     @contextmanager
     def _open_secure_parent(
         self,
@@ -185,6 +217,8 @@ class FileTools:
         return metadata
 
     def _secure_write(self, path: str, payload: bytes, *, append: bool) -> Path:
+        self._reject_git_metadata_write(path)
+        self._reject_runtime_tcb_write(path)
         with self._open_secure_parent(path, create_parents=True) as (
             parent_fd,
             name,
@@ -237,13 +271,13 @@ class FileTools:
         )
         return text, logical
 
-    def _secure_read_text_detailed(
+    def _secure_read_bytes(
         self,
         path: str,
         *,
         max_bytes: int,
-    ) -> tuple[str, Path, int, bool]:
-        """Read text and report actual bytes plus whether the size stayed stable."""
+    ) -> tuple[bytes, Path, int, bool]:
+        """Read bytes via dir_fd and report size stability."""
         with self._open_secure_parent(path, create_parents=False) as (
             parent_fd,
             name,
@@ -278,12 +312,17 @@ class FileTools:
             and after.st_ino == before.st_ino
             and after.st_dev == before.st_dev
         )
-        return (
-            b"".join(chunks).decode("utf-8", errors="replace"),
-            logical,
-            total,
-            stable,
-        )
+        return b"".join(chunks), logical, total, stable
+
+    def _secure_read_text_detailed(
+        self,
+        path: str,
+        *,
+        max_bytes: int,
+    ) -> tuple[str, Path, int, bool]:
+        """Read text and report actual bytes plus whether the size stayed stable."""
+        payload, logical, total, stable = self._secure_read_bytes(path, max_bytes=max_bytes)
+        return payload.decode("utf-8", errors="replace"), logical, total, stable
 
     @contextmanager
     def _open_secure_directory(self, path: str) -> Iterator[tuple[int, Path]]:
@@ -626,6 +665,8 @@ class FileTools:
             decision = self.guard.check_path_operation(str(logical), "delete")
             if decision.decision == SecurityDecisionType.BLOCK:
                 return ToolResult(success=False, error=decision.reason)
+            self._reject_git_metadata_write(path)
+            self._reject_runtime_tcb_write(path)
             with self._open_secure_parent(path, create_parents=False) as (
                 parent_fd,
                 name,
@@ -785,23 +826,6 @@ class FileTools:
             return await asyncio.to_thread(_view)
         except Exception as e:
             return ToolResult(success=False, error=str(e))
-
-    def _tree_lines(self, root: Path, current: Path, prefix: str = "") -> list[str]:
-        """Recursively build directory tree lines."""
-        lines: list[str] = []
-        rel = current.relative_to(root)
-        name = current.name if rel != Path(".") else "."
-        if current.is_dir():
-            lines.append(f"{prefix}{name}/")
-            children = sorted(current.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-            for i, child in enumerate(children):
-                is_last = i == len(children) - 1
-                child_prefix = prefix + ("    " if is_last else "│   ")
-                lines.extend(self._tree_lines(root, child, child_prefix))
-        else:
-            size = current.stat().st_size
-            lines.append(f"{prefix}{name} ({size} bytes)")
-        return lines
 
     async def code_search(
         self,

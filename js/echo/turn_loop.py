@@ -471,7 +471,12 @@ class EchoTurnLoop:
         cancel_token = runtime_context.cancel_token
         if not isinstance(cancel_token, asyncio.Event):
             raise EchoUnavailableError("turn setup requires an asyncio cancellation token")
-        agent._cancel_tokens[self.partition_key] = (cancel_token, state.run_id, owner)
+        agent._cancel_tokens[self.partition_key] = (
+            cancel_token,
+            state.run_id,
+            owner,
+            self.session_id,
+        )
 
         # Track session lifecycle
         try:
@@ -562,11 +567,22 @@ class EchoTurnLoop:
                         _capsule_meta = {k: v for k, v in capsule.items() if k != "capsule_text"}
                         if capsule_text:
                             capsule_decision = agent.guard.check_tool_result(capsule_text)
-                            if capsule_decision.decision != SecurityDecisionType.ALLOW:
+                            if capsule_decision.decision == SecurityDecisionType.BLOCK:
                                 agent.logger.warning(
                                     "Dropping unsafe session capsule",
                                     extra={
                                         "session": self.session_id,
+                                        "reason": capsule_decision.reason,
+                                    },
+                                )
+                                agent.audit.log(
+                                    AuditEventType.SECURITY_ALERT,
+                                    self.session_id,
+                                    state.run_id,
+                                    "agent",
+                                    "capsule_scan",
+                                    {
+                                        "decision": capsule_decision.decision.value,
                                         "reason": capsule_decision.reason,
                                     },
                                 )
@@ -750,7 +766,7 @@ class EchoTurnLoop:
         state = self.state
         cancel_entry = agent._cancel_tokens.get(self.partition_key)
         if cancel_entry is not None:
-            cancel_event, token_run_id, _ = cancel_entry
+            cancel_event, token_run_id, _ = cancel_entry[:3]
             # Only honour the cancel token if it belongs to the current run
             if token_run_id == state.run_id and cancel_event.is_set():
                 state.status = "cancelled"
@@ -901,6 +917,7 @@ class EchoTurnLoop:
     async def _run_loop(self) -> None:
         agent = self.agent
         state = self.state
+        empty_response_retries = 0
         while state.turn_count < agent.settings.max_turns:
             self._reserve_echo_budget()
             # Heartbeat: keep session alive
@@ -935,23 +952,27 @@ class EchoTurnLoop:
 
                 # Check if done
                 # Local models occasionally return finish_reason="stop" with
-                # empty content. Treat this as a model failure and retry (up
-                # to max_turns) rather than silently completing.
+                # empty content. Treat this as a model failure and retry with an
+                # independent empty-response budget (not the full max_turns).
                 if not response.tool_calls and (
                     not response.content or not response.content.strip()
                 ):
                     self._record_response(response, append_message=False)
+                    empty_response_retries += 1
                     agent.logger.warning(
                         f"Model returned empty content "
-                        f"(finish_reason={response.finish_reason}), retrying"
+                        f"(finish_reason={response.finish_reason}), "
+                        f"retry {empty_response_retries}/"
+                        f"{agent.settings.max_empty_response_retries}"
                     )
-                    if state.turn_count >= agent.settings.max_turns:
+                    if empty_response_retries >= agent.settings.max_empty_response_retries:
                         state.status = "error"
                         state.error_message = "Model returned empty response after maximum retries"
                         break
                     continue
 
                 self._record_response(response)
+                empty_response_retries = 0
 
                 if not response.tool_calls:
                     state.status = "completed"
@@ -994,9 +1015,7 @@ class EchoTurnLoop:
             tools_schema = _echo_tool_schema_subset(
                 self.user_input,
                 tools_schema,
-                allow_exec_tools=bool(
-                    getattr(agent.settings.security, "echo_exec_tools", False)
-                ),
+                allow_exec_tools=bool(getattr(agent.settings.security, "echo_exec_tools", False)),
             )
             if len(tools_schema) != original_tool_count:
                 state.compression_stats["echo_tool_schema"] = {
@@ -1994,6 +2013,12 @@ class EchoTurnLoop:
         )
         if remaining <= 0:
             raise EchoBudgetExceededError("Echo budget exceeded: completion_tokens_exceeded")
+        get_model_config = getattr(self.agent.router, "get_model_config", None)
+        if callable(get_model_config):
+            model_cfg = get_model_config(self.model or "")
+            model_cap = getattr(model_cfg, "max_tokens", None) if model_cfg is not None else None
+            if isinstance(model_cap, int) and model_cap > 0:
+                remaining = min(remaining, model_cap)
         return remaining
 
 

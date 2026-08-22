@@ -139,11 +139,23 @@ class TestConnectors:
         watch = tmp_path / "watch"
         watch.mkdir()
         (watch / "note.md").write_text("# Note\n\nContent")
-        c = FileConnector(ConnectorConfig(extra={"watch_dir": str(watch), "patterns": ["*.md"]}))
+        # tmp_path lives under /var (macOS) or /tmp (Linux) — both forbidden
+        # watch roots now that blocklist entries are compared resolved.  Bypass
+        # the constructor guard here to exercise fetch() itself.
+        c = FileConnector(ConnectorConfig(extra={"patterns": ["*.md"]}))
+        c.watch_dir = watch
         result = await c.fetch()
         assert result.source == "file"
         assert len(result.items) == 1
         assert result.items[0]["title"] == "note"
+
+    def test_file_connector_rejects_symlinked_forbidden_alias(self) -> None:
+        # /etc is a symlink to /private/etc on macOS; the unresolved alias must
+        # still be rejected because blocklist entries are compared resolved.
+        resolved = str(Path("/etc").resolve())
+        assert resolved in FileConnector._FORBIDDEN_WATCH_ROOTS
+        c = FileConnector(ConnectorConfig(extra={"watch_dir": "/etc"}))
+        assert c.watch_dir == Path(".")
 
     @pytest.mark.asyncio
     async def test_health_checks(self) -> None:

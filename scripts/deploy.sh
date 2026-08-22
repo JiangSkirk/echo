@@ -53,24 +53,24 @@ else
     echo "  ✅ 虚拟环境已存在，跳过"
 fi
 
-# 3. 安装 uv（如果可用则优先使用）
+# 3. 安装依赖（uv 钉版本 + uv sync --frozen，与 scripts/install.sh 对齐）
 echo ""
 echo "[3/5] 安装依赖..."
 source "$VENV_DIR/bin/activate"
 
-# 尝试安装 uv（更快）
+UV_PINNED_VERSION="0.11.24"
 if ! command -v uv &> /dev/null; then
-    echo "  正在安装 uv (Python 包管理加速器)..."
-    pip install uv --quiet 2>/dev/null || true
+    echo "  正在安装 uv==$UV_PINNED_VERSION (Python 包管理加速器，钉版本)..."
+    pip install "uv==$UV_PINNED_VERSION" --quiet
 fi
 
-if command -v uv &> /dev/null; then
-    echo "  使用 uv 安装 (更快)..."
-    uv pip install -e "$PROJECT_DIR"
-else
-    echo "  使用 pip 安装..."
-    pip install -e "$PROJECT_DIR"
+if [ ! -f "$PROJECT_DIR/uv.lock" ]; then
+    echo "  ❌ 缺少 uv.lock；无法执行冻结依赖安装"
+    exit 1
 fi
+
+echo "  使用 uv sync --frozen (冻结锁文件)..."
+(cd "$PROJECT_DIR" && uv sync --frozen)
 echo "  ✅ 依赖安装完成"
 
 # 4. 一键配置
@@ -92,9 +92,11 @@ cat > "$LAUNCH_SCRIPT" << 'EOF'
 set -e
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$PROJECT_DIR/.venv/bin/activate"
+HOST="${HOST:-127.0.0.1}"
+PORT="${PORT:-8000}"
 echo "Starting JS Agent Web UI..."
-echo "Open http://localhost:8000 in your browser"
-js web --host 0.0.0.0 --port 8000
+echo "Open http://${HOST}:${PORT} in your browser"
+js web --host "$HOST" --port "$PORT"
 EOF
 chmod +x "$LAUNCH_SCRIPT"
 echo "  ✅ 启动脚本已创建: $LAUNCH_SCRIPT"

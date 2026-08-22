@@ -112,7 +112,12 @@ class TestScenarioAPI:
         assert res.status_code == 404
 
     def test_start_scenario(self, client: TestClient) -> None:
-        res = client.post("/api/scenarios/code-review/start")
+        # Same-origin browser headers: state-changing endpoints now require the
+        # Origin/Host check even for the anonymous guest (anti-CSRF).
+        res = client.post(
+            "/api/scenarios/code-review/start",
+            headers={"Host": "localhost", "Origin": "http://localhost"},
+        )
         assert res.status_code == 200
         data = res.json()
         assert data["success"] is True

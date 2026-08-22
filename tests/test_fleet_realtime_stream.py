@@ -247,6 +247,40 @@ class TestFleetRealtimeEvents:
             assert frame["agent_role"] == "worker"
             assert frame["task_id"] == "t1"
 
+        identities = {
+            (frame["request_id"], frame["turn_id"], frame["session_id"])
+            for frame in received
+        }
+        assert len(identities) == 1
+        assert all(identities.pop())
+
+    async def test_direct_worker_executions_do_not_share_generated_identity(self) -> None:
+        fleet = _make_fleet()
+        received: list[dict[str, Any]] = []
+
+        async def collect(event: dict[str, Any]) -> None:
+            received.append(event)
+
+        fleet.on_event(collect)
+        task_a = Task(id="task-a", description="first", role_hint=AgentRole("worker"))
+        task_b = Task(id="task-b", description="second", role_hint=AgentRole("worker"))
+
+        await asyncio.gather(
+            fleet._execute_single(task_a, _worker(_ScriptedAgent(), name="a")),
+            fleet._execute_single(task_b, _worker(_ScriptedAgent(), name="b")),
+        )
+
+        identities_by_task = {
+            task_id: {
+                (event["request_id"], event["turn_id"], event["session_id"])
+                for event in received
+                if event.get("task_id") == task_id
+            }
+            for task_id in ("task-a", "task-b")
+        }
+        assert all(len(identities) == 1 for identities in identities_by_task.values())
+        assert identities_by_task["task-a"] != identities_by_task["task-b"]
+
     async def test_thinking_delta_emits_agent_thinking_live(self) -> None:
         fleet = _make_fleet()
         received: list[dict[str, Any]] = []

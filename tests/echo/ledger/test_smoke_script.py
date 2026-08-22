@@ -111,10 +111,17 @@ def test_echo_long_context_provider_payload_contains_expected_bounded_markers_on
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    import js.web.auth as auth_mod
     import scripts.echo_architecture_benchmark as benchmark
 
     captured_messages = []
     original_chat = benchmark.DeterministicProvider.chat
+    sentinel_origins = {"http://sentinel.example"}
+    sentinel_origins_env = "http://sentinel.example"
+    monkeypatch.setenv("JS_ECHO_ENGINE", "sentinel-engine")
+    monkeypatch.setenv("JS_ALLOWED_ORIGINS", sentinel_origins_env)
+    monkeypatch.setattr(auth_mod, "_ALLOWED_ORIGINS", sentinel_origins)
+    monkeypatch.setattr(auth_mod, "_ALLOWED_ORIGINS_ENV", sentinel_origins_env)
 
     async def capture_chat(self, messages, model, tools=None, temperature=0.7, max_tokens=None):
         captured_messages.append(list(messages))
@@ -129,12 +136,14 @@ def test_echo_long_context_provider_payload_contains_expected_bounded_markers_on
 
     monkeypatch.setattr(benchmark.DeterministicProvider, "chat", capture_chat)
 
-    result = benchmark._run_api_full_agent(
-        tmp_path,
-        benchmark.MODES[0],
-        iterations=1,
-        warmup=0,
-    )
+    mode = benchmark.MODES[0]
+    with benchmark._isolated_benchmark_environment(mode):
+        result = benchmark._run_api_full_agent(
+            tmp_path,
+            mode,
+            iterations=1,
+            warmup=0,
+        )
 
     assert captured_messages, result["failures"]
     observed = Counter(
@@ -156,17 +165,23 @@ def test_echo_long_context_provider_payload_contains_expected_bounded_markers_on
 
     assert result["failures"] == []
     assert observed == expected
+    assert os.environ["JS_ECHO_ENGINE"] == "sentinel-engine"
+    assert os.environ["JS_ALLOWED_ORIGINS"] == sentinel_origins_env
+    assert auth_mod._ALLOWED_ORIGINS is sentinel_origins
+    assert sentinel_origins_env == auth_mod._ALLOWED_ORIGINS_ENV
 
 
 def test_echo_benchmark_router_consumes_runtime_model_permits(tmp_path: Path) -> None:
     import scripts.echo_architecture_benchmark as benchmark
 
-    result = benchmark._run_api_short_agent(
-        tmp_path,
-        benchmark.MODES[0],
-        iterations=1,
-        warmup=0,
-    )
+    mode = benchmark.MODES[0]
+    with benchmark._isolated_benchmark_environment(mode):
+        result = benchmark._run_api_short_agent(
+            tmp_path,
+            mode,
+            iterations=1,
+            warmup=0,
+        )
 
     assert result["provider_chat_calls"] == 1
     assert result["failures"] == []
@@ -175,18 +190,21 @@ def test_echo_benchmark_router_consumes_runtime_model_permits(tmp_path: Path) ->
 def test_echo_long_context_prompt_tokens_exceed_short_context(tmp_path: Path) -> None:
     import scripts.echo_architecture_benchmark as benchmark
 
-    long_result = benchmark._run_api_full_agent(
-        tmp_path / "long",
-        benchmark.MODES[0],
-        iterations=1,
-        warmup=0,
-    )
-    short_result = benchmark._run_api_short_agent(
-        tmp_path / "short",
-        benchmark.MODES[0],
-        iterations=1,
-        warmup=0,
-    )
+    mode = benchmark.MODES[0]
+    with benchmark._isolated_benchmark_environment(mode):
+        long_result = benchmark._run_api_full_agent(
+            tmp_path / "long",
+            mode,
+            iterations=1,
+            warmup=0,
+        )
+    with benchmark._isolated_benchmark_environment(mode):
+        short_result = benchmark._run_api_short_agent(
+            tmp_path / "short",
+            mode,
+            iterations=1,
+            warmup=0,
+        )
 
     assert long_result["prompt_tokens"]["p50"] > short_result["prompt_tokens"]["p50"]
 
@@ -196,12 +214,14 @@ def test_echo_fake_provider_records_long_context_marker_and_payload_digests(
 ) -> None:
     import scripts.echo_architecture_benchmark as benchmark
 
-    result = benchmark._run_api_full_agent(
-        tmp_path,
-        benchmark.MODES[0],
-        iterations=1,
-        warmup=0,
-    )
+    mode = benchmark.MODES[0]
+    with benchmark._isolated_benchmark_environment(mode):
+        result = benchmark._run_api_full_agent(
+            tmp_path,
+            mode,
+            iterations=1,
+            warmup=0,
+        )
 
     evidence = result.get("provider_payload_evidence")
     assert isinstance(evidence, list)
@@ -229,12 +249,14 @@ def test_echo_long_context_gate_rejects_missing_and_foreign_markers(
     }
     monkeypatch.setattr(benchmark, "_benchmark_history", lambda: corrupted)
 
-    result = benchmark._run_api_full_agent(
-        tmp_path,
-        benchmark.MODES[0],
-        iterations=1,
-        warmup=0,
-    )
+    mode = benchmark.MODES[0]
+    with benchmark._isolated_benchmark_environment(mode):
+        result = benchmark._run_api_full_agent(
+            tmp_path,
+            mode,
+            iterations=1,
+            warmup=0,
+        )
 
     assert any("history markers" in failure for failure in result["failures"])
 
@@ -344,12 +366,14 @@ def test_echo_ws_stream_timing_records_send_to_first_text_and_terminal(
     probe = getattr(benchmark, "_run_ws_stream_timing_probe", None)
     assert callable(probe), "benchmark lacks a provider-cadence WS timing probe"
 
-    result = probe(
-        tmp_path,
-        benchmark.MODES[0],
-        iterations=2,
-        warmup=0,
-    )
+    mode = benchmark.MODES[0]
+    with benchmark._isolated_benchmark_environment(mode):
+        result = probe(
+            tmp_path,
+            mode,
+            iterations=2,
+            warmup=0,
+        )
 
     assert result.get("provider_stream_event_calls") == 2
     assert result.get("configured_cadence_ms") == {
@@ -387,12 +411,14 @@ def test_echo_ws_stream_timing_has_bounded_consumer_disconnect_and_terminal_prob
 
     probe = getattr(benchmark, "_run_ws_stream_timing_probe", None)
     assert callable(probe), "benchmark lacks bounded WS resilience probes"
-    result = probe(
-        tmp_path,
-        benchmark.MODES[0],
-        iterations=1,
-        warmup=0,
-    )
+    mode = benchmark.MODES[0]
+    with benchmark._isolated_benchmark_environment(mode):
+        result = probe(
+            tmp_path,
+            mode,
+            iterations=1,
+            warmup=0,
+        )
 
     resilience = result.get("resilience")
     assert isinstance(resilience, dict)

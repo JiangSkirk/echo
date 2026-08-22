@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from js.echo.ledger.release_gates import (
+    _ISOLATED_VENV_E2E_REQUIRED_STEPS,
     _ISOLATED_VENV_E2E_SCHEMA_VERSION,
     _valid_isolated_venv_e2e,
 )
@@ -21,13 +22,22 @@ from tests.test_isolated_product_e2e_round85 import _valid_payload
 
 
 def test_round87_e2e_schema_and_import_provenance() -> None:
-    assert _ISOLATED_VENV_E2E_SCHEMA_VERSION == "isolated-venv-e2e-v7"
-    assert ISOLATED_VENV_E2E_SCHEMA_VERSION == "isolated-venv-e2e-v7"
+    assert _ISOLATED_VENV_E2E_SCHEMA_VERSION == "isolated-venv-e2e-v8"
+    assert ISOLATED_VENV_E2E_SCHEMA_VERSION == "isolated-venv-e2e-v8"
     assert "file_sha256" in IMPORT_CHECK
     assert "site_packages" in IMPORT_CHECK
 
 
-def test_summary_requires_all_eighteen_step_receipts(tmp_path: Path) -> None:
+def test_release_gate_requires_all_work_cli_entries_for_both_artifacts() -> None:
+    required = {
+        f"{kind}: CLI {entry} --help"
+        for kind in ("wheel", "sdist")
+        for entry in ("js work", "js-work", "python -m js_work")
+    }
+    assert set(_ISOLATED_VENV_E2E_REQUIRED_STEPS) >= required
+
+
+def test_summary_requires_all_twenty_two_step_receipts(tmp_path: Path) -> None:
     summary = {
         "schema_version": ISOLATED_VENV_E2E_SCHEMA_VERSION,
         "offline": True,
@@ -42,7 +52,7 @@ def test_summary_requires_all_eighteen_step_receipts(tmp_path: Path) -> None:
         "results": [],
     }
     errors = _validate_summary_schema(summary)
-    assert "results must contain exactly 18 steps" in errors
+    assert "results must contain exactly 22 steps" in errors
 
 
 def _write(path: Path, payload: dict[str, object]) -> None:

@@ -53,18 +53,33 @@ def test_docker_copies_declared_runtime_packages_before_install() -> None:
     install_index = next(
         index
         for index, (instruction, arguments) in enumerate(instructions)
-        if instruction == "RUN" and "pip install" in arguments
+        if instruction == "RUN" and ("pip install" in arguments or "uv sync" in arguments)
     )
     copied_sources = {
         source
         for instruction, arguments in instructions[:install_index]
-        if instruction == "COPY"
+        if instruction == "COPY" and "--from=" not in arguments
         for source in _copy_sources(arguments)
     }
     missing_packages = sorted(package for package in packages if not _is_copied(package, copied_sources))
     assert not missing_packages, (
         "Docker image installs the project before copying declared runtime packages: "
         f"{missing_packages}"
+    )
+
+    # The wheel build force-includes resources/tokenizer; the Dockerfile must
+    # COPY it before the install or the image build fails outright.
+    force_includes = set(
+        project["tool"]["hatch"]["build"]["targets"]["wheel"].get("force-include", {})
+    )
+    missing_includes = sorted(
+        source
+        for source in force_includes
+        if not _is_copied(source, copied_sources)
+    )
+    assert not missing_includes, (
+        "Docker image installs the project before copying force-included paths: "
+        f"{missing_includes}"
     )
 
     entry_module = scripts["js-work"].partition(":")[0]

@@ -41,7 +41,6 @@ were removed.
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from difflib import unified_diff
@@ -164,8 +163,8 @@ def _make_chat_app() -> Any:
     app = FastAPI()
     app.include_router(chat_router)
     settings = JSSettings(
-        workspace=Path("/tmp/echo_replay_chat"),
-        state_dir=Path("/tmp/echo_replay_chat"),
+        workspace=Path("/tmp/echo_replay_chat/workspace"),
+        state_dir=Path("/tmp/echo_replay_chat/state"),
         security=SecurityConfig(api_key_required=False),
     )
     patch("js.web.server._settings", settings).start()
@@ -173,12 +172,12 @@ def _make_chat_app() -> Any:
     return app
 
 
-def _build_ws_app() -> Any:
+def _build_ws_app(monkeypatch: pytest.MonkeyPatch) -> Any:
     """Build the full ``create_app()`` with lifespan stubbed; pin Origin allowlist."""
-    os.environ["JS_ALLOWED_ORIGINS"] = "http://localhost"
+    monkeypatch.setenv("JS_ALLOWED_ORIGINS", "http://localhost")
     import js.web.auth as _auth_mod
 
-    _auth_mod._ALLOWED_ORIGINS = None
+    monkeypatch.setattr(_auth_mod, "_ALLOWED_ORIGINS", None)
 
     @asynccontextmanager
     async def _noop_lifespan(_app: Any) -> AsyncIterator[None]:
@@ -196,8 +195,8 @@ def _patch_ws_globals(agent: MagicMock, *, api_key_required: bool = False) -> li
     from js.config import JSSettings, SecurityConfig
 
     settings = JSSettings(
-        workspace=Path("/tmp/echo_replay_ws"),
-        state_dir=Path("/tmp/echo_replay_ws"),
+        workspace=Path("/tmp/echo_replay_ws/workspace"),
+        state_dir=Path("/tmp/echo_replay_ws/state"),
         security=SecurityConfig(api_key_required=api_key_required),
     )
     agent.settings = settings
@@ -337,7 +336,7 @@ def test_api_chat_golden_replay(monkeypatch: pytest.MonkeyPatch, scenario: str) 
         # depend on the caller's identity.
         from js.web.auth import AuthManager
 
-        user_key = AuthManager(Path("/tmp/echo_replay_chat")).create_key(
+        user_key = AuthManager(Path("/tmp/echo_replay_chat/state")).create_key(
             "golden-replay", role="user"
         )
         request_headers.setdefault("X-API-Key", user_key)
@@ -475,7 +474,7 @@ def test_ws_golden_replay(monkeypatch: pytest.MonkeyPatch, scenario: str) -> Non
 
     api_key_required = bool(mock_cfg.get("api_key_required", False))
 
-    app = _build_ws_app()
+    app = _build_ws_app(monkeypatch)
     agent = _make_ws_agent(scenario)
     patchers = _patch_ws_globals(agent, api_key_required=api_key_required)
 
@@ -497,7 +496,15 @@ def test_ws_golden_replay(monkeypatch: pytest.MonkeyPatch, scenario: str) -> Non
                 close_code = exc.code
                 close_reason = getattr(exc, "reason", None)
         else:
-            with client.websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+            from js.web.auth import AuthManager
+
+            user_key = AuthManager(Path(agent.settings.state_dir)).create_key(
+                "golden-ws", role="user"
+            )
+            with client.websocket_connect(
+                "/ws",
+                headers={"Origin": "http://localhost", "X-API-Key": user_key},
+            ) as ws:
                 for frame in inp["frames_in"]:
                     ws.send_json(frame)
                 for _ in range(_WS_EXPECTED_FRAMES[scenario]):
@@ -513,10 +520,21 @@ def test_ws_golden_replay(monkeypatch: pytest.MonkeyPatch, scenario: str) -> Non
     )
 
     # 2. Per-frame deep equality
+    stream_identity: tuple[str, str, str, str] | None = None
+    identity_keys = ("request_id", "turn_id", "run_id", "session_id")
     for i, (exp_frame, act_frame) in enumerate(
         zip(expected["frames_out"], frames_out, strict=True)
     ):
-        _assert_equal(f"{scenario}.frames_out[{i}]", exp_frame, act_frame)
+        if scenario in {"ws_message", "ws_stream_success", "ws_stream_error"}:
+            identity = tuple(str(act_frame.get(key) or "") for key in identity_keys)
+            assert all(identity), f"{scenario}.frames_out[{i}] missing stream identity"
+            if stream_identity is None:
+                stream_identity = identity
+            else:
+                assert identity == stream_identity
+        projected = {key: act_frame[key] for key in exp_frame}
+        _assert_equal(f"{scenario}.frames_out[{i}]", exp_frame, projected)
+        assert set(act_frame).difference(exp_frame).issubset(identity_keys)
 
     # 3. Close-code (only ws_auth_fail asserts these)
     if scenario == "ws_auth_fail":

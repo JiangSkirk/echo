@@ -71,15 +71,24 @@ class AutoFetchOrchestrator:
                 continue
             if not src_cfg.get("enabled", False):
                 continue
+            # R4-B: fail closed on legacy plaintext credentials
+            legacy_api_key = src_cfg.get("api_key", "")
+            legacy_token = src_cfg.get("token", "")
+            legacy_credentials_path = src_cfg.get("credentials_path", "")
+            if legacy_api_key or legacy_token or legacy_credentials_path:
+                raise ValueError(
+                    "legacy connector credentials require explicit migration to vault_ref"
+                )
             cfg = ConnectorConfig(
                 enabled=True,
                 poll_interval_minutes=src_cfg.get("poll_interval_minutes", self.config.poll_interval_minutes),
                 max_items_per_fetch=src_cfg.get("max_items_per_fetch", 50),
                 mock_mode=src_cfg.get("mock_mode", False),
-                api_key=src_cfg.get("api_key", ""),
+                api_key="",
                 base_url=src_cfg.get("base_url", ""),
-                token=src_cfg.get("token", ""),
-                credentials_path=src_cfg.get("credentials_path", ""),
+                token="",
+                credentials_path="",
+                vault_ref=src_cfg.get("vault_ref", ""),
                 extra=src_cfg.get("extra", {}),
             )
             self._connectors.append(cls(cfg))

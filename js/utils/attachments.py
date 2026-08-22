@@ -9,6 +9,15 @@ from js.utils.log import get_logger
 
 logger = get_logger("js.core.attachments")
 
+# Fail-closed extraction limits for hostile or oversized attachments.
+MAX_PDF_PAGES = 200
+MAX_EXCEL_ROWS = 10_000
+MAX_EXCEL_TEXT_BYTES = 5 * 1024 * 1024  # 5 MB of accumulated cell text
+
+
+class AttachmentLimitError(ValueError):
+    """Raised when attachment content exceeds an extraction safety limit."""
+
 
 def format_size(size_bytes: int) -> str:
     """Format byte size to human-readable string."""
@@ -30,7 +39,11 @@ def _rewind(source: Path | BinaryIO) -> None:
 
 
 def extract_pdf_text(path: Path | BinaryIO) -> str:
-    """Best-effort PDF-to-text extraction."""
+    """Best-effort PDF-to-text extraction.
+
+    Fail-closed: raises :class:`AttachmentLimitError` when the document exceeds
+    ``MAX_PDF_PAGES`` pages instead of silently truncating.
+    """
     try:
         from pypdf import PdfReader
     except ImportError as _e:
@@ -38,12 +51,19 @@ def extract_pdf_text(path: Path | BinaryIO) -> str:
     try:
         _rewind(path)
         reader = PdfReader(_library_source(path))
+        page_count = len(reader.pages)
+        if page_count > MAX_PDF_PAGES:
+            raise AttachmentLimitError(
+                f"PDF exceeds page limit ({page_count} > {MAX_PDF_PAGES} pages)"
+            )
         texts: list[str] = []
         for page in reader.pages:
             text = page.extract_text()
             if text:
                 texts.append(text)
         return "\n".join(texts)
+    except AttachmentLimitError:
+        raise
     except Exception:
         logger.warning("PDF extraction failed", exc_info=True)
     try:
@@ -54,24 +74,45 @@ def extract_pdf_text(path: Path | BinaryIO) -> str:
         texts2: list[str] = []
         _rewind(path)
         with pdfplumber.open(cast("Any", _library_source(path))) as pdf:
+            page_count = len(pdf.pages)
+            if page_count > MAX_PDF_PAGES:
+                raise AttachmentLimitError(
+                    f"PDF exceeds page limit ({page_count} > {MAX_PDF_PAGES} pages)"
+                )
             for pdf_page in pdf.pages:
                 text = pdf_page.extract_text()
                 if text:
                     texts2.append(text)
         return "\n".join(texts2)
+    except AttachmentLimitError:
+        raise
     except Exception:
         return ""
 
 
 def extract_excel_text(path: Path | BinaryIO) -> str:
-    """Best-effort Excel-to-text extraction with smart header detection."""
+    """Best-effort Excel-to-text extraction with smart header detection.
+
+    Fail-closed: raises :class:`AttachmentLimitError` when the sheet exceeds
+    ``MAX_EXCEL_ROWS`` rows or ``MAX_EXCEL_TEXT_BYTES`` of cell text instead of
+    silently truncating.
+    """
     try:
         import pandas as pd
     except ImportError as _e:
         raise ImportError("Install js-agent[office] to extract Excel text.") from _e
     try:
         _rewind(path)
-        df = pd.read_excel(_library_source(path), header=None, engine="openpyxl")
+        df = pd.read_excel(
+            _library_source(path),
+            header=None,
+            engine="openpyxl",
+            nrows=MAX_EXCEL_ROWS + 1,
+        )
+        if len(df) > MAX_EXCEL_ROWS:
+            raise AttachmentLimitError(
+                f"Excel exceeds row limit ({len(df)} > {MAX_EXCEL_ROWS} rows)"
+            )
         if len(df) == 0:
             return "(空表格)"
 
@@ -229,7 +270,16 @@ def extract_excel_text(path: Path | BinaryIO) -> str:
                         + (f" ...等{len(uniq)}种" if len(uniq) > 10 else "")
                     )
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        result_bytes = len(result.encode("utf-8"))
+        if result_bytes > MAX_EXCEL_TEXT_BYTES:
+            raise AttachmentLimitError(
+                f"Excel text exceeds byte limit ({result_bytes} > "
+                f"{MAX_EXCEL_TEXT_BYTES} bytes)"
+            )
+        return result
+    except AttachmentLimitError:
+        raise
     except Exception:
         logger.warning("Excel extraction failed", exc_info=True)
 
@@ -238,13 +288,28 @@ def extract_excel_text(path: Path | BinaryIO) -> str:
     except ImportError as _e:
         raise ImportError("Install js-agent[office] to extract Excel text.") from _e
     try:
-        wb = load_workbook(str(path), data_only=True)
+        _rewind(path)
+        wb = load_workbook(_library_source(path), data_only=True, read_only=True)
         ws = wb.active
         if ws is None:
             return ""
         lines2: list[str] = []
-        for row in ws.iter_rows(values_only=True):
-            lines2.append("\t".join(str(c) if c is not None else "" for c in row))
+        total_bytes = 0
+        for row_index, row in enumerate(ws.iter_rows(values_only=True), start=1):
+            if row_index > MAX_EXCEL_ROWS:
+                raise AttachmentLimitError(
+                    f"Excel exceeds row limit ({row_index} > {MAX_EXCEL_ROWS} rows)"
+                )
+            line = "\t".join(str(c) if c is not None else "" for c in row)
+            total_bytes += len(line.encode("utf-8")) + 1
+            if total_bytes > MAX_EXCEL_TEXT_BYTES:
+                raise AttachmentLimitError(
+                    f"Excel text exceeds byte limit ({total_bytes} > "
+                    f"{MAX_EXCEL_TEXT_BYTES} bytes)"
+                )
+            lines2.append(line)
         return "\n".join(lines2)
+    except AttachmentLimitError:
+        raise
     except Exception:
         return ""

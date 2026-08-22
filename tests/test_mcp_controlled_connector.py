@@ -194,6 +194,36 @@ def test_mcp_manifest_rejects_unallowlisted_tool_name(tmp_path: Path) -> None:
             "url": "https://127.0.0.1/events",
             "tools": [],
         },
+        # Obfuscated inet_aton-style IP forms (decimal, hex, octal, short)
+        # must be rejected even though they all resolve to 127.0.0.1.
+        {
+            "id": "sse-decimal-ip",
+            "enabled": True,
+            "transport": "sse",
+            "url": "https://2130706433/events",
+            "tools": [],
+        },
+        {
+            "id": "sse-hex-ip",
+            "enabled": True,
+            "transport": "sse",
+            "url": "https://0x7f000001/events",
+            "tools": [],
+        },
+        {
+            "id": "sse-octal-ip",
+            "enabled": True,
+            "transport": "sse",
+            "url": "https://0177.0.0.1/events",
+            "tools": [],
+        },
+        {
+            "id": "sse-short-ip",
+            "enabled": True,
+            "transport": "sse",
+            "url": "https://127.1/events",
+            "tools": [],
+        },
     ],
 )
 def test_mcp_manifest_rejects_incomplete_or_unsafe_transport(

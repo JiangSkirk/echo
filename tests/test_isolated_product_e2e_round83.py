@@ -107,4 +107,4 @@ def test_isolated_e2e_requires_both_wheel_and_sdist_server_steps(iso_root: Path)
 
 
 def test_round83_schema_version_is_current() -> None:
-    assert _ISOLATED_VENV_E2E_SCHEMA_VERSION == "isolated-venv-e2e-v7"
+    assert _ISOLATED_VENV_E2E_SCHEMA_VERSION == "isolated-venv-e2e-v8"

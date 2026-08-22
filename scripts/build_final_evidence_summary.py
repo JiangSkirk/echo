@@ -24,9 +24,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 from js.echo.ledger.final_evidence import (  # noqa: E402
-    bind_audit_artifact_sha,
     build_final_evidence_payload,
-    load_gate_receipt_summaries,
     promote_audit_artifacts_to_pack,
     validate_final_evidence_document,
     write_final_evidence_json,
@@ -55,8 +53,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--branch", type=str, default=None)
     parser.add_argument("--head", type=str, default=None)
     parser.add_argument("--round", type=str, default="8.15")
-    parser.add_argument("--internal-ready", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--validation-ok", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--promote-audit-to-pack", action="store_true")
     parser.add_argument(
         "--allow-validation-errors",
@@ -104,8 +100,6 @@ def main(argv: list[str] | None = None) -> int:
     elif not e2e_path.is_absolute():
         e2e_path = (REPO_ROOT / e2e_path).resolve()
 
-    raw_receipts = load_gate_receipt_summaries(evidence_dir / "final")
-    receipts = bind_audit_artifact_sha(raw_receipts, root=REPO_ROOT)
     if args.promote_audit_to_pack:
         promote_audit_artifacts_to_pack(root=REPO_ROOT, pack_dir=evidence_dir / "pack")
 
@@ -114,28 +108,34 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError:
         evidence_root_relative = str(evidence_dir)
 
-    payload = build_final_evidence_payload(
-        root=REPO_ROOT,
-        digest=digest,
-        branch=branch,
-        head=head,
-        evidence_root_relative=evidence_root_relative,
-        gate_receipts=receipts,
-        internal_ready=bool(args.internal_ready),
-        validation_ok=bool(args.validation_ok),
-        round_label=args.round,
-        soak_path=soak_path,
-        slo_path=slo_path,
-        e2e_path=e2e_path,
-        notes=args.notes,
-        pre_key_diagnostic_digest=args.pre_key_diagnostic_digest,
-    )
+    try:
+        payload = build_final_evidence_payload(
+            root=REPO_ROOT,
+            evidence_dir=evidence_dir,
+            branch=branch,
+            head=head,
+            evidence_root_relative=evidence_root_relative,
+            round_label=args.round,
+            soak_path=soak_path,
+            slo_path=slo_path,
+            e2e_path=e2e_path,
+            notes=args.notes,
+            pre_key_diagnostic_digest=args.pre_key_diagnostic_digest,
+        )
+    except ValueError as exc:
+        print(f"formal evidence validation failed: {exc}", file=sys.stderr)
+        return 1
+    if digest != payload.get("current_source_digest"):
+        print("requested digest does not match formal current source digest", file=sys.stderr)
+        return 1
 
     errors = validate_final_evidence_document(
         payload,
         soak_path=soak_path,
         slo_path=slo_path,
         root=REPO_ROOT,
+        evidence_dir=evidence_dir,
+        e2e_path=e2e_path,
         require_audit_artifact_sha=True,
     )
     output = args.output if args.output.is_absolute() else (REPO_ROOT / args.output).resolve()
@@ -148,7 +148,8 @@ def main(argv: list[str] | None = None) -> int:
     write_final_evidence_json(output, payload)
     print(f"wrote {output}")
     print(f"slo_ok={payload.get('slo_ok')}")
-    soak = payload.get("soak") if isinstance(payload.get("soak"), dict) else {}
+    raw_soak = payload.get("soak")
+    soak: dict[str, object] = raw_soak if isinstance(raw_soak, dict) else {}
     print(
         "soak counters:",
         {
@@ -163,6 +164,9 @@ def main(argv: list[str] | None = None) -> int:
         print("wrote with validation errors (diagnostic mode)", file=sys.stderr)
         for err in errors:
             print(f" - {err}", file=sys.stderr)
+        return 2
+    if payload.get("validation_ok") is not True or payload.get("product_internal_ready") is not True:
+        print("wrote partial formal evidence; product is not internally ready", file=sys.stderr)
         return 2
     return 0
 

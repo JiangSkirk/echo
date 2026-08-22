@@ -23,26 +23,34 @@ async def list_plugins(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict
 
 
 @router.post("/{plugin_id}/enable")
-async def enable_plugin(plugin_id: str, auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+async def enable_plugin(
+    plugin_id: str, auth: dict[str, Any] = Depends(require_admin)
+) -> dict[str, Any]:
     del plugin_id, auth
     raise HTTPException(409, _PLUGIN_MUTATION_DISABLED)
 
 
 @router.post("/{plugin_id}/disable")
-async def disable_plugin(plugin_id: str, auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+async def disable_plugin(
+    plugin_id: str, auth: dict[str, Any] = Depends(require_admin)
+) -> dict[str, Any]:
     del plugin_id, auth
     raise HTTPException(409, _PLUGIN_MUTATION_DISABLED)
 
 
 @router.post("/install")
-async def install_plugin(body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+async def install_plugin(
+    body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)
+) -> dict[str, Any]:
     """Fail closed until an Echo-wrapped, sandboxed plugin runtime exists."""
     del body, auth
     raise HTTPException(409, _PLUGIN_MUTATION_DISABLED)
 
 
 @router.delete("/{plugin_id}")
-async def uninstall_plugin(plugin_id: str, auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+async def uninstall_plugin(
+    plugin_id: str, auth: dict[str, Any] = Depends(require_admin)
+) -> dict[str, Any]:
     """Fail closed; release-shipped plugin files are immutable at runtime."""
     del plugin_id, auth
     raise HTTPException(409, _PLUGIN_MUTATION_DISABLED)

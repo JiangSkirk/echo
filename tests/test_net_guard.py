@@ -67,6 +67,20 @@ class TestSSRFCanaries:
                 resolver=resolver,
             )
 
+    def test_cgnat_shared_address_space_blocked(self) -> None:
+        """CGNAT 100.64.0.0/10 is neither private nor reserved; the non-global
+        check must reject it even with both policy flags opted in."""
+        resolver = _fixed_resolver({"cgnat.example": ["100.64.0.1"]})
+        with pytest.raises(OutboundURLError):
+            resolve_and_validate("http://cgnat.example/", resolver=resolver)
+        with pytest.raises(OutboundURLError):
+            resolve_and_validate(
+                "http://cgnat.example/",
+                allow_loopback=True,
+                allow_private=True,
+                resolver=resolver,
+            )
+
     def test_metadata_hostname_blocked_by_name(self) -> None:
         with pytest.raises(OutboundURLError):
             resolve_and_validate("http://metadata.google.internal/")

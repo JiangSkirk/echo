@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from rich.console import Console
 
+from js.product_storage import StorageRoots
 from js.ui.cli import _bootstrap_browser_url
 from js.web import model_refresh
 from js.web import server as web_server
@@ -97,8 +98,10 @@ def create_work_lifespan(
         bind_web_runtime(app, runtime)
 
         runtime_settings.echo_engine = "on"
-        runtime.bootstrap_admin_key = web_server._provision_bootstrap_admin_key(
-            runtime_settings
+        runtime.bootstrap_admin_key = (
+            None
+            if bool(getattr(runtime_settings, "_appshell_managed", False))
+            else web_server._provision_bootstrap_admin_key(runtime_settings)
         )
         persisted_model = web_server._load_active_model(runtime_settings.state_dir)
         if persisted_model and agent.router.get_model_config(persisted_model) is not None:
@@ -130,12 +133,13 @@ def create_work_web_app(
     *,
     config: str | None = None,
     home: Path | None = None,
+    personal_roots: StorageRoots | None = None,
     profile: WorkToolProfile = WorkToolProfile.EXECUTE,
     host: str = "127.0.0.1",
-    port: int = 8765,
+    port: int = 8000,
 ) -> FastAPI:
     """Build the Work Web app without loading the regular JS Agent state."""
-    settings = load_work_settings(config, home=home)
+    settings = load_work_settings(config, home=home, personal_roots=personal_roots)
     _tag_work_web_settings(settings, profile=profile, host=host, port=port)
     app = web_server.create_app(
         lifespan_context=create_work_lifespan(settings=settings, profile=profile),
@@ -153,9 +157,10 @@ def serve_work_web(
     *,
     config: str | None = None,
     home: Path | None = None,
+    personal_roots: StorageRoots | None = None,
     profile: WorkToolProfile = WorkToolProfile.EXECUTE,
     host: str = "127.0.0.1",
-    port: int = 8765,
+    port: int = 8000,
     reload: bool = False,
     open_browser: bool = False,
 ) -> None:
@@ -165,6 +170,7 @@ def serve_work_web(
     app = create_work_web_app(
         config=config,
         home=home,
+        personal_roots=personal_roots,
         profile=profile,
         host=host,
         port=port,

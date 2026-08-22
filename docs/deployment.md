@@ -12,18 +12,23 @@
 docker build -t js-agent:latest .
 ```
 
+不带 `--target` 的构建会产出最后一个 stage，即加固过的 production 镜像（非 root、冻结依赖）。开发镜像需显式指定 `--target dev`。
+
 ### 2. 运行容器
 
 ```bash
 docker run -d \
   --name js-agent \
-  -p 8080:8080 \
+  -p 127.0.0.1:8000:8000 \
   -v "$(pwd)/workspace:/app/workspace" \
   -v "$(pwd)/state:/app/state" \
   -e JS_LOG_LEVEL=INFO \
+  -e JS_STATE_DIR=/app/state \
   --restart unless-stopped \
   js-agent:latest
 ```
+
+端口默认只绑定回环地址；确需对外暴露时去掉 `127.0.0.1:` 前缀，并务必保持 API key 鉴权开启。
 
 ### 3. 查看日志
 
@@ -120,7 +125,7 @@ JS Agent Harness 使用两个数据卷来实现状态持久化：
 
 ## 健康检查
 
-生产环境服务已内置健康检查，每 30 秒探测一次 `http://localhost:8080/api/status`。如果连续 3 次检查失败，容器会被标记为 `unhealthy`，便于编排系统（如 Kubernetes 或 Docker Swarm）自动处理故障恢复。
+生产环境服务已内置健康检查，每 30 秒探测一次容器内 `http://localhost:8000/`（未认证的静态首页；`/api/status`、`/api/health` 需要凭证，健康检查拿不到 200）。如果连续 3 次检查失败，容器会被标记为 `unhealthy`，便于编排系统（如 Kubernetes 或 Docker Swarm）自动处理故障恢复。
 
 手动检查健康状态：
 

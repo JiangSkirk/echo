@@ -1092,6 +1092,18 @@ class ToolRegistry:
                         # Scan tool result
                         if result.output:
                             scan = self.guard.check_tool_result(result.output)
+                            if scan.decision == SecurityDecisionType.BLOCK:
+                                # Fail closed: high-confidence injection in a tool
+                                # result never reaches the model.
+                                self.logger.warning(
+                                    "Tool result blocked by security scan (%s): %s",
+                                    tool_name,
+                                    scan.reason,
+                                )
+                                return ToolResult(
+                                    success=False,
+                                    error=f"Security: tool result blocked ({scan.reason})",
+                                )
                             if scan.decision == SecurityDecisionType.WARN:
                                 result.output = (
                                     f"[Security Warning: {scan.reason}]\n{result.output}"

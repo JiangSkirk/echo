@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 import js.echo.ledger.evidence_export as evidence_export
 import js.echo.ledger.final_evidence as final_evidence
@@ -63,6 +66,30 @@ def _tree_fingerprint(root: Path) -> dict[str, tuple[int, str, int]]:
         st = path.stat()
         out[rel] = (len(data), hashlib.sha256(data).hexdigest(), st.st_mtime_ns)
     return out
+
+
+def _stub_formal_state(
+    monkeypatch: Any,
+    *,
+    receipts: dict[str, dict[str, Any]] | None = None,
+    digest: str = "a" * 64,
+    passed_gates: tuple[str, ...] | None = None,
+) -> None:
+    bound = receipts or {}
+    monkeypatch.setattr(
+        final_evidence,
+        "_derive_formal_state",
+        lambda **_kwargs: {
+            "source_digest": digest,
+            "passed_gates": passed_gates or tuple(bound),
+            "blockers": (),
+            "validation_ok": True,
+            "internal_ready": True,
+            "product_internal_ready": False,
+            "desktop_manifest_digest": None,
+            "gate_receipts": bound,
+        },
+    )
 
 
 def test_extract_soak_summary_reads_nested_counters_not_top_level_aliases() -> None:
@@ -119,25 +146,30 @@ def test_build_final_evidence_fills_slo_ok_without_top_level_ok(
         "slo_artifact_ok",
         lambda _path, *, root=None: True,  # noqa: ARG005
     )
+    receipts = {
+        "echo_full_audit": {
+            "passed": True,
+            "exit_code": 0,
+            "duration_seconds": 1.0,
+            "start_utc": "2026-07-29T00:00:00Z",
+            "end_utc": "2026-07-29T00:00:01Z",
+            "artifact_sha256": "c" * 64,
+        }
+    }
+    _stub_formal_state(
+        monkeypatch,
+        receipts=receipts,
+        passed_gates=tuple(f"slo_run_{index}" for index in range(1, 6)),
+    )
 
     payload = final_evidence.build_final_evidence_payload(
         root=root,
-        digest="a" * 64,
+        evidence_dir=tmp_path / "evidence",
         branch="feature/echo-runtime",
         head="b" * 40,
         evidence_root_relative=".task-tmp/evidence/demo",
-        gate_receipts={
-            "echo_full_audit": {
-                "passed": True,
-                "exit_code": 0,
-                "duration_seconds": 1.0,
-                "start_utc": "2026-07-29T00:00:00Z",
-                "end_utc": "2026-07-29T00:00:01Z",
-                "artifact_sha256": "c" * 64,
-            }
-        },
-        internal_ready=True,
-        validation_ok=True,
+        soak_path=root / "docs/security/ECHO_LIVE_ACCEPTANCE.json",
+        e2e_path=root / "docs/security/ECHO_ISOLATED_VENV_E2E.json",
         generated_utc="2026-07-29T00:00:02Z",
     )
 
@@ -145,11 +177,13 @@ def test_build_final_evidence_fills_slo_ok_without_top_level_ok(
     assert payload["soak"]["sample_count"] == 42
     assert payload["soak"]["success_count"] == 42
     assert payload["soak"]["failure_count"] == 0
-    assert payload["e2e_ok"] is True
+    assert payload["e2e_ok"] is False
     assert payload["gate_receipts"]["echo_full_audit"]["artifact_sha256"] == "c" * 64
 
 
-def test_readonly_validator_rejects_null_soak_and_slo_summary(tmp_path: Path) -> None:
+def test_readonly_validator_rejects_null_soak_and_slo_summary(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
     acceptance = _nested_soak_acceptance(sample_count=10)
     slo = _slo_without_top_level_ok()
     evidence = tmp_path / "evidence"
@@ -182,11 +216,13 @@ def test_readonly_validator_rejects_null_soak_and_slo_summary(tmp_path: Path) ->
     }
     before = _tree_fingerprint(evidence)
     time.sleep(0.02)
+    _stub_formal_state(monkeypatch)
     errors = final_evidence.validate_final_evidence_document(
         bad_payload,
         soak_path=soak_path,
         slo_path=slo_path,
         root=tmp_path,
+        evidence_dir=evidence,
         require_audit_artifact_sha=True,
     )
     after = _tree_fingerprint(evidence)
@@ -287,12 +323,14 @@ def test_buggy_publisher_pattern_produces_nulls_that_validator_rejects(
         "slo_artifact_ok",
         lambda _path, *, root=None: True,  # noqa: ARG005
     )
+    _stub_formal_state(monkeypatch)
     before = _tree_fingerprint(evidence)
     errors = final_evidence.validate_final_evidence_document(
         buggy_payload,
         soak_path=soak_path,
         slo_path=slo_path,
         root=tmp_path,
+        evidence_dir=evidence,
         require_audit_artifact_sha=True,
     )
     after = _tree_fingerprint(evidence)
@@ -345,16 +383,14 @@ def test_publisher_helpers_bind_audit_sha_and_pass_validator(
     assert raw["echo_full_audit"].get("artifact_sha256") is None
     receipts = final_evidence.bind_audit_artifact_sha(raw, root=root)
     assert receipts["echo_full_audit"]["artifact_sha256"] == final_evidence.sha256_file(audit)
+    _stub_formal_state(monkeypatch, receipts=receipts)
 
     payload = final_evidence.build_final_evidence_payload(
         root=root,
-        digest="a" * 64,
+        evidence_dir=tmp_path,
         branch="feature/echo-runtime",
         head="b" * 40,
         evidence_root_relative=".task-tmp/evidence/demo",
-        gate_receipts=receipts,
-        internal_ready=True,
-        validation_ok=True,
         soak_path=soak_path,
         slo_path=slo_path,
         e2e_path=e2e_path,
@@ -368,11 +404,35 @@ def test_publisher_helpers_bind_audit_sha_and_pass_validator(
         soak_path=soak_path,
         slo_path=slo_path,
         root=root,
+        evidence_dir=tmp_path,
+        e2e_path=e2e_path,
         require_audit_artifact_sha=True,
     )
     assert errors == []
     assert loaded["soak"]["sample_count"] == 77
-    assert loaded["slo_ok"] is True
+    assert loaded["slo_ok"] is False
+
+
+def test_final_summary_keyboard_interrupt_preserves_old_output_and_cleans_temp(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    output = tmp_path / "JS_AGENT_FINAL_EVIDENCE.json"
+    output.write_text('{"old": true}\n', encoding="utf-8")
+    before = output.read_bytes()
+    real_replace = os.replace
+
+    def interrupt_replace(source: str | Path, destination: str | Path) -> None:
+        if Path(destination) == output:
+            raise KeyboardInterrupt
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", interrupt_replace)
+
+    with pytest.raises(KeyboardInterrupt):
+        final_evidence.write_final_evidence_json(output, {"new": True})
+
+    assert output.read_bytes() == before
+    assert list(tmp_path.glob(f".{output.name}.*.tmp")) == []
 
 
 def test_marker_only_echo_full_audit_receipt_fails_gate_validator(tmp_path: Path) -> None:

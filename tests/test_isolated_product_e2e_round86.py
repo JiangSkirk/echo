@@ -21,9 +21,9 @@ def test_embedded_server_e2e_script_compiles(tmp_path: Path) -> None:
     compile(script.read_text(encoding="utf-8"), str(script), "exec")
 
 
-def test_valid_v7_fixture_and_exact_contract_negatives(tmp_path: Path) -> None:
+def test_valid_v8_fixture_and_exact_contract_negatives(tmp_path: Path) -> None:
     path, payload = _valid_payload(tmp_path)
-    assert _ISOLATED_VENV_E2E_SCHEMA_VERSION == "isolated-venv-e2e-v7"
+    assert _ISOLATED_VENV_E2E_SCHEMA_VERSION == "isolated-venv-e2e-v8"
     assert _valid_isolated_venv_e2e(tmp_path, path)
 
     first = payload["results"][0]

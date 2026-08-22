@@ -23,6 +23,22 @@ from js.echo.ledger.evidence_export import (
 DIGEST = "d" * 64
 
 
+@pytest.fixture(autouse=True)
+def _formal_validator_for_export_mechanics(monkeypatch: pytest.MonkeyPatch) -> None:
+    import js.echo.ledger.release_gates as release_gates
+
+    report = release_gates.FinalLocalGateEvidenceReport(
+        all_local_gates_passed=False,
+        passed_gates=("ruff",),
+        blockers=("remaining_required_gates_not_seeded",),
+        product_internal_ready=False,
+    )
+    monkeypatch.setattr(release_gates, "release_source_digest", lambda _root: DIGEST)
+    monkeypatch.setattr(
+        release_gates, "validate_final_local_gate_evidence", lambda *_a, **_k: report
+    )
+
+
 def _make_archive(path: Path, *, content: str = "clean\n") -> bytes:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.name.lower().endswith(".whl"):
@@ -30,10 +46,12 @@ def _make_archive(path: Path, *, content: str = "clean\n") -> bytes:
             archive.writestr("demo/data.txt", content)
     else:
         payload = content.encode("utf-8")
-        with tarfile.open(path, "w:gz") as archive:
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w:gz") as archive:
             info = tarfile.TarInfo("demo/data.txt")
             info.size = len(payload)
             archive.addfile(info, io.BytesIO(payload))
+        path.write_bytes(stream.getvalue())
     return path.read_bytes()
 
 

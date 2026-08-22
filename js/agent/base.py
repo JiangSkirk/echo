@@ -133,7 +133,10 @@ Search vs Fetch: Prefer web_search for finding information; use browser_fetch on
         curator: SkillCurator
         approvals: ApprovalQueue
         defense_strategies: Any
-        _cancel_tokens: dict[str, tuple[asyncio.Event, str, str | None]]
+        _cancel_tokens: dict[
+            str,
+            tuple[asyncio.Event, str, str | None, str],
+        ]
         _active_run_tasks: dict[
             str,
             tuple[asyncio.Task[Any], str, str | None],

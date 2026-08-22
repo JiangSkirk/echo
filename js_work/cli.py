@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,7 @@ from rich.panel import Panel
 from js.agent import JSAgent
 from js.echo.effect_interpreter import ToolEffect
 from js.echo.turn_runtime import run_echo_turn
+from js.product_storage import StorageRoots
 from js.utils.log import configure_logging, get_logger
 from js.web.messages import humanize_error
 from js_work.agent_factory import create_work_agent
@@ -42,11 +45,13 @@ class WorkCLI:
         config: str | None = None,
         home: Path | None = None,
         profile: WorkToolProfile = WorkToolProfile.EXECUTE,
+        personal_roots: StorageRoots | None = None,
     ) -> None:
         self.config = config
         self.home = home
         self.profile = profile
-        self.settings = load_work_settings(config, home=home)
+        self.personal_roots = personal_roots
+        self.settings = load_work_settings(config, home=home, personal_roots=personal_roots)
         self.agent: JSAgent | None = None
         self._agent_profile: WorkToolProfile | None = None
         self.session_id: str | None = None
@@ -85,7 +90,7 @@ class WorkCLI:
             console.print(
                 Panel.fit(
                     "No model providers are configured for JS Agent Work.\n"
-                    "Run `js-work init` and add a provider to the Work config.",
+                    "Run `js work init` and add a provider to the Work config.",
                     title="JS Agent Work",
                     border_style="yellow",
                 )
@@ -132,7 +137,7 @@ class WorkCLI:
             console.print(
                 Panel.fit(
                     "No model providers are configured for JS Agent Work.\n"
-                    "Run `js-work init` and add a provider to the Work config.",
+                    "Run `js work init` and add a provider to the Work config.",
                     title="JS Agent Work",
                     border_style="yellow",
                 )
@@ -256,12 +261,15 @@ def main(
     home: str | None,
     verbose: bool,
 ) -> None:
-    """JS Agent Work - a work-focused, skill-free Echo agent space."""
+    """Work mode - the restricted work-focused mode inside JS Agent."""
     configure_logging("DEBUG" if verbose else "INFO")
+    root = ctx.find_root()
+    root_object = root.obj if isinstance(root.obj, dict) else {}
     ctx.obj = {
         "config": config,
         "profile": WorkToolProfile(profile),
         "home": Path(home).expanduser() if home else None,
+        "personal_roots": root_object.get("personal_roots"),
     }
     if ctx.invoked_subcommand is None:
         cli = WorkCLI(**ctx.obj)
@@ -277,7 +285,7 @@ def init(ctx: click.Context, path: str | None) -> None:
     target = Path(path).expanduser() if path else default_work_config_path(home)
     if target.exists() and not click.confirm(f"Config exists at {target}. Overwrite?"):
         return
-    settings = load_work_settings(home=home)
+    settings = load_work_settings(home=home, personal_roots=ctx.obj["personal_roots"])
     settings.save(target)
     console.print(f"[green]JS Agent Work config initialized at {target}[/green]")
 
@@ -422,7 +430,9 @@ async def _execute_routine_tool_effect(
 @click.pass_context
 def routine_list(ctx: click.Context) -> None:
     """List Work routines."""
-    settings = load_work_settings(ctx.obj["config"], home=ctx.obj["home"])
+    settings = load_work_settings(
+        ctx.obj["config"], home=ctx.obj["home"], personal_roots=ctx.obj["personal_roots"]
+    )
     store = _local_store(settings)
     click.echo(json.dumps({"routines": [r.to_dict() for r in store.list_routines()]}, ensure_ascii=False))
 
@@ -453,7 +463,9 @@ def routine_draft(
     review_policy: str,
 ) -> None:
     """Create a disabled routine draft through Echo authorization."""
-    settings = load_work_settings(ctx.obj["config"], home=ctx.obj["home"])
+    settings = load_work_settings(
+        ctx.obj["config"], home=ctx.obj["home"], personal_roots=ctx.obj["personal_roots"]
+    )
     arguments: dict[str, Any] = {
         "name": name,
         "trigger_phrases": list(trigger),
@@ -484,7 +496,9 @@ def routine_draft(
 @click.pass_context
 def routine_approve(ctx: click.Context, routine_id: str) -> None:
     """Approve a routine draft through Echo authorization."""
-    settings = load_work_settings(ctx.obj["config"], home=ctx.obj["home"])
+    settings = load_work_settings(
+        ctx.obj["config"], home=ctx.obj["home"], personal_roots=ctx.obj["personal_roots"]
+    )
     result = asyncio.run(
         _execute_routine_control_effect(
             settings=settings,
@@ -503,7 +517,9 @@ def routine_approve(ctx: click.Context, routine_id: str) -> None:
 @click.pass_context
 def routine_inspect(ctx: click.Context, routine_id: str) -> None:
     """Inspect a routine."""
-    settings = load_work_settings(ctx.obj["config"], home=ctx.obj["home"])
+    settings = load_work_settings(
+        ctx.obj["config"], home=ctx.obj["home"], personal_roots=ctx.obj["personal_roots"]
+    )
     store = _local_store(settings)
     click.echo(json.dumps(store.get(routine_id).to_dict(), ensure_ascii=False))
 
@@ -529,7 +545,9 @@ def routine_run(
         raise click.ClickException(
             "routine run requires --profile office (capability profile is never auto-widened)"
         )
-    settings = load_work_settings(ctx.obj["config"], home=ctx.obj["home"])
+    settings = load_work_settings(
+        ctx.obj["config"], home=ctx.obj["home"], personal_roots=ctx.obj["personal_roots"]
+    )
     payload = asyncio.run(
         _execute_routine_tool_effect(
             settings=settings,
@@ -545,7 +563,7 @@ def routine_run(
 
 @main.command()
 @click.option("--host", default="127.0.0.1", show_default=True, help="Bind host")
-@click.option("--port", default=8765, show_default=True, help="Bind port")
+@click.option("--port", default=8000, show_default=True, help="Bind parent AppShell port")
 @click.option("--reload", is_flag=True, help="Enable auto-reload on code changes")
 @click.option("--open-browser", is_flag=True, help="Open the Work Web UI in a browser")
 @click.pass_context
@@ -556,15 +574,76 @@ def web(
     reload: bool,
     open_browser: bool,
 ) -> None:
-    """Run the JS Agent Work Web UI."""
-    from js_work.web import serve_work_web
+    """Run Work through the single parent AppShell host."""
+    if reload and ctx.obj["personal_roots"] is not None:
+        raise click.ClickException("AppShell object mode does not support --reload")
+    personal_roots: StorageRoots | None = ctx.obj["personal_roots"]
+    if personal_roots is None:
+        # Programmatic/direct Work command compatibility. Public ``js-work``
+        # and ``python -m js_work`` shims dispatch through ``js work`` and
+        # therefore always carry Personal roots into the parent branch below.
+        from js_work.web import serve_work_web
 
-    serve_work_web(
-        config=ctx.obj["config"],
-        home=ctx.obj["home"],
-        profile=ctx.obj["profile"],
+        serve_work_web(
+            config=ctx.obj["config"],
+            home=ctx.obj["home"],
+            personal_roots=None,
+            profile=ctx.obj["profile"],
+            host=host,
+            port=port,
+            reload=reload,
+            open_browser=open_browser,
+        )
+        return
+
+    from js.appshell.server import create_appshell_app
+
+    app = create_appshell_app(
+        personal_config=str(personal_roots.config_path),
+        work_config=ctx.obj["config"],
+        work_home=ctx.obj["home"],
+        work_profile=ctx.obj["profile"],
         host=host,
         port=port,
-        reload=reload,
-        open_browser=open_browser,
     )
+    url = f"http://{host}:{port}"
+    if open_browser:
+        import webbrowser
+
+        webbrowser.open(url)
+    console.print(f"[green]Starting JS Agent AppShell at {url}[/green]")
+    import uvicorn
+
+    uvicorn.run(app, host=host, port=port, reload=False)
+
+
+def compat_main() -> None:
+    """Translate the deprecated standalone argv and call the canonical dispatcher."""
+    warnings.warn(
+        "js-work is a compatibility shim; use `js work`.",
+        FutureWarning,
+        stacklevel=2,
+    )
+    argv = list(sys.argv[1:])
+    personal_config: str | None = None
+    translated: list[str] = []
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        if item == "--personal-config":
+            if index + 1 >= len(argv):
+                raise click.UsageError("--personal-config requires a path")
+            personal_config = argv[index + 1]
+            index += 2
+            continue
+        if item.startswith("--personal-config="):
+            personal_config = item.split("=", 1)[1]
+            index += 1
+            continue
+        translated.append(item)
+        index += 1
+    canonical_args = (["--config", personal_config] if personal_config else [])
+    canonical_args.extend(["work", *translated])
+    from js.ui.cli import main as canonical_main
+
+    canonical_main(args=canonical_args, prog_name="js", standalone_mode=True)

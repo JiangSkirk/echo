@@ -42,6 +42,7 @@ from js.skills.manager import SkillManager
 # Mock helpers
 # ---------------------------------------------------------------------------
 
+
 class MockModelProvider(ModelProvider):
     """A mock provider that returns scripted responses for testing."""
 
@@ -86,6 +87,7 @@ class MockModelProvider(ModelProvider):
         async def _gen() -> AsyncIterator[str]:
             yield "Mock"
             yield " stream"
+
         return _gen()
 
     async def health_check(self) -> bool:
@@ -123,45 +125,56 @@ def agent(settings: JSSettings, mock_provider: MockModelProvider) -> JSAgent:
 # 1. Agent Core
 # =============================================================================
 
+
 class TestAgentCore:
     @pytest.mark.asyncio
-    async def test_simple_conversation(self, agent: JSAgent, mock_provider: MockModelProvider) -> None:
-        mock_provider.set_responses([
-            ChatResponse(
-                content="Hello!",
-                tool_calls=[],
-                model="mock",
-                usage={"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
-                finish_reason="stop",
-            ),
-        ])
+    async def test_simple_conversation(
+        self, agent: JSAgent, mock_provider: MockModelProvider
+    ) -> None:
+        mock_provider.set_responses(
+            [
+                ChatResponse(
+                    content="Hello!",
+                    tool_calls=[],
+                    model="mock",
+                    usage={"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+                    finish_reason="stop",
+                ),
+            ]
+        )
         state = await agent.run("Say hello")
         assert state.status == "completed"
         assert state.turn_count == 1
         assert any(m.role == "assistant" and "Hello!" in str(m.content) for m in state.messages)
 
     @pytest.mark.asyncio
-    async def test_tool_call_and_continue(self, agent: JSAgent, mock_provider: MockModelProvider) -> None:
-        mock_provider.set_responses([
-            ChatResponse(
-                content="",
-                tool_calls=[{
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {"name": "file_list", "arguments": '{"path": "."}'},
-                }],
-                model="mock",
-                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-                finish_reason="tool_calls",
-            ),
-            ChatResponse(
-                content="Done.",
-                tool_calls=[],
-                model="mock",
-                usage={"prompt_tokens": 15, "completion_tokens": 5, "total_tokens": 20},
-                finish_reason="stop",
-            ),
-        ])
+    async def test_tool_call_and_continue(
+        self, agent: JSAgent, mock_provider: MockModelProvider
+    ) -> None:
+        mock_provider.set_responses(
+            [
+                ChatResponse(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "file_list", "arguments": '{"path": "."}'},
+                        }
+                    ],
+                    model="mock",
+                    usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                    finish_reason="tool_calls",
+                ),
+                ChatResponse(
+                    content="Done.",
+                    tool_calls=[],
+                    model="mock",
+                    usage={"prompt_tokens": 15, "completion_tokens": 5, "total_tokens": 20},
+                    finish_reason="stop",
+                ),
+            ]
+        )
         state = await agent.run("List files")
         assert state.status == "completed"
         assert state.turn_count == 2
@@ -181,11 +194,13 @@ class TestAgentCore:
             await asyncio.sleep(0.05)
             return ChatResponse(
                 content="",
-                tool_calls=[{
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {"name": "file_list", "arguments": "{}"},
-                }],
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "file_list", "arguments": "{}"},
+                    }
+                ],
                 model="mock",
                 usage={"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
                 finish_reason="tool_calls",
@@ -200,22 +215,28 @@ class TestAgentCore:
         assert state.status == "cancelled"
 
     @pytest.mark.asyncio
-    async def test_max_turns_enforced(self, agent: JSAgent, mock_provider: MockModelProvider) -> None:
+    async def test_max_turns_enforced(
+        self, agent: JSAgent, mock_provider: MockModelProvider
+    ) -> None:
         agent.settings.max_turns = 3
-        mock_provider.set_responses([
-            ChatResponse(
-                content="",
-                tool_calls=[{
-                    "id": f"call_{i}",
-                    "type": "function",
-                    "function": {"name": "file_list", "arguments": "{}"},
-                }],
-                model="mock",
-                usage={"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
-                finish_reason="tool_calls",
-            )
-            for i in range(5)
-        ])
+        mock_provider.set_responses(
+            [
+                ChatResponse(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": f"call_{i}",
+                            "type": "function",
+                            "function": {"name": "file_list", "arguments": "{}"},
+                        }
+                    ],
+                    model="mock",
+                    usage={"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+                    finish_reason="tool_calls",
+                )
+                for i in range(5)
+            ]
+        )
         state = await agent.run("Loop")
         assert state.turn_count == 3
         assert state.status == "error"
@@ -225,6 +246,7 @@ class TestAgentCore:
 # =============================================================================
 # 2. Memory System
 # =============================================================================
+
 
 class TestMemorySystem:
     def test_working_memory_roundtrip(self, settings: JSSettings) -> None:
@@ -243,10 +265,13 @@ class TestMemorySystem:
 
     def test_session_messages(self, settings: JSSettings) -> None:
         store = MemoryStore(settings.state_dir, settings.memory, KeywordEmbedder())
-        store.store_messages("sess-1", [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi"},
-        ])
+        store.store_messages(
+            "sess-1",
+            [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+            ],
+        )
         msgs = store.get_session_messages("sess-1")
         assert len(msgs) == 2
         assert msgs[0]["role"] == "user"
@@ -269,6 +294,7 @@ class TestMemorySystem:
 # =============================================================================
 # 3. Security
 # =============================================================================
+
 
 class TestSecurity:
     def test_guard_command_block(self, settings: JSSettings) -> None:
@@ -320,6 +346,7 @@ class TestSecurity:
 # 4. Router / Provider / Circuit Breaker
 # =============================================================================
 
+
 class TestRouterAndProvider:
     @pytest.mark.asyncio
     async def test_router_health_check(self, settings: JSSettings) -> None:
@@ -349,7 +376,9 @@ class TestRouterAndProvider:
 
     @pytest.mark.asyncio
     async def test_circuit_breaker_lifecycle(self) -> None:
-        cb = CircuitBreaker(name="test", failure_threshold=2, recovery_timeout=0.1, half_open_max_calls=3)
+        cb = CircuitBreaker(
+            name="test", failure_threshold=2, recovery_timeout=0.1, half_open_max_calls=3
+        )
         assert await cb.state() == CircuitState.CLOSED
 
         await cb.record_failure()
@@ -390,6 +419,7 @@ class TestRouterAndProvider:
 # 5. Skills
 # =============================================================================
 
+
 class TestSkills:
     def test_skill_manager_loads_builtin(self, settings: JSSettings) -> None:
         mgr = SkillManager(settings.state_dir, settings.workspace)
@@ -424,6 +454,7 @@ class TestSkills:
 # =============================================================================
 # 6. Compression
 # =============================================================================
+
 
 class TestCompression:
     def test_compressor_under_budget(self, settings: JSSettings) -> None:
@@ -462,6 +493,7 @@ class TestCompression:
 # 7. Evolution
 # =============================================================================
 
+
 class TestEvolution:
     def test_learner_record_and_insights(self, settings: JSSettings) -> None:
         learner = SelfLearner(settings.state_dir)
@@ -498,6 +530,7 @@ class TestEvolution:
 # 8. Cron
 # =============================================================================
 
+
 class TestCron:
     def test_cron_nlp_parsing(self) -> None:
         result = parse_natural_language("每天早上8点")
@@ -506,6 +539,7 @@ class TestCron:
 
     def test_cron_engine_job_lifecycle(self, settings: JSSettings) -> None:
         from js.cron.engine import ScheduledJob
+
         engine = CronEngine(settings.state_dir)
         job = ScheduledJob(
             name="test-job",
@@ -523,6 +557,7 @@ class TestCron:
 
     def test_cron_templates(self) -> None:
         from js.cron.templates import TEMPLATE_REGISTRY, get_template
+
         assert "health_check" in TEMPLATE_REGISTRY
         tmpl = get_template("health_check")
         assert tmpl is not None
@@ -532,6 +567,7 @@ class TestCron:
 # =============================================================================
 # 9. Web API (via TestClient)
 # =============================================================================
+
 
 class TestWebAPI:
     def test_api_models_endpoint(self, agent: JSAgent) -> None:
@@ -554,12 +590,13 @@ class TestWebAPI:
         assert data["degraded"] is False
 
     def test_api_diag_endpoint(self, agent: JSAgent) -> None:
-        from js.web.auth import require_auth_dep
+        from js.web.auth import require_auth_dep, require_user_write
         from js.web.routers.system import router as system_router
 
         app = FastAPI()
         app.include_router(system_router)
         app.dependency_overrides[require_auth_dep] = lambda: {"role": "admin"}
+        app.dependency_overrides[require_user_write] = lambda: {"role": "admin"}
 
         with patch("js.web.routers.system.get_agent", return_value=agent):
             client = TestClient(app)
@@ -574,6 +611,7 @@ class TestWebAPI:
 # =============================================================================
 # 10. Config
 # =============================================================================
+
 
 class TestConfig:
     def test_config_save_and_load(self, tmp_path: Path) -> None:
@@ -608,6 +646,7 @@ class TestConfig:
 # 11. End-to-end Workflow
 # =============================================================================
 
+
 class TestEndToEndWorkflow:
     @pytest.mark.asyncio
     async def test_full_session_with_memory_and_tools(
@@ -615,41 +654,47 @@ class TestEndToEndWorkflow:
     ) -> None:
         """A realistic session: user asks → agent uses tool → memory persists →
         second run recalls context."""
-        mock_provider.set_responses([
-            ChatResponse(
-                content="",
-                tool_calls=[{
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {"name": "file_list", "arguments": '{"path": "."}'},
-                }],
-                model="mock",
-                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-                finish_reason="tool_calls",
-            ),
-            ChatResponse(
-                content="I found your files.",
-                tool_calls=[],
-                model="mock",
-                usage={"prompt_tokens": 15, "completion_tokens": 5, "total_tokens": 20},
-                finish_reason="stop",
-            ),
-        ])
+        mock_provider.set_responses(
+            [
+                ChatResponse(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "file_list", "arguments": '{"path": "."}'},
+                        }
+                    ],
+                    model="mock",
+                    usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                    finish_reason="tool_calls",
+                ),
+                ChatResponse(
+                    content="I found your files.",
+                    tool_calls=[],
+                    model="mock",
+                    usage={"prompt_tokens": 15, "completion_tokens": 5, "total_tokens": 20},
+                    finish_reason="stop",
+                ),
+            ]
+        )
 
         session_id = "e2e-session"
         state1 = await agent.run("List my files", session_id=session_id)
         assert state1.status == "completed"
 
         # Second turn in same session
-        mock_provider.set_responses([
-            ChatResponse(
-                content="Based on what I found earlier...",
-                tool_calls=[],
-                model="mock",
-                usage={"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
-                finish_reason="stop",
-            ),
-        ])
+        mock_provider.set_responses(
+            [
+                ChatResponse(
+                    content="Based on what I found earlier...",
+                    tool_calls=[],
+                    model="mock",
+                    usage={"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+                    finish_reason="stop",
+                ),
+            ]
+        )
         state2 = await agent.run("What did you find?", session_id=session_id)
         assert state2.status == "completed"
         assert state2.turn_count == 1  # New run, fresh turn count
@@ -673,15 +718,17 @@ class TestEndToEndWorkflow:
         """Agent handles secret redaction and context compression."""
         # Built-in password pattern will catch "password=secret123"
 
-        mock_provider.set_responses([
-            ChatResponse(
-                content="I processed your request.",
-                tool_calls=[],
-                model="mock",
-                usage={"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
-                finish_reason="stop",
-            ),
-        ])
+        mock_provider.set_responses(
+            [
+                ChatResponse(
+                    content="I processed your request.",
+                    tool_calls=[],
+                    model="mock",
+                    usage={"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+                    finish_reason="stop",
+                ),
+            ]
+        )
 
         # Input with a secret
         state = await agent.run("My password is secret123")

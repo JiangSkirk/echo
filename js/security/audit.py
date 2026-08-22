@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import Any
 
 from js.utils.db import db_connection
+from js.utils.log import get_logger
+
+logger = get_logger("js.security.audit")
 
 _DEFAULT_MAX_ENTRIES = 5_000
 
@@ -119,26 +122,41 @@ class AuditLogger:
                 "FROM audit_chain_state WHERE id = 1"
             ).fetchone()
             if state is None:
-                # Migrate existing SQLite databases by anchoring the current
-                # retained chain exactly once. Future prefix deletions must be
-                # performed through prune(), which updates this state atomically.
-                first_row = conn.execute(
-                    "SELECT id, prev_checksum FROM audit_log ORDER BY id ASC LIMIT 1"
-                ).fetchone()
-                last_row = conn.execute(
-                    "SELECT checksum FROM audit_log ORDER BY id DESC LIMIT 1"
-                ).fetchone()
+                # Fail closed: a missing chain-state row while audit_log still
+                # has rows means the anchor was wiped independently of the log.
+                # Silently re-anchoring would make a full history wipe
+                # indistinguishable from a fresh install.
+                has_rows = (
+                    conn.execute("SELECT 1 FROM audit_log LIMIT 1").fetchone() is not None
+                )
+                if has_rows:
+                    raise RuntimeError(
+                        "audit_chain_state is missing but audit_log is not empty: "
+                        "the audit chain anchor was lost or wiped. Refusing to "
+                        "re-anchor automatically — manual forensic review and "
+                        "re-initialization are required."
+                    )
+                sentinel = self.state_dir / "audit.initialized"
+                if sentinel.exists():
+                    # This state_dir was initialized before, yet both the log
+                    # and the chain state are now empty — fail visible, then
+                    # rebuild so the system can start.
+                    logger.critical(
+                        "Audit chain state missing from a previously initialized, "
+                        "now-empty database; possible audit chain wipe — "
+                        "investigate before trusting this log"
+                    )
+                else:
+                    # Brand-new first initialization: leave a sentinel so a
+                    # future wipe-to-empty is detectable.
+                    sentinel.touch()
                 conn.execute(
                     """
                     INSERT INTO audit_chain_state
                     (id, anchor_log_id, anchor_prev_checksum, chain_tip)
-                    VALUES (1, ?, ?, ?)
+                    VALUES (1, NULL, ?, ?)
                     """,
-                    (
-                        first_row[0] if first_row else None,
-                        first_row[1] if first_row else "0" * 64,
-                        last_row[0] if last_row else "0" * 64,
-                    ),
+                    ("0" * 64, "0" * 64),
                 )
             conn.commit()
             # The persisted tip is authoritative across restarts and pruning.

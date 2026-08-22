@@ -75,6 +75,8 @@ def _issue_default(
     network_policy: str = DEFAULT_NETWORK_POLICY,
     max_invocations: int = 1,
     parent_lease_id: str | None = None,
+    product_id: str = "js-agent",
+    session_id: str = "session-A",
 ) -> CapabilityLease:
     return auth.issue(
         owner_key_hash=owner_key_hash,
@@ -89,6 +91,8 @@ def _issue_default(
         network_policy=network_policy,
         max_invocations=max_invocations,
         parent_lease_id=parent_lease_id,
+        product_id=product_id,
+        session_id=session_id,
     )
 
 
@@ -136,6 +140,40 @@ def _consume_persistent_worker(
         result_queue.put(f"error:{type(exc).__name__}:{exc}")
     else:
         result_queue.put("ok")
+
+
+def _consume_default_bound(auth: LeaseAuthority, lease: CapabilityLease) -> None:
+    auth.consume_bound(
+        lease,
+        expected_product_id=lease.product_id,
+        expected_owner=lease.owner_key_hash,
+        expected_session=lease.session_id,
+        expected_run=lease.run_id,
+        expected_tool=lease.tool_name,
+        expected_args_schema=lease.args_schema,
+        expected_resource_scope=lease.resource_scope,
+        expected_fs_roots=lease.fs_roots,
+        expected_network_policy=lease.network_policy,
+        expected_network_hosts=lease.network_hosts,
+        expected_max_bytes=lease.max_bytes,
+        expected_max_duration_ms=lease.max_duration_ms,
+        now=0,
+    )
+
+
+def _tamper_complete_final_ledger_mac(ledger_path: Path) -> bytes:
+    """Change only the final record MAC while preserving a complete JSONL row."""
+
+    original = ledger_path.read_bytes()
+    rows = original.decode("utf-8").splitlines()
+    final = json.loads(rows[-1])
+    mac = str(final["mac"])
+    final["mac"] = ("0" if mac[0] != "0" else "1") + mac[1:]
+    rows[-1] = json.dumps(final, sort_keys=True, separators=(",", ":"))
+    ledger_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    tampered = ledger_path.read_bytes()
+    assert tampered.endswith(b"\n")
+    return tampered
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +326,86 @@ def test_persistent_lease_ledger_recovers_one_corrupt_tail(tmp_path: Path) -> No
     with pytest.raises(LeaseNonceReplay):
         restarted.consume(lease, now=clock["now"])
     assert ledger_path.with_suffix(ledger_path.suffix + ".corrupt").is_file()
+
+
+def test_persistent_lease_ledger_rejects_complete_final_issue_mac_tamper(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "leases.jsonl"
+    auth = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    _issue_default(auth)
+    tampered = _tamper_complete_final_ledger_mac(ledger_path)
+
+    with pytest.raises(ValueError, match="lease ledger MAC mismatch"):
+        LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+
+    assert ledger_path.read_bytes() == tampered
+
+
+def test_persistent_lease_ledger_rejects_complete_final_consume_mac_tamper(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "leases.jsonl"
+    auth = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    lease = _issue_default(auth)
+    _consume_default_bound(auth, lease)
+    tampered = _tamper_complete_final_ledger_mac(ledger_path)
+
+    with pytest.raises(ValueError, match="lease ledger MAC mismatch"):
+        LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+
+    assert ledger_path.read_bytes() == tampered
+    assert not ledger_path.with_suffix(ledger_path.suffix + ".corrupt").exists()
+
+
+def test_persistent_lease_ledger_rejects_complete_final_revoke_mac_tamper(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "leases.jsonl"
+    auth = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    lease = _issue_default(auth)
+    auth.revoke(lease.lease_id)
+    tampered = _tamper_complete_final_ledger_mac(ledger_path)
+
+    with pytest.raises(ValueError, match="lease ledger MAC mismatch"):
+        LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+
+    assert ledger_path.read_bytes() == tampered
+    assert not ledger_path.with_suffix(ledger_path.suffix + ".corrupt").exists()
+
+
+def test_torn_append_after_durable_consume_never_restores_nonce(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "leases.jsonl"
+    auth = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    lease = _issue_default(auth)
+    _consume_default_bound(auth, lease)
+    durable_prefix = ledger_path.read_bytes()
+    torn = b'{"seq":2,"event_type":"revoke"'
+    with ledger_path.open("ab") as handle:
+        handle.write(torn)
+
+    restarted = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+
+    with pytest.raises(LeaseNonceReplay):
+        _consume_default_bound(restarted, lease)
+    assert ledger_path.read_bytes() == durable_prefix
+    assert ledger_path.with_suffix(ledger_path.suffix + ".corrupt").read_bytes() == torn
+
+
+def test_true_torn_uncommitted_append_preserves_last_durable_issue(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "leases.jsonl"
+    auth = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    lease = _issue_default(auth)
+    durable_prefix = ledger_path.read_bytes()
+    torn = b'{"seq":1,"event_type":"consume","payload":'
+    with ledger_path.open("ab") as handle:
+        handle.write(torn)
+
+    restarted = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+
+    _consume_default_bound(restarted, lease)
+    assert ledger_path.read_bytes().startswith(durable_prefix)
+    assert ledger_path.with_suffix(ledger_path.suffix + ".corrupt").read_bytes() == torn
 
 
 def test_persistent_lease_ledger_rejects_middle_corruption(tmp_path: Path) -> None:
@@ -548,6 +666,177 @@ def test_parent_missing_rejected_at_issue() -> None:
         _issue_default(auth, parent_lease_id="deadbeef" * 4)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("product_id", "js-work"),
+        ("owner_key_hash", "bob"),
+        ("session_id", "session-B"),
+    ],
+)
+def test_child_issue_rejects_cross_binding(field: str, value: str) -> None:
+    """A child cannot escape its parent's product/owner/session authority."""
+    auth, _ = _make_authority()
+    parent = _issue_default(auth)
+    child_args = {
+        "owner_key_hash": parent.owner_key_hash,
+        "product_id": parent.product_id,
+        "session_id": parent.session_id,
+    }
+    child_args[field] = value
+
+    with pytest.raises(LeaseDenied):
+        _issue_default(auth, parent_lease_id=parent.lease_id, **child_args)
+
+    assert auth.known_lease_ids() == frozenset({parent.lease_id})
+
+
+def test_revoke_for_session_is_owner_bound() -> None:
+    """A same-named victim session must remain usable after owner-scoped revoke."""
+    auth, clock = _make_authority()
+    alice = _issue_default(auth, owner_key_hash="alice", session_id="shared-session")
+    bob = _issue_default(
+        auth,
+        owner_key_hash="bob",
+        session_id="shared-session",
+        run_id="run-B",
+    )
+
+    revoked = auth.revoke_for_session(
+        owner_key_hash="alice",
+        session_id="shared-session",
+    )
+
+    assert revoked == (alice.lease_id,)
+    assert auth.is_revoked(alice.lease_id)
+    assert not auth.is_revoked(bob.lease_id)
+    auth.verify(
+        bob,
+        expected_owner="bob",
+        expected_tool=bob.tool_name,
+        expected_scope=bob.resource_scope,
+        now=clock["now"],
+    )
+
+
+@pytest.mark.parametrize(
+    ("owner_key_hash", "session_id"),
+    [("", "session-A"), ("alice", ""), (" ", "session-A"), ("alice", " ")],
+)
+def test_revoke_for_session_rejects_unverifiable_binding(
+    owner_key_hash: str,
+    session_id: str,
+) -> None:
+    auth, _ = _make_authority()
+    lease = _issue_default(auth)
+
+    with pytest.raises(ValueError):
+        auth.revoke_for_session(
+            owner_key_hash=owner_key_hash,
+            session_id=session_id,
+        )
+
+    assert not auth.is_revoked(lease.lease_id)
+
+
+def test_legacy_cross_bound_descendant_revoke_fails_without_partial_mutation(
+    tmp_path: Path,
+) -> None:
+    """A valid old ledger with a cross-owner child must fail closed atomically."""
+    import js.echo.capability as capability_mod
+
+    ledger_path = tmp_path / "legacy-leases.jsonl"
+    auth = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    parent = _issue_default(auth)
+    child = _issue_default(auth, run_id="child", parent_lease_id=parent.lease_id)
+
+    rows = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
+    child_payload = rows[1]["payload"]["lease"]
+    child_payload["owner_key_hash"] = "legacy-other-owner"
+    unsigned = dataclasses.replace(
+        capability_mod._lease_from_payload(child_payload),
+        mac=b"",
+    )
+    child_payload["mac"] = compute_lease_mac(_TEST_KEY, unsigned).hex()
+    base = {
+        "seq": rows[1]["seq"],
+        "event_type": rows[1]["event_type"],
+        "payload": rows[1]["payload"],
+        "prev_hash": rows[1]["prev_hash"],
+    }
+    rows[1]["record_hash"] = capability_mod._ledger_hash(base)
+    rows[1]["mac"] = capability_mod._ledger_mac(
+        _TEST_KEY,
+        {**base, "record_hash": rows[1]["record_hash"]},
+    )
+    ledger_path.write_text(
+        "".join(capability_mod._stable_json(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    restarted = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    with pytest.raises(LeaseDenied):
+        restarted.revoke_for_session(
+            owner_key_hash=parent.owner_key_hash,
+            session_id=parent.session_id,
+        )
+
+    assert not restarted.is_revoked(parent.lease_id)
+    assert not restarted.is_revoked(child.lease_id)
+
+
+def test_legacy_cross_bound_child_selected_as_root_fails_without_mutation(
+    tmp_path: Path,
+) -> None:
+    """A selected legacy child must still inherit every recorded ancestor binding."""
+    import js.echo.capability as capability_mod
+
+    ledger_path = tmp_path / "legacy-child-root-leases.jsonl"
+    auth = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    parent = _issue_default(auth, owner_key_hash="alice", session_id="shared-session")
+    child = _issue_default(
+        auth,
+        owner_key_hash="alice",
+        session_id="shared-session",
+        run_id="child",
+        parent_lease_id=parent.lease_id,
+    )
+
+    rows = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
+    child_payload = rows[1]["payload"]["lease"]
+    child_payload["owner_key_hash"] = "bob"
+    unsigned = dataclasses.replace(
+        capability_mod._lease_from_payload(child_payload),
+        mac=b"",
+    )
+    child_payload["mac"] = compute_lease_mac(_TEST_KEY, unsigned).hex()
+    base = {
+        "seq": rows[1]["seq"],
+        "event_type": rows[1]["event_type"],
+        "payload": rows[1]["payload"],
+        "prev_hash": rows[1]["prev_hash"],
+    }
+    rows[1]["record_hash"] = capability_mod._ledger_hash(base)
+    rows[1]["mac"] = capability_mod._ledger_mac(
+        _TEST_KEY,
+        {**base, "record_hash": rows[1]["record_hash"]},
+    )
+    ledger_path.write_text(
+        "".join(capability_mod._stable_json(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    restarted = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    with pytest.raises(LeaseDenied):
+        restarted.revoke_for_session(
+            owner_key_hash="bob",
+            session_id="shared-session",
+        )
+
+    assert not restarted.is_revoked(parent.lease_id)
+    assert not restarted.is_revoked(child.lease_id)
+
+
 # ---------------------------------------------------------------------------
 # 10. Uniqueness — many issues
 # ---------------------------------------------------------------------------
@@ -775,3 +1064,211 @@ def test_consume_rejects_corrupted_stored_owner_or_scope() -> None:
     auth._issued[real.lease_id] = dataclasses.replace(real, resource_scope="evil")
     with pytest.raises(LeaseMacInvalid):
         auth.consume(real, now=0)
+
+
+# ---------------------------------------------------------------------------
+# R4A-B1: Lease consume receipt, Echo anchor, valid-prefix rollback detection
+# ---------------------------------------------------------------------------
+from js.echo.capability import EchoAnchorUnavailable, LeaseConsumeReceipt  # noqa: E402
+
+
+def test_consume_bound_returns_durable_receipt(tmp_path: Path) -> None:
+    """consume_bound must return a LeaseConsumeReceipt with ledger seq + hash."""
+    ledger_path = tmp_path / "leases.jsonl"
+    auth = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    lease = _issue_default(auth)
+
+    receipt = auth.consume_bound(
+        lease,
+        expected_product_id=lease.product_id,
+        expected_owner=lease.owner_key_hash,
+        expected_session=lease.session_id,
+        expected_run=lease.run_id,
+        expected_tool=lease.tool_name,
+        expected_args_schema=lease.args_schema,
+        expected_resource_scope=lease.resource_scope,
+        expected_fs_roots=lease.fs_roots,
+        expected_network_policy=lease.network_policy,
+        expected_network_hosts=lease.network_hosts,
+        expected_max_bytes=lease.max_bytes,
+        expected_max_duration_ms=lease.max_duration_ms,
+        now=0,
+    )
+    assert isinstance(receipt, LeaseConsumeReceipt)
+    assert receipt.lease_id == lease.lease_id
+    assert receipt.nonce == lease.nonce
+    assert isinstance(receipt.ledger_seq, int)
+    assert receipt.ledger_record_hash.startswith("sha256:")
+
+
+def test_delete_final_consume_line_echo_anchor_detects(tmp_path: Path) -> None:
+    """Deleting the final consume line leaves a self-consistent prefix.
+
+    The Echo anchor must detect this valid-prefix rollback.
+    """
+    ledger_path = tmp_path / "leases.jsonl"
+    auth = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    lease = _issue_default(auth)
+    receipt = auth.consume_bound(
+        lease,
+        expected_product_id=lease.product_id,
+        expected_owner=lease.owner_key_hash,
+        expected_session=lease.session_id,
+        expected_run=lease.run_id,
+        expected_tool=lease.tool_name,
+        expected_args_schema=lease.args_schema,
+        expected_resource_scope=lease.resource_scope,
+        expected_fs_roots=lease.fs_roots,
+        expected_network_policy=lease.network_policy,
+        expected_network_hosts=lease.network_hosts,
+        expected_max_bytes=lease.max_bytes,
+        expected_max_duration_ms=lease.max_duration_ms,
+        now=0,
+    )
+
+    # Simulate Echo anchor registry
+    anchor_registry: dict[tuple[str, str], str] = {}
+    anchor_registry[(lease.lease_id, lease.nonce)] = receipt.ledger_record_hash
+
+    def echo_lookup(lid: str, nonce: str) -> str | None:
+        return anchor_registry.get((lid, nonce))
+
+    # Delete the final consume line
+    lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    del lines[-1]
+    ledger_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    # Restart: prefix is self-consistent, nonce appears unconsumed
+    restarted = LeaseAuthority(
+        mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path
+    )
+    # But Echo anchor detects the rollback
+    is_consumed = restarted.verify_consume_anchor(
+        lease.lease_id, lease.nonce, echo_lookup=echo_lookup
+    )
+    assert is_consumed is True
+
+
+def test_lease_only_rollback_echo_anchor_intact(tmp_path: Path) -> None:
+    """Lease ledger rolled back but Echo anchor intact -> detected."""
+    ledger_path = tmp_path / "leases.jsonl"
+    auth = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    lease = _issue_default(auth)
+    receipt = auth.consume_bound(
+        lease,
+        expected_product_id=lease.product_id,
+        expected_owner=lease.owner_key_hash,
+        expected_session=lease.session_id,
+        expected_run=lease.run_id,
+        expected_tool=lease.tool_name,
+        expected_args_schema=lease.args_schema,
+        expected_resource_scope=lease.resource_scope,
+        expected_fs_roots=lease.fs_roots,
+        expected_network_policy=lease.network_policy,
+        expected_network_hosts=lease.network_hosts,
+        expected_max_bytes=lease.max_bytes,
+        expected_max_duration_ms=lease.max_duration_ms,
+        now=0,
+    )
+
+    anchor_registry: dict[tuple[str, str], str] = {
+        (lease.lease_id, lease.nonce): receipt.ledger_record_hash
+    }
+
+    def echo_lookup(lid: str, nonce: str) -> str | None:
+        return anchor_registry.get((lid, nonce))
+
+    # Keep only issue lines (delete consume entirely)
+    lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    issue_lines = [
+        line for line in lines if json.loads(line).get("event_type") == "issue"
+    ]
+    ledger_path.write_text("\n".join(issue_lines) + "\n", encoding="utf-8")
+
+    restarted = LeaseAuthority(
+        mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path
+    )
+    assert restarted.verify_consume_anchor(
+        lease.lease_id, lease.nonce, echo_lookup=echo_lookup
+    ) is True
+
+
+def test_echo_anchor_unavailable_fails_closed(tmp_path: Path) -> None:
+    """Echo anchor unavailable -> verify_consume_anchor raises, does not pass."""
+    ledger_path = tmp_path / "leases.jsonl"
+    auth = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    lease = _issue_default(auth)
+    auth.consume_bound(
+        lease,
+        expected_product_id=lease.product_id,
+        expected_owner=lease.owner_key_hash,
+        expected_session=lease.session_id,
+        expected_run=lease.run_id,
+        expected_tool=lease.tool_name,
+        expected_args_schema=lease.args_schema,
+        expected_resource_scope=lease.resource_scope,
+        expected_fs_roots=lease.fs_roots,
+        expected_network_policy=lease.network_policy,
+        expected_network_hosts=lease.network_hosts,
+        expected_max_bytes=lease.max_bytes,
+        expected_max_duration_ms=lease.max_duration_ms,
+        now=0,
+    )
+
+    def echo_unavailable(lid: str, nonce: str) -> str | None:
+        raise RuntimeError("echo service is down")
+
+    restarted = LeaseAuthority(
+        mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path
+    )
+    with pytest.raises(EchoAnchorUnavailable):
+        restarted.verify_consume_anchor(
+            lease.lease_id, lease.nonce, echo_lookup=echo_unavailable
+        )
+
+
+def test_full_state_dir_rollback_is_external_limitation(
+    tmp_path: Path,
+) -> None:
+    """Full state_dir rollback (lease + Echo + keys) is undetectable locally.
+
+    This is an acknowledged external limitation.
+    """
+    ledger_path = tmp_path / "leases.jsonl"
+    auth = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    lease = _issue_default(auth)
+    pre_consume = ledger_path.read_bytes()
+
+    auth.consume_bound(
+        lease,
+        expected_product_id=lease.product_id,
+        expected_owner=lease.owner_key_hash,
+        expected_session=lease.session_id,
+        expected_run=lease.run_id,
+        expected_tool=lease.tool_name,
+        expected_args_schema=lease.args_schema,
+        expected_resource_scope=lease.resource_scope,
+        expected_fs_roots=lease.fs_roots,
+        expected_network_policy=lease.network_policy,
+        expected_network_hosts=lease.network_hosts,
+        expected_max_bytes=lease.max_bytes,
+        expected_max_duration_ms=lease.max_duration_ms,
+        now=0,
+    )
+
+    # Full rollback: restore to pre-consume state
+    ledger_path.write_bytes(pre_consume)
+    restarted = LeaseAuthority(
+        mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path
+    )
+
+    # No local mechanism can detect full rollback. Document this boundary.
+    # The lease appears unconsumed.
+    anchor_registry: dict[tuple[str, str], str] = {}
+
+    def echo_lookup(lid: str, nonce: str) -> str | None:
+        return anchor_registry.get((lid, nonce))
+
+    assert restarted.verify_consume_anchor(
+        lease.lease_id, lease.nonce, echo_lookup=echo_lookup
+    ) is False  # Echo also rolled back, so anchor is gone

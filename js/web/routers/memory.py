@@ -117,7 +117,7 @@ async def memory_enhanced(
             }
             for e in agent.memory.get_episodes(limit=20, owner_key_hash=owner)
         ],
-        "dream_logs": agent.memory.get_dream_logs(limit=10),
+        "dream_logs": agent.memory.get_dream_logs(limit=10, owner_key_hash=owner),
         "semantic_memories": agent.memory.get_all_semantic(limit=20, owner_key_hash=owner),
         "working_memories": agent.memory.get_all_working(limit=20, owner_key_hash=owner),
         "memory_files": agent.memory.list_memory_files(owner_key_hash=owner),
@@ -496,7 +496,9 @@ async def memory_metrics(auth: dict[str, Any] = Depends(require_auth_dep)) -> di
             "working_memories": len(
                 agent.memory.get_all_working(limit=1000, owner_key_hash=memory_owner(auth))
             ),
-            "dream_logs": len(agent.memory.get_dream_logs(limit=1000)),
+            "dream_logs": len(
+                agent.memory.get_dream_logs(limit=1000, owner_key_hash=memory_owner(auth))
+            ),
         },
     }
 
@@ -639,3 +641,135 @@ async def delete_session_capsule(
         auth,
         session_id=session_id,
     )
+
+
+# ── R6 compression routes ──
+
+
+@router.post("/api/memory/compression/proposals")
+async def compression_create_proposal(
+    body: dict[str, Any] = Body(...),
+    auth: dict[str, Any] = Depends(require_admin_write),
+) -> dict[str, Any]:
+    """Create a compression proposal from source refs and a summary."""
+    forbidden = {
+        "owner",
+        "mode",
+        "workspace",
+        "session",
+        "run",
+        "role",
+        "approved_by",
+        "edits",
+        "status",
+        "tokenizer_id",
+        "token_count",
+    }
+    extra = set(body.keys()) - {"source_refs", "proposed_summary"}
+    if extra & forbidden:
+        raise HTTPException(422, f"Forbidden fields: {extra & forbidden}")
+    return await _mutate_memory("compression_create", body, auth)
+
+
+@router.post("/api/memory/compression/proposals/{proposal_id}/approve")
+async def compression_approve_proposal(
+    proposal_id: str,
+    auth: dict[str, Any] = Depends(require_admin_write),
+) -> dict[str, Any]:
+    """Approve a compression proposal (admin only)."""
+    return await _mutate_memory(
+        "compression_approve",
+        {"proposal_id": proposal_id},
+        auth,
+    )
+
+
+@router.post("/api/memory/compression/proposals/{proposal_id}/reject")
+async def compression_reject_proposal(
+    proposal_id: str,
+    auth: dict[str, Any] = Depends(require_admin_write),
+) -> dict[str, Any]:
+    """Reject a compression proposal (admin only)."""
+    return await _mutate_memory(
+        "compression_reject",
+        {"proposal_id": proposal_id},
+        auth,
+    )
+
+
+@router.get("/api/memory/compression/proposals")
+async def compression_list_proposals(
+    status: str = "pending",
+    limit: int = 50,
+    auth: dict[str, Any] = Depends(require_auth_dep),
+) -> dict[str, Any]:
+    """List compression proposals for the current owner."""
+    agent = get_agent()
+    owner = memory_owner(auth)
+    if not isinstance(owner, str) or not owner:
+        raise HTTPException(401, "Authenticated owner is required")
+    from js.memory.layers import CompressionScopeV1
+
+    mode = "personal"
+    workspace = None
+    scope = CompressionScopeV1(owner=owner, mode=mode, workspace=workspace)
+    proposals = agent.memory.list_compression_proposals(
+        scope=scope,
+        status=status,
+        limit=min(max(limit, 1), 100),
+    )
+    return {
+        "proposals": [
+            {
+                "proposal_id": p.proposal_id,
+                "status": p.status,
+                "coverage": p.coverage_estimate,
+                "conflict_flags": list(p.conflict_flags),
+                "source_token_count": p.source_token_count,
+                "summary_token_count": p.summary_token_count,
+                "created_at": p.created_at,
+            }
+            for p in proposals
+        ],
+    }
+
+
+@router.get("/api/memory/compression/capsules/{capsule_id}/rehydrate")
+async def compression_rehydrate_capsule(
+    capsule_id: str,
+    auth: dict[str, Any] = Depends(require_auth_dep),
+) -> dict[str, Any]:
+    """Rehydrate a compression capsule with full summary and sources."""
+    agent = get_agent()
+    owner = memory_owner(auth)
+    if not isinstance(owner, str) or not owner:
+        raise HTTPException(401, "Authenticated owner is required")
+    from js.memory.layers import MemoryCompressionAuthorityV1
+
+    auth_obj = MemoryCompressionAuthorityV1(
+        task_ref_hash="sha256:" + "0" * 64,
+        owner=owner,
+        mode="personal",
+        workspace=None,
+        role=str(auth.get("role") or "user"),
+        session="web",
+        run="web",
+    )
+    rehydrated = agent.memory.rehydrate_compression_capsule(
+        capsule_id,
+        authority=auth_obj,
+    )
+    if rehydrated is None:
+        raise HTTPException(404, "Capsule not found")
+    return {
+        "capsule_id": rehydrated.capsule_id,
+        "proposed_summary": rehydrated.proposed_summary,
+        "sources": [
+            {
+                "kind": str(s.ref.kind),
+                "record_id": s.ref.record_id,
+                "content_hash": s.content_hash,
+            }
+            for s in rehydrated.sources
+        ],
+    }

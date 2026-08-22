@@ -106,6 +106,34 @@ class LeaseContextMismatch(LeaseDenied):
     """A signed execution context did not match the stored lease record."""
 
 
+class LeaseBindingMismatch(LeaseDenied):
+    """A parent/child lease crossed its product, owner, or session binding."""
+
+
+class EchoAnchorUnavailable(LeaseDenied):
+    """The Echo anchor authority is unavailable for consume verification."""
+
+
+# ---------------------------------------------------------------------------
+# Durable consume receipt (R4A-B1)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class LeaseConsumeReceipt:
+    """Durable proof of a single-use lease consumption.
+
+    The ``ledger_record_hash`` is the domain-separated SHA-256 of the
+    consume record written to the persistent lease ledger.  It is used
+    as the Echo anchor binding to detect valid-prefix rollback of the
+    lease ledger alone.
+    """
+
+    lease_id: str
+    nonce: str
+    consumed_at: int
+    ledger_seq: int
+    ledger_record_hash: str
+
+
 # ---------------------------------------------------------------------------
 # Canonical encoding primitives (capability-permit domain only)
 # ---------------------------------------------------------------------------
@@ -410,6 +438,19 @@ class LeaseAuthority:
                     raise LeaseParentMissing(f"parent lease {parent_lease_id!r} is not registered")
                 if parent_lease_id in self._revoked:
                     raise LeaseRevoked(f"parent lease {parent_lease_id!r} is revoked")
+                parent = self._issued[parent_lease_id]
+                owner_matches = len(parent.owner_key_hash) == len(owner_key_hash) and hmac.compare_digest(
+                    parent.owner_key_hash.encode("utf-8"),
+                    owner_key_hash.encode("utf-8"),
+                )
+                if (
+                    parent.product_id != product_id
+                    or not owner_matches
+                    or parent.session_id != session_id
+                ):
+                    raise LeaseBindingMismatch(
+                        "child lease must inherit parent product_id, owner_key_hash, and session_id"
+                    )
 
             # Allocate a fresh lease_id (single retry on collision — 128-bit
             # space makes a third hit astronomically unlikely).
@@ -556,6 +597,204 @@ class LeaseAuthority:
 
             if lease.resource_scope != expected_scope:
                 raise LeaseScopeMismatch("lease resource_scope does not match expected scope")
+
+    def _validate_bound_locked(
+        self,
+        lease: CapabilityLease,
+        *,
+        expected_product_id: str,
+        expected_owner: str,
+        expected_session: str,
+        expected_run: str,
+        expected_tool: str,
+        expected_args_schema: str,
+        expected_resource_scope: str,
+        expected_fs_roots: tuple[str, ...],
+        expected_network_policy: str,
+        expected_network_hosts: tuple[str, ...],
+        expected_max_bytes: int,
+        expected_max_duration_ms: int,
+        now: int,
+        require_single_use: bool,
+    ) -> tuple[CapabilityLease, _NonceState]:
+        """Validate a complete expected binding while the authority transaction is held."""
+
+        if type(lease) is not CapabilityLease:
+            raise LeaseBindingMismatch("bound consume requires an exact CapabilityLease")
+        if type(expected_fs_roots) is not tuple or type(expected_network_hosts) is not tuple:
+            raise LeaseBindingMismatch("bound lease tuple fields must be immutable")
+        if any(type(item) is not str for item in (*expected_fs_roots, *expected_network_hosts)):
+            raise LeaseBindingMismatch("bound lease tuple values must be text")
+        if type(now) is not int or type(expected_max_bytes) is not int or type(expected_max_duration_ms) is not int:
+            raise LeaseBindingMismatch("bound lease numeric expectations must be integers")
+
+        stored = self._canonical_check(lease)
+        if stored.lease_id in self._revoked:
+            raise LeaseRevoked(f"lease {stored.lease_id!r} is revoked")
+        if now > stored.expires_at:
+            raise LeaseExpired(f"lease {stored.lease_id!r} expired at {stored.expires_at}")
+        owner_ok = len(stored.owner_key_hash) == len(expected_owner) and hmac.compare_digest(
+            stored.owner_key_hash.encode("utf-8"),
+            expected_owner.encode("utf-8"),
+        )
+        checks = (
+            ("product_id", stored.product_id == expected_product_id),
+            ("owner_key_hash", owner_ok),
+            ("session_id", stored.session_id == expected_session),
+            ("run_id", stored.run_id == expected_run),
+            ("tool_name", stored.tool_name == expected_tool),
+            ("args_schema", stored.args_schema == expected_args_schema),
+            ("resource_scope", stored.resource_scope == expected_resource_scope),
+            ("fs_roots", tuple(stored.fs_roots) == expected_fs_roots),
+            ("network_policy", stored.network_policy == expected_network_policy),
+            ("network_hosts", tuple(stored.network_hosts) == expected_network_hosts),
+            ("max_bytes", stored.max_bytes == expected_max_bytes),
+            ("max_duration_ms", stored.max_duration_ms == expected_max_duration_ms),
+            ("max_invocations", not require_single_use or stored.max_invocations == 1),
+        )
+        for field, matches in checks:
+            if not matches:
+                raise LeaseBindingMismatch(f"lease {field} does not match expected binding")
+
+        state = self._nonces.get(stored.nonce)
+        if state is None:
+            raise LeaseNonceReplay("lease nonce is unknown or already exhausted")
+        if state.lease_id != stored.lease_id:
+            raise LeaseNonceReplay("lease nonce does not bind to the presented lease_id")
+        if state.invocations_remaining <= 0:
+            raise LeaseExhausted(f"lease {stored.lease_id!r} has no invocations remaining")
+        return stored, state
+
+    def verify_bound(
+        self,
+        lease: CapabilityLease,
+        *,
+        expected_product_id: str,
+        expected_owner: str,
+        expected_session: str,
+        expected_run: str,
+        expected_tool: str,
+        expected_args_schema: str,
+        expected_resource_scope: str,
+        expected_fs_roots: tuple[str, ...],
+        expected_network_policy: str,
+        expected_network_hosts: tuple[str, ...],
+        expected_max_bytes: int,
+        expected_max_duration_ms: int,
+        now: int,
+        require_single_use: bool = True,
+    ) -> None:
+        """Perform the complete connector binding preflight without consuming."""
+
+        with self._lock, self._ledger_transaction():
+            self._validate_bound_locked(
+                lease,
+                expected_product_id=expected_product_id,
+                expected_owner=expected_owner,
+                expected_session=expected_session,
+                expected_run=expected_run,
+                expected_tool=expected_tool,
+                expected_args_schema=expected_args_schema,
+                expected_resource_scope=expected_resource_scope,
+                expected_fs_roots=expected_fs_roots,
+                expected_network_policy=expected_network_policy,
+                expected_network_hosts=expected_network_hosts,
+                expected_max_bytes=expected_max_bytes,
+                expected_max_duration_ms=expected_max_duration_ms,
+                now=now,
+                require_single_use=require_single_use,
+            )
+
+    def consume_bound(
+        self,
+        lease: CapabilityLease,
+        *,
+        expected_product_id: str,
+        expected_owner: str,
+        expected_session: str,
+        expected_run: str,
+        expected_tool: str,
+        expected_args_schema: str,
+        expected_resource_scope: str,
+        expected_fs_roots: tuple[str, ...],
+        expected_network_policy: str,
+        expected_network_hosts: tuple[str, ...],
+        expected_max_bytes: int,
+        expected_max_duration_ms: int,
+        now: int,
+        require_single_use: bool = True,
+    ) -> LeaseConsumeReceipt:
+        """Validate and durably consume one exact lease in one transaction.
+
+        Returns a :class:`LeaseConsumeReceipt` containing the durable
+        ledger record hash, which callers should bind to an Echo anchor
+        for valid-prefix rollback detection.
+        """
+
+        with self._lock, self._ledger_transaction():
+            stored, state = self._validate_bound_locked(
+                lease,
+                expected_product_id=expected_product_id,
+                expected_owner=expected_owner,
+                expected_session=expected_session,
+                expected_run=expected_run,
+                expected_tool=expected_tool,
+                expected_args_schema=expected_args_schema,
+                expected_resource_scope=expected_resource_scope,
+                expected_fs_roots=expected_fs_roots,
+                expected_network_policy=expected_network_policy,
+                expected_network_hosts=expected_network_hosts,
+                expected_max_bytes=expected_max_bytes,
+                expected_max_duration_ms=expected_max_duration_ms,
+                now=now,
+                require_single_use=require_single_use,
+            )
+            state.invocations_remaining -= 1
+            if state.invocations_remaining == 0 and stored.max_invocations == 1:
+                del self._nonces[stored.nonce]
+            seq = self._ledger_seq
+            record_hash = self._append_ledger_record(
+                "consume",
+                {
+                    "lease_id": stored.lease_id,
+                    "nonce": stored.nonce,
+                    "remaining": max(state.invocations_remaining, 0),
+                },
+            )
+            return LeaseConsumeReceipt(
+                lease_id=stored.lease_id,
+                nonce=stored.nonce,
+                consumed_at=now,
+                ledger_seq=seq,
+                ledger_record_hash=record_hash,
+            )
+
+    def verify_consume_anchor(
+        self,
+        lease_id: str,
+        nonce: str,
+        *,
+        echo_lookup: Callable[[str, str], str | None],
+    ) -> bool:
+        """Check whether the Echo authority has a durable consume anchor.
+
+        When the lease ledger's final consume line is deleted (valid-prefix
+        rollback), the remaining prefix is self-consistent and the nonce
+        appears unconsumed.  This method queries the Echo authority to
+        detect such rollback.
+
+        Returns ``True`` if the Echo anchor confirms the lease was consumed.
+        Raises :class:`EchoAnchorUnavailable` if the Echo authority is
+        unavailable (fail closed).
+        """
+
+        try:
+            anchor_hash = echo_lookup(lease_id, nonce)
+        except Exception as exc:
+            raise EchoAnchorUnavailable(
+                "echo anchor authority is unavailable"
+            ) from exc
+        return anchor_hash is not None
 
     # -- consumption -------------------------------------------------------
     def consume(self, lease: CapabilityLease, *, now: int) -> None:
@@ -725,6 +964,78 @@ class LeaseAuthority:
         ).digest()
 
     # -- revocation --------------------------------------------------------
+    @staticmethod
+    def _shares_binding(left: CapabilityLease, right: CapabilityLease) -> bool:
+        return (
+            left.product_id == right.product_id
+            and len(left.owner_key_hash) == len(right.owner_key_hash)
+            and hmac.compare_digest(
+                left.owner_key_hash.encode("utf-8"),
+                right.owner_key_hash.encode("utf-8"),
+            )
+            and left.session_id == right.session_id
+        )
+
+    def _validate_ancestor_chain(self, root_id: str) -> None:
+        """Fail closed when a selected root has a missing, cyclic, or cross-bound ancestor."""
+
+        root = self._issued.get(root_id)
+        if root is None:
+            raise LeaseBindingMismatch(f"selected lease {root_id!r} is missing from authority ledger")
+        current_id = root_id
+        seen = {root_id}
+        while True:
+            if current_id not in self._parents:
+                raise LeaseBindingMismatch(
+                    f"lease {current_id!r} is missing its recorded parent binding"
+                )
+            parent_id = self._parents[current_id]
+            if parent_id is None:
+                return
+            if parent_id in seen:
+                raise LeaseBindingMismatch("lease ancestor chain contains a cycle")
+            parent = self._issued.get(parent_id)
+            if parent is None:
+                raise LeaseBindingMismatch(
+                    f"lease ancestor {parent_id!r} is missing from authority ledger"
+                )
+            if not self._shares_binding(root, parent):
+                raise LeaseBindingMismatch(
+                    "lease ancestor crosses product_id, owner_key_hash, or session_id"
+                )
+            seen.add(parent_id)
+            current_id = parent_id
+
+    def _descendant_closure(self, roots: tuple[str, ...]) -> tuple[str, ...]:
+        """Return a binding-safe descendant closure without mutating state."""
+
+        queue = list(roots)
+        ordered: list[str] = []
+        seen: set[str] = set()
+        while queue:
+            current_id = queue.pop(0)
+            if current_id in seen:
+                continue
+            current = self._issued.get(current_id)
+            if current is None:
+                raise LeaseBindingMismatch(
+                    f"lease descendant {current_id!r} is missing from authority ledger"
+                )
+            seen.add(current_id)
+            ordered.append(current_id)
+            for child_id in sorted(self._children.get(current_id, set())):
+                child = self._issued.get(child_id)
+                if child is None:
+                    raise LeaseBindingMismatch(
+                        f"lease descendant {child_id!r} is missing from authority ledger"
+                    )
+                if not self._shares_binding(current, child):
+                    raise LeaseBindingMismatch(
+                        "lease descendant crosses product_id, owner_key_hash, or session_id"
+                    )
+                queue.append(child_id)
+        return tuple(ordered)
+
     def revoke(self, lease_id: str) -> None:
         """Mark ``lease_id`` and every descendant as revoked.
 
@@ -737,34 +1048,68 @@ class LeaseAuthority:
         with self._lock, self._ledger_transaction():
             if lease_id not in self._issued:
                 return
-            queue: list[str] = [lease_id]
-            while queue:
-                current = queue.pop(0)
+            targets = self._descendant_closure((lease_id,))
+            for current in targets:
                 if current in self._revoked:
                     continue
                 self._revoked.add(current)
                 self._append_ledger_record("revoke", {"lease_id": current})
-                queue.extend(self._children.get(current, set()))
 
-    def revoke_for_session(self, session_id: str) -> tuple[str, ...]:
-        """Revoke every issued lease bound to ``session_id``.
+    def revoke_for_session(
+        self,
+        *,
+        owner_key_hash: str,
+        session_id: str,
+    ) -> tuple[str, ...]:
+        """Atomically revoke leases bound to one verified owner/session.
 
         Used by AppShell Personal↔Work switch so departing-product leases cannot
         be replayed after the client rebinds. Returns the revoked lease ids.
         """
-        if not isinstance(session_id, str) or not session_id:
-            return ()
+        if not isinstance(owner_key_hash, str) or not owner_key_hash.strip():
+            raise ValueError("owner_key_hash must be a non-empty string")
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError("session_id must be a non-empty string")
         with self._lock, self._ledger_transaction():
-            targets = tuple(
+            roots = tuple(
                 lease_id
                 for lease_id, lease in self._issued.items()
-                if lease.session_id == session_id and lease_id not in self._revoked
+                if lease.session_id == session_id
+                and len(lease.owner_key_hash) == len(owner_key_hash)
+                and hmac.compare_digest(
+                    lease.owner_key_hash.encode("utf-8"),
+                    owner_key_hash.encode("utf-8"),
+                )
+                and lease_id not in self._revoked
             )
-        revoked: list[str] = []
-        for lease_id in targets:
-            self.revoke(lease_id)
-            revoked.append(lease_id)
-        return tuple(revoked)
+            for root_id in roots:
+                self._validate_ancestor_chain(root_id)
+            targets = self._descendant_closure(roots)
+            revoked: list[str] = []
+            for lease_id in targets:
+                if lease_id in self._revoked:
+                    continue
+                self._revoked.add(lease_id)
+                self._append_ledger_record("revoke", {"lease_id": lease_id})
+                revoked.append(lease_id)
+            return tuple(revoked)
+
+    def active_session_ids_for_owner(self, *, owner_key_hash: str) -> tuple[str, ...]:
+        """Snapshot sessions with unrevoked leases for one verified owner."""
+        if not isinstance(owner_key_hash, str) or not owner_key_hash.strip():
+            raise ValueError("owner_key_hash must be a non-empty string")
+        with self._lock, self._ledger_transaction():
+            sessions = {
+                lease.session_id
+                for lease_id, lease in self._issued.items()
+                if lease_id not in self._revoked
+                and len(lease.owner_key_hash) == len(owner_key_hash)
+                and hmac.compare_digest(
+                    lease.owner_key_hash.encode("utf-8"),
+                    owner_key_hash.encode("utf-8"),
+                )
+            }
+        return tuple(sorted(sessions))
 
     def is_revoked(self, lease_id: str) -> bool:
         """Return ``True`` iff ``lease_id`` is currently marked revoked."""
@@ -778,9 +1123,20 @@ class LeaseAuthority:
         with self._lock, self._ledger_transaction():
             return frozenset(self._issued.keys())
 
-    def _append_ledger_record(self, event_type: str, payload: dict[str, object]) -> None:
+    def _append_ledger_record(self, event_type: str, payload: dict[str, object]) -> str:
+        """Append a record and return its ``record_hash``."""
         if self._ledger_path is None:
-            return
+            # In-memory mode: compute a synthetic hash for receipt binding
+            base = {
+                "seq": self._ledger_seq,
+                "event_type": event_type,
+                "payload": payload,
+                "prev_hash": self._ledger_prev_hash,
+            }
+            record_hash = _ledger_hash(base)
+            self._ledger_prev_hash = record_hash
+            self._ledger_seq += 1
+            return record_hash
         self._ledger_path.parent.mkdir(parents=True, exist_ok=True)
         was_missing = not self._ledger_path.exists()
         base = {
@@ -808,6 +1164,7 @@ class LeaseAuthority:
                 os.close(directory_fd)
         self._ledger_prev_hash = record_hash
         self._ledger_seq += 1
+        return record_hash
 
     @contextmanager
     def _ledger_transaction(self) -> Iterator[None]:
@@ -871,6 +1228,17 @@ class LeaseAuthority:
                 continue
             try:
                 row = json.loads(raw_line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                is_incomplete_eof = (
+                    expected_seq > 0
+                    and index == len(raw_lines) - 1
+                    and not raw_line.endswith((b"\n", b"\r"))
+                )
+                if is_incomplete_eof:
+                    self._isolate_ledger_tail(path, clean_offset=line_start)
+                    break
+                raise
+            try:
                 base = {
                     "seq": int(row["seq"]),
                     "event_type": str(row["event_type"]),
@@ -888,11 +1256,7 @@ class LeaseAuthority:
                 if not hmac.compare_digest(str(row.get("mac", "")), expected_mac):
                     raise ValueError("lease ledger MAC mismatch")
                 self._apply_ledger_record(str(base["event_type"]), row["payload"])
-            except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
-                remaining = raw_lines[index + 1 :]
-                if expected_seq > 0 and not any(line.strip() for line in remaining):
-                    self._isolate_ledger_tail(path, clean_offset=line_start)
-                    break
+            except (KeyError, TypeError, ValueError):
                 raise
             expected_seq += 1
             expected_prev = record_hash
@@ -1050,6 +1414,7 @@ __all__ = [
     "LeaseUnknownTool",
     "LeaseParentMissing",
     "LeaseContextMismatch",
+    "LeaseBindingMismatch",
     "LeaseAuthority",
     "compute_lease_mac",
     "sign_tool_execution_context",

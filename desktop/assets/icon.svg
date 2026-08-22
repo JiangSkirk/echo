@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- JS Agent app icon — reference source of truth.
+     Warm ivory base, pine-green "JS" wordmark, one small cinnabar dot.
+     macOS safe area: content inset ~10.5%; no robot, no bubbles, no stars.
+     The production PNGs are rendered deterministically by
+     render_icons.swift (CoreText/CoreGraphics) with the same layout. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect x="108" y="108" width="808" height="808" rx="180" ry="180"
+        fill="#FCFBF7" stroke="#E3DED0" stroke-width="2"/>
+  <text x="500" y="612" text-anchor="middle"
+        font-family="Songti SC, STSong, serif" font-weight="700"
+        font-size="430" fill="#355D4C">JS</text>
+  <circle cx="716" cy="588" r="24" fill="#B84F3B"/>
+</svg>

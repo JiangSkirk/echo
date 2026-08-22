@@ -14,13 +14,19 @@ class FileConnector(Connector):
 
     # Paths that must never be used as a watch_dir — reading system files via
     # the pipeline connector would exfiltrate sensitive content into LLM prompts.
-    _FORBIDDEN_WATCH_ROOTS: frozenset[str] = frozenset({
-        "/", "/etc", "/usr", "/bin", "/sbin", "/var", "/root",
-        "/sys", "/proc", "/dev", "/boot", "/lib", "/lib64",
-        "/Users", "/home", "/opt", "/Applications",
-        "/Library", "/System", "/Network",
-        "/tmp", "/mnt",
-    })
+    # Each entry is resolved too: on macOS /etc is a symlink to /private/etc
+    # (likewise /tmp, /var), so comparing only unresolved strings would let
+    # symlinked aliases bypass the blocklist.
+    _FORBIDDEN_WATCH_ROOTS: frozenset[str] = frozenset(
+        str(Path(root).resolve())
+        for root in (
+            "/", "/etc", "/usr", "/bin", "/sbin", "/var", "/root",
+            "/sys", "/proc", "/dev", "/boot", "/lib", "/lib64",
+            "/Users", "/home", "/opt", "/Applications",
+            "/Library", "/System", "/Network",
+            "/tmp", "/mnt",
+        )
+    )
 
     def __init__(self, config: ConnectorConfig) -> None:
         super().__init__(config)

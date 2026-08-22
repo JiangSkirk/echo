@@ -3,9 +3,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: production
     container_name: js-agent
     ports:
-      - "8000:8000"
+      # Loopback-only by default: the API is key-gated, but a personal agent
+      # harness should not be LAN-reachable unless the user opts in.
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./workspace:/app/workspace
       - ./state:/app/state
@@ -14,7 +17,11 @@ services:
       - JS_STATE_DIR=/app/state
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/status')"]
+      # Probe the unauthenticated static index route. /api/status and
+      # /api/health require credentials and would always answer 401 here, and
+      # /api/appshell/health only exists on the AppShell parent app, not on
+      # the plain `js web` server this container runs.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -26,9 +33,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: dev
     container_name: js-agent-dev
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./workspace:/app/workspace
       - ./state:/app/state

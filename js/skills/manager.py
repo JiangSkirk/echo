@@ -20,7 +20,7 @@ import httpx
 
 from js.security.net_guard import PinnedTransport, resolve_and_validate
 from js.security.sandbox import SandboxExecutor
-from js.skills.executor import execute_skill
+from js.skills.executor import MAX_SUBSKILL_DEPTH, execute_skill
 from js.skills.hermes_bridge import (
     discover_hermes_skills,
     enhanced_scan_hermes_skill,
@@ -1034,6 +1034,12 @@ class SkillManager:
                     staging_dir,
                     True,
                 )
+                # Align with the remote-archive policy: a top-level .git or
+                # .venv is never accepted (the integrity hash excludes .venv,
+                # so a shipped interpreter would be invisible to it).
+                for top_item in staging_dir.iterdir():
+                    if top_item.name in {".git", ".venv"}:
+                        raise ValueError("Local skill source contains a forbidden directory")
             elif local_source.is_file():
                 staging_dir.mkdir(mode=0o700)
                 await asyncio.to_thread(
@@ -1081,12 +1087,19 @@ entry: main.py
         spec.id = target_id
         spec.path = staging_dir
         if expected_hash:
-            if not re.fullmatch(r"[0-9a-fA-F]{64}", expected_hash):
+            # SkillSpec.compute_hash() returns a 32-hex truncated SHA-256;
+            # accept both the truncated form and the full 64-hex digest so
+            # the pin actually verifies instead of always failing closed.
+            if not re.fullmatch(r"[0-9a-fA-F]{32}|[0-9a-fA-F]{64}", expected_hash):
                 raise ValueError("Skill expected hash must be a SHA-256 digest")
-            actual_hash = spec.compute_hash()
-            if actual_hash.lower() != expected_hash.lower():
+            from js.skills.spec import compute_skill_dir_hash
+
+            actual_full = compute_skill_dir_hash(staging_dir).lower()
+            expected = expected_hash.lower()
+            if expected not in (actual_full, actual_full[:32]):
                 raise ValueError(
-                    f"Skill hash mismatch for {spec.id}: expected {expected_hash}, got {actual_hash}"
+                    f"Skill hash mismatch for {spec.id}: "
+                    f"expected {expected_hash}, got {actual_full[:32]}"
                 )
 
         self._infer_installed_skill_type(spec, manifest, staging_dir)
@@ -1597,10 +1610,31 @@ entry: main.py
         args: dict[str, Any],
         llm_caller: LLMCaller | None = None,
         session_id: str = "",
+        *,
+        _depth: int = 0,
+        _ancestors: tuple[str, ...] = (),
     ) -> dict[str, Any]:
-        """Execute a skill with full lifecycle tracking."""
+        """Execute a skill with full lifecycle tracking.
+
+        ``_depth`` and ``_ancestors`` are internal recursion-guard parameters,
+        set only when this method acts as the sub-skill resolver of a
+        workflow/meta skill; regular callers must not pass them.
+        """
 
         self._ensure_open()
+        # Fail-closed recursion guard (defense in depth — the executor runs
+        # the same checks before invoking the resolver).
+        if _depth > MAX_SUBSKILL_DEPTH:
+            return {
+                "success": False,
+                "error": f"Maximum skill nesting depth ({MAX_SUBSKILL_DEPTH}) exceeded",
+            }
+        if skill_id in _ancestors:
+            return {
+                "success": False,
+                "error": f"Recursive skill reference blocked: "
+                f"'{skill_id}' is already in the call chain",
+            }
         start = time.time()
         with self._skills_lock:
             spec = self._skills.get(skill_id)
@@ -1631,7 +1665,9 @@ entry: main.py
 
         # Resolve dependencies for META skills
         if spec.type == SkillType.META:
-            dep_results = await self._execute_dependencies(spec, args, llm_caller)
+            dep_results = await self._execute_dependencies(
+                spec, args, llm_caller, _depth, _ancestors
+            )
             if not all(r.get("success", False) for r in dep_results):
                 return {
                     "success": False,
@@ -1642,7 +1678,14 @@ entry: main.py
         # Execute
         try:
             exec_result: dict[str, Any] = await execute_skill(
-                spec, args, self.workspace, llm_caller, self._sandbox, self.execute
+                spec,
+                args,
+                self.workspace,
+                llm_caller,
+                self._sandbox,
+                self.execute,
+                _depth=_depth,
+                _ancestors=_ancestors,
             )
         except Exception as exc:
             logger.warning(
@@ -1713,6 +1756,8 @@ entry: main.py
         spec: SkillSpec,
         args: dict[str, Any],
         llm_caller: LLMCaller | None,
+        _depth: int = 0,
+        _ancestors: tuple[str, ...] = (),
     ) -> list[dict[str, Any]]:
         """Execute dependency skills in topological order."""
         results: list[dict[str, Any]] = []
@@ -1725,8 +1770,17 @@ entry: main.py
             dep_spec = self._skills.get(dep_id)
             if not dep_spec:
                 return {"success": False, "error": f"Dependency skill not found: {dep_id}"}
+            # Dependencies run one nesting level below the meta skill, so the
+            # recursion guard context must extend with this skill's ID.
             result = await execute_skill(
-                dep_spec, args, self.workspace, llm_caller, self._sandbox, self.execute
+                dep_spec,
+                args,
+                self.workspace,
+                llm_caller,
+                self._sandbox,
+                self.execute,
+                _depth=_depth + 1,
+                _ancestors=(*_ancestors, spec.id),
             )
             return result
 

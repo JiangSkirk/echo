@@ -10,6 +10,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -98,10 +99,26 @@ def _validated_sse_url(value: Any) -> str:
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
-        pass
+        # Not a canonical IP literal.  Reject obfuscated numeric forms that
+        # inet_aton-style parsers accept — decimal ("2130706433"), hex
+        # ("0x7f000001"), octal ("0177.0.0.1") and short forms ("127.1") —
+        # because different stacks resolve them inconsistently and they are a
+        # classic SSRF-filter bypass.
+        try:
+            socket.inet_aton(hostname)
+        except (OSError, UnicodeError):
+            pass  # a regular DNS name
+        else:
+            raise ValueError(
+                "MCP SSE transport requires a canonical IP literal, not an "
+                "inet_aton-style obfuscated form"
+            ) from None
     else:
         if not address.is_global:
             raise ValueError("MCP SSE transport cannot target a non-global address")
+    # NOTE: this is only a static pre-check.  Before MCP execution is ever
+    # enabled, the hostname must be re-validated after DNS resolution and the
+    # connection pinned to the validated address (DNS-rebinding TOCTOU).
     return value
 
 

@@ -77,6 +77,83 @@ class TestSandboxExecution:
         assert "LD_PRELOAD" not in env
         assert "/Users/private-person" not in repr(env)
 
+    def test_git_config_overrides_neutralize_repo_hooks(
+        self, tmp_path: Path
+    ) -> None:
+        """On git >= 2.31 the sandbox env must pin hook-execution config."""
+        import os as _os
+        import shutil
+        import subprocess
+
+        sandbox = SandboxExecutor(workspace=tmp_path)
+        env = sandbox._build_env(None)
+
+        git_version: tuple[int, int] | None = None
+        if shutil.which("git") is not None:
+            probe = subprocess.run(
+                ["git", "--version"], capture_output=True, text=True, timeout=2
+            )
+            git_version = sandbox._parse_git_version(probe.stdout)
+
+        if git_version is None or git_version < (2, 31):
+            # Old/missing git: fail-open means no injection at all.
+            assert "GIT_CONFIG_COUNT" not in env
+            return
+
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert env["GIT_CONFIG_GLOBAL"] == _os.devnull
+        count = int(env["GIT_CONFIG_COUNT"])
+        pairs = {
+            env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"]
+            for i in range(count)
+        }
+        assert pairs["core.hooksPath"] == _os.devnull
+        assert pairs["core.fsmonitor"] == ""
+        assert pairs["diff.external"] == ""
+        assert pairs["core.pager"] == ""
+        assert pairs["core.editor"] == ""
+        assert pairs["core.sshCommand"] == ""
+        assert pairs["core.gitProxy"] == ""
+        assert pairs["credential.helper"] == ""
+
+    def test_parse_git_version(self) -> None:
+        assert SandboxExecutor._parse_git_version(
+            "git version 2.39.3 (Apple Git-145)"
+        ) == (2, 39)
+        assert SandboxExecutor._parse_git_version("git version 2.30.1") == (2, 30)
+        assert SandboxExecutor._parse_git_version("garbage") is None
+
+    def test_fs_rejection_denies_expandable_dollar_paths(self, tmp_path: Path) -> None:
+        """$'...' / $"..." / hex-escaped absolute paths must not bypass the check."""
+        sandbox = SandboxExecutor(workspace=tmp_path, strict_isolation=True)
+        denied = [
+            "cat > $'/tmp/pwn'",
+            'cat > $"/tmp/pwn"',
+            "cat > $'\\x2f\\x74\\x6d\\x70\\x2f\\x70\\x77\\x6e'",
+            "cat $'/etc/passwd'",
+        ]
+        for command in denied:
+            rejection = sandbox._fs_restricted_rejection(command, fs_restricted=True)
+            assert rejection is not None, command
+            assert "expandable path" in rejection
+
+    def test_fs_rejection_allows_plain_variable_references(self, tmp_path: Path) -> None:
+        sandbox = SandboxExecutor(workspace=tmp_path, strict_isolation=True)
+        for command in ("echo $HOME", "echo $HOME/bin", "cat file.txt"):
+            assert sandbox._fs_restricted_rejection(command, fs_restricted=True) is None, command
+
+    def test_fs_rejection_checks_rg_positional_paths(self, tmp_path: Path) -> None:
+        """rg is a read command: its path arguments must stay in-workspace."""
+        sandbox = SandboxExecutor(workspace=tmp_path, strict_isolation=True)
+        rejection = sandbox._fs_restricted_rejection(
+            "rg --pre-path /bin/sh pattern .", fs_restricted=True
+        )
+        assert rejection is not None
+        assert "outside workspace" in rejection
+        assert (
+            sandbox._fs_restricted_rejection("rg pattern .", fs_restricted=True) is None
+        )
+
     @pytest.mark.asyncio
     async def test_fs_restricted_blocks_absolute_reads_outside_workspace(
         self,

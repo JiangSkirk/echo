@@ -24,7 +24,10 @@ RISK_PATTERNS = {
         re.I,
     ),
     "credential_access": re.compile(
-        r"(os\.environ\[.*(KEY|TOKEN|SECRET|PWD|PASS)|\.env|id_rsa|aws_credentials)",
+        r"(os\.environ\[.*(KEY|TOKEN|SECRET|PWD|PASS)|"
+        r"os\.environ\.get\s*\(\s*['\"][^'\"]*(?:KEY|TOKEN|SECRET|PWD|PASS)|"
+        r"os\.getenv\s*\(\s*['\"][^'\"]*(?:KEY|TOKEN|SECRET|PWD|PASS)|"
+        r"\.env|id_rsa|aws_credentials)",
         re.I,
     ),
     "code_execution": re.compile(
@@ -36,7 +39,8 @@ RISK_PATTERNS = {
         re.I,
     ),
     "obfuscation": re.compile(
-        r"(base64\.b64decode\s*\(|__import__\s*\(|getattr\s*\(.*__builtins)",
+        r"(base64\.b64decode\s*\(|b85decode\s*\(|fromhex\s*\(|__import__\s*\(|"
+        r"importlib\.import_module\s*\(|getattr\s*\(.*__builtins)",
         re.I,
     ),
     "sensitive_path_access": re.compile(
@@ -46,6 +50,7 @@ RISK_PATTERNS = {
         re.I,
     ),
 }
+
 
 @dataclass
 class ScanResult:
@@ -71,7 +76,17 @@ def scan_skill(spec: SkillSpec) -> ScanResult:
         if spec.path:
             files_to_scan = list(spec.path.rglob("*.py"))
             files_to_scan.extend(spec.path.rglob("*.sh"))
+            files_to_scan.extend(spec.path.rglob("*.bash"))
             files_to_scan.extend(spec.path.rglob("*.js"))
+            files_to_scan.extend(spec.path.rglob("*.zsh"))
+            files_to_scan.extend(spec.path.rglob("*.ksh"))
+            files_to_scan.extend(spec.path.rglob("*.ps1"))
+            # Always scan the declared entry, even when its suffix is outside
+            # the glob set (a CODE entry like run.zsh was previously invisible).
+            if spec.entry:
+                entry_path = spec.path / spec.entry
+                if entry_path.is_file() and entry_path not in files_to_scan:
+                    files_to_scan.append(entry_path)
             # Also scan SKILL.md for suspicious patterns
             skill_md = spec.path / "SKILL.md"
             if skill_md.exists():
@@ -117,17 +132,16 @@ def _assess_trust(spec: SkillSpec, risk_flags: list[str]) -> TrustLevel:
     # physical location of the skill under js/skills/builtin/.
     if spec.trust_level == TrustLevel.BUILTIN:
         builtin_dir = (Path(__file__).parent / "builtin").resolve()
-        is_genuine_builtin = (
-            spec.path is not None
-            and str(spec.path.resolve()).startswith(str(builtin_dir) + os.sep)
+        is_genuine_builtin = spec.path is not None and str(spec.path.resolve()).startswith(
+            str(builtin_dir) + os.sep
         )
         if is_genuine_builtin:
             return TrustLevel.BUILTIN
         # Self-declared from outside — fall through to normal risk assessment
         logger.warning(
-            "Skill '%s' self-declared trust_level=builtin but is not in %s — "
-            "treating as untrusted",
-            spec.id, builtin_dir,
+            "Skill '%s' self-declared trust_level=builtin but is not in %s — treating as untrusted",
+            spec.id,
+            builtin_dir,
         )
 
     # ── Ed25519 signature verification ──
@@ -145,8 +159,7 @@ def _assess_trust(spec: SkillSpec, risk_flags: list[str]) -> TrustLevel:
                     return TrustLevel.TRUSTED
                 else:
                     logger.warning(
-                        "Skill '%s' has invalid Ed25519 signature — "
-                        "downgrading to COMMUNITY",
+                        "Skill '%s' has invalid Ed25519 signature — downgrading to COMMUNITY",
                         spec.id,
                     )
                     return TrustLevel.COMMUNITY
@@ -210,7 +223,18 @@ def runtime_security_check(spec: SkillSpec) -> tuple[bool, list[str]]:
                 content = entry.read_text(errors="ignore")
                 sensitive_pattern = RISK_PATTERNS.get("sensitive_path_access")
                 if sensitive_pattern and sensitive_pattern.search(content):
-                    warnings.append("Script references sensitive paths (SSH keys, credentials, etc.)")
+                    warnings.append(
+                        "Script references sensitive paths (SSH keys, credentials, etc.)"
+                    )
+                # High-confidence execution vectors (curl|sh, reverse shells)
+                # block at runtime too — install-time scanning may predate an
+                # entry rewrite, and .bash/.sh entries deserve the same screen.
+                exfil_pattern = RISK_PATTERNS.get("network_exfil")
+                if exfil_pattern and exfil_pattern.search(content):
+                    warnings.append(
+                        "Script contains a network exfiltration/exec pattern "
+                        "(curl|sh, nc -e, /dev/tcp, socket.connect)"
+                    )
             except Exception:
                 logger.warning(f"Failed to read entry {entry}", exc_info=True)
 

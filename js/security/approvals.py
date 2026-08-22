@@ -19,11 +19,12 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from js.security.secrets import redact_known_secrets
 from js.utils.log import get_logger
@@ -85,6 +86,7 @@ class ApprovalRequest:
     session_id: str | None = None
     run_id: str | None = None
     owner_key_hash: str | None = None
+    approval_mode: ApprovalMode = ApprovalMode.MANUAL
     resolved: bool = False
     approved: bool = False
     decision: ApprovalDecision | None = None
@@ -109,6 +111,100 @@ class _CallbackRegistration:
 class _ResolvedDecisionRecord:
     decision: ApprovalDecision
     owner_key_hash: str | None
+    session_id: str
+    run_id: str
+    tool_name: str
+    arguments_hash: str
+    requested_at: float
+    expires_at: float
+    approval_mode: ApprovalMode
+
+
+class ApprovalEchoAuthority:
+    """Typed, sealed authority for atomic approval claims in EchoLedger.
+
+    Created by ``EchoSafetyService``, passed to ``ApprovalQueue`` via
+    ``set_echo_authority()`` (set-once).  Once sealed, cannot be replaced.
+    All three methods (``claim_once``, ``lookup_claim``, ``record_event``)
+    operate on the same Echo journal partition.
+    """
+
+    __slots__ = ("_service", "_product_id", "_sealed")
+
+    def __init__(self, service: Any, *, product_id: str) -> None:
+        self._service = service
+        self._product_id = product_id
+        self._sealed = False
+
+    def seal(self) -> None:
+        self._sealed = True
+
+    def claim_once(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        run_id: str,
+        request_id: str,
+        tool_name: str,
+        arguments_hash: str,
+        approval_mode: str,
+        expires_at: float,
+        requested_at: float,
+    ) -> Any:
+        """Atomically claim one approval binding in the Echo journal."""
+        return self._service.claim_approval_binding_once(
+            tenant_id=tenant_id,
+            product_id=self._product_id,
+            session_id=session_id,
+            run_id=run_id,
+            request_id=request_id,
+            tool_name=tool_name,
+            arguments_hash=arguments_hash,
+            approval_mode=approval_mode,
+            expires_at=expires_at,
+            requested_at=requested_at,
+        )
+
+    def lookup_claim(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        request_id: str,
+    ) -> Any | None:
+        """Query whether a claim exists in the Echo journal."""
+        return self._service.lookup_approval_claim(
+            tenant_id=tenant_id,
+            product_id=self._product_id,
+            session_id=session_id,
+            request_id=request_id,
+        )
+
+    def record_event(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        run_id: str,
+        event_type: str,
+        request_id: str,
+        tool_name: str,
+        arguments_hash: str,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Record a non-claim approval event (e.g. finalize)."""
+        self._service.record_approval_event(
+            tenant_id=tenant_id,
+            product_id=self._product_id,
+            session_id=session_id,
+            run_id=run_id,
+            event_type=event_type,
+            request_id=request_id,
+            tool_name=tool_name,
+            arguments_hash=arguments_hash,
+            extra=extra,
+        )
 
 
 class ApprovalQueue:
@@ -140,6 +236,9 @@ class ApprovalQueue:
         # local JSONL file is only a derived mirror; the EchoLedger scope
         # partition journal is the system of record.
         self._echo_event_sink: Callable[[dict[str, Any]], None] | None = None
+        # Typed, sealed Echo authority for atomic approval claims.
+        self._echo_authority: ApprovalEchoAuthority | None = None
+        self._echo_authority_sealed = False
         self._load_ledger_sequence()
 
     def set_echo_event_sink(self, sink: Callable[[dict[str, Any]], None] | None) -> None:
@@ -151,6 +250,35 @@ class ApprovalQueue:
         closed rather than proceeding on the derived JSONL mirror alone.
         """
         self._echo_event_sink = sink
+
+    def set_echo_authority(self, authority: ApprovalEchoAuthority) -> None:
+        """Install the typed, sealed Echo authority for atomic claims.
+
+        Set-once: a second call raises ``RuntimeError``.  Once installed,
+        ``consume_approved_binding`` uses the authority's atomic
+        ``claim_once`` instead of trusting the local mirror.
+        """
+        if self._echo_authority_sealed:
+            raise RuntimeError("echo authority is already sealed")
+        self._echo_authority = authority
+        self._echo_authority_sealed = True
+        authority.seal()
+        # Also wire the sink for non-claim events (approve, finalize, etc.)
+        if self._echo_event_sink is None:
+            self._echo_event_sink = lambda event: authority.record_event(
+                tenant_id=str(event.get("owner_key_hash") or "local"),
+                session_id=str(event.get("session_id") or ""),
+                run_id=str(event.get("run_id") or ""),
+                event_type=str(event["event_type"]),
+                request_id=str(event.get("request_id") or ""),
+                tool_name=str(event.get("tool_name") or ""),
+                arguments_hash=str(event.get("arguments_hash") or ""),
+                extra={
+                    k: v
+                    for k, v in event.items()
+                    if k not in _SINK_CORE_FIELDS and k != "timestamp"
+                },
+            )
 
     def _derive_ledger_mac_key(self) -> bytes:
         """Derive a per-installation MAC key from a secret file.
@@ -378,11 +506,18 @@ class ApprovalQueue:
     def _store_resolved_decision(
         self,
         decision: ApprovalDecision,
-        owner_key_hash: str | None,
+        request: ApprovalRequest,
     ) -> None:
         self._resolved_decisions[decision.request_id] = _ResolvedDecisionRecord(
             decision=decision,
-            owner_key_hash=owner_key_hash,
+            owner_key_hash=request.owner_key_hash,
+            session_id=request.session_id or "",
+            run_id=request.run_id or "",
+            tool_name=request.tool_name,
+            arguments_hash=self._argument_hash(request.arguments),
+            requested_at=request.timestamp,
+            expires_at=request.timestamp + request.timeout_seconds,
+            approval_mode=request.approval_mode,
         )
         self._resolved_decisions.move_to_end(decision.request_id)
         while len(self._resolved_decisions) > 1024:
@@ -400,6 +535,14 @@ class ApprovalQueue:
     def _argument_hash(arguments: dict[str, Any]) -> str:
         payload = json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str)
         return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def arguments_hash(cls, arguments: dict[str, Any]) -> str:
+        """Return the exact safe hash used by approval binding snapshots."""
+
+        if type(arguments) is not dict:
+            raise TypeError("approval arguments must be an exact dict")
+        return cls._argument_hash(arguments)
 
     @classmethod
     def _redact_ledger_value(cls, value: Any) -> Any:
@@ -428,16 +571,20 @@ class ApprovalQueue:
             "owner_key_hash": req.owner_key_hash or "",
             "arguments_hash": self._argument_hash(req.arguments),
             "timestamp": req.timestamp,
+            "requested_at": req.timestamp,
+            "expires_at": req.timestamp + req.timeout_seconds,
+            "approval_mode": req.approval_mode.value,
             **extra,
         }
         event = self._redact_ledger_value(event)
+        # The EchoLedger scope partition journal is the authoritative record.
+        # Call it before the derived mirror so a sink failure cannot leave a
+        # locally claimable approval that the authoritative journal never saw.
+        if self._echo_event_sink is not None:
+            self._echo_event_sink(dict(event))
         if self._ledger_path is not None:
             with self._lock:
                 self._append_ledger_mirror(event)
-        # The EchoLedger scope partition journal is the authoritative record.
-        # Sink failures propagate so the approval flow fails closed.
-        if self._echo_event_sink is not None:
-            self._echo_event_sink(dict(event))
 
     def _append_ledger_mirror(self, event: dict[str, Any]) -> None:
         """Append to the derived local JSONL mirror (not the system of record)."""
@@ -532,6 +679,44 @@ class ApprovalQueue:
                 prev_hash = record_hash.removeprefix("sha256:")
         return (max_seq + 1) if max_seq >= 0 else 0, prev_hash
 
+    def _verified_ledger_rows(self) -> list[dict[str, Any]]:
+        """Read the complete approval mirror with exact chain/MAC validation."""
+
+        if self._ledger_path is None or not self._ledger_path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        prev_hash = "0" * 64
+        expected_seq = 0
+        with self._ledger_path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                if not raw_line.strip():
+                    continue
+                try:
+                    row = json.loads(raw_line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError("approval ledger contains invalid JSON") from exc
+                if type(row) is not dict or int(row.get("seq", -1)) != expected_seq:
+                    raise ValueError("approval ledger sequence is invalid")
+                if row.get("prev_hash") != prev_hash:
+                    raise ValueError("approval ledger hash chain is invalid")
+                canonical = json.dumps(
+                    {key: value for key, value in row.items() if key not in ("record_hash", "mac")},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+                record_hash = "sha256:" + hashlib.sha256(canonical).hexdigest()
+                if row.get("record_hash") != record_hash:
+                    raise ValueError("approval ledger record hash is invalid")
+                expected_mac = hmac.new(self._ledger_mac_key, canonical, hashlib.sha256).hexdigest()
+                if not hmac.compare_digest(str(row.get("mac", "")), expected_mac):
+                    raise ValueError("approval ledger MAC is invalid")
+                rows.append(cast("dict[str, Any]", row))
+                expected_seq += 1
+                prev_hash = record_hash.removeprefix("sha256:")
+        return rows
+
     def _emit_metrics(
         self,
         tool_name: str,
@@ -583,7 +768,7 @@ class ApprovalQueue:
                     request_id=req.id,
                     reason="timeout",
                 )
-                self._store_resolved_decision(req.decision, req.owner_key_hash)
+                self._store_resolved_decision(req.decision, req)
                 self._record_outcome(False)
                 self._append_ledger("approval_expired", req, reason="timeout")
                 self._audit_log(req, "expired", "timeout")
@@ -621,6 +806,54 @@ class ApprovalQueue:
         """Remove a session callback."""
         with self._lock:
             self._callbacks.pop(session_id, None)
+
+    def revoke_for_session(
+        self,
+        *,
+        owner_key_hash: str,
+        session_id: str,
+        reason: str = "session_revoked",
+    ) -> tuple[str, ...]:
+        """Reject pending approvals bound to one verified owner/session.
+
+        AppShell mode changes call this beside capability-lease revocation so
+        a decision queued in the departing mode cannot be approved after the
+        browser reconnects to a different runtime.
+        """
+        if not owner_key_hash or not session_id:
+            raise ValueError("approval revocation requires owner_key_hash and session_id")
+        revoked: list[ApprovalRequest] = []
+        with self._lock:
+            for request_id, request in tuple(self._pending.items()):
+                if request.resolved or request.session_id != session_id:
+                    continue
+                if not _secure_str_eq(request.owner_key_hash, owner_key_hash):
+                    continue
+                decision = ApprovalDecision(
+                    ApprovalDecisionType.REJECT,
+                    request_id=request.id,
+                    reason=reason,
+                )
+                request.resolved = True
+                request.approved = False
+                request.decision = decision
+                self._pending.pop(request_id, None)
+                self._store_resolved_decision(decision, request)
+                revoked.append(request)
+
+            registration = self._callbacks.get(session_id)
+            if registration is not None and _secure_str_eq(
+                registration.owner_key_hash,
+                owner_key_hash,
+            ):
+                self._callbacks.pop(session_id, None)
+
+        for request in revoked:
+            self._record_outcome(False)
+            self._emit_metrics(request.tool_name, self.default_mode, False)
+            self._append_ledger("approval_rejected", request, reason=reason)
+            self._audit_log(request, "denied", reason)
+        return tuple(request.id for request in revoked)
 
     def request(
         self,
@@ -673,6 +906,7 @@ class ApprovalQueue:
                 session_id=session_id,
                 run_id=run_id,
                 owner_key_hash=owner_key_hash,
+                approval_mode=resolved_mode,
             )
             # AUTO_APPROVE must still honor an existing session callback binding
             # so a cross-owner / cross-run request cannot skip the Echo gate.
@@ -740,6 +974,7 @@ class ApprovalQueue:
                 session_id=session_id,
                 run_id=run_id,
                 owner_key_hash=owner_key_hash,
+                approval_mode=resolved_mode,
             )
             self._append_ledger("approval_requested", auto_req)
             self._append_ledger("approval_rejected", auto_req, reason="auto_deny")
@@ -764,6 +999,7 @@ class ApprovalQueue:
                 session_id=session_id,
                 run_id=run_id,
                 owner_key_hash=owner_key_hash,
+                approval_mode=resolved_mode,
             )
             self._append_ledger("approval_requested", auto_req)
             self._append_ledger("approval_rejected", auto_req, reason="cron_deny")
@@ -785,6 +1021,7 @@ class ApprovalQueue:
             session_id=session_id,
             run_id=run_id,
             owner_key_hash=owner_key_hash,
+            approval_mode=resolved_mode,
         )
 
         with self._lock:
@@ -832,13 +1069,6 @@ class ApprovalQueue:
                         reason="callback",
                     )
                 approved = decision.approved
-                with self._lock:
-                    req.resolved = True
-                    req.approved = approved
-                    req.decision = decision
-                    self._pending.pop(req.id, None)
-                self._record_outcome(approved)
-                self._emit_metrics(tool_name, resolved_mode, approved)
                 event_type = (
                     "approval_edited"
                     if decision.action == ApprovalDecisionType.EDIT
@@ -847,6 +1077,14 @@ class ApprovalQueue:
                     else "approval_rejected"
                 )
                 self._append_ledger(event_type, req, reason=decision.reason)
+                with self._lock:
+                    req.resolved = True
+                    req.approved = approved
+                    req.decision = decision
+                    self._store_resolved_decision(decision, req)
+                    self._pending.pop(req.id, None)
+                self._record_outcome(approved)
+                self._emit_metrics(tool_name, resolved_mode, approved)
                 self._audit_log(req, "approved" if approved else "denied", "callback")
                 return decision
             except Exception as e:
@@ -861,15 +1099,16 @@ class ApprovalQueue:
                 reason="cli_prompt",
             )
             req.decision = decision
-            self._record_outcome(approved)
-            with self._lock:
-                self._pending.pop(req.id, None)
-            self._emit_metrics(tool_name, resolved_mode, approved)
             self._append_ledger(
                 "approval_approved" if approved else "approval_rejected",
                 req,
                 reason="cli_prompt",
             )
+            self._record_outcome(approved)
+            with self._lock:
+                self._store_resolved_decision(decision, req)
+                self._pending.pop(req.id, None)
+            self._emit_metrics(tool_name, resolved_mode, approved)
             self._audit_log(req, "approved" if approved else "denied", "cli_prompt")
             return decision
 
@@ -958,20 +1197,21 @@ class ApprovalQueue:
                 # Reject resolution of expired requests
                 if req.is_expired():
                     logger.warning("Attempted to resolve expired approval request %s", request_id)
-                    req.resolved = True
-                    req.approved = False
-                    req.decision = ApprovalDecision(
+                    decision = ApprovalDecision(
                         ApprovalDecisionType.REJECT,
                         request_id=req.id,
                         reason="late_resolution",
                     )
-                    self._store_resolved_decision(req.decision, req.owner_key_hash)
+                    self._append_ledger("approval_expired", req, reason="late_resolution")
+                    req.resolved = True
+                    req.approved = False
+                    req.decision = decision
+                    self._store_resolved_decision(decision, req)
                     self._record_outcome(False)
                     self._pending.pop(request_id, None)
-                    self._append_ledger("approval_expired", req, reason="late_resolution")
                     self._audit_log(req, "expired", "late_resolution")
                     self._emit_metrics(req.tool_name, self.default_mode, False)
-                    return req.decision
+                    return decision
                 approved = action in {
                     ApprovalDecisionType.APPROVE,
                     ApprovalDecisionType.EDIT,
@@ -987,20 +1227,23 @@ class ApprovalQueue:
                     response=response,
                     reason=reason,
                 )
-                req.resolved = True
-                req.approved = approved
-                req.decision = decision
-                self._store_resolved_decision(decision, req.owner_key_hash)
-                self._record_outcome(approved)
-                self._pending.pop(request_id, None)
-                self._emit_metrics(req.tool_name, self.default_mode, approved)
                 event_type = {
                     ApprovalDecisionType.APPROVE: "approval_approved",
                     ApprovalDecisionType.EDIT: "approval_edited",
                     ApprovalDecisionType.REJECT: "approval_rejected",
                     ApprovalDecisionType.RESPOND: "approval_responded",
                 }[action]
+                # Persist both authoritative event and durable exact snapshot
+                # before removing the pending record. Sink/ledger failure leaves
+                # the request pending and therefore cannot authorize execution.
                 self._append_ledger(event_type, req, reason=reason)
+                req.resolved = True
+                req.approved = approved
+                req.decision = decision
+                self._store_resolved_decision(decision, req)
+                self._record_outcome(approved)
+                self._pending.pop(request_id, None)
+                self._emit_metrics(req.tool_name, self.default_mode, approved)
                 self._audit_log(req, "approved" if approved else "denied", "resolved")
                 return decision
         return ApprovalDecision(ApprovalDecisionType.PENDING, request_id=request_id)
@@ -1038,6 +1281,258 @@ class ApprovalQueue:
             ):
                 return None
             return request
+
+    def pending_arguments_hash(
+        self,
+        request_id: str,
+        *,
+        owner_key_hash: str,
+    ) -> str:
+        """Return the canonical argument hash for one exact pending request.
+
+        This is a read-only projection accessor.  It never returns arguments
+        and refuses a request that is no longer pending or belongs to another
+        owner.
+        """
+        request = self.get_pending_request(
+            request_id,
+            owner_key_hash=owner_key_hash,
+        )
+        if request is None:
+            raise KeyError("pending approval request is unavailable")
+        return self._argument_hash(request.arguments)
+
+    @contextmanager
+    def _approval_claim_transaction(self) -> Iterator[None]:
+        """Serialize approval preflight/claim across queue instances and processes."""
+
+        if self._ledger_path is None:
+            yield
+            return
+        lock_path = self._ledger_path.with_suffix(self._ledger_path.suffix + ".claim.lock")
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            os.fchmod(lock_fd, 0o600)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+
+    def _durable_resolved_record(self, request_id: str) -> _ResolvedDecisionRecord | None:
+        record: _ResolvedDecisionRecord | None = None
+        for row in self._verified_ledger_rows():
+            if row.get("request_id") != request_id:
+                continue
+            event_type = str(row.get("event_type", ""))
+            if event_type == "approval_approved":
+                try:
+                    approval_mode = ApprovalMode(str(row["approval_mode"]))
+                    requested_at = float(row["requested_at"])
+                    expires_at = float(row["expires_at"])
+                    owner_key_hash = str(row["owner_key_hash"])
+                    session_id = str(row["session_id"])
+                    run_id = str(row["run_id"])
+                    tool_name = str(row["tool_name"])
+                    arguments_hash = str(row["arguments_hash"])
+                except (KeyError, TypeError, ValueError):
+                    # Pre-R4 approval rows do not have the complete immutable
+                    # snapshot and therefore require fresh manual approval.
+                    record = None
+                    continue
+                record = _ResolvedDecisionRecord(
+                    decision=ApprovalDecision(
+                        ApprovalDecisionType.APPROVE,
+                        request_id=request_id,
+                    ),
+                    owner_key_hash=owner_key_hash,
+                    session_id=session_id,
+                    run_id=run_id,
+                    tool_name=tool_name,
+                    arguments_hash=arguments_hash,
+                    requested_at=requested_at,
+                    expires_at=expires_at,
+                    approval_mode=approval_mode,
+                )
+            elif event_type in {
+                "approval_edited",
+                "approval_rejected",
+                "approval_responded",
+                "approval_expired",
+                "approval_execution_claimed",
+            }:
+                record = None
+        # If mirror has no claim but Echo authority is available, check Echo
+        # for a durable claim.  This detects mirror truncation.
+        if (
+            record is not None
+            and self._echo_authority is not None
+        ):
+            echo_claim = self._echo_authority.lookup_claim(
+                tenant_id=record.owner_key_hash or "",
+                session_id=record.session_id,
+                request_id=request_id,
+            )
+            if echo_claim is not None:
+                # Echo has a claim that mirror is missing -> rebuild consumed
+                return None
+        return record
+
+    def _resolved_record_for_claim(self, request_id: str) -> _ResolvedDecisionRecord | None:
+        if self._ledger_path is not None:
+            return self._durable_resolved_record(request_id)
+        return self._resolved_decisions.get(request_id)
+
+    @staticmethod
+    def _validate_approved_record(
+        record: _ResolvedDecisionRecord | None,
+        *,
+        owner_key_hash: str,
+        session_id: str,
+        run_id: str,
+        tool_name: str,
+        arguments_hash: str,
+        require_manual: bool,
+    ) -> _ResolvedDecisionRecord:
+        matches = record is not None and all(
+            (
+                record.decision.action is ApprovalDecisionType.APPROVE,
+                _secure_str_eq(record.owner_key_hash, owner_key_hash),
+                _secure_str_eq(record.session_id, session_id),
+                _secure_str_eq(record.run_id, run_id),
+                record.tool_name == tool_name,
+                _secure_str_eq(record.arguments_hash, arguments_hash),
+                not require_manual or record.approval_mode is ApprovalMode.MANUAL,
+                time.time() <= record.expires_at,
+            )
+        )
+        if not matches or record is None:
+            raise PermissionError("approved binding is unavailable or does not match")
+        return record
+
+    def validate_approved_binding(
+        self,
+        request_id: str,
+        *,
+        owner_key_hash: str,
+        session_id: str,
+        run_id: str,
+        tool_name: str,
+        arguments_hash: str,
+        require_manual: bool,
+    ) -> ApprovalDecision:
+        """Read-only preflight for one exact resolved approval snapshot."""
+
+        with self._lock, self._approval_claim_transaction():
+            record = self._validate_approved_record(
+                self._resolved_record_for_claim(request_id),
+                owner_key_hash=owner_key_hash,
+                session_id=session_id,
+                run_id=run_id,
+                tool_name=tool_name,
+                arguments_hash=arguments_hash,
+                require_manual=require_manual,
+            )
+            return record.decision
+
+    def consume_approved_binding(
+        self,
+        request_id: str,
+        *,
+        owner_key_hash: str,
+        session_id: str,
+        run_id: str,
+        tool_name: str,
+        arguments_hash: str,
+        require_manual: bool,
+    ) -> ApprovalDecision:
+        """Durably claim one exact manual approval at most once.
+
+        When an :class:`ApprovalEchoAuthority` is installed, the claim is
+        performed atomically in the Echo journal's cross-process lock
+        (``claim_once``).  The local mirror is updated only as a cache;
+        mirror failure is non-fatal.  If the Echo authority is unavailable,
+        the claim fails closed and does NOT fall back to mirror-only trust.
+
+        Without an Echo authority (legacy/test mode), falls back to the
+        mirror-based claim with cross-process file lock.
+        """
+
+        with self._lock, self._approval_claim_transaction():
+            record = self._validate_approved_record(
+                self._resolved_record_for_claim(request_id),
+                owner_key_hash=owner_key_hash,
+                session_id=session_id,
+                run_id=run_id,
+                tool_name=tool_name,
+                arguments_hash=arguments_hash,
+                require_manual=require_manual,
+            )
+
+            # --- Echo authority path (production) ---
+            if self._echo_authority is not None:
+                self._echo_authority.claim_once(
+                    tenant_id=record.owner_key_hash or "",
+                    session_id=record.session_id,
+                    run_id=record.run_id,
+                    request_id=request_id,
+                    tool_name=record.tool_name,
+                    arguments_hash=record.arguments_hash,
+                    approval_mode=record.approval_mode.value,
+                    expires_at=record.expires_at,
+                    requested_at=record.requested_at,
+                )
+                # receipt.claimed_now == False means already claimed (idempotent
+                # recovery).  Either way, the binding is consumed; we must NOT
+                # re-authorize execution from an already_claimed receipt.
+                # Mirror is cache-only:
+                event = self._redact_ledger_value(
+                    {
+                        "event_type": "approval_execution_claimed",
+                        "request_id": request_id,
+                        "tool_name": record.tool_name,
+                        "context": "runtime",
+                        "session_id": record.session_id,
+                        "run_id": record.run_id,
+                        "owner_key_hash": record.owner_key_hash or "",
+                        "arguments_hash": record.arguments_hash,
+                        "timestamp": time.time(),
+                        "requested_at": record.requested_at,
+                        "expires_at": record.expires_at,
+                        "approval_mode": record.approval_mode.value,
+                    }
+                )
+                if self._ledger_path is not None:
+                    try:
+                        self._append_ledger_mirror(cast("dict[str, Any]", event))
+                    except Exception:
+                        pass  # mirror failure is non-fatal; Echo is authoritative
+                self._resolved_decisions.pop(request_id, None)
+                return record.decision
+
+            # --- Legacy mirror-only path (test/no-Echo mode) ---
+            event = self._redact_ledger_value(
+                {
+                    "event_type": "approval_execution_claimed",
+                    "request_id": request_id,
+                    "tool_name": record.tool_name,
+                    "context": "runtime",
+                    "session_id": record.session_id,
+                    "run_id": record.run_id,
+                    "owner_key_hash": record.owner_key_hash or "",
+                    "arguments_hash": record.arguments_hash,
+                    "timestamp": time.time(),
+                    "requested_at": record.requested_at,
+                    "expires_at": record.expires_at,
+                    "approval_mode": record.approval_mode.value,
+                }
+            )
+            if self._ledger_path is not None:
+                self._append_ledger_mirror(cast("dict[str, Any]", event))
+            if self._echo_event_sink is not None:
+                self._echo_event_sink(cast("dict[str, Any]", dict(event)))
+            self._resolved_decisions.pop(request_id, None)
+            return record.decision
 
     def take_decision(
         self,
@@ -1115,3 +1610,17 @@ def wire_echo_approval_sink(
         )
 
     return _sink
+
+
+def wire_echo_approval_authority(
+    service: Any,
+    *,
+    product_id: str,
+) -> ApprovalEchoAuthority:
+    """Create a typed, sealed ``ApprovalEchoAuthority`` for an ApprovalQueue.
+
+    The authority provides atomic ``claim_once`` and ``lookup_claim``
+    operations backed by the Echo journal's cross-process lock.
+    """
+
+    return ApprovalEchoAuthority(service, product_id=product_id)

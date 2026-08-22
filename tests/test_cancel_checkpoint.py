@@ -193,6 +193,72 @@ class TestCancelAPI:
         assert token.is_set()
 
     @pytest.mark.asyncio
+    async def test_request_owned_cancel_distinguishes_cancelled_idle_and_denied(
+        self,
+        agent: JSAgent,
+    ) -> None:
+        victim_token = asyncio.Event()
+        agent.bind_cancel_token(
+            "shared-session",
+            victim_token,
+            owner_key_hash="victim-owner",
+            run_id="victim-run",
+        )
+
+        denied = agent.request_owned_cancel(
+            "shared-session",
+            owner_key_hash="attacker-owner",
+        )
+        assert str(denied) == "denied"
+        assert not victim_token.is_set()
+
+        cancelled = agent.request_owned_cancel(
+            "shared-session",
+            owner_key_hash="victim-owner",
+        )
+        assert str(cancelled) == "cancelled"
+        assert victim_token.is_set()
+
+        idle = agent.request_owned_cancel(
+            "missing-session",
+            owner_key_hash="victim-owner",
+        )
+        assert str(idle) == "idle"
+
+    @pytest.mark.parametrize(
+        ("session_id", "owner_key_hash"),
+        [("", "owner"), (" ", "owner"), ("session", ""), ("session", " ")],
+    )
+    def test_request_owned_cancel_rejects_unverifiable_binding(
+        self,
+        agent: JSAgent,
+        session_id: str,
+        owner_key_hash: str,
+    ) -> None:
+        with pytest.raises(ValueError):
+            agent.request_owned_cancel(session_id, owner_key_hash=owner_key_hash)
+
+    def test_request_owned_cancel_denies_legacy_unowned_same_session(
+        self,
+        agent: JSAgent,
+    ) -> None:
+        legacy_token = asyncio.Event()
+        agent.bind_cancel_token(
+            "legacy-session",
+            legacy_token,
+            owner_key_hash=None,
+            run_id="legacy-run",
+        )
+
+        result = agent.request_owned_cancel(
+            "legacy-session",
+            owner_key_hash="authenticated-owner",
+        )
+
+        assert str(result) == "denied"
+        assert not legacy_token.is_set()
+
+    @pytest.mark.asyncio
     async def test_same_session_id_cancels_only_matching_owner(
         self,
         agent: JSAgent,

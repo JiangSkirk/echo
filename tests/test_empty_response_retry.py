@@ -60,6 +60,7 @@ class MockEmptyProvider(ModelProvider):
     ) -> AsyncIterator[str]:
         async def _gen() -> AsyncIterator[str]:
             yield "Mock"
+
         return _gen()
 
     async def health_check(self) -> bool:
@@ -81,8 +82,11 @@ class MockRouter(ModelRouter):
         self._model_map = {}
         self._permit_verifier = permit_verifier
 
-    async def select_model(self, task_complexity: str = "medium", preferred: str | None = None) -> Any:
+    async def select_model(
+        self, task_complexity: str = "medium", preferred: str | None = None
+    ) -> Any:
         from js.models.router import RoutingDecision
+
         return RoutingDecision(
             provider=self._providers["mock"],
             model="gpt",
@@ -132,6 +136,7 @@ def agent(tmp_path: Path, mock_provider: MockEmptyProvider) -> JSAgent:
         workspace=tmp_path / "workspace",
         state_dir=tmp_path / "state",
         max_turns=5,
+        max_empty_response_retries=3,
     )
     agent = JSAgent(settings)
     agent.router = MockRouter(
@@ -143,13 +148,35 @@ def agent(tmp_path: Path, mock_provider: MockEmptyProvider) -> JSAgent:
 
 class TestEmptyResponseRetry:
     @pytest.mark.asyncio
-    async def test_empty_response_retries_then_succeeds(self, agent: JSAgent, mock_provider: MockEmptyProvider) -> None:
+    async def test_empty_response_retries_then_succeeds(
+        self, agent: JSAgent, mock_provider: MockEmptyProvider
+    ) -> None:
         """Empty responses should be retried until a non-empty one is received."""
-        mock_provider.set_responses([
-            ChatResponse(content="", tool_calls=[], model="mock", usage={"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5}, finish_reason="stop"),
-            ChatResponse(content="", tool_calls=[], model="mock", usage={"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5}, finish_reason="stop"),
-            ChatResponse(content="Got it!", tool_calls=[], model="mock", usage={"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}, finish_reason="stop"),
-        ])
+        mock_provider.set_responses(
+            [
+                ChatResponse(
+                    content="",
+                    tool_calls=[],
+                    model="mock",
+                    usage={"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5},
+                    finish_reason="stop",
+                ),
+                ChatResponse(
+                    content="",
+                    tool_calls=[],
+                    model="mock",
+                    usage={"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5},
+                    finish_reason="stop",
+                ),
+                ChatResponse(
+                    content="Got it!",
+                    tool_calls=[],
+                    model="mock",
+                    usage={"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+                    finish_reason="stop",
+                ),
+            ]
+        )
 
         state = await agent.run("Test retry")
 
@@ -160,32 +187,79 @@ class TestEmptyResponseRetry:
         assert not any(m.role == "assistant" and m.content == "" for m in state.messages)
 
     @pytest.mark.asyncio
-    async def test_empty_response_exhausts_max_turns(self, agent: JSAgent, mock_provider: MockEmptyProvider) -> None:
-        """All empty responses should end with status='error' after max_turns."""
-        mock_provider.set_responses([
-            ChatResponse(content="", tool_calls=[], model="mock", usage={"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5}, finish_reason="stop"),
-            ChatResponse(content="", tool_calls=[], model="mock", usage={"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5}, finish_reason="stop"),
-            ChatResponse(content="", tool_calls=[], model="mock", usage={"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5}, finish_reason="stop"),
-            ChatResponse(content="", tool_calls=[], model="mock", usage={"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5}, finish_reason="stop"),
-            ChatResponse(content="", tool_calls=[], model="mock", usage={"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5}, finish_reason="stop"),
-        ])
+    async def test_empty_response_exhausts_max_retries(
+        self, agent: JSAgent, mock_provider: MockEmptyProvider
+    ) -> None:
+        """Consecutive empties should error after max_empty_response_retries, not max_turns."""
+        mock_provider.set_responses(
+            [
+                ChatResponse(
+                    content="",
+                    tool_calls=[],
+                    model="mock",
+                    usage={"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5},
+                    finish_reason="stop",
+                ),
+                ChatResponse(
+                    content="",
+                    tool_calls=[],
+                    model="mock",
+                    usage={"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5},
+                    finish_reason="stop",
+                ),
+                ChatResponse(
+                    content="",
+                    tool_calls=[],
+                    model="mock",
+                    usage={"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5},
+                    finish_reason="stop",
+                ),
+                ChatResponse(
+                    content="Should not reach",
+                    tool_calls=[],
+                    model="mock",
+                    usage={"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+                    finish_reason="stop",
+                ),
+            ]
+        )
 
         state = await agent.run("Test exhaust")
 
         assert state.status == "error"
-        assert state.turn_count == 5
+        assert state.turn_count == 3  # max_empty_response_retries=3
+        assert len(mock_provider.calls) == 3
         assert state.error_message is not None
-        assert "maximum retries" in state.error_message.lower() or "empty" in state.error_message.lower()
+        assert (
+            "maximum retries" in state.error_message.lower()
+            or "empty" in state.error_message.lower()
+        )
         # No empty assistant messages should remain
         assert not any(m.role == "assistant" and m.content == "" for m in state.messages)
 
     @pytest.mark.asyncio
-    async def test_single_empty_then_success(self, agent: JSAgent, mock_provider: MockEmptyProvider) -> None:
+    async def test_single_empty_then_success(
+        self, agent: JSAgent, mock_provider: MockEmptyProvider
+    ) -> None:
         """A single empty response followed by success."""
-        mock_provider.set_responses([
-            ChatResponse(content="  ", tool_calls=[], model="mock", usage={"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5}, finish_reason="stop"),
-            ChatResponse(content="OK", tool_calls=[], model="mock", usage={"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}, finish_reason="stop"),
-        ])
+        mock_provider.set_responses(
+            [
+                ChatResponse(
+                    content="  ",
+                    tool_calls=[],
+                    model="mock",
+                    usage={"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5},
+                    finish_reason="stop",
+                ),
+                ChatResponse(
+                    content="OK",
+                    tool_calls=[],
+                    model="mock",
+                    usage={"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+                    finish_reason="stop",
+                ),
+            ]
+        )
 
         state = await agent.run("Test whitespace")
 

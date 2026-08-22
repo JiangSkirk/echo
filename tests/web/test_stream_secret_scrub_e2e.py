@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -20,6 +19,7 @@ from js.agent import JSAgent
 from js.config import JSSettings, ModelConfig, ModelProviderConfig, SecurityConfig
 from js.models.providers import OpenAICompatibleProvider
 from js.models.stream_events import StreamEvent
+from js.web.auth import AuthManager
 from js.web.runtime_context import WebRuntime, bind_web_runtime
 
 _SECRET = "xYz-NOT_A_SK_PREFIX_9876543210!@#"
@@ -100,11 +100,11 @@ def _leaky_stream_provider(secret: str = _SECRET) -> OpenAICompatibleProvider:
     return provider
 
 
-def _build_app() -> Any:
-    os.environ["JS_ALLOWED_ORIGINS"] = "http://localhost"
+def _build_app(monkeypatch: pytest.MonkeyPatch) -> Any:
+    monkeypatch.setenv("JS_ALLOWED_ORIGINS", "http://localhost")
     import js.web.auth as auth_mod
 
-    auth_mod._ALLOWED_ORIGINS = None
+    monkeypatch.setattr(auth_mod, "_ALLOWED_ORIGINS", None)
 
     @asynccontextmanager
     async def _noop_lifespan(_app: Any) -> AsyncIterator[None]:
@@ -120,6 +120,7 @@ def _build_app() -> Any:
 async def test_ws_type_stream_scrubs_secrets_in_all_sinks(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = JSSettings(
         workspace=tmp_path / "workspace",
@@ -140,7 +141,7 @@ async def test_ws_type_stream_scrubs_secrets_in_all_sinks(
     }
     agent.router._routing_cache.clear()
 
-    app = _build_app()
+    app = _build_app(monkeypatch)
     bind_web_runtime(
         app,
         WebRuntime(agent=agent, settings=settings, stats_store=None),
@@ -152,13 +153,16 @@ async def test_ws_type_stream_scrubs_secrets_in_all_sinks(
         patch("js.web.deps._agent", agent),
         patch("js.web.deps._settings", settings),
     ):
+        user_key = AuthManager(settings.state_dir).create_key("ws-scrub", role="user")
         client = TestClient(
-            app, base_url="http://localhost", headers={"Origin": "http://localhost"}
+            app,
+            base_url="http://localhost",
+            headers={"Origin": "http://localhost", "X-API-Key": user_key},
         )
         ws_frames: list[str] = []
         with (
             caplog.at_level(logging.DEBUG),
-            client.websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws,
+            client.websocket_connect("/ws") as ws,
         ):
             ws.send_json(
                 {

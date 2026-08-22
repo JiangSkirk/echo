@@ -73,7 +73,7 @@ def test_create_work_web_app_bootstraps_work_agent_without_skills(tmp_path: Path
         page = client.get("/")
         assert page.status_code == 200
         assert "<title>JS Agent Work</title>" in page.text
-        assert '<h1 class="font-bold text-lg">JS Agent Work</h1>' in page.text
+        assert 'class="rail-brand"' in page.text
 
 
 @pytest.mark.parametrize("fleet_timeout", [False, True], ids=["success", "timeout"])
@@ -138,7 +138,12 @@ def test_work_web_diag_and_skill_endpoints_are_skill_free(tmp_path: Path) -> Non
     with TestClient(
         app, base_url="http://localhost", headers={"Origin": "http://localhost"}
     ) as client:
-        diag = client.get("/api/diag")
+        from js.web.auth import AuthManager
+
+        key = AuthManager(app.state.web_runtime.settings.state_dir).create_key(
+            "work-diag", role="user"
+        )
+        diag = client.get("/api/diag", headers={"X-API-Key": key})
         assert diag.status_code == 200
         diag_data = diag.json()
         assert diag_data["hermes_bridge"] == {
@@ -412,6 +417,7 @@ def test_main_and_work_diag_routes_stay_bound_to_the_request_app(tmp_path: Path)
     from js.config import JSSettings
     from js.echo.ledger.service import EchoSafetyService
     from js.web import server as web_server
+    from js.web.auth import AuthManager
     from js.web.runtime_context import WebRuntime, bind_web_runtime, clear_web_runtime
     from js.web.stats_store import TokenStatsStore
     from js_work.web import create_work_web_app
@@ -476,8 +482,28 @@ def test_main_and_work_diag_routes_stay_bound_to_the_request_app(tmp_path: Path)
                 completion_tokens=2,
             )
 
-        main_routes = {route["path"] for route in main_client.get("/api/diag").json()["routes"]}
-        work_routes = {route["path"] for route in work_client.get("/api/diag").json()["routes"]}
+        main_routes = {
+            route["path"]
+            for route in main_client.get(
+                "/api/diag",
+                headers={
+                    "X-API-Key": AuthManager(main_runtime.settings.state_dir).create_key(
+                        "main-diag", role="user"
+                    )
+                },
+            ).json()["routes"]
+        }
+        work_routes = {
+            route["path"]
+            for route in work_client.get(
+                "/api/diag",
+                headers={
+                    "X-API-Key": AuthManager(work_runtime.settings.state_dir).create_key(
+                        "work-diag", role="user"
+                    )
+                },
+            ).json()["routes"]
+        }
         main_calls = main_client.get("/api/dashboard").json()["token_stats"]["total"]["calls"]
         work_calls = work_client.get("/api/dashboard").json()["token_stats"]["total"]["calls"]
 
@@ -668,12 +694,14 @@ def test_js_work_web_cli_builds_work_web_app(monkeypatch: Any, tmp_path: Path) -
         *,
         config: str | None,
         home: Path | None,
+        personal_roots: Any,
         profile: WorkToolProfile,
         host: str,
         port: int,
     ) -> MagicMock:
         captured["config"] = config or ""
         captured["home"] = str(home)
+        captured["personal_roots"] = personal_roots
         captured["profile"] = profile.value
         captured["host"] = host
         captured["port"] = port
@@ -707,6 +735,7 @@ def test_js_work_web_cli_builds_work_web_app(monkeypatch: Any, tmp_path: Path) -
     assert captured == {
         "config": "",
         "home": str(tmp_path),
+        "personal_roots": None,
         "profile": "office",
         "host": "127.0.0.1",
         "port": 8765,

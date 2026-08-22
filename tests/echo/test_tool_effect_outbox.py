@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 import threading
 from collections.abc import Awaitable, Callable
@@ -17,8 +18,11 @@ from js.agent.tool_executor import ToolExecutorMixin
 from js.config import EchoLedgerConfig
 from js.echo import stable_payload_hash
 from js.echo.durable_thread import EchoDurableExecutor
+from js.echo.ledger.effects import EffectReceipt
 from js.echo.ledger.journal import FileEchoLedger
 from js.echo.ledger.service import EchoSafetyService, EchoUnavailableError
+from js.echo.mode_contract import AppMode, ArtifactRefV1, TaskRef
+from js.echo.turn_context import RuntimeContext, reset_runtime_context, set_runtime_context
 from js.security.approvals import ApprovalMode, ApprovalQueue
 from js.security.guard import BehaviorGuard
 from js.security.secrets import SecretManager
@@ -39,6 +43,605 @@ class _SecurityConfig:
 
 class _Executor(ToolExecutorMixin):
     pass
+
+
+def test_effect_receipt_without_artifacts_remains_backward_compatible() -> None:
+    receipt = EffectReceipt(
+        receipt_id="receipt:legacy",
+        effect_id="effect-legacy",
+        tenant_id="tenant-a",
+        status="ok",
+        output_ref="sha256:" + "0" * 64,
+        replay_class="idempotent",
+    )
+
+    assert receipt.artifact_refs == ()
+
+
+def test_artifact_ref_receipt_restarts_and_lists_exact_verified_ref(tmp_path: Path) -> None:
+    service = EchoSafetyService(state_dir=tmp_path)
+    context = service.begin_tool_effect(
+        tenant_id="tenant-a",
+        product_id="js-agent",
+        session_id="session-a",
+        run_id="run-a",
+        tool_name="excel_write",
+        tool_call_id="call-a",
+        args_hash="sha256:" + "1" * 64,
+        lease_id="lease-a",
+        replay_class="non_idempotent",
+    )
+    ref = ArtifactRefV1(
+        mode=AppMode.PERSONAL,
+        owner="tenant-a",
+        session="session-a",
+        workspace=None,
+        kind="spreadsheet",
+        uri="echo://artifact/exact-a",
+        digest="sha256:" + "2" * 64,
+        acl="owner",
+        created_by_run="run-a",
+    )
+    service.finish_tool_effect(
+        context,
+        status="ok",
+        output_hash=ref.digest,
+        artifact_refs=(ref,),
+    )
+    later = service.begin_tool_effect(
+        tenant_id="tenant-a",
+        product_id="js-agent",
+        session_id="session-a",
+        run_id="run-b",
+        tool_name="file_write",
+        tool_call_id="call-b",
+        args_hash="sha256:" + "3" * 64,
+        lease_id="lease-b",
+        replay_class="non_idempotent",
+    )
+    service.finish_tool_effect(
+        later,
+        status="ok",
+        output_hash="sha256:" + "4" * 64,
+    )
+    service.close()
+
+    restarted = EchoSafetyService(state_dir=tmp_path)
+    assert restarted.list_verified_artifact_refs(
+        tenant_id="tenant-a",
+        mode=AppMode.PERSONAL,
+        workspace=None,
+        limit=50,
+    ) == (ref,)
+
+
+def test_artifact_ref_survives_required_archive_compaction_and_restart(
+    tmp_path: Path,
+) -> None:
+    config = EchoLedgerConfig(retain_records=2, trigger_records=100, max_archives=1)
+    service = EchoSafetyService(state_dir=tmp_path, ledger_config=config)
+    context = service.begin_tool_effect(
+        tenant_id="tenant-a",
+        product_id="js-agent",
+        session_id="session-a",
+        run_id="run-a",
+        tool_name="excel_write",
+        tool_call_id="call-a",
+        args_hash="sha256:" + "1" * 64,
+        lease_id="lease-a",
+        replay_class="non_idempotent",
+    )
+    ref = ArtifactRefV1(
+        mode=AppMode.PERSONAL,
+        owner="tenant-a",
+        session="session-a",
+        workspace=None,
+        kind="spreadsheet",
+        uri="echo://artifact/archived-a",
+        digest="sha256:" + "2" * 64,
+        acl="owner",
+        created_by_run="run-a",
+    )
+    service.finish_tool_effect(
+        context,
+        status="ok",
+        output_hash=ref.digest,
+        artifact_refs=(ref,),
+    )
+    later = service.begin_tool_effect(
+        tenant_id="tenant-a",
+        product_id="js-agent",
+        session_id="session-a",
+        run_id="run-after-artifact",
+        tool_name="file_write",
+        tool_call_id="call-after-artifact",
+        args_hash="sha256:" + "3" * 64,
+        lease_id="lease-after-artifact",
+        replay_class="non_idempotent",
+    )
+    service.finish_tool_effect(
+        later,
+        status="ok",
+        output_hash="sha256:" + "4" * 64,
+    )
+    journal_path = service.journal_path_for_scope(
+        "tenant-a",
+        product_id="js-agent",
+        session_id="session-a",
+    )
+    assert service.compact_journals(max_records=2)[str(journal_path)] is True
+    active_records = FileEchoLedger(
+        journal_path,
+        mac_key=service.journal_key_for_scope(
+            "tenant-a",
+            product_id="js-agent",
+            session_id="session-a",
+        ),
+    ).records
+    assert not any(
+        record.record_type == "receipt" and record.payload.get("artifact_refs")
+        for record in active_records
+    ), "artifact receipt must be recovered from the required archive, not active tail"
+    assert service.list_verified_artifact_refs(
+        tenant_id="tenant-a",
+        mode=AppMode.PERSONAL,
+        workspace=None,
+    ) == (ref,)
+    service.close()
+
+    restarted = EchoSafetyService(state_dir=tmp_path, ledger_config=config)
+    assert restarted.list_verified_artifact_refs(
+        tenant_id="tenant-a",
+        mode=AppMode.PERSONAL,
+        workspace=None,
+    ) == (ref,)
+
+
+def test_artifact_ref_remains_visible_after_session_partition_retirement(
+    tmp_path: Path,
+) -> None:
+    """A verified ref remains reconstructible after its journal is retired."""
+    config = EchoLedgerConfig(max_session_partitions_per_owner=2)
+    service = EchoSafetyService(state_dir=tmp_path, ledger_config=config)
+    context = service.begin_tool_effect(
+        tenant_id="tenant-a",
+        product_id="js-agent",
+        session_id="artifact-session",
+        run_id="artifact-run",
+        tool_name="excel_write",
+        tool_call_id="artifact-call",
+        args_hash="sha256:" + "1" * 64,
+        lease_id="artifact-lease",
+        replay_class="non_idempotent",
+    )
+    ref = ArtifactRefV1(
+        mode=AppMode.PERSONAL,
+        owner="tenant-a",
+        session="artifact-session",
+        workspace=None,
+        kind="spreadsheet",
+        uri="echo://artifact/retired-session",
+        digest="sha256:" + "2" * 64,
+        acl="owner",
+        created_by_run="artifact-run",
+    )
+    service.finish_tool_effect(
+        context,
+        status="ok",
+        output_hash=ref.digest,
+        artifact_refs=(ref,),
+    )
+    artifact_journal = service.journal_path_for_scope(
+        "tenant-a",
+        product_id="js-agent",
+        session_id="artifact-session",
+    )
+    os.utime(artifact_journal, ns=(1_000_000_000, 1_000_000_000))
+
+    for index in range(2):
+        later = service.begin_tool_effect(
+            tenant_id="tenant-a",
+            product_id="js-agent",
+            session_id=f"later-session-{index}",
+            run_id=f"later-run-{index}",
+            tool_name="file_write",
+            tool_call_id=f"later-call-{index}",
+            args_hash="sha256:" + str(index + 3) * 64,
+            lease_id=f"later-lease-{index}",
+            replay_class="non_idempotent",
+        )
+        service.finish_tool_effect(
+            later,
+            status="ok",
+            output_hash="sha256:" + str(index + 5) * 64,
+        )
+
+    assert service.health().retired_session_partition_count >= 1
+    assert not artifact_journal.exists()
+    service.close()
+    restarted = EchoSafetyService(state_dir=tmp_path, ledger_config=config)
+    assert restarted.list_verified_artifact_refs(
+        tenant_id="tenant-a",
+        mode=AppMode.PERSONAL,
+        workspace=None,
+    ) == (ref,)
+
+
+def test_artifact_ref_binding_mismatch_fails_before_receipt_append(tmp_path: Path) -> None:
+    service = EchoSafetyService(state_dir=tmp_path)
+    context = service.begin_tool_effect(
+        tenant_id="tenant-a",
+        product_id="js-agent",
+        session_id="session-a",
+        run_id="run-a",
+        tool_name="excel_write",
+        tool_call_id="call-a",
+        args_hash="sha256:" + "1" * 64,
+        lease_id="lease-a",
+        replay_class="non_idempotent",
+    )
+    before = service.journal_path_for_scope(
+        "tenant-a", product_id="js-agent", session_id="session-a"
+    ).read_bytes()
+    wrong_owner = ArtifactRefV1(
+        mode=AppMode.PERSONAL,
+        owner="tenant-b",
+        session="session-a",
+        workspace=None,
+        kind="spreadsheet",
+        uri="echo://artifact/wrong-owner",
+        digest="sha256:" + "2" * 64,
+        acl="owner",
+        created_by_run="run-a",
+    )
+
+    with pytest.raises(ValueError, match="owner"):
+        service.finish_tool_effect(
+            context,
+            status="ok",
+            output_hash=wrong_owner.digest,
+            artifact_refs=(wrong_owner,),
+        )
+
+    after = service.journal_path_for_scope(
+        "tenant-a", product_id="js-agent", session_id="session-a"
+    ).read_bytes()
+    assert after == before
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("session", "session-b"),
+        ("created_by_run", "run-b"),
+        ("mode", AppMode.WORK),
+    ),
+)
+def test_artifact_ref_scope_mismatch_fails_before_receipt_append(
+    tmp_path: Path,
+    field: str,
+    replacement: object,
+) -> None:
+    service = EchoSafetyService(state_dir=tmp_path)
+    context = service.begin_tool_effect(
+        tenant_id="tenant-a",
+        product_id="js-agent",
+        session_id="session-a",
+        run_id="run-a",
+        tool_name="excel_write",
+        tool_call_id="call-a",
+        args_hash="sha256:" + "1" * 64,
+        lease_id="lease-a",
+        replay_class="non_idempotent",
+    )
+    values: dict[str, object] = {
+        "mode": AppMode.PERSONAL,
+        "owner": "tenant-a",
+        "session": "session-a",
+        "workspace": None,
+        "kind": "spreadsheet",
+        "uri": "echo://artifact/scope-mismatch",
+        "digest": "sha256:" + "2" * 64,
+        "acl": "owner",
+        "created_by_run": "run-a",
+    }
+    values[field] = replacement
+    if field == "mode":
+        values["mode"] = AppMode.WORK
+        values["workspace"] = "ws-" + "a" * 64
+    ref = ArtifactRefV1(**values)  # type: ignore[arg-type]
+    before = service.journal_path_for_scope(
+        "tenant-a", product_id="js-agent", session_id="session-a"
+    ).read_bytes()
+
+    with pytest.raises(ValueError, match=field):
+        service.finish_tool_effect(
+            context,
+            status="ok",
+            output_hash=ref.digest,
+            artifact_refs=(ref,),
+        )
+
+    assert service.journal_path_for_scope(
+        "tenant-a", product_id="js-agent", session_id="session-a"
+    ).read_bytes() == before
+
+
+def test_work_artifact_workspace_mismatch_fails_before_receipt_append(
+    tmp_path: Path,
+) -> None:
+    service = EchoSafetyService(state_dir=tmp_path)
+    expected_workspace = "ws-" + "a" * 64
+    context = service.begin_tool_effect(
+        tenant_id="tenant-a",
+        product_id="js-work",
+        session_id="session-a",
+        run_id="run-a",
+        tool_name="excel_write",
+        tool_call_id="call-a",
+        args_hash="sha256:" + "1" * 64,
+        lease_id="lease-a",
+        replay_class="non_idempotent",
+        workspace=expected_workspace,
+    )
+    ref = ArtifactRefV1(
+        mode=AppMode.WORK,
+        owner="tenant-a",
+        session="session-a",
+        workspace="ws-" + "b" * 64,
+        kind="spreadsheet",
+        uri="echo://artifact/wrong-workspace",
+        digest="sha256:" + "2" * 64,
+        acl="workspace",
+        created_by_run="run-a",
+    )
+    before = service.journal_path_for_scope(
+        "tenant-a", product_id="js-work", session_id="session-a"
+    ).read_bytes()
+
+    with pytest.raises(ValueError, match="workspace"):
+        service.finish_tool_effect(
+            context,
+            status="ok",
+            output_hash=ref.digest,
+            artifact_refs=(ref,),
+        )
+
+    assert service.journal_path_for_scope(
+        "tenant-a", product_id="js-work", session_id="session-a"
+    ).read_bytes() == before
+
+
+def test_failed_receipt_rejects_artifact_refs_before_append(tmp_path: Path) -> None:
+    service = EchoSafetyService(state_dir=tmp_path)
+    context = service.begin_tool_effect(
+        tenant_id="tenant-a",
+        product_id="js-agent",
+        session_id="session-a",
+        run_id="run-a",
+        tool_name="excel_write",
+        tool_call_id="call-a",
+        args_hash="sha256:" + "1" * 64,
+        lease_id="lease-a",
+        replay_class="non_idempotent",
+    )
+    ref = ArtifactRefV1(
+        mode=AppMode.PERSONAL,
+        owner="tenant-a",
+        session="session-a",
+        workspace=None,
+        kind="spreadsheet",
+        uri="echo://artifact/failed",
+        digest="sha256:" + "2" * 64,
+        acl="owner",
+        created_by_run="run-a",
+    )
+
+    with pytest.raises(ValueError, match="successful"):
+        service.finish_tool_effect(
+            context,
+            status="failed",
+            output_hash=ref.digest,
+            artifact_refs=(ref,),
+        )
+
+
+@pytest.mark.parametrize("oversized", ("count", "bytes"))
+def test_tool_finish_artifact_limits_fail_before_receipt_append(
+    tmp_path: Path,
+    oversized: str,
+) -> None:
+    service = EchoSafetyService(state_dir=tmp_path)
+    context = service.begin_tool_effect(
+        tenant_id="tenant-a",
+        product_id="js-agent",
+        session_id="session-artifact-limit",
+        run_id="run-artifact-limit",
+        tool_name="excel_write",
+        tool_call_id="call-artifact-limit",
+        args_hash="sha256:" + "1" * 64,
+        lease_id="lease-artifact-limit",
+        replay_class="non_idempotent",
+    )
+    count = 33 if oversized == "count" else 32
+    uri_padding = 8 if oversized == "count" else 3_980
+    refs = tuple(
+        ArtifactRefV1(
+            mode=AppMode.PERSONAL,
+            owner="tenant-a",
+            session="session-artifact-limit",
+            workspace=None,
+            kind="spreadsheet",
+            uri=f"echo://artifact/{index}-" + "a" * uri_padding,
+            digest="sha256:" + f"{(index % 15) + 1:x}" * 64,
+            acl="owner",
+            created_by_run="run-artifact-limit",
+        )
+        for index in range(count)
+    )
+    before = service.journal_path_for_scope(
+        "tenant-a",
+        product_id="js-agent",
+        session_id="session-artifact-limit",
+    ).read_bytes()
+
+    with pytest.raises(ValueError, match="artifact refs.*limit"):
+        service.finish_tool_effect(
+            context,
+            status="ok",
+            output_hash="sha256:" + "f" * 64,
+            artifact_refs=refs,
+        )
+
+    assert service.journal_path_for_scope(
+        "tenant-a",
+        product_id="js-agent",
+        session_id="session-artifact-limit",
+    ).read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "malformed_artifact_refs",
+    (
+        "not-a-list",
+        [
+            {
+                "schema_version": 1,
+                "mode": "personal",
+                "owner": "tenant-a",
+                "session": "session-a",
+                "workspace": None,
+                "kind": "spreadsheet",
+                "uri": "echo://artifact/malformed",
+                "digest": "sha256:" + "2" * 64,
+                "acl": "owner",
+                "created_by_run": "run-a",
+                "physical_path": "/must/not/be-accepted",
+            }
+        ],
+    ),
+)
+def test_malformed_artifact_receipt_payload_fails_semantic_replay_closed(
+    tmp_path: Path,
+    malformed_artifact_refs: object,
+) -> None:
+    service = EchoSafetyService(state_dir=tmp_path)
+    context = service.begin_tool_effect(
+        tenant_id="tenant-a",
+        product_id="js-agent",
+        session_id="session-a",
+        run_id="run-a",
+        tool_name="excel_write",
+        tool_call_id="call-a",
+        args_hash="sha256:" + "1" * 64,
+        lease_id="lease-a",
+        replay_class="non_idempotent",
+    )
+    journal = FileEchoLedger(
+        service.journal_path_for_scope(
+            "tenant-a", product_id="js-agent", session_id="session-a"
+        ),
+        mac_key=service.journal_key_for_scope(
+            "tenant-a", product_id="js-agent", session_id="session-a"
+        ),
+    )
+    journal.append(
+        record_type="receipt",
+        tenant_id="tenant-a",
+        run_id="run-a",
+        payload={
+            "effect_id": context.effect_id,
+            "outbox_id": context.outbox_id,
+            "status": "ok",
+            "output_ref": "sha256:" + "2" * 64,
+            "replay_class": "non_idempotent",
+            "artifact_refs": malformed_artifact_refs,
+        },
+    )
+    service.close()
+
+    restarted = EchoSafetyService(state_dir=tmp_path)
+    with pytest.raises(EchoUnavailableError, match="verified projection"):
+        restarted.list_verified_artifact_refs(
+            tenant_id="tenant-a",
+            mode=AppMode.PERSONAL,
+            workspace=None,
+        )
+
+
+def test_other_owner_corrupt_partition_cannot_block_or_influence_verified_artifacts(
+    tmp_path: Path,
+) -> None:
+    service = EchoSafetyService(state_dir=tmp_path)
+    owned_context = service.begin_tool_effect(
+        tenant_id="tenant-a",
+        product_id="js-agent",
+        session_id="session-a",
+        run_id="run-a",
+        tool_name="excel_write",
+        tool_call_id="call-a",
+        args_hash="sha256:" + "1" * 64,
+        lease_id="lease-a",
+        replay_class="non_idempotent",
+    )
+    owned_ref = ArtifactRefV1(
+        mode=AppMode.PERSONAL,
+        owner="tenant-a",
+        session="session-a",
+        workspace=None,
+        kind="spreadsheet",
+        uri="echo://artifact/owned",
+        digest="sha256:" + "2" * 64,
+        acl="owner",
+        created_by_run="run-a",
+    )
+    service.finish_tool_effect(
+        owned_context,
+        status="ok",
+        output_hash=owned_ref.digest,
+        artifact_refs=(owned_ref,),
+    )
+    other = service.begin_tool_effect(
+        tenant_id="tenant-b",
+        product_id="js-agent",
+        session_id="session-a",
+        run_id="run-a",
+        tool_name="excel_write",
+        tool_call_id="call-b",
+        args_hash="sha256:" + "3" * 64,
+        lease_id="lease-b",
+        replay_class="non_idempotent",
+    )
+    other_path = service.journal_path_for_scope(
+        "tenant-b", product_id="js-agent", session_id="session-a"
+    )
+    other_journal = FileEchoLedger(
+        other_path,
+        mac_key=service.journal_key_for_scope(
+            "tenant-b", product_id="js-agent", session_id="session-a"
+        ),
+    )
+    other_journal.append(
+        record_type="receipt",
+        tenant_id="tenant-b",
+        run_id="run-a",
+        payload={
+            "effect_id": other.effect_id,
+            "outbox_id": other.outbox_id,
+            "status": "ok",
+            "output_ref": "sha256:" + "4" * 64,
+            "replay_class": "non_idempotent",
+            "artifact_refs": "corrupt-other-owner",
+        },
+    )
+    service.close()
+
+    restarted = EchoSafetyService(state_dir=tmp_path)
+    assert restarted.list_verified_artifact_refs(
+        tenant_id="tenant-a",
+        mode=AppMode.PERSONAL,
+        workspace=None,
+    ) == (owned_ref,)
 
 
 _TEST_DURABLE_EXECUTOR = EchoDurableExecutor(
@@ -146,6 +749,124 @@ async def _execute(
         user_input="invoke the test tool",
         owner_key_hash="tenant-a",
     )
+
+
+@pytest.mark.asyncio
+async def test_successful_excel_write_result_records_verified_artifact_ref(
+    tmp_path: Path,
+) -> None:
+    digest_hex = "3" * 64
+
+    async def handler() -> ToolResult:
+        return ToolResult(
+            success=True,
+            output="spreadsheet written",
+            metadata={"content_sha256": digest_hex},
+        )
+
+    executor = _build_executor(
+        tmp_path,
+        tool_name="excel_write",
+        read_only=False,
+        handler=handler,
+    )
+    executor.settings.product_id = "js-agent"
+    try:
+        _message, result = await _execute(
+            executor,
+            tool_name="excel_write",
+            arguments={},
+        )
+        assert result.success is True
+
+        refs = executor.echo_safety_service.list_verified_artifact_refs(
+            tenant_id="tenant-a",
+            mode=AppMode.PERSONAL,
+            workspace=None,
+        )
+        assert len(refs) == 1
+        ref = refs[0]
+        assert ref.mode is AppMode.PERSONAL
+        assert ref.owner == "tenant-a"
+        assert ref.session == "session-a"
+        assert ref.created_by_run == "run-a"
+        assert ref.workspace is None
+        assert ref.kind == "spreadsheet"
+        assert ref.digest == "sha256:" + digest_hex
+        assert ref.uri.startswith("echo://artifact/")
+        assert ref.acl == "owner"
+    finally:
+        executor.echo_safety_service.close()
+
+
+@pytest.mark.asyncio
+async def test_work_excel_write_binds_artifact_to_runtime_workspace(
+    tmp_path: Path,
+) -> None:
+    digest_hex = "4" * 64
+    workspace_handle = "ws-" + "a" * 32
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+
+    async def handler() -> ToolResult:
+        return ToolResult(
+            success=True,
+            output="spreadsheet written",
+            metadata={"content_sha256": digest_hex},
+        )
+
+    executor = _build_executor(
+        tmp_path,
+        tool_name="excel_write",
+        read_only=False,
+        handler=handler,
+    )
+    executor.settings.product_id = "js-work"
+    context = RuntimeContext(
+        product_id="js-work",
+        channel="test",
+        owner_key_hash="tenant-a",
+        session_id="session-a",
+        run_id="run-a",
+        role="user",
+        profile="default",
+        capabilities=("excel_write",),
+        workspace=workspace_root,
+        state_dir=tmp_path / "state",
+        fs_roots=(workspace_root,),
+        task_ref=TaskRef(
+            mode=AppMode.WORK,
+            owner="tenant-a",
+            session="session-a",
+            run="run-a",
+            workspace=workspace_handle,
+        ),
+    )
+    token = set_runtime_context(context)
+    try:
+        _message, result = await _execute(
+            executor,
+            tool_name="excel_write",
+            arguments={},
+        )
+        assert result.success is True
+
+        refs = executor.echo_safety_service.list_verified_artifact_refs(
+            tenant_id="tenant-a",
+            mode=AppMode.WORK,
+            workspace=workspace_handle,
+        )
+        assert len(refs) == 1
+        ref = refs[0]
+        assert ref.mode is AppMode.WORK
+        assert ref.owner == "tenant-a"
+        assert ref.session == "session-a"
+        assert ref.created_by_run == "run-a"
+        assert ref.workspace == workspace_handle
+        assert ref.digest == "sha256:" + digest_hex
+    finally:
+        reset_runtime_context(token)
+        executor.echo_safety_service.close()
 
 
 @pytest.mark.asyncio

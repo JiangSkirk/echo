@@ -104,6 +104,57 @@ class TestFileTools:
 
         assert result.success is False
         assert outside_victim.read_text(encoding="utf-8") == "private"
+    @pytest.mark.asyncio
+    async def test_git_metadata_writes_are_rejected(
+        self, file_tools: FileTools, tmp_path: Path
+    ) -> None:
+        """file_write/file_edit/file_delete must never touch workspace .git/.
+
+        A tool-written hook or config would execute on the host's next git
+        invocation; reads stay allowed for legitimate inspection.
+        """
+        git_dir = tmp_path / ".git"
+        (git_dir / "hooks").mkdir(parents=True)
+        config = git_dir / "config"
+        config.write_text("[core]\n\trepositoryformatversion = 0\n", encoding="utf-8")
+
+        for path in (".git/config", ".git/hooks/pre-commit", ".git"):
+            result = await file_tools.write(path, "[core]\n\thooksPath = evil\n")
+            assert result.success is False, path
+            assert ".git" in result.error
+
+        result = await file_tools.edit(
+            ".git/config", "repositoryformatversion = 0", "hooksPath = evil"
+        )
+        assert result.success is False
+        assert ".git" in result.error
+
+        result = await file_tools.delete(".git/config")
+        assert result.success is False
+        assert ".git" in result.error
+
+        # Nothing was mutated and reads are unaffected.
+        assert "hooksPath" not in config.read_text(encoding="utf-8")
+        assert not (git_dir / "hooks" / "pre-commit").exists()
+        result = await file_tools.read(".git/config")
+        assert result.success
+        assert "repositoryformatversion" in result.output
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", [".GIT/config", ".Git/hooks/pwn", ".gIt", "x/.GiT/y"])
+    async def test_git_metadata_case_variants_are_rejected(
+        self, file_tools: FileTools, tmp_path: Path, path: str
+    ) -> None:
+        """Round-3 finding: on case-insensitive filesystems (default APFS,
+        Windows) a case variant like ``.GIT/config`` resolved onto ``.git/``
+        and bypassed the lexical guard — it must be compared case-folded."""
+        (tmp_path / ".git" / "hooks").mkdir(parents=True)
+        result = await file_tools.write(path, "pwned")
+        assert result.success is False, path
+        assert ".git" in result.error.lower()
+        assert not (tmp_path / ".git" / "config").exists()
+        result = await file_tools.delete(path)
+        assert result.success is False, path
 
 
 class TestToolRegistry:

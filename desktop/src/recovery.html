@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'">
+    <title>JS Agent — 正在启动</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: #0f1115;
+        color: #f2f1ed;
+      }
+      main {
+        width: min(100%, 34rem);
+        padding: 2rem;
+        border: 1px solid #303640;
+        border-radius: 14px;
+        background: #171b23;
+        box-shadow: 0 18px 60px rgb(0 0 0 / 24%);
+      }
+      .eyebrow {
+        margin: 0 0 0.75rem;
+        color: #9fb8ac;
+        font-size: 0.78rem;
+        font-weight: 650;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      h1 { margin: 0; font-size: 1.35rem; line-height: 1.35; }
+      p { margin: 0.8rem 0 0; color: #c8cbd1; line-height: 1.6; }
+      .detail { color: #aeb4be; font-size: 0.9rem; }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: #b7d9c8;
+      }
+      .actions { display: flex; gap: 0.75rem; margin-top: 1.5rem; }
+      button {
+        min-height: 40px;
+        padding: 0.6rem 1rem;
+        border: 1px solid #3d4652;
+        border-radius: 9px;
+        background: #252b35;
+        color: #f2f1ed;
+        font: inherit;
+        font-weight: 620;
+        cursor: pointer;
+      }
+      button.primary { border-color: #6b9680; background: #3f735d; }
+      button:hover:not(:disabled) { filter: brightness(1.08); }
+      button:focus-visible { outline: 2px solid #9cc8b2; outline-offset: 3px; }
+      button:disabled { cursor: not-allowed; opacity: 0.48; }
+      .privacy { margin-top: 1.25rem; color: #8f97a3; font-size: 0.82rem; }
+      @media (prefers-color-scheme: light) {
+        body { background: #f4f2ec; color: #252822; }
+        main { border-color: #d7d5ce; background: #fbfaf6; box-shadow: 0 18px 60px rgb(37 40 34 / 10%); }
+        p { color: #555b55; }
+        .detail { color: #6b716c; }
+        code { color: #35624e; }
+        button { border-color: #cbc9c1; background: #eeeae1; color: #252822; }
+        button.primary { border-color: #49745f; background: #49745f; color: #fff; }
+        .privacy { color: #747b75; }
+      }
+    </style>
+  </head>
+  <body>
+    <main id="recovery-panel" aria-labelledby="recovery-title" aria-describedby="recovery-message" aria-busy="true">
+      <p class="eyebrow">JS Agent 本地服务</p>
+      <h1 id="recovery-title">正在启动</h1>
+      <p id="recovery-message" role="status" aria-live="polite">正在准备本地 Host，请稍候。</p>
+      <p class="detail" id="error-detail" hidden>诊断代码：<code id="error-code"></code></p>
+      <div class="actions">
+        <button class="primary" id="retry" type="button" disabled>重新连接</button>
+        <button id="quit" type="button">退出</button>
+      </div>
+      <p class="privacy">此页面不会显示凭据、文件路径或启动地址。</p>
+    </main>
+    <script>
+      (function () {
+        "use strict";
+
+        var RETRY_URL = "tauri://localhost/__recovery_action__/retry";
+        var QUIT_URL = "tauri://localhost/__recovery_action__/quit";
+        var allowedErrors = {
+          spawn_failed: 1,
+          ready_timeout: 1,
+          sentinel_invalid: 1,
+          digest_mismatch: 1,
+          pgid_escape: 1,
+          sidecar_exit: 1,
+          sidecar_signal: 1,
+          cancelled: 1,
+          tray_failed: 1,
+          window_failed: 1,
+          bootstrap_failed: 1,
+          stdout_eof: 1
+        };
+        var views = {
+          starting: {
+            title: "正在启动",
+            message: "正在准备本地 Host，请稍候。",
+            retry: false,
+            busy: true
+          },
+          automatic_recovery: {
+            title: "正在自动恢复",
+            message: "本地 Host 已中断，JS Agent 正在安全清理并重新连接。",
+            retry: false,
+            busy: true
+          },
+          retryable_failure: {
+            title: "暂时无法连接",
+            message: "本地 Host 尚未就绪。你可以重新连接，或先退出应用。",
+            retry: true,
+            busy: false
+          },
+          fatal_failure: {
+            title: "无法自动恢复",
+            message: "为避免遗留进程或不确定状态，JS Agent 已停止重试。请退出后重新打开应用。",
+            retry: false,
+            busy: false
+          }
+        };
+
+        function readState() {
+          var raw = (location.hash || "").replace(/^#/, "");
+          if (!raw) return { state: "starting", error: "" };
+          var parts = raw.split("&");
+          var state = "";
+          var error = "";
+          for (var i = 0; i < parts.length; i += 1) {
+            var pair = parts[i].split("=");
+            if (pair.length !== 2) continue;
+            if (pair[0] === "state") state = pair[1];
+            if (pair[0] === "error") error = pair[1];
+          }
+          if (!views[state]) return { state: "fatal_failure", error: "" };
+          if (state === "starting") return { state: state, error: "" };
+          if (!allowedErrors[error]) return { state: "fatal_failure", error: "" };
+          return { state: state, error: error };
+        }
+
+        function render() {
+          var current = readState();
+          var view = views[current.state];
+          var panel = document.getElementById("recovery-panel");
+          var title = document.getElementById("recovery-title");
+          var message = document.getElementById("recovery-message");
+          var detail = document.getElementById("error-detail");
+          var code = document.getElementById("error-code");
+          var retry = document.getElementById("retry");
+
+          title.textContent = view.title;
+          message.textContent = view.message;
+          panel.setAttribute("aria-busy", view.busy ? "true" : "false");
+          retry.disabled = !view.retry;
+          detail.hidden = !current.error;
+          code.textContent = current.error;
+          document.title = "JS Agent — " + view.title;
+        }
+
+        document.getElementById("retry").addEventListener("click", function () {
+          var button = document.getElementById("retry");
+          if (button.disabled) return;
+          button.disabled = true;
+          document.getElementById("recovery-panel").setAttribute("aria-busy", "true");
+          location.assign(RETRY_URL);
+        });
+        document.getElementById("quit").addEventListener("click", function () {
+          document.getElementById("retry").disabled = true;
+          document.getElementById("quit").disabled = true;
+          document.getElementById("recovery-panel").setAttribute("aria-busy", "true");
+          location.assign(QUIT_URL);
+        });
+        window.addEventListener("hashchange", render);
+        render();
+      })();
+    </script>
+  </body>
+</html>

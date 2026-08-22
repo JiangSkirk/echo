@@ -47,7 +47,25 @@ def _stdout_for_parser(parser: str, gate_name: str, *, source_digest: str | None
     if parser == "release_markers":
         from js.echo.ledger.release_gates import format_release_result_line
 
-        return f"[OK] {gate_name}\n{format_release_result_line(gate=gate_name, ok=True)}\n"
+        bindings = None
+        if gate_name == "desktop_build":
+            bindings = {
+                "desktop_manifest_sha256": "1" * 64,
+                "app_tree_sha256": "2" * 64,
+                "app_sha256": "3" * 64,
+            }
+        elif gate_name == "tauri_webview_lifecycle":
+            bindings = {
+                "desktop_manifest_sha256": "1" * 64,
+                "app_tree_sha256": "2" * 64,
+                "app_sha256": "3" * 64,
+                "result_sha256": "4" * 64,
+                "harness_sha256": "5" * 64,
+            }
+        return (
+            f"[OK] {gate_name}\n"
+            f"{format_release_result_line(gate=gate_name, ok=True, bindings=bindings)}\n"
+        )
     if parser == "readiness_json":
         from js.echo.ledger.release_gates import (
             READINESS_RESULT_SCHEMA_VERSION,
@@ -441,6 +459,17 @@ def test_validate_final_local_gate_evidence_requires_full_required_set(
     )
     monkeypatch.setattr(
         "js.echo.ledger.release_gates._valid_echo_live_acceptance",
+        lambda *args, **kwargs: True,
+    )
+    # This test exercises the required-receipt set, not supervised-soak internals.
+    # The shared legacy fixture writes `{}` for JSON artifacts, so explicitly
+    # isolate the new mandatory combined-artifact validator in this success path.
+    monkeypatch.setattr(
+        "js.echo.ledger.release_gates._valid_supervised_soak_artifact",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "js.echo.ledger.release_gates._valid_desktop_release_bindings",
         lambda *args, **kwargs: True,
     )
     report = validate_final_local_gate_evidence(

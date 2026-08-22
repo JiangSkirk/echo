@@ -11,8 +11,11 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from js.appshell.principal import AppShellOperationV1, current_appshell_epoch_binding
+from js.connectors.contracts import ConnectorExecutionRequestV1, ConnectorRunOutcomeV1
+from js.connectors.manager import build_production_connector_manager
 from js.echo.attachment_gate import AttachmentGateError, validate_chat_attachments
 from js.echo.effect_interpreter import EffectInterpreter, ModelEffect, ToolEffect
 from js.echo.private_handoff import PrivateHandoffVault
@@ -22,6 +25,7 @@ if TYPE_CHECKING:
     from js.models.providers import ChatMessage, ChatResponse
     from js.models.stream_events import StreamEvent
     from js.tools.registry import ToolResult
+from js.echo.mode_contract import AppMode, TaskRef, mode_from_product_id
 from js.echo.turn_context import (
     RuntimeContext,
     current_owner_key_hash,
@@ -34,6 +38,22 @@ from js.echo.turn_context import (
     set_current_owner_key_hash,
     set_runtime_context,
 )
+
+_WORKSPACE_HANDLE_DOMAIN: bytes = b"js-agent:workspace-handle:v1\0"
+
+
+def _workspace_handle(workspace: Path) -> str:
+    """Derive a deterministic opaque pseudo-name from a trusted resolved workspace path.
+
+    The output is ``ws-<64 lowercase hex>`` and satisfies ``_WORKSPACE_RE``.
+    This is a path pseudo-name, not a cryptographic commitment.
+    """
+    import unicodedata
+
+    path_text = unicodedata.normalize("NFC", str(workspace))
+    path_bytes = path_text.encode("utf-8")
+    payload = _WORKSPACE_HANDLE_DOMAIN + len(path_bytes).to_bytes(4, "big") + path_bytes
+    return "ws-" + hashlib.sha256(payload).hexdigest()
 
 
 class EchoBackpressureError(RuntimeError):
@@ -94,7 +114,23 @@ class EchoRuntime:
         product_id = str(getattr(getattr(agent, "settings", None), "product_id", "js-agent"))
         self._pulse = pulse_runtime or get_pulse_runtime(product_id)
         self._turn_loop_factory = turn_loop_factory or _default_turn_loop_factory
-        self.effects = EffectInterpreter(agent, runtime_authority=self)
+        # Create the connector artifact store from the agent's state_dir
+        _state_dir = getattr(getattr(agent, "settings", None), "state_dir", None)
+        _artifact_store = None
+        if _state_dir is not None:
+            from js.connectors.artifact_store import ConnectorArtifactStore
+
+            _artifact_store = ConnectorArtifactStore(state_dir=Path(str(_state_dir)) / "echo")
+        self._connector_manager = build_production_connector_manager(
+            artifact_store=_artifact_store,
+        )
+        self._dispatch_issuer = self._connector_manager._create_dispatch_issuer()
+        self.effects = EffectInterpreter(
+            agent,
+            runtime_authority=self,
+            connector_manager=self._connector_manager,
+            dispatch_issuer=self._dispatch_issuer,
+        )
         self._admission_tasks: dict[asyncio.Task[Any], int] = {}
         self._issued_control_contexts: PrivateHandoffVault[str] = PrivateHandoffVault(
             max_entries=128,
@@ -164,6 +200,21 @@ class EchoRuntime:
 
     @staticmethod
     def _context_fingerprint(context: RuntimeContext) -> str:
+        task_ref_hash = ""
+        if context.task_ref is not None:
+            task_ref_hash = context.task_ref.canonical_hash()
+        appshell_binding = context.appshell_epoch_binding
+        appshell_binding_scope = (
+            (
+                appshell_binding.owner,
+                appshell_binding.session,
+                appshell_binding.active_mode,
+                appshell_binding.workspace,
+                appshell_binding.epoch,
+            )
+            if appshell_binding is not None
+            else None
+        )
         payload = (
             context.product_id,
             context.channel,
@@ -180,6 +231,8 @@ class EchoRuntime:
             context.deadline_ms,
             id(context.cancel_token),
             context.control_scope,
+            task_ref_hash,
+            appshell_binding_scope,
         )
         return hashlib.sha256(repr(payload).encode("utf-8")).hexdigest()
 
@@ -187,6 +240,21 @@ class EchoRuntime:
         context_error = runtime_context_error(context)
         if context_error is not None:
             raise PermissionError(f"Echo context scope is invalid: {context_error}")
+        if context.task_ref is not None:
+            tr = context.task_ref
+            if tr.legacy_product_id != context.product_id:
+                raise PermissionError("Echo context task_ref product_id mismatch")
+            if tr.owner != context.owner_key_hash:
+                raise PermissionError("Echo context task_ref owner mismatch")
+            if tr.session != context.session_id:
+                raise PermissionError("Echo context task_ref session mismatch")
+            if tr.run != context.run_id:
+                raise PermissionError("Echo context task_ref run mismatch")
+            mode = mode_from_product_id(context.product_id)
+            if mode is AppMode.PERSONAL and tr.workspace is not None:
+                raise PermissionError("Echo context task_ref must not carry workspace in personal mode")
+            if mode is AppMode.WORK and tr.workspace is None:
+                raise PermissionError("Echo context task_ref must carry workspace in work mode")
         signature = hmac.new(
             self._context_mac_key,
             self._context_fingerprint(context).encode("ascii"),
@@ -216,12 +284,38 @@ class EchoRuntime:
         effect_kind: str,
     ) -> None:
         """Authenticate a context at the final model/tool adapter boundary."""
-        if effect_kind not in {"model", "tool"}:
+        if effect_kind not in {"model", "tool", "connector"}:
             raise PermissionError("Unknown Echo effect kind")
         self._validate_context_scope(
             context,
             consume_control_context=effect_kind == "tool",
         )
+
+    def begin_effect_operation(
+        self,
+        context: RuntimeContext,
+        *,
+        effect_kind: str,
+    ) -> AppShellOperationV1 | None:
+        binding = context.appshell_epoch_binding
+        if binding is None:
+            return None
+        store = getattr(self._agent, "_appshell_operation_store", None)
+        begin = getattr(store, "begin_operation", None)
+        if not callable(begin):
+            raise PermissionError("AppShell effect operation authority is unavailable")
+        return cast(
+            "AppShellOperationV1",
+            begin(binding, operation_kind=f"echo_{effect_kind}"),
+        )
+
+    def finish_effect_operation(self, operation: AppShellOperationV1 | None) -> None:
+        if operation is None:
+            return
+        store = getattr(self._agent, "_appshell_operation_store", None)
+        release = getattr(store, "release_operation", None)
+        if not callable(release) or not release(operation):
+            raise RuntimeError("AppShell effect operation release failed")
 
     def _validate_context_scope(
         self,
@@ -276,6 +370,21 @@ class EchoRuntime:
         unknown = set(context.capabilities) - self._registered_capabilities()
         if unknown:
             raise PermissionError("Echo context scope capabilities exceed the owning agent")
+        self._validate_appshell_epoch(context)
+
+    def _validate_appshell_epoch(self, context: RuntimeContext) -> None:
+        managed = bool(getattr(self._agent.settings, "_appshell_managed", False))
+        binding = context.appshell_epoch_binding
+        if not managed:
+            if binding is not None:
+                raise PermissionError("Standalone Echo context cannot carry AppShell authority")
+            return
+        if binding is None:
+            raise PermissionError("AppShell-managed Echo effect requires a parent epoch binding")
+        validator = getattr(self._agent, "_appshell_epoch_validator", None)
+        if not callable(validator):
+            raise PermissionError("AppShell epoch validator is unavailable")
+        validator(binding)
 
     def build_context(
         self,
@@ -365,13 +474,39 @@ class EchoRuntime:
         else:
             resolved_cancel_token = asyncio.Event()
         cancel_token = resolved_cancel_token
+        resolved_run_id = run_id or str(uuid.uuid4())
+        mode = mode_from_product_id(product_id)
+        ws_handle = None if mode is AppMode.PERSONAL else _workspace_handle(workspace)
+        appshell_binding = current_appshell_epoch_binding()
+        if bool(getattr(settings, "_appshell_managed", False)):
+            if appshell_binding is None:
+                raise PermissionError(
+                    "AppShell-managed Echo context requires an admitted parent request"
+                )
+            if (
+                appshell_binding.owner != owner_key_hash
+                or appshell_binding.active_mode != mode.value
+                or appshell_binding.workspace != ws_handle
+            ):
+                raise PermissionError(
+                    "AppShell parent binding does not match the Echo product authority"
+                )
+        elif appshell_binding is not None:
+            raise PermissionError("Standalone Echo context cannot inherit AppShell authority")
+        task_ref = TaskRef(
+            mode=mode,
+            owner=owner_key_hash,
+            session=resolved_session_id,
+            run=resolved_run_id,
+            workspace=ws_handle,
+        )
         context = self._sign_context(
             RuntimeContext(
                 product_id=product_id,
                 channel=channel,
                 owner_key_hash=owner_key_hash,
                 session_id=resolved_session_id,
-                run_id=run_id or str(uuid.uuid4()),
+                run_id=resolved_run_id,
                 role=resolved_role,
                 profile=resolved_profile,
                 capabilities=resolved_capabilities,
@@ -382,6 +517,8 @@ class EchoRuntime:
                 deadline_ms=deadline_ms,
                 cancel_token=cancel_token,
                 control_scope=("provider_discovery" if control_arguments is not None else ""),
+                task_ref=task_ref,
+                appshell_epoch_binding=appshell_binding,
             )
         )
         if control_arguments is not None:
@@ -424,6 +561,19 @@ class EchoRuntime:
         progress_callback: Callable[[str, ToolResult], Awaitable[None]] | None = None,
     ) -> tuple[ChatMessage, ToolResult]:
         return await self.effects.execute_tool(effect, context, progress_callback)
+
+    async def execute_connector_effect(
+        self,
+        request: ConnectorExecutionRequestV1,
+        *,
+        params: Mapping[str, Any],
+        context: RuntimeContext,
+    ) -> ConnectorRunOutcomeV1:
+        return await self.effects.execute_connector(
+            request,
+            params=params,
+            context=context,
+        )
 
     async def run_turn(
         self,

@@ -9,7 +9,7 @@ This is local engineering evidence. It is not external FTO, clean-room, security
 - Internal release ready: `True`
 - Stable release ready: `False`
 - Stable release blockers: `legal_fto_review_pending, clean_room_reviewer_pending, external_security_audit_missing, redteam_report_missing`
-- Benchmark SHA-256: `0f49eebbeae91162d5bcbbc4658c44de42076e139b26dca54d5f2a64a4fc57f6`
+- Benchmark SHA-256: `a0522361696a1212651eeb7ab07e12937eede4c27bc4605c7ace8a67f16d1e11`
 
 ## Round 1: 架构边界轮
 
@@ -72,29 +72,29 @@ This is local engineering evidence. It is not external FTO, clean-room, security
 ## Round 7: stream/thinking/UI 轮
 
 - **P1 Stream terminal ordering and thinking side-channel are covered**
-  - Status: `fixed`
+  - Status: `open`
   - Evidence: `js/web/server.py; tests/echo/ledger/test_websocket_primary.py`
   - Repair: Keep token/thinking frames before one terminal done/error.
   - Verification: `.venv/bin/python -m pytest tests/echo/ledger/test_websocket_primary.py tests/test_stream_events_dispatch.py -q`
 
 ## Round 8: 性能/token 轮
 
-- **P2 api_full_agent Echo p95 40.655ms / limit 45.0ms**
+- **P2 api_full_agent Echo p95 38.298ms / limit 45.0ms**
   - Status: `fixed`
   - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
   - Repair: Keep Echo p95 within the deterministic absolute SLO gate.
   - Verification: `.venv/bin/python scripts/echo_architecture_benchmark.py --iterations 50 --warmup 10 --enforce-slo --baseline docs/security/ECHO_BASELINE_65CC545.json --output docs/security/ECHO_SLO_BENCHMARK.json`
-- **P2 api_wrapper_only Echo p95 0.663ms / limit 2.5ms**
+- **P2 api_wrapper_only Echo p95 0.617ms / limit 2.5ms**
   - Status: `fixed`
   - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
   - Repair: Keep Echo p95 within the deterministic absolute SLO gate.
   - Verification: `.venv/bin/python scripts/echo_architecture_benchmark.py --iterations 50 --warmup 10 --enforce-slo --baseline docs/security/ECHO_BASELINE_65CC545.json --output docs/security/ECHO_SLO_BENCHMARK.json`
-- **P2 ws_message_wrapper Echo p95 1.266ms / limit 2.5ms**
+- **P2 ws_message_wrapper Echo p95 1.244ms / limit 2.5ms**
   - Status: `fixed`
   - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
   - Repair: Keep Echo p95 within the deterministic absolute SLO gate.
   - Verification: `.venv/bin/python scripts/echo_architecture_benchmark.py --iterations 50 --warmup 10 --enforce-slo --baseline docs/security/ECHO_BASELINE_65CC545.json --output docs/security/ECHO_SLO_BENCHMARK.json`
-- **P2 ws_stream_wrapper Echo p95 1.482ms / limit 2.5ms**
+- **P2 ws_stream_wrapper Echo p95 1.406ms / limit 2.5ms**
   - Status: `fixed`
   - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
   - Repair: Keep Echo p95 within the deterministic absolute SLO gate.

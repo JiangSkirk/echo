@@ -6,6 +6,7 @@ from typing import Literal, Protocol
 
 from js.echo.ledger._hashing import stable_hash
 from js.echo.ledger.policy import PermitSeal
+from js.echo.mode_contract import ArtifactRefV1
 
 ReceiptStatus = Literal["ok", "failed", "cancelled"]
 ProbeStatus = Literal["found", "missing", "unknown"]
@@ -20,6 +21,7 @@ class EffectReceipt:
     status: ReceiptStatus
     output_ref: str
     replay_class: str
+    artifact_refs: tuple[ArtifactRefV1, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -214,6 +216,15 @@ class DurableEffectLog:
 
     def receipted_rows(self) -> tuple[OutboxRow, ...]:
         return tuple(row for row in self._outbox.values() if row.status == "receipted")
+
+    def receipt_snapshot(self) -> tuple[EffectReceipt, ...]:
+        """Return an immutable snapshot of replay-verified receipts."""
+        return tuple(
+            sorted(
+                self._receipts.values(),
+                key=lambda receipt: (receipt.receipt_id, receipt.effect_id),
+            )
+        )
 
     def manual_review_count(self) -> int:
         return sum(1 for row in self._outbox.values() if row.status == "manual_review")

@@ -565,7 +565,7 @@ class NativeDesktopBackend:
         if point:
             parts.append(f"m:{point.x},{point.y}")
         parts.extend([act] * clicks)
-        subprocess.run([self._cliclick, " ".join(parts)], capture_output=True, text=True, timeout=5)
+        subprocess.run([self._cliclick, *parts], capture_output=True, text=True, timeout=5)
         return {"action": "mouse_click", "button": button, "clicks": clicks}
 
     def _fallback_mouse_move(self, point):
@@ -586,7 +586,7 @@ class NativeDesktopBackend:
             raise RuntimeError("No mouse backend available")
         b = {"left": ("dd", "dm", "du"), "right": ("rd", "rm", "ru"), "middle": ("md", "mm", "mu")}[button]
         parts = [f"{b[0]}:{start.x},{start.y}", f"{b[1]}:{end.x},{end.y}", f"{b[2]}:{end.x},{end.y}"]
-        subprocess.run([self._cliclick, " ".join(parts)], capture_output=True, text=True, timeout=5)
+        subprocess.run([self._cliclick, *parts], capture_output=True, text=True, timeout=5)
         return {"action": "mouse_drag", "start": f"{start.x},{start.y}", "end": f"{end.x},{end.y}"}
 
     def _fallback_type_text(self, text):

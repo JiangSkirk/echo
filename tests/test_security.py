@@ -259,18 +259,53 @@ class TestAuditLogger:
         with pytest.raises(ValueError, match="max_entries"):
             audit.prune(max_entries=-1)
 
-    def test_existing_database_migrates_chain_state(self, tmp_path: Path) -> None:
+    def test_missing_chain_state_with_rows_fails_closed(self, tmp_path: Path) -> None:
+        """A missing chain-state row with a non-empty log means the anchor was
+        wiped independently of the log; silently re-anchoring would make a full
+        history wipe indistinguishable from a fresh install."""
         audit = AuditLogger(tmp_path)
         audit.log(AuditEventType.USER_MESSAGE, "session", "run", "user", "existing")
 
         with sqlite3.connect(audit.db_path) as conn:
-            conn.execute("DROP TABLE audit_chain_state")
+            conn.execute("DELETE FROM audit_chain_state")
 
-        migrated = AuditLogger(tmp_path)
-        assert migrated.verify_chain() == (True, 0)
+        with pytest.raises(RuntimeError, match="manual forensic review"):
+            AuditLogger(tmp_path)
 
-        migrated.log(AuditEventType.USER_MESSAGE, "session", "run", "user", "new")
-        assert migrated.verify_chain() == (True, 0)
+    def test_missing_chain_state_empty_db_with_sentinel_rebuilds_fail_visible(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Wiping an initialized state_dir down to an empty DB (rows + chain
+        state) must be fail-visible: raise a critical alert, then rebuild so
+        the system can start."""
+        from unittest.mock import Mock
+
+        audit = AuditLogger(tmp_path)
+        audit.log(AuditEventType.USER_MESSAGE, "session", "run", "user", "event")
+
+        with sqlite3.connect(audit.db_path) as conn:
+            conn.execute("DELETE FROM audit_log")
+            conn.execute("DELETE FROM audit_chain_state")
+
+        mock_logger = Mock()
+        monkeypatch.setattr("js.security.audit.logger", mock_logger)
+
+        rebuilt = AuditLogger(tmp_path)
+        mock_logger.critical.assert_called_once()
+        assert rebuilt.verify_chain() == (True, 0)
+
+        rebuilt.log(AuditEventType.USER_MESSAGE, "session", "run", "user", "new")
+        assert rebuilt.verify_chain() == (True, 0)
+
+    def test_fresh_init_creates_initialized_sentinel(self, tmp_path: Path) -> None:
+        """Brand-new initialization leaves an audit.initialized sentinel so a
+        later wipe-to-empty is detectable; normal restarts stay silent."""
+        audit = AuditLogger(tmp_path)
+        assert (tmp_path / "audit.initialized").exists()
+
+        audit.log(AuditEventType.USER_MESSAGE, "session", "run", "user", "event")
+        restarted = AuditLogger(tmp_path)
+        assert restarted.verify_chain() == (True, 0)
 
 
 class TestSandbox:

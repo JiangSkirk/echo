@@ -55,20 +55,26 @@ _DANGEROUS_COMMANDS: frozenset[str] = frozenset({
     "fdisk", "parted", "pvcreate", "vgcreate", "lvcreate",
     "iptables", "ip6tables", "nft",
     "systemctl", "service",
+    # Execution-capable wrappers / reverse-shell building blocks: each can
+    # run arbitrary commands or create the fifo a reverse shell needs.
+    "mkfifo", "xargs", "parallel", "env", "script", "socat",
 })
-
-# Commands dangerous ONLY with specific flag patterns
-_DANGEROUS_FLAGS: dict[str, list[list[str]]] = {
-    "rm": [["-rf", "/"], ["-r", "/"], ["-f", "/"], ["-rf", "/*"], ["-rf", "~"]],
-    "chmod": [["-R", "777", "/"], ["-R", "000", "/"]],
-    "dd": [["if=/dev/zero"], ["of=/dev/"], ["of=/dev/sd"], ["of=/dev/nvme"]],
-    "mkfs": [["/dev/"]],
-}
 
 # Source commands whose output piped to a shell interpreter is dangerous
 _NETWORK_SOURCES: frozenset[str] = frozenset({
     "curl", "wget", "nc", "netcat", "ncat", "telnet", "ftp",
 })
+
+# Interpreters that turn piped bytes into executed code
+_SHELL_INTERPRETERS: frozenset[str] = frozenset({
+    "sh", "bash", "dash", "zsh", "ksh", "ash", "fish",
+    "python", "python3", "perl", "ruby", "node",
+})
+
+# netcat-family flags that spawn a program (``nc -e /bin/sh``, bundled
+# ``-le``, ncat ``--exec`` / ``--sh-exec``)
+_NC_FAMILY: frozenset[str] = frozenset({"nc", "netcat", "ncat"})
+_NC_EXEC_LONG_FLAGS = ("--exec", "--sh-exec")
 
 
 # ---------------------------------------------------------------------------
@@ -91,31 +97,34 @@ def _check_dangerous_command(ast: Any) -> RuleVerdict | None:
     return None
 
 
-def _check_dangerous_flags(ast: Any) -> RuleVerdict | None:
-    """Block commands with dangerous flag combinations."""
+def _check_nc_exec(ast: Any) -> RuleVerdict | None:
+    """Block netcat-family command execution flags (``nc -e``, ncat ``--exec``)."""
     from js.security.parser import _basename, extract_all_args
 
     for args in extract_all_args(ast):
         if not args:
             continue
-        cmd = _basename(args[0]).lower()
-        flag_lists = _DANGEROUS_FLAGS.get(cmd)
-        if not flag_lists:
+        if _basename(args[0]).lower() not in _NC_FAMILY:
             continue
-
-        args_lower = " ".join(a.lower() for a in args)
-        for flags in flag_lists:
-            if all(f.lower() in args_lower for f in flags):
+        for token in args[1:]:
+            for flag in _NC_EXEC_LONG_FLAGS:
+                if token == flag or token.startswith(flag + "="):
+                    return RuleVerdict(
+                        blocked=True,
+                        reason=f"netcat exec flag denied (command execution vector): {token}",
+                        rule_name="nc_exec",
+                    )
+            if token.startswith("-") and not token.startswith("--") and "e" in token[1:]:
                 return RuleVerdict(
                     blocked=True,
-                    reason=f"Dangerous flags for {cmd}: {' '.join(flags)}",
-                    rule_name="dangerous_flags",
+                    reason=f"nc -e style exec flag denied (command execution vector): {token}",
+                    rule_name="nc_exec",
                 )
     return None
 
 
 def _check_network_pipe_to_shell(ast: Any) -> RuleVerdict | None:
-    """Block patterns like ``curl ... | sh`` or ``wget ... | bash``."""
+    """Block patterns like ``curl ... | sh`` or ``wget ... | python3``."""
     from js.security.parser import _basename
 
     for item in ast.commands:
@@ -133,7 +142,7 @@ def _check_network_pipe_to_shell(ast: Any) -> RuleVerdict | None:
             cmd_name = _basename(stage.command).lower()
             if cmd_name in _NETWORK_SOURCES:
                 has_network_source = True
-            if cmd_name in ("sh", "bash", "dash", "zsh", "ksh", "ash", "fish") and shell_stage_index < 0:
+            if cmd_name in _SHELL_INTERPRETERS and shell_stage_index < 0:
                 shell_stage_index = i
                 shell_target = cmd_name
 
@@ -168,6 +177,7 @@ def _check_redirect_to_device(ast: Any) -> RuleVerdict | None:
     _device_prefixes = (
         "/dev/sd", "/dev/hd", "/dev/nvme", "/dev/mmcblk",
         "/dev/vd", "/dev/xvd", "/dev/md",
+        "/dev/disk", "/dev/rdisk",  # macOS block/raw disks
     )
     for target in targets:
         resolved = os.path.normpath(target)
@@ -176,6 +186,28 @@ def _check_redirect_to_device(ast: Any) -> RuleVerdict | None:
                 blocked=True,
                 reason=f"Redirection to block device: {target}",
                 rule_name="redirect_to_device",
+            )
+    return None
+
+
+def _check_redirect_to_git_metadata(ast: Any) -> RuleVerdict | None:
+    """Block shell redirection into the workspace ``.git`` tree.
+
+    R3-2: a sandboxed ``echo ... > .git/hooks/post-checkout`` plants a hook
+    that executes OUTSIDE the sandbox on the host's next git invocation.
+    The file tools already refuse .git writes; this closes the shell path.
+    The comparison is case-folded because the default macOS/Windows
+    filesystems resolve ``.GIT`` onto ``.git``.
+    """
+    from js.security.parser import extract_redirect_targets
+
+    for target in extract_redirect_targets(ast):
+        parts = os.path.normpath(target).split(os.sep)
+        if any(part.casefold() == ".git" for part in parts):
+            return RuleVerdict(
+                blocked=True,
+                reason=f"Redirection into .git metadata denied (hook/config planting vector): {target}",
+                rule_name="redirect_to_git_metadata",
             )
     return None
 
@@ -210,10 +242,19 @@ def _check_eval(ast: Any) -> RuleVerdict | None:
 
 _RULES: list[Rule] = [
     Rule("dangerous_command", "Block hardline-dangerous commands", _check_dangerous_command),
-    Rule("dangerous_flags", "Block dangerous flag combinations", _check_dangerous_flags),
-    Rule("network_pipe_to_shell", "Block curl/wget piped to shell", _check_network_pipe_to_shell),
+    Rule("nc_exec", "Block netcat-family exec flags (nc -e, ncat --exec)", _check_nc_exec),
+    Rule(
+        "network_pipe_to_shell",
+        "Block network commands piped to a shell/interpreter",
+        _check_network_pipe_to_shell,
+    ),
     Rule("subshell", "Detect command substitution", _check_subshell),
     Rule("redirect_to_device", "Block redirection to block devices", _check_redirect_to_device),
+    Rule(
+        "redirect_to_git_metadata",
+        "Block redirection into .git metadata (host-side hook execution)",
+        _check_redirect_to_git_metadata,
+    ),
     Rule("eval", "Block eval command", _check_eval),
 ]
 

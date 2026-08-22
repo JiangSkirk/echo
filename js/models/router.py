@@ -280,6 +280,108 @@ def _stream_failure_completion(event: StreamEvent | None, error: BaseException |
     return max(0, int(value)) if isinstance(value, int) else 0
 
 
+class ModelSwitchValidationError(Exception):
+    """Raised when a model switch is rejected with a status code and detail."""
+
+    def __init__(self, status_code: int, detail: str, *, needs_config: bool = False) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+        self.needs_config = needs_config
+
+
+def validate_model_for_activation(
+    model_id: str,
+    configured_providers: set[str],
+    *,
+    get_model_binding: Callable[[str], tuple[str, ModelConfig] | None] | None = None,
+    get_preset: Callable[[str], Any] | None = None,
+    provider_models: dict[str, set[str]] | None = None,
+) -> None:
+    """Validate that a model_id may become the active model.
+
+    This is a shared pure function used by both the HTTP endpoint
+    (``server.py``) and the control-plane tool (``tool_executor.py``)
+    so the two layers can never drift.
+
+    Rules (fail-closed):
+    1. Extract ``provider_name`` from ``model_id`` (``"provider/model"``).
+    2. If ``provider_name`` is **not** in ``configured_providers``:
+       - If ``get_preset`` says it is a known preset -> raise 409
+         ``needs_config``.
+       - Otherwise -> raise 400 invalid.
+       Router mappings (stale or dynamic) are **irrelevant** here:
+       a mapping alone does not prove the provider is configured.
+    3. If ``provider_name`` **is** configured, the model must still be
+       explicitly declared.  Accept if any of:
+       - ``provider_models`` maps ``provider_name`` to a set containing
+         ``model_suffix`` (declared in ``settings.models``); **or**
+       - ``get_model_binding(model_id)`` returns a tuple whose
+         ``[0]`` equals ``provider_name`` and whose ``[1].id`` equals
+         ``model_suffix``; **or**
+       - ``get_model_binding(model_suffix)`` returns a tuple whose
+         ``[0]`` equals ``provider_name`` and whose ``[1].id`` equals
+         ``model_suffix``.
+    4. Otherwise -> raise 400 invalid.
+    """
+    provider_name = model_id.split("/", 1)[0] if "/" in model_id else ""
+
+    if provider_name not in configured_providers:
+        if get_preset is not None:
+            try:
+                if get_preset(provider_name) is not None:
+                    raise ModelSwitchValidationError(
+                        409,
+                        (
+                            f"Provider '{provider_name}' 尚未配置，"
+                            "请先添加该云模型并填写 API Key。"
+                        ),
+                        needs_config=True,
+                    )
+            except ModelSwitchValidationError:
+                raise
+            except Exception:
+                pass
+        raise ModelSwitchValidationError(400, f"Invalid model '{model_id}'")
+
+    model_suffix = model_id.split("/", 1)[1] if "/" in model_id else model_id
+
+    if provider_models is not None:
+        declared = provider_models.get(provider_name)
+        if declared and model_suffix in declared:
+            return
+
+    if get_model_binding is not None:
+        try:
+            binding = get_model_binding(model_id)
+        except Exception:
+            binding = None
+        if binding is not None and isinstance(binding, tuple) and len(binding) == 2:
+            bp_name, bp_config = binding
+            if (
+                isinstance(bp_name, str)
+                and isinstance(bp_config, ModelConfig)
+                and bp_name == provider_name
+                and bp_config.id == model_suffix
+            ):
+                return
+        try:
+            binding_short = get_model_binding(model_suffix)
+        except Exception:
+            binding_short = None
+        if binding_short is not None and isinstance(binding_short, tuple) and len(binding_short) == 2:
+            bp_name, bp_config = binding_short
+            if (
+                isinstance(bp_name, str)
+                and isinstance(bp_config, ModelConfig)
+                and bp_name == provider_name
+                and bp_config.id == model_suffix
+            ):
+                return
+
+    raise ModelSwitchValidationError(400, f"Invalid model '{model_id}'")
+
+
 class ModelRouter:
     """Routes requests to appropriate models with health checks and fallback."""
 
@@ -400,6 +502,19 @@ class ModelRouter:
             return entry[1]
         return None
 
+    def _clamp_stream_max_tokens(
+        self,
+        decision: RoutingDecision,
+        requested_max_tokens: int | None,
+    ) -> int | None:
+        model_cfg = self.get_model_config(decision.model)
+        model_cap = getattr(model_cfg, "max_tokens", None) if model_cfg is not None else None
+        if isinstance(model_cap, bool) or not isinstance(model_cap, int) or model_cap <= 0:
+            return requested_max_tokens
+        if requested_max_tokens is None:
+            return model_cap
+        return min(max(0, requested_max_tokens), model_cap)
+
     def get_model_binding(self, model_id: str) -> tuple[str, ModelConfig] | None:
         """Return the configured provider/model pair without probing provider health."""
         entry = self._model_map.get(model_id)
@@ -408,6 +523,23 @@ class ModelRouter:
             if isinstance(provider_name, str) and isinstance(config, ModelConfig):
                 return provider_name, config
         return None
+
+    def get_model_bindings(self) -> tuple[tuple[str, ModelConfig], ...]:
+        """Return deduplicated bindings backed by exact full model IDs."""
+        bindings: list[tuple[str, ModelConfig]] = []
+        seen: set[str] = set()
+        for model_id, entry in self._model_map.items():
+            if not isinstance(entry, tuple) or len(entry) != 2:
+                continue
+            provider_name, config = entry
+            if not isinstance(provider_name, str) or not isinstance(config, ModelConfig):
+                continue
+            full_id = f"{provider_name}/{config.id}"
+            if model_id != full_id or full_id in seen:
+                continue
+            seen.add(full_id)
+            bindings.append((provider_name, config))
+        return tuple(bindings)
 
     def is_local_model(self, model_id: str) -> bool:
         """Return True if the model is served by a local provider (e.g. LMStudio, Ollama)."""
@@ -980,6 +1112,7 @@ class ModelRouter:
         | None = None,
     ) -> AsyncGenerator[StreamEvent, None]:
         """Stream one provider decision through the same model-gate hooks as chat()."""
+        provider_max_tokens = self._clamp_stream_max_tokens(decision, max_tokens)
         context: Any = None
         finalized = False
         text_parts: list[str] = []
@@ -1030,7 +1163,7 @@ class ModelRouter:
                 model=decision.model,
                 tools=tools,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_tokens=provider_max_tokens,
             ):
                 if raw_ev.kind == "error":
                     # Re-scrub provider-aware: custom/legacy streams may emit raw secrets.

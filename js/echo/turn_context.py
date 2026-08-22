@@ -10,7 +10,11 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from js.appshell.principal import AppShellEpochBindingV1
+    from js.echo.mode_contract import TaskRef
 
 _MAX_RUNTIME_IDENTITY_CHARS = 512
 # Keep session_id charset/length aligned with js.web.ids.validate_session_id.
@@ -63,6 +67,8 @@ class RuntimeContext:
     cancel_token: Any | None = field(default_factory=asyncio.Event)
     control_scope: str = ""
     authority_mac: str = ""
+    task_ref: TaskRef | None = None
+    appshell_epoch_binding: AppShellEpochBindingV1 | None = None
 
 
 def runtime_context_error(context: RuntimeContext) -> str | None:

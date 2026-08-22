@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from js.agent import JSAgent
 from js.config import EchoBudgetConfig, JSSettings, MemoryConfig, ModelConfig
@@ -389,6 +390,173 @@ async def test_failed_usage_consumption_reduces_fallback_turn_budget(tmp_path: P
             "provider_actual",
             "estimated",
         ]
+    finally:
+        await agent.close()
+
+
+@pytest.mark.asyncio
+async def test_auto_selected_stream_primary_and_fallback_each_use_own_model_cap(
+    tmp_path: Path,
+) -> None:
+    agent = JSAgent(
+        JSSettings(
+            workspace=tmp_path / "workspace",
+            state_dir=tmp_path / "state",
+            max_turns=2,
+            memory=MemoryConfig(capsule_enabled=False),
+            echo_budget=EchoBudgetConfig(max_completion_tokens=5),
+        )
+    )
+    primary = _StreamingProvider(
+        [
+            StreamEvent(
+                kind="usage",
+                usage={
+                    "prompt_tokens": 7,
+                    "completion_tokens": 3,
+                    "total_tokens": 10,
+                    "cached_tokens": 0,
+                },
+            ),
+            StreamEvent(kind="error", error="failed after reasoning"),
+        ]
+    )
+    backup = _StreamingProvider(
+        [
+            StreamEvent(kind="text_delta", text="ok"),
+            StreamEvent(kind="done", finish_reason="stop"),
+        ]
+    )
+    agent.router.add_provider(
+        "primary",
+        primary,
+        [
+            ModelConfig(
+                id="primary-model",
+                provider="primary",
+                context_window=32_000,
+                max_tokens=4,
+            )
+        ],
+    )
+    agent.router.add_provider(
+        "backup",
+        backup,
+        [
+            ModelConfig(
+                id="backup-model",
+                provider="backup",
+                context_window=32_000,
+                max_tokens=1,
+            )
+        ],
+    )
+
+    try:
+        state = await agent.run(
+            "fallback within selected model caps",
+            stream_callback=lambda _token: _async_noop(),
+            disable_tools=True,
+        )
+
+        assert state.status == "completed"
+        assert primary.max_tokens == [4]
+        assert backup.max_tokens == [1]
+        assert [receipt["status"] for receipt in _receipts(agent, state.session_id)] == [
+            "failed",
+            "completed",
+        ]
+        assert agent.echo_safety_service.health().claimed_effect_count == 0
+    finally:
+        await agent.close()
+
+
+@pytest.mark.parametrize("raw_max_tokens", [True, False])
+def test_model_config_rejects_boolean_max_tokens(raw_max_tokens: bool) -> None:
+    with pytest.raises(ValidationError, match="max_tokens"):
+        ModelConfig(
+            id="model",
+            provider="mock",
+            context_window=32_000,
+            max_tokens=raw_max_tokens,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_max_tokens", [True, False])
+async def test_raw_boolean_model_cap_does_not_clamp_provider_request(
+    tmp_path: Path,
+    raw_max_tokens: bool,
+) -> None:
+    agent = JSAgent(
+        JSSettings(
+            workspace=tmp_path / "workspace",
+            state_dir=tmp_path / "state",
+            max_turns=1,
+            memory=MemoryConfig(capsule_enabled=False),
+            echo_budget=EchoBudgetConfig(max_completion_tokens=5),
+        )
+    )
+    provider = _StreamingProvider(
+        [
+            StreamEvent(kind="text_delta", text="ok"),
+            StreamEvent(kind="done", finish_reason="stop"),
+        ]
+    )
+    raw_config = ModelConfig(
+        id="model",
+        provider="mock",
+        context_window=32_000,
+        max_tokens=4,
+    )
+    raw_config.max_tokens = raw_max_tokens
+    agent.router.add_provider("mock", provider, [raw_config])
+
+    try:
+        state = await agent.run(
+            "preserve the request cap for a raw boolean config",
+            stream_callback=lambda _token: _async_noop(),
+            disable_tools=True,
+        )
+
+        assert state.status == "completed"
+        assert provider.max_tokens == [5]
+    finally:
+        await agent.close()
+
+
+@pytest.mark.asyncio
+async def test_request_max_tokens_clamped_to_model_max_tokens(tmp_path: Path) -> None:
+    """Echo completion budget is a hard ceiling; request max_tokens follows model cap."""
+    agent = JSAgent(
+        JSSettings(
+            workspace=tmp_path / "workspace",
+            state_dir=tmp_path / "state",
+            max_turns=1,
+            memory=MemoryConfig(capsule_enabled=False),
+            echo_budget=EchoBudgetConfig(max_completion_tokens=32_768),
+        )
+    )
+    provider = _StreamingProvider(
+        [
+            StreamEvent(kind="text_delta", text="ok"),
+            StreamEvent(kind="done", finish_reason="stop"),
+        ]
+    )
+    agent.router.add_provider(
+        "mock",
+        provider,
+        [ModelConfig(id="model", provider="mock", context_window=32_000, max_tokens=128)],
+    )
+    try:
+        state = await agent.run(
+            "say ok",
+            model="mock/model",
+            stream_callback=lambda _token: _async_noop(),
+            disable_tools=True,
+        )
+        assert state.status == "completed"
+        assert provider.max_tokens == [128]
     finally:
         await agent.close()
 

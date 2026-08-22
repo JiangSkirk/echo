@@ -473,9 +473,10 @@ class TestDockerCompose:
         prod = data["services"]["js-agent"]
         dev = data["services"]["js-agent-dev"]
 
-        # Both should expose 8000
-        assert prod["ports"] == ["8000:8000"]
-        assert dev["ports"] == ["8000:8000"]
+        # Both should expose 8000 on the container side, bound to loopback on
+        # the host so the API is not LAN-reachable by default.
+        assert prod["ports"] == ["127.0.0.1:8000:8000"]
+        assert dev["ports"] == ["127.0.0.1:8000:8000"]
 
         # Dev command should include --reload and match port 8000
         cmd = dev.get("command", [])

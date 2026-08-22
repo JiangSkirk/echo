@@ -240,10 +240,13 @@ def test_ws_rejects_hostile_session_id(tmp_path: Path) -> None:
         )
         frame = ws.receive_json()
         assert frame["type"] == "error"
+        assert "session" in str(frame).lower()
         with pytest.raises(WebSocketDisconnect) as exc_info:
             ws.receive_json()
     assert exc_info.value.code == 1008
-    agent.bind_cancel_token.assert_called()
+    agent.bind_cancel_token.assert_not_called()
+    agent.unbind_cancel_token.assert_not_called()
+    agent.request_cancel.assert_not_called()
 
 
 def test_optional_query_session_id_dependency() -> None:

@@ -13,6 +13,11 @@ js/
 │   ├── turn_loop.py       # Echo-owned model/tool loop
 │   ├── effect_interpreter.py # Executes authorized effects and records receipts
 │   └── ledger/            # MAC/hash journal, outbox, leases, and recovery
+├── appshell/              # Single-host AppShell (Personal/Work in ONE app)
+│   ├── routers.py         # Parent API: session, switch, inbox, artifacts, work-context
+│   ├── work_context.py    # Work-context projection (closed DTOs, session/run bound)
+│   ├── inbox.py           # Read-only Inbox/artifact projections
+│   └── principal.py       # Parent session store (mode/workspace/epoch, CAS)
 ├── config.py              # Settings with Pydantic validation
 ├── agent/                 # Compatibility facade; delegates turns to Echo
 ├── setup_wizard.py        # Interactive first-time setup
@@ -58,7 +63,10 @@ js/
 │   ├── auth.py            # Auth dependency (no-arg, reads _settings internally)
 │   ├── deps.py            # FastAPI dependency injection
 │   ├── static/            # Web UI assets
-│   ├── templates/         # Jinja2 templates
+│   │   ├── css/           # tokens.css (light/dark design tokens) + shell.css + legacy.css
+│   │   ├── js/            # theme-init/theme/shell/work_context/icons modules
+│   │   └── vendor/lucide/ # offline ISC line-icon set (LICENSE included)
+│   ├── templates/         # Jinja2 templates (single unified shell)
 │   └── routers/           # Modular routers (chat, cron, fleet, plugins, system)
 ├── ui/                    # Rich CLI
 │   └── cli.py             # Interactive shell + commands

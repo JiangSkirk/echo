@@ -67,6 +67,16 @@ def test_shared_get_path_has_one_effective_operation(path: str) -> None:
     assert route_operation_ids == [operations["get"]["operationId"]]
 
 
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+def test_api_documentation_routes_are_not_served(path: str) -> None:
+    """Swagger UI and the raw schema are unauthenticated reconnaissance value,
+    so the HTTP routes stay disabled; app.openapi() remains for in-process use.
+    """
+    client = TestClient(create_app())
+
+    assert client.get(path).status_code == 404
+
+
 def _write_work_config(path: Path) -> Path:
     config = path / "config.yaml"
     config.write_text(
@@ -168,10 +178,20 @@ def test_main_and_work_status_diag_contracts_are_runtime_isolated(tmp_path: Path
     )
 
     with TestClient(main_app) as main_client, TestClient(work_app) as work_client:
+        from js.web.auth import AuthManager
+
+        main_key = AuthManager(main_app.state.web_runtime.settings.state_dir).create_key(
+            "main-diag", role="user"
+        )
+        work_key = AuthManager(work_app.state.web_runtime.settings.state_dir).create_key(
+            "work-diag", role="user"
+        )
+        main_headers = {"X-API-Key": main_key}
+        work_headers = {"X-API-Key": work_key}
         main_status = main_client.get("/api/status").json()
         work_status = work_client.get("/api/status").json()
-        main_diag = main_client.get("/api/diag").json()
-        work_diag = work_client.get("/api/diag").json()
+        main_diag = main_client.get("/api/diag", headers=main_headers).json()
+        work_diag = work_client.get("/api/diag", headers=work_headers).json()
 
     assert set(main_status) == set(work_status)
     assert main_status["desktop_control_enabled"] is True

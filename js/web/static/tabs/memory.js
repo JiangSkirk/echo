@@ -1,4 +1,4 @@
-import { escapeHtml, showToast, showLoading, showError } from '../utils/dom.js';
+import { escapeHtml, showToast, showLoading, showError, el, onDataClick, bindDataClicks, sanitizeRuntimeId } from '../utils/dom.js';
 
 // Current block filter for search
 let currentBlockPath = '';
@@ -10,6 +10,33 @@ let currentProposals = [];     // pending proposals currently rendered
 let proposalEditId = null;     // proposal being edited in the modal
 let pendingBlockOp = null;     // { mode: 'move'|'merge', src }
 let pendingConfirm = null;     // callback for the generic confirm modal
+
+function parseMemoryId(raw) {
+  if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 && raw <= Number.MAX_SAFE_INTEGER) {
+    return raw;
+  }
+  const text = String(raw ?? '').trim();
+  if (!/^[0-9]{1,16}$/.test(text)) return null;
+  return Number.parseInt(text, 10);
+}
+
+function bindMemoryActions(root) {
+  if (!root) return;
+  bindDataClicks(root, 'memId', (rawId, event) => {
+    const id = parseMemoryId(rawId);
+    if (id == null) return;
+    const action = event.currentTarget.dataset.memAction;
+    if (action === 'verify') verifyMemory(id);
+    else if (action === 'audit') showMemoryAudit(id);
+    else if (action === 'edit') editSemanticMemory(id);
+    else if (action === 'delete') deleteSemanticMemory(id);
+    else if (action === 'save') saveSemanticMemory(id);
+    else if (action === 'cancel-edit') loadMemory();
+    else if (action === 'approve') approveProposal(id);
+    else if (action === 'edit-proposal') openProposalEdit(id);
+    else if (action === 'reject') rejectProposal(id);
+  });
+}
 
 function showModal(id) {
   const m = document.getElementById(id);
@@ -202,6 +229,7 @@ export async function loadMemory() {
         semEl.innerHTML = '<div class="text-gray-400 text-sm">暂无长期知识</div>';
       } else {
         semEl.innerHTML = items.map(s => renderSemanticMemoryItem(s)).join('');
+        bindMemoryActions(semEl);
       }
     }
 
@@ -248,14 +276,33 @@ export async function loadMemory() {
     if (filesEl) {
       const files = data.memory_files || [];
       if (files.length === 0) {
-        filesEl.innerHTML = '<div class="text-gray-400 text-sm col-span-3">暂无记忆文件</div>';
+        filesEl.replaceChildren();
+        filesEl.appendChild(el('div', {
+          className: 'text-gray-400 text-sm col-span-3',
+          text: '暂无记忆文件',
+        }));
       } else {
-        filesEl.innerHTML = files.map(f => `
-          <div onclick="openMemoryFileEditor('${escapeHtml(f)}')" class="cursor-pointer bg-gray-800 rounded-lg p-3 hover:bg-gray-700 transition">
-            <div class="text-sm font-medium">${escapeHtml(f.toUpperCase())}.md</div>
-            <div class="text-xs text-gray-500">点击编辑</div>
-          </div>
-        `).join('');
+        filesEl.replaceChildren();
+        for (const rawName of files) {
+          const name = sanitizeRuntimeId(rawName);
+          if (!name) continue;
+          const card = el('div', {
+            className: 'cursor-pointer bg-gray-800 rounded-lg p-3 hover:bg-gray-700 transition',
+            dataset: { memoryFile: name },
+          });
+          card.appendChild(el('div', {
+            className: 'text-sm font-medium',
+            text: `${name.toUpperCase()}.md`,
+          }));
+          card.appendChild(el('div', {
+            className: 'text-xs text-gray-500',
+            text: '点击编辑',
+          }));
+          onDataClick(card, 'memoryFile', (fileName) => {
+            openMemoryFileEditor(fileName);
+          });
+          filesEl.appendChild(card);
+        }
       }
     }
 
@@ -279,31 +326,52 @@ export async function loadBlockTree() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     const blocks = data.blocks || [];
-    let html = `
-      <div onclick="loadBlockMemories('')" class="cursor-pointer px-2 py-1 rounded hover:bg-gray-800 transition ${currentBlockPath === '' ? 'bg-gray-800 text-pink-400' : 'text-gray-400'}">
-        <i class="fas fa-database mr-1 text-xs"></i>全部
-      </div>`;
+    treeEl.replaceChildren();
+    const allBtn = el('div', {
+      className: `cursor-pointer px-2 py-1 rounded hover:bg-gray-800 transition ${currentBlockPath === '' ? 'bg-gray-800 text-pink-400' : 'text-gray-400'}`,
+    });
+    allBtn.appendChild(el('i', { className: 'fas fa-database mr-1 text-xs' }));
+    allBtn.appendChild(document.createTextNode('全部'));
+    allBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      loadBlockMemories('');
+    });
+    treeEl.appendChild(allBtn);
     if (blocks.length === 0) {
-      html += '<div class="text-gray-500 text-xs px-2 py-1">暂无区块</div>';
+      treeEl.appendChild(el('div', { className: 'text-gray-500 text-xs px-2 py-1', text: '暂无区块' }));
     }
-    // Render each top-level block; if expanded, fetch + inline its sub-blocks.
     for (const b of blocks) {
       const path = b.block_path || b.path || '';
-      html += renderBlockNode(b, 0, true);
+      treeEl.appendChild(renderBlockNode(b, 0, true));
       if (expandedBlocks.has(path)) {
         try {
           const subRes = await fetch('/api/memory/blocks?prefix=' + encodeURIComponent(path));
           const subData = await subRes.json();
           for (const sb of (subData.blocks || [])) {
-            if ((sb.block_path || '') !== path) html += renderBlockNode(sb, 1, false);
+            if ((sb.block_path || '') !== path) treeEl.appendChild(renderBlockNode(sb, 1, false));
           }
         } catch (_) {}
       }
     }
-    html += blockToolbarHtml();
-    treeEl.innerHTML = html;
+    const toolbar = el('div', { className: 'mt-3 pt-2 border-t border-gray-800 flex flex-col gap-1' });
+    const moveBtn = el('button', {
+      className: 'text-[11px] text-gray-400 hover:text-pink-400 text-left px-2 py-1 rounded hover:bg-gray-800 transition',
+    });
+    moveBtn.appendChild(el('i', { className: 'fas fa-arrows-up-down-left-right mr-1' }));
+    moveBtn.appendChild(document.createTextNode('移动区块'));
+    moveBtn.addEventListener('click', () => openBlockMove());
+    const mergeBtn = el('button', {
+      className: 'text-[11px] text-gray-400 hover:text-pink-400 text-left px-2 py-1 rounded hover:bg-gray-800 transition',
+    });
+    mergeBtn.appendChild(el('i', { className: 'fas fa-code-merge mr-1' }));
+    mergeBtn.appendChild(document.createTextNode('合并区块'));
+    mergeBtn.addEventListener('click', () => openBlockMerge());
+    toolbar.appendChild(moveBtn);
+    toolbar.appendChild(mergeBtn);
+    treeEl.appendChild(toolbar);
   } catch (e) {
-    treeEl.innerHTML = '<div class="text-red-400 text-xs">加载失败</div>';
+    treeEl.replaceChildren();
+    treeEl.appendChild(el('div', { className: 'text-red-400 text-xs', text: '加载失败' }));
   }
 }
 
@@ -314,28 +382,44 @@ function renderBlockNode(block, depth, expandable) {
   const isActive = currentBlockPath === path;
   const pad = depth > 0 ? 'ml-4' : '';
   const isOpen = expandedBlocks.has(path);
-  const caret = expandable
-    ? `<i onclick="event.stopPropagation(); toggleBlockExpand('${escapeHtml(path)}')" class="fas fa-chevron-${isOpen ? 'down' : 'right'} text-[9px] mr-1 text-gray-500 hover:text-pink-400 cursor-pointer"></i>`
-    : '<span class="inline-block w-3"></span>';
-  return `
-    <div class="flex items-center justify-between group ${pad} px-2 py-1 rounded hover:bg-gray-800 transition ${isActive ? 'bg-gray-800 text-pink-400' : 'text-gray-400'}">
-      <div onclick="loadBlockMemories('${escapeHtml(path)}')" class="cursor-pointer flex-1 truncate">
-        ${caret}<i class="fas fa-folder mr-1 text-xs ${isActive ? 'text-pink-400' : 'text-gray-600'}"></i>
-        <span class="${isActive ? 'font-medium' : ''}">${escapeHtml(name)}</span>
-        <span class="text-[10px] text-gray-600 ml-1">(${count})</span>
-      </div>
-      <i onclick="event.stopPropagation(); openBlockDelete('${escapeHtml(path)}')" class="fas fa-trash text-[9px] text-gray-700 hover:text-red-400 cursor-pointer opacity-0 group-hover:opacity-100 ml-1" title="删除区块"></i>
-    </div>
-  `;
-}
-
-function blockToolbarHtml() {
-  return `
-    <div class="mt-3 pt-2 border-t border-gray-800 flex flex-col gap-1">
-      <button onclick="openBlockMove()" class="text-[11px] text-gray-400 hover:text-pink-400 text-left px-2 py-1 rounded hover:bg-gray-800 transition"><i class="fas fa-arrows-up-down-left-right mr-1"></i>移动区块</button>
-      <button onclick="openBlockMerge()" class="text-[11px] text-gray-400 hover:text-pink-400 text-left px-2 py-1 rounded hover:bg-gray-800 transition"><i class="fas fa-code-merge mr-1"></i>合并区块</button>
-    </div>
-  `;
+  const row = el('div', {
+    className: `flex items-center justify-between group ${pad} px-2 py-1 rounded hover:bg-gray-800 transition ${isActive ? 'bg-gray-800 text-pink-400' : 'text-gray-400'}`,
+  });
+  const label = el('div', { className: 'cursor-pointer flex-1 truncate' });
+  if (expandable) {
+    const caret = el('i', {
+      className: `fas fa-chevron-${isOpen ? 'down' : 'right'} text-[9px] mr-1 text-gray-500 hover:text-pink-400 cursor-pointer`,
+    });
+    caret.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleBlockExpand(path);
+    });
+    label.appendChild(caret);
+  } else {
+    label.appendChild(el('span', { className: 'inline-block w-3' }));
+  }
+  label.appendChild(el('i', {
+    className: `fas fa-folder mr-1 text-xs ${isActive ? 'text-pink-400' : 'text-gray-600'}`,
+  }));
+  label.appendChild(el('span', { className: isActive ? 'font-medium' : '', text: name }));
+  label.appendChild(el('span', { className: 'text-[10px] text-gray-600 ml-1', text: `(${count})` }));
+  label.addEventListener('click', (event) => {
+    event.preventDefault();
+    loadBlockMemories(path);
+  });
+  const trash = el('i', {
+    className: 'fas fa-trash text-[9px] text-gray-700 hover:text-red-400 cursor-pointer opacity-0 group-hover:opacity-100 ml-1',
+  });
+  trash.title = '删除区块';
+  trash.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openBlockDelete(path);
+  });
+  row.appendChild(label);
+  row.appendChild(trash);
+  return row;
 }
 
 export function toggleBlockExpand(path) {
@@ -483,6 +567,7 @@ export async function loadBlockMemories(path) {
       semEl.innerHTML = '<div class="text-gray-400 text-sm">该区块暂无知识</div>';
     } else {
       semEl.innerHTML = items.map(s => renderSemanticMemoryItem(s)).join('');
+      bindMemoryActions(semEl);
     }
   } catch (e) {
     semEl.innerHTML = '<div class="text-red-400 text-sm">加载失败: ' + escapeHtml(e.message) + '</div>';
@@ -508,6 +593,8 @@ function getSourceLabel(source) {
 }
 
 export function renderSemanticMemoryItem(s) {
+  const memId = parseMemoryId(s.id);
+  if (memId == null) return '';
   const catColor = {
     fact: 'bg-blue-900/40 text-blue-400',
     preference: 'bg-pink-900/40 text-pink-400',
@@ -519,40 +606,42 @@ export function renderSemanticMemoryItem(s) {
   const entityLabel = ENTITY_LABELS[etype] || etype;
   const isVerified = (s.last_verified_at || 0) > 0;
   return `
-    <div class="bg-gray-800 rounded-lg px-3 py-2" data-memory-id="${s.id}" data-category="${escapeHtml(s.category || 'fact')}" data-entity-type="${escapeHtml(etype)}" data-memory-path="${escapeHtml(s.memory_path || '')}" data-entity-name="${escapeHtml(s.entity_name || '')}">
+    <div class="bg-gray-800 rounded-lg px-3 py-2" data-memory-id="${memId}" data-category="${escapeHtml(s.category || 'fact')}" data-entity-type="${escapeHtml(etype)}" data-memory-path="${escapeHtml(s.memory_path || '')}" data-entity-name="${escapeHtml(s.entity_name || '')}">
       <div class="flex items-center justify-between flex-wrap gap-1">
         <div class="flex items-center gap-2 flex-wrap">
           <span class="text-xs font-mono text-pink-400">${escapeHtml(s.key || 'unknown')}</span>
           <span class="text-[10px] px-1.5 py-0.5 rounded ${catColor}">${escapeHtml(s.category || 'fact')}</span>
           <span class="text-[10px] ${confBadge.color}" title="${confBadge.label}">${confBadge.icon} ${((s.confidence || 0.5) * 100).toFixed(0)}%</span>
           <span class="text-[10px] bg-gray-700/50 text-gray-400 px-1.5 py-0.5 rounded">${getSourceLabel(s.source)}</span>
-          <span class="text-[10px] px-1.5 py-0.5 rounded ${entityColor}">${entityLabel}</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded ${entityColor}">${escapeHtml(entityLabel)}</span>
           ${isVerified ? '<span class="text-[10px] text-green-400" title="已验证"><i class="fas fa-check-circle"></i></span>' : ''}
         </div>
         <div class="flex items-center gap-1">
-          <button onclick="verifyMemory(${s.id})" class="text-[10px] bg-green-900/30 hover:bg-green-900/50 text-green-400 px-2 py-1 rounded transition" title="验证">
+          <button type="button" data-mem-action="verify" data-mem-id="${memId}" class="text-[10px] bg-green-900/30 hover:bg-green-900/50 text-green-400 px-2 py-1 rounded transition" title="验证">
             <i class="fas fa-check"></i>
           </button>
-          <button onclick="showMemoryAudit(${s.id})" class="text-[10px] bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded transition" title="历史版本">
+          <button type="button" data-mem-action="audit" data-mem-id="${memId}" class="text-[10px] bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded transition" title="历史版本">
             <i class="fas fa-history"></i>
           </button>
-          <button onclick="editSemanticMemory(${s.id})" class="text-[10px] bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded transition" title="编辑">
+          <button type="button" data-mem-action="edit" data-mem-id="${memId}" class="text-[10px] bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded transition" title="编辑">
             <i class="fas fa-pen"></i>
           </button>
-          <button onclick="deleteSemanticMemory(${s.id})" class="text-[10px] bg-red-900/40 hover:bg-red-900/60 text-red-400 px-2 py-1 rounded transition" title="删除">
+          <button type="button" data-mem-action="delete" data-mem-id="${memId}" class="text-[10px] bg-red-900/40 hover:bg-red-900/60 text-red-400 px-2 py-1 rounded transition" title="删除">
             <i class="fas fa-trash"></i>
           </button>
         </div>
       </div>
       <div class="text-sm text-gray-300 mt-1 memory-value">${escapeHtml(s.value || '')}</div>
       ${s.memory_path ? `<div class="text-[10px] text-gray-600 mt-0.5"><i class="fas fa-folder-open mr-1"></i>${escapeHtml(s.memory_path)}</div>` : ''}
-      <div class="memory-audit hidden mt-2 bg-gray-900/50 rounded p-2 text-xs text-gray-400" id="memory-audit-${s.id}"></div>
+      <div class="memory-audit hidden mt-2 bg-gray-900/50 rounded p-2 text-xs text-gray-400" id="memory-audit-${memId}"></div>
     </div>
   `;
 }
 
 export function editSemanticMemory(id) {
-  const card = document.querySelector(`[data-memory-id="${id}"]`);
+  const memId = parseMemoryId(id);
+  if (memId == null) return;
+  const card = document.querySelector(`[data-memory-id="${memId}"]`);
   if (!card) return;
   const valueEl = card.querySelector('.memory-value');
   const currentValue = valueEl.textContent;
@@ -565,20 +654,21 @@ export function editSemanticMemory(id) {
   const currentEname = card.dataset.entityName || '';
 
   valueEl.innerHTML = `
-    <textarea id="sem-edit-${id}" rows="3" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-gray-300 resize-none focus:outline-none focus:border-pink-500">${escapeHtml(currentValue)}</textarea>
+    <textarea id="sem-edit-${memId}" rows="3" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-gray-300 resize-none focus:outline-none focus:border-pink-500">${escapeHtml(currentValue)}</textarea>
     <div class="flex flex-wrap items-center gap-2 mt-2">
-      <select id="sem-cat-${id}" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
+      <select id="sem-cat-${memId}" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
         ${categoryOptionsHtml(currentCategory)}
       </select>
-      <select id="sem-etype-${id}" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
+      <select id="sem-etype-${memId}" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
         ${entityOptionsHtml(currentEtype)}
       </select>
-      <input id="sem-path-${id}" type="text" value="${escapeHtml(currentPath)}" placeholder="路径" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 w-32">
-      <input id="sem-ename-${id}" type="text" value="${escapeHtml(currentEname)}" placeholder="实体名" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 w-24">
-      <button onclick="saveSemanticMemory(${id})" class="bg-pink-900/40 hover:bg-pink-900/60 text-pink-300 px-3 py-1 rounded text-xs">保存</button>
-      <button onclick="loadMemory()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-xs">取消</button>
+      <input id="sem-path-${memId}" type="text" value="${escapeHtml(currentPath)}" placeholder="路径" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 w-32">
+      <input id="sem-ename-${memId}" type="text" value="${escapeHtml(currentEname)}" placeholder="实体名" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 w-24">
+      <button type="button" data-mem-action="save" data-mem-id="${memId}" class="bg-pink-900/40 hover:bg-pink-900/60 text-pink-300 px-3 py-1 rounded text-xs">保存</button>
+      <button type="button" data-mem-action="cancel-edit" data-mem-id="${memId}" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-xs">取消</button>
     </div>
   `;
+  bindMemoryActions(valueEl);
 }
 
 export async function showMemoryAudit(id) {
@@ -693,12 +783,15 @@ export async function loadProposals() {
       return;
     }
     el.innerHTML = items.map(renderProposal).join('');
+    bindMemoryActions(el);
   } catch (e) {
     el.innerHTML = '<div class="text-red-400 text-sm">加载收件箱失败</div>';
   }
 }
 
 function renderProposal(p) {
+  const memId = parseMemoryId(p.id);
+  if (memId == null) return '';
   const conf = Math.round((p.confidence || 0) * 100);
   const etype = p.entity_type || 'general';
   const entityColor = ENTITY_COLORS[etype] || ENTITY_COLORS.general;
@@ -707,7 +800,7 @@ function renderProposal(p) {
   const srcLabel = getSourceLabel(p.source);
   return `
     <div class="bg-gray-800 rounded-lg px-3 py-2 border-l-2 border-yellow-600/60">
-      <div class="text-[11px] text-gray-500 mb-1"><i class="fas fa-lightbulb text-yellow-500 mr-1"></i>${escapeHtml(srcLabel)}想记住（<span class="${entityColor.split(' ').find(c => c.startsWith('text-')) || ''}">${entityLabel}</span>）</div>
+      <div class="text-[11px] text-gray-500 mb-1"><i class="fas fa-lightbulb text-yellow-500 mr-1"></i>${escapeHtml(srcLabel)}想记住（<span class="${entityColor.split(' ').find(c => c.startsWith('text-')) || ''}">${escapeHtml(entityLabel)}</span>）</div>
       <div class="flex items-start justify-between gap-2">
         <div class="flex-1 min-w-0">
           <div class="text-sm text-gray-200">${p.key ? `<span class="text-gray-500">${escapeHtml(p.key)}：</span>` : ''}${escapeHtml(p.value || '')}</div>
@@ -716,9 +809,9 @@ function renderProposal(p) {
           ${p.evidence ? `<details class="mt-1"><summary class="text-[10px] text-gray-500 cursor-pointer hover:text-gray-300">查看证据</summary><div class="text-[10px] text-gray-400 italic mt-1">${escapeHtml(p.evidence)}</div></details>` : ''}
         </div>
         <div class="flex flex-col gap-1 shrink-0">
-          <button onclick="approveProposal(${p.id})" class="text-[10px] bg-green-900/40 hover:bg-green-900/60 text-green-300 px-2 py-1 rounded" title="确认并写入"><i class="fas fa-check"></i></button>
-          <button onclick="openProposalEdit(${p.id})" class="text-[10px] bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded" title="编辑后确认"><i class="fas fa-pen"></i></button>
-          <button onclick="rejectProposal(${p.id})" class="text-[10px] bg-red-900/40 hover:bg-red-900/60 text-red-300 px-2 py-1 rounded" title="拒绝"><i class="fas fa-times"></i></button>
+          <button type="button" data-mem-action="approve" data-mem-id="${memId}" class="text-[10px] bg-green-900/40 hover:bg-green-900/60 text-green-300 px-2 py-1 rounded" title="确认并写入"><i class="fas fa-check"></i></button>
+          <button type="button" data-mem-action="edit-proposal" data-mem-id="${memId}" class="text-[10px] bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded" title="编辑后确认"><i class="fas fa-pen"></i></button>
+          <button type="button" data-mem-action="reject" data-mem-id="${memId}" class="text-[10px] bg-red-900/40 hover:bg-red-900/60 text-red-300 px-2 py-1 rounded" title="拒绝"><i class="fas fa-times"></i></button>
         </div>
       </div>
     </div>
@@ -911,6 +1004,7 @@ export async function searchSemantic() {
       container.innerHTML = '<div class="text-gray-400 text-sm">未找到匹配的知识</div>';
     } else {
       container.innerHTML = items.map(s => renderSemanticMemoryItem(s)).join('');
+      bindMemoryActions(container);
     }
   } catch (e) {
     container.innerHTML = '<div class="text-red-400 text-sm">搜索失败: ' + escapeHtml(e.message) + '</div>';
@@ -940,10 +1034,12 @@ export function showAddSemanticModal() {
     <input id="semantic-add-path" type="text" placeholder="路径 (可选, 如 /user/preferences)" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm">
     <textarea id="semantic-add-value" rows="2" placeholder="值..." class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm resize-none"></textarea>
     <div class="flex gap-2">
-      <button onclick="submitSemanticMemory()" class="bg-pink-900/40 hover:bg-pink-900/60 text-pink-300 px-3 py-1 rounded text-sm">保存</button>
-      <button onclick="document.getElementById('semantic-add-form').remove()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm">取消</button>
+      <button type="button" data-add-action="save" class="bg-pink-900/40 hover:bg-pink-900/60 text-pink-300 px-3 py-1 rounded text-sm">保存</button>
+      <button type="button" data-add-action="cancel" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm">取消</button>
     </div>
   `;
+  form.querySelector('[data-add-action="save"]')?.addEventListener('click', () => submitSemanticMemory());
+  form.querySelector('[data-add-action="cancel"]')?.addEventListener('click', () => form.remove());
   container.insertBefore(form, container.firstChild);
 }
 
@@ -976,6 +1072,9 @@ export async function submitSemanticMemory() {
 }
 
 export async function openMemoryFileEditor(name) {
+  const safeName = sanitizeRuntimeId(name);
+  if (!safeName) return;
+  name = safeName;
   const modal = document.getElementById('memory-file-modal');
   const title = document.getElementById('memory-file-modal-title');
   const textarea = document.getElementById('memory-file-editor');

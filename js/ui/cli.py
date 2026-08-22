@@ -27,6 +27,7 @@ from js.echo.turn_runtime import run_echo_turn
 from js.tools.registry import ToolResult
 from js.utils.log import configure_logging, get_logger
 from js.web.messages import humanize_error
+from js_work.cli import main as work_main
 
 console = Console()
 
@@ -145,6 +146,10 @@ class JSCLI:
     def _get_session(self) -> PromptSession[str]:
         history_path = Path.home() / ".js" / "history"
         history_path.parent.mkdir(parents=True, exist_ok=True)
+        # Prompt history can contain sensitive content; keep it owner-only.
+        if not history_path.exists():
+            history_path.touch(mode=0o600)
+        history_path.chmod(0o600)
         return PromptSession(
             history=FileHistory(str(history_path)),
             style=PROMPT_STYLE,
@@ -437,6 +442,18 @@ def _print_skill_detail(detail: dict[str, Any]) -> None:
 def main(ctx: click.Context, config: str | None, verbose: bool) -> None:
     """JS Agent - A stable, secure, and convenient AI agent."""
     configure_logging("DEBUG" if verbose else "INFO")
+    root_object = ctx.ensure_object(dict)
+    root_object["personal_config"] = config
+
+    if ctx.invoked_subcommand == "work":
+        from js.product_storage import StorageRoots
+
+        settings = JSSettings.from_file(config, allow_hermes_merge=False)
+        root_object["personal_roots"] = StorageRoots(
+            config_path=settings.config_source_path,
+            workspace=settings.workspace.expanduser().resolve(strict=False),
+            state_dir=settings.state_dir.expanduser().resolve(strict=False),
+        )
 
     if ctx.invoked_subcommand is None:
         settings = JSSettings.from_file(config)
@@ -468,41 +485,90 @@ def main(ctx: click.Context, config: str | None, verbose: bool) -> None:
 @click.option("--personal-config", type=click.Path(), default=None, help="Personal JS config")
 @click.option("--work-config", type=click.Path(), default=None, help="Work JS config")
 @click.option(
-    "--personal-url",
-    default="http://127.0.0.1:8000",
+    "--host",
+    default="127.0.0.1",
     show_default=True,
-    help="Personal backend base URL",
+    help="Bind host for the single AppShell server",
+)
+@click.option(
+    "--port",
+    default="8000",
+    show_default=True,
+    help="Bind port for the single AppShell server",
+)
+@click.option(
+    "--personal-url",
+    default=None,
+    help="[deprecated] Use --host/--port instead. Ignored if set.",
 )
 @click.option(
     "--work-url",
-    default="http://127.0.0.1:8765",
-    show_default=True,
-    help="Work backend base URL",
+    default=None,
+    help="[deprecated] Use --host/--port instead. Ignored if set.",
+)
+@click.option(
+    "--legacy-dual-host",
+    is_flag=True,
+    hidden=True,
 )
 @click.option("--no-browser", is_flag=True, help="Do not open a browser window")
 def appshell_cmd(
     personal_config: str | None,
     work_config: str | None,
-    personal_url: str,
-    work_url: str,
+    host: str,
+    port: str,
+    personal_url: str | None,
+    work_url: str | None,
+    legacy_dual_host: bool,
     no_browser: bool,
 ) -> None:
-    """Launch Personal + Work backends under one AppShell chrome.
+    """Launch the unified JS Agent AppShell (single host, single port).
 
-    Data planes stay isolated (separate state_dir / ledger / memory). The UI
-    switches products via /api/workspace/switch then navigates to the target host.
+    Personal and Work are routed at root by the parent principal.
+    Data planes stay isolated (separate state_dir / ledger / memory).
+    The legacy flag is accepted as a hidden single-host compatibility shim.
     """
-    from js.appshell.launcher import launch_appshell
+    if legacy_dual_host:
+        from js.appshell.launcher import launch_appshell
 
-    raise SystemExit(
-        launch_appshell(
-            personal_config=personal_config,
-            work_config=work_config,
-            personal_base_url=personal_url,
-            work_base_url=work_url,
-            open_browser=not no_browser,
+        raise SystemExit(
+            launch_appshell(
+                personal_config=personal_config,
+                work_config=work_config,
+                personal_base_url=personal_url or "http://127.0.0.1:8000",
+                work_base_url=work_url or personal_url or "http://127.0.0.1:8000",
+                open_browser=not no_browser,
+            )
         )
+
+    import uvicorn
+
+    from js.appshell.server import create_appshell_app
+    from js_work.tools import WorkToolProfile
+
+    app = create_appshell_app(
+        personal_config=personal_config,
+        work_config=work_config,
+        work_profile=WorkToolProfile.EXECUTE,
+        host=host,
+        port=int(port),
     )
+    url = f"http://{host}:{port}"
+    console.print(f"[green]Starting JS Agent AppShell at {url}[/green]")
+    console.print("[dim]Personal and Work share this root; server mode decides routing.[/dim]")
+
+    if not no_browser:
+        import threading
+        import time
+        import webbrowser
+
+        def _open() -> None:
+            time.sleep(1.5)
+            webbrowser.open(url)
+
+        threading.Thread(target=_open, daemon=True).start()
+
+    uvicorn.run(app, host=host, port=int(port))
 
 
 @main.command()
@@ -669,6 +735,15 @@ def stop() -> None:
         pid_file.unlink(missing_ok=True)
         return
 
+    cmdline = _pid_cmdline(pid)
+    if "js" not in cmdline or "web" not in cmdline:
+        console.print(
+            f"[red]Refusing to stop PID {pid}: its command line does not look like a "
+            f"'js web' server ({cmdline or 'unreadable'}). Remove {pid_file} manually "
+            "if the server is gone.[/red]"
+        )
+        return
+
     console.print(f"[yellow]Stopping server (PID {pid})...[/yellow]")
     try:
         os.kill(pid, signal.SIGINT)
@@ -767,6 +842,32 @@ def _pid_alive(pid: int) -> bool:
     except (OSError, ProcessLookupError):
         return False
     return True
+
+
+def _pid_cmdline(pid: int) -> str:
+    """Return the full command line of a process, or "" if it cannot be read.
+
+    Used to guard against PID reuse before signalling a daemon. Prefers `ps`
+    (macOS/Linux); falls back to /proc on minimal Linux systems without ps.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    return raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
 
 
 def _launch_web(
@@ -1060,9 +1161,16 @@ def skill_uninstall(skill_id: str, yes: bool, config: str | None) -> None:
 @skill.command("trust")
 @click.argument("skill_id")
 @click.argument("level", type=click.Choice(["builtin", "trusted", "community", "quarantine"]))
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt")
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
-def skill_trust(skill_id: str, level: str, config: str | None) -> None:
+def skill_trust(skill_id: str, level: str, yes: bool, config: str | None) -> None:
     """Set trust level for a skill."""
+    if level == "builtin" and not yes:
+        click.confirm(
+            f"Grant 'builtin' trust to skill '{skill_id}'? "
+            "Builtin trust bypasses security scanning.",
+            abort=True,
+        )
     settings = JSSettings.from_file(config)
     cli = JSCLI(settings)
 
@@ -1573,6 +1681,9 @@ def rl_list() -> None:
             f"{p.stat().st_size // 1024}KB",
         )
     console.print(table)
+
+
+main.add_command(work_main, "work")
 
 
 if __name__ == "__main__":

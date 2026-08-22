@@ -203,7 +203,11 @@ class CronExpression:
             self.fields[name] = self._parse_field(part, *self.RANGES[name])
 
     def _parse_field(self, part: str, min_val: int, max_val: int) -> set[int]:
-        """Parse a single cron field."""
+        """Parse a single cron field.
+
+        Values outside ``[min_val, max_val]`` (and inverted ranges) raise
+        ValueError instead of being silently accepted.
+        """
         result: set[int] = set()
         if part == "*":
             return set(range(min_val, max_val + 1))
@@ -216,6 +220,10 @@ class CronExpression:
             if "/" in segment:
                 base, step_str = segment.split("/", 1)
                 step = int(step_str)
+                if step < 1:
+                    raise ValueError(
+                        f"Invalid cron step {step} in {self.raw!r}: step must be >= 1"
+                    )
                 if base == "*":
                     start, end = min_val, max_val
                 elif "-" in base:
@@ -223,15 +231,31 @@ class CronExpression:
                 else:
                     start = int(base)
                     end = max_val
+                self._check_bounds(start, end, min_val, max_val)
                 result.update(range(start, end + 1, step))
             # Range: 1-5
             elif "-" in segment:
                 start, end = map(int, segment.split("-"))
+                self._check_bounds(start, end, min_val, max_val)
                 result.update(range(start, end + 1))
             # Single value
             else:
-                result.add(int(segment))
+                value = int(segment)
+                self._check_bounds(value, value, min_val, max_val)
+                result.add(value)
         return result
+
+    def _check_bounds(self, start: int, end: int, min_val: int, max_val: int) -> None:
+        """Reject out-of-bounds or inverted ranges BEFORE expanding them.
+
+        Fail closed: silently accepting a range like ``1-20000000`` in the
+        month field once let a single expression allocate ~1.7GB of RSS.
+        """
+        if start < min_val or end > max_val or start > end:
+            raise ValueError(
+                f"Cron value out of range in {self.raw!r}: "
+                f"[{start}, {end}] is not within [{min_val}, {max_val}]"
+            )
 
     def next_run(self, after: float | None = None) -> float | None:
         """Calculate the next run timestamp after the given time."""
@@ -253,12 +277,17 @@ class CronExpression:
 
     def _matches(self, dt: datetime) -> bool:
         """Check if a datetime matches this cron expression."""
+        # datetime.weekday() is Monday=0..Sunday=6 while the cron convention
+        # (see RANGES, templates and nlp.py) is 0=Sunday..6=Saturday — map
+        # Python weekdays onto cron weekdays so e.g. "0 9 * * 0" fires on
+        # Sunday instead of never, and weekly jobs don't shift by one day.
+        cron_weekday = (dt.weekday() + 1) % 7
         return (
             dt.minute in self.fields["minute"]
             and dt.hour in self.fields["hour"]
             and dt.day in self.fields["day_of_month"]
             and dt.month in self.fields["month"]
-            and dt.weekday() in self.fields["day_of_week"]
+            and cron_weekday in self.fields["day_of_week"]
         )
 
 

@@ -690,23 +690,33 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
     # Memory Files (IDENTITY.md, USER.md, DREAMS.md)
     # ------------------------------------------------------------------
 
-    _VALID_MEMORY_FILES = {"identity", "user", "dreams"}
+    _VALID_MEMORY_FILES = frozenset({"identity", "user", "dreams"})
+
+    def _require_valid_memory_file(self, name: str) -> str:
+        """Accept only the three profile basenames; reject path fragments."""
+        safe_name = Path(name).name
+        if safe_name not in self._VALID_MEMORY_FILES:
+            raise ValueError(f"Invalid memory file name: {name}")
+        return safe_name
 
     def list_memory_files(self, owner_key_hash: str | None = None) -> list[str]:
         """List available memory files (basename without extension)."""
-        memory_dir = self._memory_file_path("profile", owner_key_hash).parent
+        memory_dir = self._memory_file_path("identity", owner_key_hash).parent
         if not memory_dir.exists():
             return []
         files = []
         for path in sorted(memory_dir.glob("*.md")):
-            files.append(path.stem)
+            if path.stem in self._VALID_MEMORY_FILES:
+                files.append(path.stem)
         return files
 
     def _memory_file_path(self, name: str, owner_key_hash: str | None = None) -> Path:
         """Resolve memory file path, guarding against path traversal."""
         from js.memory.profile_scope import scoped_profile_path
 
-        return scoped_profile_path(self.state_dir, name, owner_key_hash)
+        return scoped_profile_path(
+            self.state_dir, self._require_valid_memory_file(name), owner_key_hash
+        )
 
     def read_memory_file(self, name: str, owner_key_hash: str | None = None) -> str:
         """Read a memory file's content. Returns empty string if not found."""
@@ -747,6 +757,79 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         owner_key_hash: str | None = None,
     ) -> None:
         """Write content to a memory file."""
-        path = self._memory_file_path(name, owner_key_hash)
+        path = self._memory_file_path(self._require_valid_memory_file(name), owner_key_hash)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
+
+    # ── R6 compression pipeline (lazy, production-owned) ──
+
+    @property
+    def compression_pipeline(self) -> Any:
+        """Lazy R6 CompressionPipeline bound to memory_enhanced.db."""
+        cached = getattr(self, "_compression_pipeline", None)
+        if cached is not None:
+            return cached
+        from js.memory.compression import CompressionPipeline
+
+        cached = CompressionPipeline(self.enhanced.db_path)
+        self._compression_pipeline = cached
+        return cached
+
+    def create_compression_proposal(
+        self,
+        *,
+        authority: Any,
+        source_refs: tuple[Any, ...],
+        proposed_summary: str,
+    ) -> Any:
+        return self.compression_pipeline.create_proposal(
+            authority=authority,
+            source_refs=source_refs,
+            proposed_summary=proposed_summary,
+        )
+
+    def approve_compression_proposal(
+        self,
+        proposal_id: str,
+        *,
+        authority: Any,
+    ) -> Any:
+        return self.compression_pipeline.approve_proposal(
+            proposal_id,
+            authority=authority,
+        )
+
+    def reject_compression_proposal(
+        self,
+        proposal_id: str,
+        *,
+        authority: Any,
+    ) -> Any:
+        return self.compression_pipeline.reject_proposal(
+            proposal_id,
+            authority=authority,
+        )
+
+    def list_compression_proposals(
+        self,
+        *,
+        scope: Any,
+        status: str = "pending",
+        limit: int = 50,
+    ) -> Any:
+        return self.compression_pipeline.list_proposals(
+            scope=scope,
+            status=status,
+            limit=limit,
+        )
+
+    def rehydrate_compression_capsule(
+        self,
+        capsule_id: str,
+        *,
+        authority: Any,
+    ) -> Any:
+        return self.compression_pipeline.rehydrate_capsule(
+            capsule_id,
+            authority=authority,
+        )

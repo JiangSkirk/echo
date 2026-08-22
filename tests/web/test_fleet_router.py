@@ -20,8 +20,8 @@ def _make_client() -> TestClient:
     app = FastAPI()
     app.include_router(fleet_router)
     _settings = JSSettings(
-        workspace=Path("/tmp/js_test"),
-        state_dir=Path("/tmp/js_test"),
+        workspace=Path("/tmp/js_test/workspace"),
+        state_dir=Path("/tmp/js_test/state"),
         security=SecurityConfig(api_key_required=False),
     )
     patch("js.web.server._settings", _settings).start()

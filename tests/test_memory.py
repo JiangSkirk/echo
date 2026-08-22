@@ -57,9 +57,9 @@ class TestMemoryStore:
         assert any(r.key == "k" for r in store.search("replacement"))
 
     def test_search_special_characters_do_not_crash(self, store: MemoryStore) -> None:
-        store.store("alpha", "a:b (c) AND d-e \"quoted\"")
+        store.store("alpha", 'a:b (c) AND d-e "quoted"')
         # FTS operator characters in the query must not raise.
-        for q in ('a:b', 'AND', '"quoted"', 'd-e', '(c)'):
+        for q in ("a:b", "AND", '"quoted"', "d-e", "(c)"):
             assert isinstance(store.search(q), list)
 
     def test_profile_files_are_owner_scoped_and_never_fall_back_to_shared(
@@ -70,16 +70,29 @@ class TestMemoryStore:
 
         assert store.read_memory_file("user") == "shared local profile"
         assert (
-            store.read_memory_file("user", owner_key_hash="owner-alice")
-            == "alice private profile"
+            store.read_memory_file("user", owner_key_hash="owner-alice") == "alice private profile"
         )
         assert store.read_memory_file("user", owner_key_hash="owner-bob") == ""
 
-        alice_context = store.get_context_string(
-            owner_key_hash="owner-alice", max_chars=4000
-        )
+        alice_context = store.get_context_string(owner_key_hash="owner-alice", max_chars=4000)
         bob_context = store.get_context_string(owner_key_hash="owner-bob", max_chars=4000)
         assert "alice private profile" in alice_context
         assert "shared local profile" not in alice_context
         assert "alice private profile" not in bob_context
         assert "shared local profile" not in bob_context
+
+    def test_memory_files_reject_names_outside_allowlist(self, store: MemoryStore) -> None:
+        store.write_memory_file("user", "ok")
+        extra = store._memory_file_path("user").parent / "notes.md"
+        extra.parent.mkdir(parents=True, exist_ok=True)
+        extra.write_text("leaked", encoding="utf-8")
+
+        listed = store.list_memory_files()
+        assert "user" in listed
+        assert "notes" not in listed
+        with pytest.raises(ValueError, match="Invalid memory file name"):
+            store.read_memory_file("notes")
+        with pytest.raises(ValueError, match="Invalid memory file name"):
+            store.write_memory_file("../etc/passwd", "nope")
+        with pytest.raises(ValueError, match="Invalid memory file name"):
+            store.write_memory_file("notes", "nope")

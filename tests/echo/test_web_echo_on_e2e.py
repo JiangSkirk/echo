@@ -11,25 +11,29 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocket
 
 from js.agent import JSAgent
-from js.config import JSSettings, SecurityConfig
+from js.config import EchoBudgetConfig, JSSettings, SecurityConfig
 from js.echo.context_runtime import (
     get_context_runtime_snapshot_for_tests,
     reset_context_runtime_for_tests,
 )
+from js.echo.ledger.journal import FileEchoLedger
 from js.models.permit import ModelPermitError, ModelPermitIssuer
 from js.models.providers import ChatMessage, ChatResponse, ModelProvider
 from js.models.router import ModelRouter
+from js.models.stream_events import StreamEvent
 from js.web.routers.chat import router as chat_router
 
 
@@ -98,6 +102,24 @@ class DisconnectAwareProvider(RecordingProvider):
         return await super().chat(messages, model, tools, temperature, max_tokens)
 
 
+class ScriptedStreamProvider(RecordingProvider):
+    def __init__(self, events: list[StreamEvent]) -> None:
+        super().__init__()
+        self.events = events
+
+    async def chat_stream_events(
+        self,
+        messages: list[ChatMessage],
+        model: str,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        del messages, model, tools, temperature, max_tokens
+        for event in self.events:
+            yield event
+
+
 class RecordingRouter(ModelRouter):
     def __init__(
         self,
@@ -156,7 +178,7 @@ class RecordingRouter(ModelRouter):
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-        except Exception as exc:
+        except BaseException as exc:
             await after_model_call(context, None, exc)
             raise
         await after_model_call(context, response, None)
@@ -238,11 +260,31 @@ def _make_agent(tmp_path: Path, provider: RecordingProvider) -> CapturingAgent:
     return CapturingAgent(agent)
 
 
-def _make_ws_app() -> Any:
-    os.environ["JS_ALLOWED_ORIGINS"] = "http://localhost"
+def _ledger_records(
+    agent: CapturingAgent,
+    owner_key_hash: str,
+    session_id: str,
+) -> list[Any]:
+    service = agent._agent.echo_safety_service
+    return FileEchoLedger(
+        service.journal_path_for_scope(
+            owner_key_hash,
+            product_id="js-agent",
+            session_id=session_id,
+        ),
+        mac_key=service.journal_key_for_scope(
+            owner_key_hash,
+            product_id="js-agent",
+            session_id=session_id,
+        ),
+    ).records
+
+
+def _make_ws_app(monkeypatch: pytest.MonkeyPatch) -> Any:
+    monkeypatch.setenv("JS_ALLOWED_ORIGINS", "http://localhost")
     import js.web.auth as auth_mod
 
-    auth_mod._ALLOWED_ORIGINS = None
+    monkeypatch.setattr(auth_mod, "_ALLOWED_ORIGINS", None)
 
     @asynccontextmanager
     async def _noop_lifespan(_app: Any) -> AsyncIterator[None]:
@@ -254,13 +296,29 @@ def _make_ws_app() -> Any:
         return create_app()
 
 
+def test_make_ws_app_origin_overrides_are_scoped(monkeypatch: pytest.MonkeyPatch) -> None:
+    import js.web.auth as auth_mod
+
+    original_cache = ("http://before.example",)
+    monkeypatch.setenv("JS_ALLOWED_ORIGINS", "http://before.example")
+    monkeypatch.setattr(auth_mod, "_ALLOWED_ORIGINS", original_cache)
+
+    with pytest.MonkeyPatch.context() as ws_monkeypatch:
+        _make_ws_app(ws_monkeypatch)
+        assert os.environ["JS_ALLOWED_ORIGINS"] == "http://localhost"
+        assert auth_mod._ALLOWED_ORIGINS is None
+
+    assert os.environ["JS_ALLOWED_ORIGINS"] == "http://before.example"
+    assert auth_mod._ALLOWED_ORIGINS is original_cache
+
+
 def _make_ws_client(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     agent: CapturingAgent,
 ) -> TestClient:
     settings = _settings(tmp_path)
-    app = _make_ws_app()
+    app = _make_ws_app(monkeypatch)
     agent.settings = settings
     if not hasattr(agent, "_dream_scheduler") or agent._dream_scheduler is None:
         agent._dream_scheduler = MagicMock()
@@ -270,7 +328,14 @@ def _make_ws_client(
     monkeypatch.setattr("js.web.server.get_agent", lambda: agent)
     monkeypatch.setattr("js.web.deps._settings", settings)
     monkeypatch.setattr("js.web.deps._agent", agent)
-    return TestClient(app, base_url="http://localhost", headers={"Origin": "http://localhost"})
+    from js.web.auth import AuthManager
+
+    user_key = AuthManager(settings.state_dir).create_key("echo-ws-e2e", role="user")
+    return TestClient(
+        app,
+        base_url="http://localhost",
+        headers={"Origin": "http://localhost", "X-API-Key": user_key},
+    )
 
 
 def test_api_chat_on_mode_produces_real_echo_metrics_from_agent_path(
@@ -366,7 +431,7 @@ def test_ws_message_on_mode_produces_real_echo_metrics_from_agent_path(
     agent = _make_agent(tmp_path, provider)
     client = _make_ws_client(monkeypatch, tmp_path, agent)
 
-    with client.websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with client.websocket_connect("/ws") as ws:
         ws.send_json(
             {
                 "type": "message",
@@ -377,7 +442,9 @@ def test_ws_message_on_mode_produces_real_echo_metrics_from_agent_path(
         status = ws.receive_json()
         response = ws.receive_json()
 
-    assert status == {"type": "status", "content": "thinking..."}
+    assert status["type"] == "status"
+    assert status["content"] == "thinking..."
+    assert all(status.get(key) for key in ("request_id", "turn_id", "run_id", "session_id"))
     assert response["type"] == "response"
     assert response["content"] == "Echo WS endpoint response"
     assert response["session_id"] == "ws-on-session"
@@ -391,9 +458,10 @@ def test_ws_message_on_mode_produces_real_echo_metrics_from_agent_path(
     assert snapshot.last_observation.naive_tokens > 0
     assert agent.last_state is not None
     echo_stats = agent.last_state.compression_stats["echo_context_savings"]
-    assert response["compression"]["echo_context_savings"]["naive_tokens"] == echo_stats[
-        "naive_tokens"
-    ]
+    assert (
+        response["compression"]["echo_context_savings"]["naive_tokens"]
+        == echo_stats["naive_tokens"]
+    )
 
 
 def test_ws_message_on_mode_echo_failure_fails_open(
@@ -410,7 +478,7 @@ def test_ws_message_on_mode_echo_failure_fails_open(
 
     monkeypatch.setattr("js.echo.turn_loop.observe_prompt_context", boom)
 
-    with client.websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with client.websocket_connect("/ws") as ws:
         ws.send_json(
             {
                 "type": "message",
@@ -421,13 +489,114 @@ def test_ws_message_on_mode_echo_failure_fails_open(
         status = ws.receive_json()
         response = ws.receive_json()
 
-    assert status == {"type": "status", "content": "thinking..."}
+    assert status["type"] == "status"
+    assert status["content"] == "thinking..."
+    assert all(status.get(key) for key in ("request_id", "turn_id", "run_id", "session_id"))
     assert response["type"] == "response"
     assert response["content"] == "WS legacy response survives"
     assert len(provider.calls) == 1
     assert response["compression"]["echo_context_savings"]["error"] == (
         "RuntimeError: ws observer exploded"
     )
+
+
+@pytest.mark.parametrize(
+    ("case", "events", "completion_budget", "expected_terminal_type"),
+    [
+        pytest.param(
+            "success",
+            [
+                StreamEvent(kind="text_delta", text="ok"),
+                StreamEvent(kind="done", finish_reason="stop"),
+            ],
+            8,
+            "done",
+            id="success",
+        ),
+        pytest.param(
+            "budget-failure",
+            [
+                StreamEvent(kind="text_delta", text="abcdefgh"),
+                StreamEvent(kind="done", finish_reason="stop"),
+            ],
+            1,
+            "error",
+            id="budget-failure",
+        ),
+        pytest.param(
+            "provider-error",
+            [StreamEvent(kind="error", error="provider failed")],
+            8,
+            "error",
+            id="provider-error",
+        ),
+    ],
+)
+def test_ws_stream_connected_outcome_emits_exactly_one_terminal_frame(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    case: str,
+    events: list[StreamEvent],
+    completion_budget: int,
+    expected_terminal_type: str,
+) -> None:
+    sent_frames: list[dict[str, Any]] = []
+    pong_sent = threading.Event()
+    real_send_json = WebSocket.send_json
+
+    async def probe_send_json(
+        websocket: WebSocket,
+        data: Any,
+        mode: Literal["text", "binary"] = "text",
+    ) -> None:
+        await real_send_json(websocket, data, mode=mode)
+        if not isinstance(data, dict):
+            return
+        frame = dict(data)
+        sent_frames.append(frame)
+        if frame.get("type") == "pong":
+            pong_sent.set()
+
+    monkeypatch.setattr(WebSocket, "send_json", probe_send_json)
+    provider = ScriptedStreamProvider(events)
+    agent = _make_agent(tmp_path, provider)
+    client = _make_ws_client(monkeypatch, tmp_path, agent)
+    agent._agent.settings.echo_budget = EchoBudgetConfig(
+        max_completion_tokens=completion_budget
+    )
+    frames: list[dict[str, Any]] = []
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json(
+            {
+                "type": "stream",
+                "content": f"exercise {case} terminal delivery",
+                "session_id": f"ws-terminal-{case}",
+                "enable_tools": False,
+            }
+        )
+        while True:
+            frame = ws.receive_json()
+            frames.append(frame)
+            if frame.get("terminal") is True:
+                break
+        ws.send_json({"type": "ping"})
+        assert pong_sent.wait(timeout=1.0), {
+            "client_frames": frames,
+            "sent_frames": sent_frames,
+        }
+
+    turn_frames: list[dict[str, Any]] = []
+    for frame in sent_frames:
+        if frame.get("type") == "pong":
+            break
+        turn_frames.append(frame)
+    terminal_frames = [frame for frame in turn_frames if frame.get("terminal") is True]
+    assert len(terminal_frames) == 1, turn_frames
+    assert terminal_frames[0]["type"] == expected_terminal_type
+    assert all(frame.get("terminal") is not True for frame in turn_frames[:-1])
+    diagnostics = [frame for frame in turn_frames if frame.get("type") == "stream_diagnostic"]
+    assert all(frame.get("terminal") is not True for frame in diagnostics)
 
 
 def test_ws_disconnect_cancels_inflight_echo_turn(
@@ -446,7 +615,7 @@ def test_ws_disconnect_cancels_inflight_echo_turn(
     agent._agent.request_cancel = record_cancel  # type: ignore[method-assign]
     client = _make_ws_client(monkeypatch, tmp_path, agent)
 
-    with client.websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with client.websocket_connect("/ws") as ws:
         ws.send_json(
             {
                 "type": "message",
@@ -454,9 +623,34 @@ def test_ws_disconnect_cancels_inflight_echo_turn(
                 "session_id": "ws-disconnect",
             }
         )
-        assert ws.receive_json() == {"type": "status", "content": "thinking..."}
+        status = ws.receive_json()
+        assert status["type"] == "status"
+        assert status["content"] == "thinking..."
+        assert all(
+            status.get(key) for key in ("request_id", "turn_id", "run_id", "session_id")
+        )
         assert provider.started.wait(timeout=1.0)
         ws.close()
 
     assert provider.cancelled.wait(timeout=1.0)
-    assert cancel_requests == [("ws-disconnect", "local-user")]
+    assert len(cancel_requests) == 1
+    assert cancel_requests[0][0] == "ws-disconnect"
+    assert isinstance(cancel_requests[0][1], str) and cancel_requests[0][1]
+    assert cancel_requests[0][1] != "local-user"
+    owner_key_hash = cancel_requests[0][1]
+    deadline = time.monotonic() + 1.0
+    receipts: list[Any] = []
+    merges: list[Any] = []
+    while time.monotonic() < deadline:
+        records = _ledger_records(agent, owner_key_hash, "ws-disconnect")
+        receipts = [record for record in records if record.record_type == "receipt"]
+        merges = [record for record in records if record.record_type == "merge"]
+        if len(receipts) == 1 and len(merges) == 1:
+            break
+        time.sleep(0.01)
+
+    assert len(receipts) == 1
+    assert receipts[0].payload["status"] == "cancelled"
+    assert len(merges) == 1
+    assert merges[0].payload["status"] == "cancelled"
+    assert agent._agent.echo_safety_service.health().claimed_effect_count == 0

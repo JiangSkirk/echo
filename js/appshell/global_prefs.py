@@ -14,9 +14,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-APPSHELL_PREFS_SCHEMA = "js-appshell-global-prefs-v1"
+APPSHELL_PREFS_SCHEMA = "js-appshell-global-prefs-v2"
+APPSHELL_PREFS_SCHEMA_V1 = "js-appshell-global-prefs-v1"
 DEFAULT_PERSONAL_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_WORK_BASE_URL = "http://127.0.0.1:8765"
+DEFAULT_HOST_BASE_URL = "http://127.0.0.1:8000"
+DEFAULT_PERSONAL_PATH = "/personal"
+DEFAULT_WORK_PATH = "/work"
 
 
 @dataclass(frozen=True)
@@ -25,9 +29,18 @@ class GlobalPrefs:
     language: str = "zh-CN"
     timezone: str = "Asia/Shanghai"
     theme: str = "system"
+    # v2 single-host fields
+    host_base_url: str = DEFAULT_HOST_BASE_URL
+    personal_path: str = DEFAULT_PERSONAL_PATH
+    work_path: str = DEFAULT_WORK_PATH
+    # v1 legacy fields (kept for rollback compatibility)
     personal_base_url: str = DEFAULT_PERSONAL_BASE_URL
     work_base_url: str = DEFAULT_WORK_BASE_URL
-    # Credential *references* only — opaque ids, never raw secrets.
+    # Optional state dirs written by ``js appshell`` so loopback handoff can
+    # mint a bootstrap entry URL for the *other* product. Never store keys here.
+    personal_state_dir: str | None = None
+    work_state_dir: str | None = None
+    # Credential *references* only - opaque ids, never raw secrets.
     credential_refs: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
@@ -52,6 +65,17 @@ def _validate_url(value: object, *, field: str) -> str:
     return value.rstrip("/")
 
 
+def _optional_state_dir(value: object, *, field: str) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or any(ch.isspace() for ch in value):
+        raise ValueError(f"{field} must be an absolute path string")
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise ValueError(f"{field} must be an absolute path")
+    return str(path.resolve())
+
+
 def prefs_from_mapping(data: dict[str, Any]) -> GlobalPrefs:
     refs_raw = data.get("credential_refs", ())
     if refs_raw is None:
@@ -62,24 +86,40 @@ def prefs_from_mapping(data: dict[str, Any]) -> GlobalPrefs:
     for item in refs_raw:
         if not isinstance(item, str) or not item or any(ch.isspace() for ch in item):
             raise ValueError("credential_refs entries must be non-empty opaque strings")
-        # Reject values that look like raw secrets.
         lowered = item.lower()
         if lowered.startswith(("sk-", "Bearer ", "-----begin")) or "api_key" in lowered:
             raise ValueError("credential_refs must not contain raw secret material")
         refs.append(item)
+    # v2 single-host fields, with v1 fallback
+    host_base_url = _validate_url(
+        data.get("host_base_url") or DEFAULT_HOST_BASE_URL,
+        field="host_base_url",
+    )
+    personal_path = str(data.get("personal_path") or DEFAULT_PERSONAL_PATH)
+    work_path = str(data.get("work_path") or DEFAULT_WORK_PATH)
+    # Keep v1 URLs for rollback
+    personal_base_url = _validate_url(
+        data.get("personal_base_url") or DEFAULT_PERSONAL_BASE_URL,
+        field="personal_base_url",
+    )
+    work_base_url = _validate_url(
+        data.get("work_base_url") or DEFAULT_WORK_BASE_URL,
+        field="work_base_url",
+    )
     return GlobalPrefs(
         schema_version=str(data.get("schema_version") or APPSHELL_PREFS_SCHEMA),
         language=str(data.get("language") or "zh-CN"),
         timezone=str(data.get("timezone") or "Asia/Shanghai"),
         theme=str(data.get("theme") or "system"),
-        personal_base_url=_validate_url(
-            data.get("personal_base_url") or DEFAULT_PERSONAL_BASE_URL,
-            field="personal_base_url",
+        host_base_url=host_base_url,
+        personal_path=personal_path,
+        work_path=work_path,
+        personal_base_url=personal_base_url,
+        work_base_url=work_base_url,
+        personal_state_dir=_optional_state_dir(
+            data.get("personal_state_dir"), field="personal_state_dir"
         ),
-        work_base_url=_validate_url(
-            data.get("work_base_url") or DEFAULT_WORK_BASE_URL,
-            field="work_base_url",
-        ),
+        work_state_dir=_optional_state_dir(data.get("work_state_dir"), field="work_state_dir"),
         credential_refs=tuple(refs),
     )
 

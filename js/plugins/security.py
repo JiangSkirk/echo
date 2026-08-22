@@ -82,12 +82,6 @@ def scan_plugin_source(plugin_id: str, source: str, filename: str = "<plugin>") 
             scan_time=time_mod.time() - start,
         )
 
-    # Track whether `os` or `asyncio` was imported (bare import, not `from`).
-    # We allow the import itself but block dangerous method calls on the module.
-    _imported_os = False
-    _imported_asyncio = False
-    _imported_importlib = False
-
     for node in ast.walk(tree):
         # Disallowed builtins: eval(), exec(), compile(), __import__()
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in PLUGIN_DISALLOWED_BUILTINS:
@@ -104,7 +98,12 @@ def scan_plugin_source(plugin_id: str, source: str, filename: str = "<plugin>") 
         ):
             risk_flags.append("disallowed_call:getattr(__builtins__)")
 
-        # Disallowed imports — enforce against the full PLUGIN_DISALLOWED_MODULES set
+        # Disallowed imports — enforce against the full PLUGIN_DISALLOWED_MODULES set.
+        # NOTE: the top-level check also blocks bare `import os` ("os" is the
+        # top-level name of "os.system"), so dangerous os.* usage is normally
+        # caught at the import site; the call-site checks below additionally
+        # cover modules that reach the namespace without a flagged import
+        # (e.g. via `import os.path`, which binds `os`).
         if isinstance(node, ast.Import):
             for alias in node.names:
                 # Check top-level module name against all disallowed modules
@@ -113,13 +112,6 @@ def scan_plugin_source(plugin_id: str, source: str, filename: str = "<plugin>") 
                 }
                 if alias.name in _disallowed_toplevel:
                     risk_flags.append(f"disallowed_import:{alias.name}")
-                # Track bare os / asyncio / importlib imports for call-site checks
-                if alias.name == "os":
-                    _imported_os = True
-                elif alias.name == "asyncio":
-                    _imported_asyncio = True
-                elif alias.name == "importlib":
-                    _imported_importlib = True
 
         if isinstance(node, ast.ImportFrom):
             module = node.module or ""

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import ipaddress
 import os
 import re
+import sys
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -85,6 +87,13 @@ class ModelConfig(BaseModel):
     supports_tools: bool = True
     cost_input: float = Field(default=0.0, ge=0.0)
     cost_output: float = Field(default=0.0, ge=0.0)
+
+    @field_validator("max_tokens", mode="before")
+    @classmethod
+    def reject_boolean_max_tokens(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("max_tokens must be a positive integer, not a boolean")
+        return value
 
     @field_validator("id", "provider")
     @classmethod
@@ -227,6 +236,16 @@ class EchoLedgerConfig(BaseModel):
     max_open_effects_per_tenant: int = Field(default=1_024, ge=1)
     max_session_partitions_per_owner: int = Field(default=64, ge=2)
     max_retired_session_receipts_per_owner: int = Field(default=256, ge=1)
+    max_retired_artifact_refs_per_owner: int = Field(
+        default=1_024,
+        ge=1,
+        le=65_536,
+    )
+    max_retired_artifact_bytes_per_owner: int = Field(
+        default=4 * 1024 * 1024,
+        ge=1,
+        le=64 * 1024 * 1024,
+    )
 
     @model_validator(mode="after")
     def validate_trigger_exceeds_retention(self) -> EchoLedgerConfig:
@@ -426,6 +445,100 @@ class AgentFeatureConfig(BaseModel):
 # Module-level cache for parsed config files: path -> (mtime, instance)
 _settings_file_cache: dict[Path, tuple[float, JSSettings]] = {}
 
+_PRIVATE_DIRECTORY_MODE = 0o700
+_MACOS_TRUSTED_PRIVATE_ALIASES = {
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
+
+
+def _absolute_without_resolving(path: Path) -> Path:
+    """Return an absolute lexical path without following user-controlled links.
+
+    macOS exposes ``/tmp`` and ``/var`` as root-owned compatibility symlinks to
+    ``/private``.  Treat only those exact, verified system aliases as canonical
+    prefixes; all later components are still opened with ``O_NOFOLLOW``.
+    """
+    absolute = Path(os.path.abspath(os.fspath(path.expanduser())))
+    if sys.platform != "darwin" or len(absolute.parts) < 3:
+        return absolute
+
+    alias_name = absolute.parts[1]
+    expected = _MACOS_TRUSTED_PRIVATE_ALIASES.get(alias_name)
+    if expected is None:
+        return absolute
+
+    alias = Path(absolute.anchor) / alias_name
+    try:
+        metadata = alias.lstat()
+        if (
+            not alias.is_symlink()
+            or metadata.st_uid != 0
+            or Path(os.path.realpath(alias)) != expected
+            or not expected.is_dir()
+        ):
+            return absolute
+    except OSError:
+        return absolute
+    return expected.joinpath(*absolute.parts[2:])
+
+
+def _ensure_private_directory(path: Path, *, label: str) -> None:
+    """Create or tighten a managed directory without following symlinks.
+
+    Walking one component at a time relative to an already-open directory
+    prevents a managed leaf (or one of its parents) from redirecting chmod to
+    an unrelated target. Existing ordinary directories are tightened to 0700;
+    symlinks and non-directories fail closed.
+    """
+    absolute = _absolute_without_resolving(path)
+    if absolute == Path(absolute.anchor):
+        raise ValueError(f"{label} must be a private directory below the filesystem root")
+
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    no_follow_flag = getattr(os, "O_NOFOLLOW", 0)
+    if not directory_flag or not no_follow_flag:
+        raise RuntimeError("private directory creation requires O_DIRECTORY and O_NOFOLLOW")
+
+    current_fd = os.open(absolute.anchor, os.O_RDONLY | directory_flag)
+    try:
+        for component in absolute.parts[1:]:
+            try:
+                os.mkdir(component, _PRIVATE_DIRECTORY_MODE, dir_fd=current_fd)
+            except FileExistsError:
+                pass
+
+            try:
+                child_fd = os.open(
+                    component,
+                    os.O_RDONLY | directory_flag | no_follow_flag,
+                    dir_fd=current_fd,
+                )
+            except OSError as exc:
+                if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise ValueError(
+                        f"{label} must be a private directory, not a symlink or non-directory"
+                    ) from exc
+                raise
+            os.close(current_fd)
+            current_fd = child_fd
+
+        os.fchmod(current_fd, _PRIVATE_DIRECTORY_MODE)
+    finally:
+        os.close(current_fd)
+
+
+def _personal_storage_roots(*paths: Path) -> tuple[Path, ...]:
+    """Return lexical ``.js`` ancestors that are managed Personal roots."""
+    roots: set[Path] = set()
+    for path in paths:
+        absolute = _absolute_without_resolving(path)
+        for candidate in (absolute, *absolute.parents):
+            if candidate.name == ".js":
+                roots.add(candidate)
+                break
+    return tuple(sorted(roots, key=lambda candidate: len(candidate.parts)))
+
 
 def _normalise_echo_engine(value: str) -> str:
     normalised = (value or "on").strip().lower()
@@ -451,6 +564,11 @@ class JSSettings(BaseSettings):
     state_dir: Path = Field(default_factory=lambda: Path.home() / ".js" / "state")
     # Agent behavior
     max_turns: int = Field(default=50, ge=1)
+    max_empty_response_retries: int = Field(
+        default=3,
+        ge=1,
+        description="Max consecutive empty model responses before failing the run",
+    )
 
     # Sub-configs
     models: list[ModelConfig] = Field(default_factory=list)
@@ -465,7 +583,19 @@ class JSSettings(BaseSettings):
     features: AgentFeatureConfig = Field(default_factory=AgentFeatureConfig)
     search_configured: bool = False
     first_run_completed: bool = False
+    # Server-authoritative first-run wizard state. ``first_run_completed`` remains
+    # for backward compatibility and is kept in sync:
+    # pending|in_progress → first_run_completed=False
+    # completed|skipped → first_run_completed=True
+    onboarding_status: str = Field(
+        default="pending",
+        description="Onboarding lifecycle: pending | in_progress | completed | skipped",
+    )
     desktop_control_enabled: bool = False
+    # Deferred product surfaces stay fail-closed until a future release explicitly enables them.
+    mobile_enabled: bool = False
+    friends_enabled: bool = False
+    remote_collaboration_enabled: bool = False
     mcp_manifest: Path | None = Field(
         default=None,
         description="Optional Echo-controlled MCP manifest path",
@@ -484,16 +614,75 @@ class JSSettings(BaseSettings):
         description="Echo engine mode: on",
     )
 
+    @field_validator(
+        "mobile_enabled", "friends_enabled", "remote_collaboration_enabled", mode="before"
+    )
+    @classmethod
+    def require_exact_boolean_deferred_feature_gate(cls, value: object) -> bool:
+        """Reject coercion so deferred product surfaces remain fail-closed."""
+        if type(value) is not bool:
+            raise ValueError("deferred feature gate must be an exact boolean")
+        return value
+
     @field_validator("echo_engine")
     @classmethod
     def validate_echo_engine(cls, v: str) -> str:
         """Reject removed rollout/rollback modes and unknown values."""
         return _normalise_echo_engine(v)
 
+    @field_validator("onboarding_status", mode="before")
+    @classmethod
+    def validate_onboarding_status(cls, value: object) -> str:
+        allowed = {"pending", "in_progress", "completed", "skipped"}
+        if value is None or value == "":
+            return "pending"
+        text = str(value).strip().lower()
+        if text not in allowed:
+            raise ValueError(
+                f"onboarding_status must be one of {sorted(allowed)}, got {value!r}"
+            )
+        return text
+
+    @model_validator(mode="after")
+    def sync_onboarding_with_first_run(self) -> JSSettings:
+        """Migrate legacy first_run_completed and keep both fields coherent.
+
+        Terminal states (completed/skipped) always imply first_run_completed.
+        ``in_progress`` may keep first_run_completed=True when the wizard is
+        reopened from Settings after a prior dismiss (bootstrap must stay closed).
+        Legacy configs with only the boolean true migrate pending → completed.
+        """
+        status = self.onboarding_status
+        if status in {"completed", "skipped"}:
+            self.first_run_completed = True
+            return self
+        if status == "pending" and self.first_run_completed:
+            # Legacy: only the boolean existed.
+            self.onboarding_status = "completed"
+            return self
+        # pending + first_run false: first boot
+        # in_progress + first_run false: first-time wizard mid-flow
+        # in_progress + first_run true: reopen after skip/complete
+        return self
+
     @model_validator(mode="after")
     def ensure_directories(self) -> JSSettings:
-        self.workspace.mkdir(parents=True, exist_ok=True)
-        self.state_dir.mkdir(parents=True, exist_ok=True)
+        # Fail closed when the state directory is the workspace or nested
+        # inside it: tool writes are confined to the workspace, and the
+        # durable ledger / secret stores under state_dir must stay out of
+        # their reach.  Compare resolved paths so symlink aliases cannot
+        # hide the nesting.
+        workspace_resolved = self.workspace.expanduser().resolve()
+        state_resolved = self.state_dir.expanduser().resolve()
+        if state_resolved == workspace_resolved or workspace_resolved in state_resolved.parents:
+            raise ValueError(
+                "workspace must not be the state directory or one of its ancestors: "
+                f"workspace={workspace_resolved} state_dir={state_resolved}"
+            )
+        for root in _personal_storage_roots(self.workspace, self.state_dir):
+            _ensure_private_directory(root, label="Personal storage root")
+        _ensure_private_directory(self.workspace, label="Personal workspace")
+        _ensure_private_directory(self.state_dir, label="Personal state directory")
         return self
 
     @model_validator(mode="after")
@@ -576,6 +765,11 @@ class JSSettings(BaseSettings):
         else:
             p = None
 
+        if p is not None:
+            from js.product_storage import assert_personal_path_not_in_work_namespace
+
+            assert_personal_path_not_in_work_namespace(p)
+
         instance: JSSettings | None = None
         config_path: Path | None = None
 
@@ -639,6 +833,13 @@ class JSSettings(BaseSettings):
                 pass
 
         return instance.with_runtime_engine_env()
+
+    @property
+    def config_source_path(self) -> Path:
+        """Resolved source used to load or save this Personal configuration."""
+        if hasattr(self, "_config_path") and self._config_path is not None:
+            return Path(self._config_path).expanduser().resolve(strict=False)
+        return (Path.home() / ".config" / "js" / "config.yaml").resolve(strict=False)
 
     def _merge_hermes(self) -> None:
         """Overlay Hermes config (~/.hermes/config.yaml) when JS config is default."""
@@ -751,6 +952,10 @@ class JSSettings(BaseSettings):
             target = Path(self._config_path)
         else:
             target = Path.home() / ".config" / "js" / "config.yaml"
+
+        from js.product_storage import assert_personal_path_not_in_work_namespace
+
+        assert_personal_path_not_in_work_namespace(target)
 
         # Build the new data dict
         new_data = self.model_dump(mode="json", exclude={"providers": {"__all__": {"api_key"}}})

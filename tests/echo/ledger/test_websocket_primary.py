@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import errno
-import os
 import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -17,11 +16,11 @@ from js.echo.ledger.service import EchoBlockedError, EchoUnavailableError
 from js.web.runtime_context import WebRuntime, bind_web_runtime
 
 
-def _build_app() -> Any:
-    os.environ["JS_ALLOWED_ORIGINS"] = "http://localhost"
+def _build_app(monkeypatch: pytest.MonkeyPatch) -> Any:
+    monkeypatch.setenv("JS_ALLOWED_ORIGINS", "http://localhost")
     import js.web.auth as auth_mod
 
-    auth_mod._ALLOWED_ORIGINS = None
+    monkeypatch.setattr(auth_mod, "_ALLOWED_ORIGINS", None)
 
     @asynccontextmanager
     async def _noop_lifespan(_app: Any) -> AsyncIterator[None]:
@@ -69,6 +68,15 @@ def _client(app: Any) -> TestClient:
     return TestClient(app, base_url="http://localhost", headers={"Origin": "http://localhost"})
 
 
+_WIRED_WS_HEADERS: dict[str, str] = {"Origin": "http://localhost"}
+
+
+def _assert_identified_frame(frame: dict[str, Any], expected: dict[str, Any]) -> None:
+    assert {key: frame.get(key) for key in expected} == expected
+    for key in ("request_id", "turn_id", "run_id", "session_id"):
+        assert isinstance(frame.get(key), str) and frame[key]
+
+
 def _wire(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -76,11 +84,16 @@ def _wire(
     agent: MagicMock,
     run_echo_turn: Any,
 ) -> Any:
-    app = _build_app()
+    global _WIRED_WS_HEADERS
+    from js.web.auth import AuthManager
+
+    app = _build_app(monkeypatch)
     monkeypatch.setattr("js.web.server._settings", settings)
     monkeypatch.setattr("js.web.server._agent", agent)
     monkeypatch.setattr("js.web.server.get_agent", lambda: agent)
     monkeypatch.setattr("js.web.server.run_echo_turn", run_echo_turn)
+    user_key = AuthManager(settings.state_dir).create_key("ws-primary", role="user")
+    _WIRED_WS_HEADERS = {"Origin": "http://localhost", "X-API-Key": user_key}
     return app
 
 
@@ -94,14 +107,12 @@ def test_ws_message_echo_on_delegates_primary_gate_to_echo_turn_boundary(
     run_echo_turn = AsyncMock(return_value=state)
     app = _wire(monkeypatch, settings=settings, agent=agent, run_echo_turn=run_echo_turn)
 
-    with _client(app).websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
-        ws.send_json(
-            {"type": "message", "content": "hello through ws", "session_id": "ws-primary"}
-        )
+    with _client(app).websocket_connect("/ws", headers=_WIRED_WS_HEADERS) as ws:
+        ws.send_json({"type": "message", "content": "hello through ws", "session_id": "ws-primary"})
         status = ws.receive_json()
         response = ws.receive_json()
 
-    assert status == {"type": "status", "content": "thinking..."}
+    _assert_identified_frame(status, {"type": "status", "content": "thinking..."})
     assert response["type"] == "response"
     assert response["content"] == "WS wrapped response"
     run_echo_turn.assert_awaited_once()
@@ -127,7 +138,7 @@ def test_ws_stream_echo_on_delegates_primary_gate_to_echo_turn_boundary(
     run_echo_turn = AsyncMock(side_effect=_runtime)
     app = _wire(monkeypatch, settings=settings, agent=agent, run_echo_turn=run_echo_turn)
 
-    with _client(app).websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with _client(app).websocket_connect("/ws", headers=_WIRED_WS_HEADERS) as ws:
         ws.send_json({"type": "stream", "content": "stream through ws", "session_id": "ws-primary"})
         frames = [ws.receive_json() for _ in range(4)]
 
@@ -158,7 +169,7 @@ def test_ws_message_echo_on_calls_turn_runtime_without_changing_frames(
 
     app = _wire(monkeypatch, settings=settings, agent=agent, run_echo_turn=_runtime)
 
-    with _client(app).websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with _client(app).websocket_connect("/ws", headers=_WIRED_WS_HEADERS) as ws:
         ws.send_json(
             {
                 "type": "message",
@@ -169,7 +180,7 @@ def test_ws_message_echo_on_calls_turn_runtime_without_changing_frames(
         status = ws.receive_json()
         response = ws.receive_json()
 
-    assert status == {"type": "status", "content": "thinking..."}
+    _assert_identified_frame(status, {"type": "status", "content": "thinking..."})
     assert response["type"] == "response"
     assert response["content"] == "WS runtime response"
     assert len(runtime_calls) == 1
@@ -199,7 +210,7 @@ def test_ws_stream_echo_on_calls_turn_runtime_without_changing_frames(
 
     app = _wire(monkeypatch, settings=settings, agent=agent, run_echo_turn=_runtime)
 
-    with _client(app).websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with _client(app).websocket_connect("/ws", headers=_WIRED_WS_HEADERS) as ws:
         ws.send_json(
             {
                 "type": "stream",
@@ -236,7 +247,7 @@ def test_ws_stream_diagnostic_sanitizes_provider_error(
 
     app = _wire(monkeypatch, settings=settings, agent=agent, run_echo_turn=_runtime)
 
-    with _client(app).websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with _client(app).websocket_connect("/ws", headers=_WIRED_WS_HEADERS) as ws:
         ws.send_json(
             {
                 "type": "stream",
@@ -268,7 +279,7 @@ def test_ws_stream_echo_on_records_token_usage(
             await stream_callback("Hello")
         return state
 
-    app = _build_app()
+    app = _build_app(monkeypatch)
     monkeypatch.setattr("js.web.server._settings", settings)
     monkeypatch.setattr("js.web.server._agent", agent)
     monkeypatch.setattr("js.web.server.get_agent", lambda: agent)
@@ -277,8 +288,12 @@ def test_ws_stream_echo_on_records_token_usage(
         app,
         WebRuntime(agent=agent, settings=settings, stats_store=_Stats()),
     )
+    from js.web.auth import AuthManager
 
-    with _client(app).websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    user_key = AuthManager(settings.state_dir).create_key("ws-token-usage", role="user")
+    ws_headers = {"Origin": "http://localhost", "X-API-Key": user_key}
+
+    with _client(app).websocket_connect("/ws", headers=ws_headers) as ws:
         ws.send_json(
             {
                 "type": "stream",
@@ -331,7 +346,7 @@ def test_ws_success_survives_token_telemetry_failure(
     )
     monkeypatch.setattr("js.web.server.logger", telemetry_logger)
 
-    with _client(app).websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with _client(app).websocket_connect("/ws", headers=_WIRED_WS_HEADERS) as ws:
         ws.send_json(
             {
                 "type": "message",
@@ -360,7 +375,7 @@ def test_ws_message_echo_on_blocks_secret_at_echo_turn_boundary(
     )
     app = _wire(monkeypatch, settings=settings, agent=agent, run_echo_turn=run_echo_turn)
 
-    with _client(app).websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with _client(app).websocket_connect("/ws", headers=_WIRED_WS_HEADERS) as ws:
         ws.send_json(
             {
                 "type": "message",
@@ -371,7 +386,7 @@ def test_ws_message_echo_on_blocks_secret_at_echo_turn_boundary(
         status = ws.receive_json()
         error = ws.receive_json()
 
-    assert status == {"type": "status", "content": "thinking..."}
+    _assert_identified_frame(status, {"type": "status", "content": "thinking..."})
     assert error["type"] == "error"
     assert "sensitive" in error["content"]
     run_echo_turn.assert_awaited_once()
@@ -389,7 +404,7 @@ def test_ws_message_echo_on_rejects_plain_workspace_attachment(
     run_echo_turn = AsyncMock()
     app = _wire(monkeypatch, settings=settings, agent=agent, run_echo_turn=run_echo_turn)
 
-    with _client(app).websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with _client(app).websocket_connect("/ws", headers=_WIRED_WS_HEADERS) as ws:
         ws.send_json(
             {
                 "type": "message",
@@ -415,7 +430,7 @@ def test_ws_stream_rejects_non_list_attachments_like_http(
     run_echo_turn = AsyncMock()
     app = _wire(monkeypatch, settings=settings, agent=agent, run_echo_turn=run_echo_turn)
 
-    with _client(app).websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with _client(app).websocket_connect("/ws", headers=_WIRED_WS_HEADERS) as ws:
         ws.send_json(
             {
                 "type": "stream",
@@ -426,11 +441,14 @@ def test_ws_stream_rejects_non_list_attachments_like_http(
         )
         error = ws.receive_json()
 
-    assert error == {
-        "type": "error",
-        "content": "attachments must be a list",
-        "session_id": "ws-bad-attachments",
-    }
+    _assert_identified_frame(
+        error,
+        {
+            "type": "error",
+            "content": "attachments must be a list",
+            "session_id": "ws-bad-attachments",
+        },
+    )
     run_echo_turn.assert_not_awaited()
     agent.run.assert_not_awaited()
 
@@ -446,7 +464,7 @@ def test_ws_stream_echo_on_blocks_secret_at_echo_turn_boundary(
     )
     app = _wire(monkeypatch, settings=settings, agent=agent, run_echo_turn=run_echo_turn)
 
-    with _client(app).websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with _client(app).websocket_connect("/ws", headers=_WIRED_WS_HEADERS) as ws:
         ws.send_json(
             {
                 "type": "stream",
@@ -457,7 +475,7 @@ def test_ws_stream_echo_on_blocks_secret_at_echo_turn_boundary(
         status = ws.receive_json()
         error = ws.receive_json()
 
-    assert status == {"type": "status", "content": "streaming..."}
+    _assert_identified_frame(status, {"type": "status", "content": "streaming..."})
     assert error["type"] == "error"
     assert "sensitive" in error["content"]
     run_echo_turn.assert_awaited_once()
@@ -475,7 +493,7 @@ def test_ws_message_echo_on_fails_closed_when_begin_errors(
     )
     app = _wire(monkeypatch, settings=settings, agent=agent, run_echo_turn=run_echo_turn)
 
-    with _client(app).websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with _client(app).websocket_connect("/ws", headers=_WIRED_WS_HEADERS) as ws:
         ws.send_json(
             {
                 "type": "message",
@@ -486,7 +504,7 @@ def test_ws_message_echo_on_fails_closed_when_begin_errors(
         status = ws.receive_json()
         error = ws.receive_json()
 
-    assert status == {"type": "status", "content": "thinking..."}
+    _assert_identified_frame(status, {"type": "status", "content": "thinking..."})
     assert error["type"] == "error"
     assert "safety layer" in error["content"]
     run_echo_turn.assert_awaited_once()
@@ -503,7 +521,7 @@ def test_ws_echo_unavailable_does_not_echo_private_exception(
     run_echo_turn = AsyncMock(side_effect=EchoUnavailableError(private_detail))
     app = _wire(monkeypatch, settings=settings, agent=agent, run_echo_turn=run_echo_turn)
 
-    with _client(app).websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with _client(app).websocket_connect("/ws", headers=_WIRED_WS_HEADERS) as ws:
         ws.send_json(
             {
                 "type": "message",
@@ -529,7 +547,7 @@ def test_ws_stream_echo_on_fails_closed_when_begin_errors(
     )
     app = _wire(monkeypatch, settings=settings, agent=agent, run_echo_turn=run_echo_turn)
 
-    with _client(app).websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with _client(app).websocket_connect("/ws", headers=_WIRED_WS_HEADERS) as ws:
         ws.send_json(
             {
                 "type": "stream",
@@ -540,7 +558,7 @@ def test_ws_stream_echo_on_fails_closed_when_begin_errors(
         status = ws.receive_json()
         error = ws.receive_json()
 
-    assert status == {"type": "status", "content": "streaming..."}
+    _assert_identified_frame(status, {"type": "status", "content": "streaming..."})
     assert error["type"] == "error"
     assert "safety layer" in error["content"]
     run_echo_turn.assert_awaited_once()
@@ -558,7 +576,7 @@ def test_ws_message_echo_on_does_not_send_response_before_finalize_error(
     )
     app = _wire(monkeypatch, settings=settings, agent=agent, run_echo_turn=run_echo_turn)
 
-    with _client(app).websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with _client(app).websocket_connect("/ws", headers=_WIRED_WS_HEADERS) as ws:
         ws.send_json(
             {
                 "type": "message",
@@ -569,7 +587,7 @@ def test_ws_message_echo_on_does_not_send_response_before_finalize_error(
         status = ws.receive_json()
         first_terminal = ws.receive_json()
 
-    assert status == {"type": "status", "content": "thinking..."}
+    _assert_identified_frame(status, {"type": "status", "content": "thinking..."})
     assert first_terminal["type"] == "error"
     assert "safety layer" in first_terminal["content"]
     # Single terminal frame: no response/done after finalize failure.
@@ -592,7 +610,7 @@ def test_ws_stream_echo_on_does_not_send_done_before_finalize_error(
     run_echo_turn = AsyncMock(side_effect=_runtime)
     app = _wire(monkeypatch, settings=settings, agent=agent, run_echo_turn=run_echo_turn)
 
-    with _client(app).websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws:
+    with _client(app).websocket_connect("/ws", headers=_WIRED_WS_HEADERS) as ws:
         ws.send_json(
             {
                 "type": "stream",

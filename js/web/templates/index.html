@@ -7,342 +7,110 @@
 <title>{{PRODUCT_NAME}}</title>
 <link href="/static/vendor/tailwind.css" rel="stylesheet">
 <link href="/static/vendor/fontawesome/css/all.min.css" rel="stylesheet">
-<style>
-@keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 5px rgba(59,130,246,0.3); }
-  50% { box-shadow: 0 0 20px rgba(59,130,246,0.6); }
-}
-.msg-user { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); }
-.msg-assistant { background: #1f2937; border: 1px solid #374151; }
-.typing-dot { animation: bounce 1.4s infinite ease-in-out both; }
-.typing-dot:nth-child(1) { animation-delay: -0.32s; }
-.typing-dot:nth-child(2) { animation-delay: -0.16s; }
-@keyframes bounce {
-  0%, 80%, 100% { transform: scale(0); }
-  40% { transform: scale(1); }
-}
-#sidebar { transition: transform 0.3s ease; }
-.markdown pre { background: #111827; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; }
-.markdown code { background: #374151; padding: 0.2rem 0.4rem; border-radius: 0.25rem; font-size: 0.875rem; }
-.markdown pre code { background: transparent; padding: 0; }
-/* Chat scroll & wrap fixes */
-#tab-chat { min-height: 0; overflow: hidden; }
-#chat-messages { min-height: 0; overflow-x: hidden; width: 100%; }
-.msg-user, .msg-assistant { word-break: break-word; overflow-wrap: break-word; min-width: 0; overflow-wrap: anywhere; max-width: 100%; box-sizing: border-box; }
-/* Force message row containers to not expand */
-#chat-messages > div { min-width: 0; }
-.markdown pre { white-space: pre-wrap; word-break: break-all; max-width: 100%; box-sizing: border-box; min-width: 0; }
-/* Session list */
-#session-list { transition: max-height 0.3s ease, opacity 0.3s ease; }
-.session-item { cursor: pointer; }
-.session-item:hover { background: #374151; }
-
-/* ════════════════════════════════════════
-   Fleet Workstation — Feishu-style Layout
-   ════════════════════════════════════════ */
-.fleet-workspace { background: #131519; }
-.fleet-sidebar { scrollbar-width: thin; scrollbar-color: #374151 #1a1d24; }
-.fleet-sidebar::-webkit-scrollbar { width: 4px; }
-.fleet-sidebar::-webkit-scrollbar-thumb { background: #374151; border-radius: 2px; }
-.fleet-chat-area { scrollbar-width: thin; scrollbar-color: #374151 #131519; }
-.fleet-chat-area::-webkit-scrollbar { width: 6px; }
-.fleet-chat-area::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
-
-/* Sidebar conversation items */
-.fleet-conv-item {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 10px; border-radius: 6px;
-  cursor: pointer; transition: background 0.15s;
-}
-.fleet-conv-item:hover { background: #23262d; }
-.fleet-conv-item.active { background: #2a3a52; }
-.fleet-conv-item .conv-avatar {
-  width: 36px; height: 36px; border-radius: 50%;
-  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
-  font-size: 13px; font-weight: 600;
-}
-.fleet-conv-item .conv-meta { flex: 1; min-width: 0; }
-.fleet-conv-item .conv-name {
-  font-size: 12px; font-weight: 500; color: #d1d5db;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.fleet-conv-item .conv-preview {
-  font-size: 10px; color: #6b7280;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  margin-top: 1px;
-}
-.fleet-conv-item .conv-badge {
-  width: 7px; height: 7px; border-radius: 50%;
-  flex-shrink: 0;
-}
-
-/* Chat message bubbles */
-.fleet-msg-row { display: flex; gap: 8px; max-width: 85%; }
-.fleet-msg-row.me { margin-left: auto; flex-direction: row-reverse; }
-.fleet-msg-avatar {
-  width: 32px; height: 32px; border-radius: 50%;
-  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 600;
-}
-.fleet-msg-bubble {
-  padding: 8px 12px; border-radius: 12px;
-  font-size: 13px; line-height: 1.5;
-  word-break: break-word;
-}
-.fleet-msg-row.me .fleet-msg-bubble {
-  background: #2a4a8a; color: #e5e7eb;
-  border-bottom-right-radius: 4px;
-}
-.fleet-msg-row.them .fleet-msg-bubble {
-  background: #23262d; color: #d1d5db;
-  border: 1px solid #2d3139;
-  border-bottom-left-radius: 4px;
-}
-.fleet-msg-row.system .fleet-msg-bubble {
-  background: transparent; color: #6b7280;
-  font-size: 11px; text-align: center; border: none;
-}
-.fleet-msg-time {
-  font-size: 9px; color: #4b5563; margin-top: 2px;
-}
-.fleet-msg-row.me .fleet-msg-time { text-align: right; }
-
-/* Typing indicator */
-.fleet-typing {
-  display: flex; gap: 3px; padding: 10px 12px;
-}
-.fleet-typing-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: #6b7280; animation: fleetTypingBounce 1.4s infinite ease-in-out both;
-}
-.fleet-typing-dot:nth-child(1) { animation-delay: -0.32s; }
-.fleet-typing-dot:nth-child(2) { animation-delay: -0.16s; }
-@keyframes fleetTypingBounce {
-  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-  40% { transform: scale(1); opacity: 1; }
-}
-
-/* Detail panel tabs */
-.fleet-detail-section { padding: 12px 16px; border-bottom: 1px solid #23262d; }
-.fleet-detail-section:last-child { border-bottom: none; }
-
-/* Auto-grow textarea */
-
-
-/* Model config cards */
-.fleet-model-card {
-  display: flex; align-items: center; gap: 6px;
-  padding: 6px 8px; border-radius: 6px;
-  background: #23262d; border: 1px solid #2d3139;
-  transition: border-color 0.15s;
-}
-.fleet-model-card:hover { border-color: #3b82f6; }
-.fleet-model-card .model-icon {
-  width: 22px; height: 22px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 9px; flex-shrink: 0;
-}
-.fleet-model-card .model-select {
-  flex: 1; min-width: 0;
-  background: transparent; border: none;
-  color: #d1d5db; font-size: 10px;
-  outline: none; cursor: pointer;
-}
-.fleet-model-card .model-select option { background: #1a1d24; }
-
-/* Group chat items */
-.fleet-group-avatar {
-  width: 36px; height: 36px; border-radius: 50%;
-  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
-  font-size: 13px; color: white;
-}
-.fleet-group-avatar .member-count {
-  position: absolute; bottom: -2px; right: -2px;
-  width: 14px; height: 14px; border-radius: 50%;
-  background: #1a1d24; border: 1.5px solid #1a1d24;
-  font-size: 8px; display: flex; align-items: center; justify-content: center;
-  color: #9ca3af;
-}
-
-/* Group chat header — stacked avatars */
-.fleet-group-header-avatars {
-  display: flex; align-items: center;
-}
-.fleet-group-header-avatars .gh-avatar {
-  width: 24px; height: 24px; border-radius: 50%;
-  border: 2px solid #131519; margin-left: -8px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 9px; font-weight: 600; color: white;
-}
-.fleet-group-header-avatars .gh-avatar:first-child { margin-left: 0; }
-.fleet-group-header-avatars .gh-more {
-  width: 24px; height: 24px; border-radius: 50%;
-  border: 2px solid #131519; margin-left: -8px;
-  background: #374151; display: flex; align-items: center; justify-content: center;
-  font-size: 8px; color: #d1d5db;
-}
-  /* Typing cursor */
-  .typing-cursor::after {
-    content: '|';
-    animation: cursorBlink 1s step-end infinite;
-    color: #60a5fa;
-  }
-  @keyframes cursorBlink {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0; }
-  }
-  /* Thinking block */
-  .thinking-block {
-    background: rgba(107, 33, 168, 0.1);
-    border: 1px solid rgba(168, 85, 247, 0.2);
-    border-radius: 0.5rem;
-    padding: 0.5rem;
-    margin-bottom: 0.5rem;
-  }
-  .thinking-block summary {
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    color: #a78bfa;
-    font-size: 0.75rem;
-    user-select: none;
-  }
-  .thinking-block summary::-webkit-details-marker { display: none; }
-  .thinking-block .thinking-content {
-    color: #9ca3af;
-    font-size: 0.75rem;
-    font-family: monospace;
-    white-space: pre-wrap;
-    margin-top: 0.5rem;
-    padding-left: 0.5rem;
-    border-left: 2px solid rgba(168, 85, 247, 0.3);
-  }
-</style>
+<link href="/static/css/tokens.css" rel="stylesheet">
+<link href="/static/css/legacy.css" rel="stylesheet">
+<link href="/static/css/shell.css" rel="stylesheet">
+<script src="/static/js/theme-init.js"></script>
 </head>
-<body class="bg-gray-950 text-gray-100 h-screen flex overflow-hidden">
+<body class="h-screen overflow-hidden">
 
-<!-- Sidebar -->
-<aside id="sidebar" class="w-64 bg-gray-900 border-r border-gray-800 flex flex-col transform -translate-x-full md:translate-x-0 absolute md:relative z-20 h-full">
-  <div class="p-4 border-b border-gray-800 flex items-center gap-3">
-    <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-      <i class="fas fa-robot text-white text-sm"></i>
-    </div>
-    <h1 class="font-bold text-lg">{{PRODUCT_NAME}}</h1>
-  </div>
-  <nav class="flex-1 p-2 space-y-1 overflow-y-auto">
-    <!-- 常用：普通用户日常主线 -->
-    <div class="px-3 pt-1 pb-1 text-[10px] font-semibold text-gray-600 tracking-wider">常用</div>
-    <div>
-      <button onclick="toggleSessionList()" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2 text-blue-400 bg-gray-800/50" id="nav-chat">
-        <i class="fas fa-comments w-5"></i> 对话
-        <i id="session-chevron" class="fas fa-chevron-down text-xs text-gray-500 ml-auto transition-transform"></i>
-      </button>
-      <div id="session-list" class="overflow-y-auto space-y-0.5" style="max-height: 0px; opacity: 0;">
-        <!-- Sessions loaded dynamically -->
-      </div>
-    </div>
-    <button onclick="switchTab('memory')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-memory">
-      <i class="fas fa-brain w-5"></i> 记忆
+<div id="app-shell">
+  <!-- 1. Nav rail -->
+  <nav id="nav-rail" aria-label="主导航">
+    <div class="rail-brand" aria-hidden="true">JS</div>
+    <button type="button" id="nav-chat" class="rail-item shell-active" data-tab="chat" data-rail-label="对话" aria-label="对话">
+      <span data-icon="message-circle"></span><span>对话</span>
     </button>
-    <button onclick="switchTab('files')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-files">
-      <i class="fas fa-folder w-5"></i> 文件
+    <button type="button" id="nav-memory" class="rail-item" data-tab="memory" data-rail-label="记忆" aria-label="记忆">
+      <span data-icon="brain"></span><span>记忆</span>
     </button>
-    <button onclick="switchTab('models')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-models">
-      <i class="fas fa-microchip w-5"></i> 模型
+    <button type="button" id="nav-files" class="rail-item" data-tab="files" data-rail-label="文件" aria-label="文件">
+      <span data-icon="folder"></span><span>文件</span>
     </button>
-
-    <!-- 进阶：多 Agent / 自动化能力 -->
-    <div class="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-600 tracking-wider">进阶</div>
-    <button onclick="switchTab('agents')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-agents">
-      <i class="fas fa-network-wired w-5"></i> 多Agent
+    <button type="button" id="nav-tasks" class="rail-item" data-tab="tasks" data-rail-label="任务" aria-label="任务">
+      <span data-icon="list-checks"></span><span>任务</span>
+      <span id="task-notify-dot" class="notify-dot" hidden></span>
     </button>
-    <button onclick="switchTab('scenarios')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-scenarios">
-      <i class="fas fa-th-large w-5"></i> 场景模板
+    <button type="button" class="rail-item" data-tab="__more__" data-rail-label="更多" aria-label="更多功能" aria-haspopup="true">
+      <span data-icon="ellipsis"></span><span>更多</span>
     </button>
-    <button onclick="switchTab('evolution')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-evolution">
-      <i class="fas fa-dna w-5"></i> 进化
-    </button>
-    <button onclick="switchTab('skills')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-skills">
-      <i class="fas fa-magic w-5"></i> Skills
-    </button>
-    <button onclick="switchTab('search')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-search">
-      <i class="fas fa-search w-5"></i> 搜索
-    </button>
-
-    <!-- 系统：运维 / 监控 / 安全 -->
-    <div class="px-3 pt-3 pb-1 text-[10px] font-semibold text-gray-600 tracking-wider">系统</div>
-    <button onclick="switchTab('dashboard')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-dashboard">
-      <i class="fas fa-gauge-high w-5"></i> 仪表盘
-    </button>
-    <button onclick="switchTab('tasks')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-tasks">
-      <i class="fas fa-tasks w-5"></i> 任务中心
-    </button>
-    <button onclick="switchTab('audit')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-audit">
-      <i class="fas fa-shield-alt w-5"></i> 审计
-    </button>
-    <button onclick="switchTab('approvals')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-approvals">
-      <i class="fas fa-user-check w-5"></i> 审批
-      <span id="approvals-pending-count" class="hidden ml-auto min-w-5 px-1.5 py-0.5 rounded-full bg-yellow-500/20 text-yellow-300 text-[10px] text-center" aria-label="待审批数量">0</span>
-    </button>
-    <button onclick="switchTab('stats')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-stats">
-      <i class="fas fa-coins w-5"></i> 用量统计
-    </button>
-    <button onclick="switchTab('status')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-status">
-      <i class="fas fa-chart-line w-5"></i> 状态
-    </button>
-    <button onclick="switchTab('cron')" class="w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 flex items-center gap-2" id="nav-cron">
-      <i class="fas fa-clock w-5"></i> 定时任务
+    <div class="rail-spacer"></div>
+    <button type="button" class="rail-item" data-tab="__settings__" data-rail-label="设置" aria-label="设置">
+      <span data-icon="settings"></span><span>设置</span>
     </button>
   </nav>
-  <div class="p-4 border-t border-gray-800 text-xs text-gray-500">
-    <div id="conn-status" class="flex items-center gap-2 mb-2">
-      <span class="w-2 h-2 rounded-full bg-green-500"></span> 已连接
-    </div>
-    <div class="flex items-center gap-2">
-      <input id="api-key-input" type="password" placeholder="API Key" value=""
-        class="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-blue-500"
-        onchange="saveApiKey(this.value)">
-      <button onclick="saveApiKey(document.getElementById('api-key-input').value)"
-        class="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs hover:bg-gray-700" title="保存">
-        <i class="fas fa-save"></i>
+
+  <!-- 2. Session column -->
+  <aside id="session-column" aria-label="会话列表">
+    <div class="session-actions">
+      <button type="button" id="btn-new-chat" onclick="newSession()">
+        <span data-icon="plus"></span><span id="btn-new-chat-label">新对话</span>
+      </button>
+      <button type="button" id="btn-compose" onclick="newSession()" aria-label="新任务" title="新任务">
+        <span data-icon="square-pen"></span>
       </button>
     </div>
-  </div>
-</aside>
-
-<!-- Main Content -->
-<main class="flex-1 flex flex-col min-w-0">
-  <!-- Header -->
-  <header class="h-14 bg-gray-900 border-b border-gray-800 flex items-center justify-between px-4">
-    <button onclick="toggleSidebar()" class="md:hidden text-gray-400 hover:text-white">
-      <i class="fas fa-bars"></i>
+    <div class="session-search-wrap">
+      <span data-icon="search"></span>
+      <input id="session-search" type="search" placeholder="搜索对话" aria-label="搜索对话">
+    </div>
+    <div id="session-list" role="list" aria-label="历史会话"></div>
+    <button type="button" id="session-view-all" onclick="loadSessions()">
+      查看全部对话 <span data-icon="chevron-right"></span>
     </button>
-    <div class="flex items-center gap-3">
-      <div id="product-switcher" class="flex items-center rounded-lg border border-gray-700 overflow-hidden text-xs" role="group" aria-label="Product workspace">
-        <button type="button" id="product-personal-btn" onclick="switchProductWorkspace('js-agent')" class="px-3 py-1.5 bg-gray-800 text-blue-300 font-medium">Personal</button>
-        <button type="button" id="product-work-btn" onclick="switchProductWorkspace('js-work')" class="px-3 py-1.5 text-gray-400 hover:text-white hover:bg-gray-800">Work</button>
+  </aside>
+
+  <!-- 3. Main column -->
+  <div class="shell-main">
+    <header id="top-bar">
+      <button type="button" id="btn-toggle-session-column" aria-label="切换会话栏">
+        <span data-icon="panel-left"></span>
+      </button>
+      <div id="product-switcher" role="group" aria-label="Personal / Work 模式切换">
+        <button type="button" id="product-personal-btn" class="seg-active" onclick="switchProductWorkspace('js-agent')">Personal</button>
+        <button type="button" id="product-work-btn" onclick="switchProductWorkspace('js-work')" hidden aria-hidden="true">Work</button>
       </div>
-      <select id="current-model" onchange="switchModel(this.value)" class="text-xs bg-gray-800 border border-gray-700 rounded px-2 py-1 text-gray-300 focus:outline-none focus:border-blue-500">
+      <span id="workspace-label" hidden>
+        <span data-icon="folder"></span><span id="workspace-name">工作区</span>
+      </span>
+      <select id="current-model" onchange="switchModel(this.value)" aria-label="选择模型">
         <option value="">默认模型</option>
       </select>
-      <button onclick="newSession()" class="text-xs bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded transition">
-        <i class="fas fa-plus mr-1"></i>新会话
+      <button type="button" id="model-hint" hidden onclick="switchTab('models')">尚未配置模型 · 现在设置</button>
+      <div class="topbar-spacer"></div>
+      <span id="conn-status"><span class="conn-dot conn-ok"></span><span class="conn-text">已连接</span></span>
+      <button type="button" id="cmdk-button" aria-label="搜索或输入命令 (⌘K)">
+        <span data-icon="search"></span><span class="cmdk-label">搜索或输入命令</span><kbd>⌘K</kbd>
       </button>
+      <button type="button" id="theme-toggle" aria-label="切换主题"></button>
+      <button type="button" id="user-entry" aria-label="用户与设置">J</button>
+    </header>
+
+    <!-- Work context band (Work mode only) -->
+    <div id="work-context-band" hidden aria-label="工作上下文摘要">
+      <span class="band-item band-workspace" id="band-workspace">工作区</span>
+      <span class="band-sep">|</span>
+      <span class="band-item" id="band-grants">授权状态不可用</span>
+      <span class="band-sep">|</span>
+      <span class="band-item" id="band-approval-mode">写入需审批</span>
     </div>
-  </header>
+
+    <div class="shell-body">
+      <main id="main-content">
 
   <!-- First-Start Wizard -->
-  <div id="setup-wizard" class="hidden fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
+  <div id="setup-wizard" class="hidden fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4"
+       role="dialog" aria-modal="true" aria-labelledby="wizard-step-1-title"
+       aria-describedby="wizard-dialog-description" tabindex="-1">
     <div class="bg-gray-900 border border-gray-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl">
+      <p id="wizard-dialog-description" class="sr-only">JS Agent 初始设置，可配置模型或选择稍后再配置。</p>
       <!-- Step 1: Welcome -->
       <div id="wizard-step-1">
         <div class="text-center mb-6">
-          <div class="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
-            <i class="fas fa-robot text-white text-2xl"></i>
+          <div class="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4" style="background: var(--color-primary);">
+            <span style="font-family: var(--font-brand); color: var(--color-on-primary); font-size: 24px; font-weight: 700;">JS</span>
           </div>
-          <h2 class="text-2xl font-bold mb-2">欢迎使用 {{PRODUCT_NAME}}</h2>
+          <h2 id="wizard-step-1-title" class="text-2xl font-bold mb-2" tabindex="-1">欢迎使用 {{PRODUCT_NAME}}</h2>
           <p class="text-gray-400">只需几步即可完成初始设置，开始您的 AI 助手之旅。</p>
         </div>
         <div class="bg-gray-800 rounded-xl p-4 mb-6 text-sm text-gray-300 space-y-2">
@@ -350,9 +118,13 @@
           <div class="flex items-center gap-2"><i class="fas fa-check-circle text-green-400"></i> 长期记忆与情景回溯</div>
           <div class="flex items-center gap-2"><i class="fas fa-check-circle text-green-400"></i> 自主进化与技能扩展</div>
         </div>
-        <button onclick="wizardNext()" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-xl font-medium transition">
+        <button id="wizard-start-button" type="button" onclick="wizardNext()" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-xl font-medium transition">
           开始设置 <i class="fas fa-arrow-right ml-1"></i>
         </button>
+        <button type="button" id="wizard-skip-1" onclick="wizardSkip()" class="w-full mt-3 bg-transparent hover:bg-gray-800 text-gray-300 border border-gray-600 py-2.5 rounded-xl font-medium transition">
+          一键跳过设置，直接进入
+        </button>
+        <p class="text-xs text-gray-500 text-center mt-2">跳过仅表示稍后再配置模型，不会创建密钥或授予额外权限。</p>
       </div>
 
       <!-- Step 2: Choose Model -->
@@ -361,8 +133,8 @@
           <span class="text-blue-400 font-medium">步骤 2 / 3</span>
           <span>选择默认模型</span>
         </div>
-        <h2 class="text-xl font-bold mb-2">选择并测试模型</h2>
-        <p class="text-gray-400 text-sm mb-4">选择模型后点击<span class="text-blue-400">测试</span>按钮验证连接，确保模型可用。</p>
+        <h2 id="wizard-step-2-title" class="text-xl font-bold mb-2" tabindex="-1">选择并测试模型</h2>
+        <p class="text-gray-400 text-sm mb-4">可选择模型并点击<span class="text-blue-400">测试</span>验证连接；也可随时稍后再配置。</p>
         <div id="wizard-model-list" class="space-y-2 max-h-64 overflow-y-auto mb-4">
           <div class="text-gray-400 text-sm"><i class="fas fa-spinner fa-spin mr-2"></i>加载模型列表...</div>
         </div>
@@ -376,7 +148,7 @@
             </select>
             <div id="wizard-cloud-details" class="hidden">
               <div class="text-xs text-gray-500 mb-1" id="wizard-cloud-desc"></div>
-              <input id="wizard-cloud-key" type="password" placeholder="输入 API Key" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none focus:border-blue-500">
+              <input id="wizard-cloud-key" type="password" placeholder="输入 API Key" autocomplete="off" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none focus:border-blue-500">
               <div id="wizard-cloud-error" class="hidden text-xs text-red-400 mt-1"></div>
               <div id="wizard-cloud-success" class="hidden text-xs text-green-400 mt-1"></div>
               <div class="flex gap-2 mt-2">
@@ -395,10 +167,13 @@
           <button onclick="wizardPrev()" class="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-2 rounded-xl transition">
             <i class="fas fa-arrow-left mr-1"></i> 上一步
           </button>
-          <button onclick="wizardNext()" id="wizard-next-2" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-xl transition disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+          <button onclick="wizardNext()" id="wizard-next-2" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-xl transition disabled:opacity-50 disabled:cursor-not-allowed">
             下一步 <i class="fas fa-arrow-right ml-1"></i>
           </button>
         </div>
+        <button type="button" id="wizard-skip-2" onclick="wizardSkip()" class="w-full mt-3 bg-transparent hover:bg-gray-800 text-gray-300 border border-gray-600 py-2 rounded-xl transition">
+          稍后再配置，直接进入
+        </button>
       </div>
 
       <!-- Step 3: Done -->
@@ -407,7 +182,7 @@
           <div class="w-16 h-16 bg-green-600 rounded-full flex items-center justify-center mx-auto mb-4">
             <i class="fas fa-check text-white text-2xl"></i>
           </div>
-          <h2 class="text-2xl font-bold mb-2">设置完成</h2>
+          <h2 id="wizard-step-3-title" class="text-2xl font-bold mb-2" tabindex="-1">设置完成</h2>
           <p class="text-gray-400">您已完成初始设置，可以开始使用 {{PRODUCT_NAME}} 了。</p>
         </div>
         <div class="bg-gray-800 rounded-xl p-4 mb-6 text-sm">
@@ -416,8 +191,11 @@
             <span id="wizard-selected-model" class="text-blue-400 font-medium">未选择</span>
           </div>
         </div>
-        <button onclick="wizardComplete()" class="w-full bg-green-600 hover:bg-green-700 text-white py-2.5 rounded-xl font-medium transition">
+        <button onclick="wizardComplete()" id="wizard-finish" class="w-full bg-green-600 hover:bg-green-700 text-white py-2.5 rounded-xl font-medium transition">
           开始使用 <i class="fas fa-rocket ml-1"></i>
+        </button>
+        <button type="button" id="wizard-skip-3" onclick="wizardSkip()" class="w-full mt-3 bg-transparent hover:bg-gray-800 text-gray-300 border border-gray-600 py-2 rounded-xl transition">
+          稍后再配置，直接进入
         </button>
       </div>
     </div>
@@ -437,33 +215,55 @@
       </div>
       <div class="flex items-center gap-2">
         <select id="fleet-mode-select" class="hidden bg-gray-800 border border-gray-700 rounded-lg px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-purple-500">
-          <option value="auto">🤖 自动模式</option>
-          <option value="manager">👔 经理模式</option>
-          <option value="debate">💬 辩论模式</option>
-          <option value="sequential">⛓️ 串行模式</option>
+          <option value="auto">自动模式</option>
+          <option value="manager">经理模式</option>
+          <option value="debate">辩论模式</option>
+          <option value="sequential">串行模式</option>
         </select>
         <button id="btn-mode-toggle" onclick="toggleFleetMode()" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded-lg transition flex items-center gap-1.5">
           <i class="fas fa-exchange-alt"></i> <span id="mode-toggle-label">切换至集群</span>
         </button>
       </div>
     </div>
-    <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-4 min-h-0"></div>
-    <div class="border-t border-gray-800 p-4">
-      <div class="max-w-4xl mx-auto">
-        <!-- Attachment preview bar -->
-        <div id="attachment-bar" class="hidden flex flex-wrap gap-2 mb-2"></div>
-        <div class="relative">
-          <textarea id="chat-input" rows="2" placeholder="输入消息... (Shift+Enter 换行, Enter 发送，或直接拖拽文件到页面)"
-            class="w-full bg-gray-800 border border-gray-700 rounded-xl px-12 py-3 resize-none focus:outline-none focus:border-blue-500 transition"></textarea>
-          <!-- Attach button -->
-          <button onclick="triggerFileSelect()" title="上传文件" class="absolute left-3 bottom-3 w-8 h-8 bg-blue-600/80 hover:bg-blue-500 rounded-lg flex items-center justify-center transition text-white shadow-lg shadow-blue-600/20">
-            <i class="fas fa-paperclip text-xs"></i>
-          </button>
-          <!-- Send button -->
-          <button id="chat-send-button" type="button" class="absolute right-3 bottom-3 z-10 w-8 h-8 bg-blue-600 hover:bg-blue-700 rounded-lg flex items-center justify-center transition">
-            <i class="fas fa-paper-plane text-xs"></i>
-          </button>
+    <div id="chat-stage" class="flex-1 min-h-0 relative">
+      <div id="chat-messages" class="h-full overflow-y-auto p-4 space-y-4 min-h-0"
+           role="log" aria-label="对话消息" aria-live="polite" aria-relevant="additions"
+           aria-busy="false"></div>
+      <section id="chat-empty-state" class="absolute inset-0 flex items-center justify-center text-center" aria-labelledby="chat-empty-title">
+        <div class="max-w-sm px-6 py-8">
+          <div class="w-12 h-12 mx-auto mb-4 rounded-xl flex items-center justify-center" style="background: var(--color-primary-soft); color: var(--color-primary);">
+            <span data-icon="message-circle"></span>
+          </div>
+          <h2 id="chat-empty-title" data-empty-title class="text-lg font-semibold mb-2">正在读取模型配置</h2>
+          <p data-empty-description class="text-sm text-gray-400 mb-4">加载完成前不会发送或清空你的内容。</p>
+          <button type="button" data-empty-action class="px-4 py-2 rounded-lg text-sm font-medium" style="background: var(--color-primary); color: var(--color-on-primary);" disabled>正在加载…</button>
         </div>
+      </section>
+    </div>
+    <div id="chat-live-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div class="chat-input-bar">
+      <div id="attachment-bar" class="hidden flex flex-wrap gap-2 mb-2"></div>
+      <textarea id="chat-input" rows="2" placeholder="输入消息…（Shift+Enter 换行，Enter 发送，或直接拖拽文件到页面）" aria-label="输入消息"></textarea>
+      <div class="chat-tool-row">
+        <button type="button" class="chat-icon-btn" onclick="triggerFileSelect()" aria-label="添加附件" title="添加附件">
+          <span data-icon="paperclip"></span>
+        </button>
+        <button type="button" class="chat-chip" id="chat-tools-chip" onclick="openCommandPalette()" aria-label="工具">
+          <span data-icon="wrench"></span>工具
+        </button>
+        <span class="chat-chip" id="chat-workspace-chip" hidden>
+          <span data-icon="box"></span>绑定到 <span id="chat-workspace-name">工作区</span>
+        </span>
+        <button type="button" class="chat-chip" id="chat-model-chip" onclick="document.getElementById('current-model').focus()" aria-label="当前模型">
+          <span data-icon="cpu"></span><span id="chat-model-name">未配置模型</span>
+        </button>
+        <div style="flex:1"></div>
+        <button type="button" id="chat-stop-button" aria-label="停止生成" title="停止生成">
+          <span data-icon="square"></span>
+        </button>
+        <button id="chat-send-button" type="button" aria-label="发送" title="发送">
+          <span data-icon="send-horizontal"></span>
+        </button>
       </div>
     </div>
   </div>
@@ -735,7 +535,7 @@
       <!-- Unified Role Cards: Config + Runtime Status -->
       <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
         <h3 class="text-sm font-semibold mb-3 flex items-center gap-2">
-          <i class="fas fa-robot text-blue-400"></i> 角色列表
+          <i class="fas fa-users text-blue-400"></i> 角色列表
         </h3>
         <div id="fleet-model-config" class="space-y-2"></div>
         <button onclick="addFleetRoleCard()" class="mt-3 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-2 rounded-lg transition flex items-center gap-1">
@@ -784,21 +584,21 @@
         </button>
       </div>
 
-      <!-- Active Model Card -->
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-4">
+      <!-- Active model summary -->
+      <section class="model-section">
         <h3 class="font-bold text-sm mb-3"><i class="fas fa-bolt text-yellow-400 mr-2"></i>当前活跃模型</h3>
-        <div id="active-model-display" class="flex items-center justify-between bg-gray-800 rounded-lg px-4 py-3">
+        <div id="active-model-display" class="model-active-row">
           <div>
             <div id="active-model-name" class="text-sm font-medium">加载中...</div>
             <div id="active-model-meta" class="text-xs text-gray-500 mt-0.5">--</div>
           </div>
-          <span id="active-model-badge" class="text-xs bg-blue-900 text-blue-400 px-2 py-1 rounded">当前使用</span>
+          <span id="active-model-badge" class="model-current-badge">当前使用</span>
         </div>
-      </div>
+      </section>
 
       <!-- Add Provider Card -->
       <!-- Cloud Provider Quick Add -->
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-4">
+      <section class="model-section">
         <h3 class="font-bold text-sm mb-3"><i class="fas fa-cloud text-blue-400 mr-2"></i>云模型快捷添加</h3>
         <div class="space-y-3">
           <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -819,7 +619,7 @@
             </div>
           </div>
           <!-- Preset details panel -->
-          <div id="cloud-preset-details" class="hidden bg-gray-800/50 rounded-lg p-3 text-xs text-gray-400">
+          <div id="cloud-preset-details" class="hidden model-subtle-panel text-xs text-gray-400">
             <div id="cloud-preset-desc" class="mb-2"></div>
             <div id="cloud-preset-models" class="flex flex-wrap gap-1"></div>
           </div>
@@ -834,10 +634,10 @@
           <div id="cloud-preset-error" class="text-xs text-red-400 hidden"></div>
           <div id="cloud-preset-success" class="text-xs text-green-400 hidden"></div>
         </div>
-      </div>
+      </section>
 
       <!-- Manual Provider Add -->
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-4">
+      <section class="model-section">
         <div class="flex items-center justify-between mb-3 cursor-pointer" onclick="toggleAddProvider()">
           <h3 class="font-bold text-sm"><i class="fas fa-sliders-h text-gray-400 mr-2"></i>手动添加 Provider（高级）</h3>
           <i id="add-provider-chevron" class="fas fa-chevron-down text-gray-500 transition-transform"></i>
@@ -871,9 +671,9 @@
           </div>
           <div id="provider-error" class="text-xs text-red-400 hidden"></div>
         </div>
-      </div>
+      </section>
 
-      <div id="models-content" class="space-y-4"></div>
+      <div id="models-content" class="model-groups"></div>
     </div>
   </div>
 
@@ -934,7 +734,7 @@
         <div id="desktop-wizard-container" class="text-xs text-gray-500">
           <i class="fas fa-spinner fa-spin mr-1"></i>检测中...
         </div>
-      </div></div>
+      </div>
 
       <pre id="status-content" class="bg-gray-900 border border-gray-800 rounded-xl p-4 text-sm font-mono"></pre>
     </div>
@@ -1070,6 +870,77 @@
   </div>
 </main>
 
+      <!-- 4. Work context panel (Work mode only) -->
+      <aside id="work-context-panel" hidden aria-label="工作上下文">
+        <div class="wcp-header">
+          <span>工作上下文</span>
+          <span>
+            <button type="button" id="wcp-directory-grant" aria-label="目录授权" title="目录授权">
+              <span data-icon="folder"></span><span>目录授权</span>
+            </button>
+            <button type="button" id="wcp-refresh" aria-label="刷新工作上下文" title="刷新">
+              <span data-icon="refresh-cw"></span>
+            </button>
+            <button type="button" id="wcp-collapse" aria-label="折叠工作上下文" title="折叠">
+              <span data-icon="chevron-up"></span>
+            </button>
+          </span>
+        </div>
+        <div class="wcp-body">
+          <section class="wcp-section" aria-label="文件">
+            <div class="wcp-section-title"><span data-icon="folder"></span>文件</div>
+            <div id="wcp-files"><div class="wcp-empty">加载中…</div></div>
+          </section>
+          <section class="wcp-section" aria-label="生成物">
+            <div class="wcp-section-title"><span data-icon="file-output"></span>生成物</div>
+            <div id="wcp-artifacts"><div class="wcp-empty">加载中…</div></div>
+          </section>
+          <section class="wcp-section" aria-label="待审批">
+            <div class="wcp-section-title attention"><span data-icon="circle-alert"></span>待审批</div>
+            <div id="wcp-approvals"><div class="wcp-empty">暂无待审批事项</div></div>
+          </section>
+          <section class="wcp-section" aria-label="当前任务">
+            <div class="wcp-section-title"><span data-icon="list-checks"></span>当前任务</div>
+            <div id="wcp-current-task"><div class="wcp-empty">暂无进行中的任务</div></div>
+          </section>
+        </div>
+      </aside>
+    </div><!-- /.shell-body -->
+  </div><!-- /.shell-main -->
+</div><!-- /#app-shell -->
+
+<button type="button" id="wcp-expand-handle" hidden aria-label="展开工作上下文" title="展开工作上下文">
+  <span data-icon="panel-right"></span>
+</button>
+
+<!-- More menu -->
+<nav id="more-menu" hidden aria-label="更多功能"></nav>
+
+<!-- Command palette -->
+<div id="command-palette" hidden role="dialog" aria-modal="true" aria-label="命令面板">
+  <div class="palette-panel">
+    <div class="palette-input-wrap">
+      <span data-icon="search"></span>
+      <input id="command-palette-input" type="text" placeholder="搜索或输入命令…" aria-label="搜索或输入命令">
+    </div>
+    <div class="palette-list" id="command-palette-list" role="listbox"></div>
+  </div>
+</div>
+
+<!-- Settings popover -->
+<div id="settings-popover" hidden role="dialog" aria-label="设置">
+  <div class="settings-title">设置</div>
+  <label for="api-key-input">应用 API Key（仅发送至本地服务端保存）</label>
+  <div class="settings-row">
+    <input id="api-key-input" type="password" placeholder="API Key" autocomplete="off">
+    <button type="button" class="settings-btn" onclick="saveApiKey(document.getElementById('api-key-input').value)">保存</button>
+  </div>
+  <div class="settings-row">
+    <button type="button" class="settings-btn" onclick="resetWizard()">重新运行向导</button>
+    <button type="button" class="settings-btn" onclick="switchTab('status')">系统状态</button>
+  </div>
+</div>
+
 <!-- Memory File Editor Modal -->
 <div id="memory-file-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="memory-file-modal-title">
   <div class="bg-gray-900 border border-gray-700 rounded-xl max-w-3xl w-full max-h-[80vh] flex flex-col">
@@ -1196,6 +1067,29 @@
     </div>
   </div>
 
-  <script type="module" src="/static/app.js?v=4"></script>
+  <!-- Persistent announcement container. Individual errors use role=alert. -->
+  <div id="toast-region" class="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2 pointer-events-none"
+       aria-live="polite" aria-relevant="additions text" aria-atomic="false"></div>
+
+  <!-- Desktop bootstrap failure is deliberately outside #app-shell so the
+       failed shell can be made inert without hiding the recovery action. -->
+  <section id="bootstrap-failure" class="hidden fixed inset-0 bg-gray-950 flex items-center justify-center p-6" style="z-index: 70;"
+           role="alertdialog" aria-modal="true" aria-labelledby="bootstrap-failure-title"
+           aria-describedby="bootstrap-failure-description" tabindex="-1">
+    <div class="max-w-md w-full rounded-2xl border border-gray-700 bg-gray-900 p-6 shadow-2xl text-center">
+      <div class="w-12 h-12 mx-auto mb-4 rounded-xl flex items-center justify-center" style="background: var(--color-primary-soft); color: var(--color-primary);">
+        <span aria-hidden="true">JS</span>
+      </div>
+      <h1 id="bootstrap-failure-title" class="text-xl font-semibold mb-2">无法完成安全连接</h1>
+      <p id="bootstrap-failure-description" class="text-sm text-gray-400 mb-5">桌面外壳没有完成本地身份交换。你的凭据和本地路径不会显示在这里。</p>
+      <div id="bootstrap-recovery-guidance" class="rounded-lg border border-gray-700 bg-gray-800 p-4 text-sm text-gray-200" role="note">
+        <strong class="block mb-2">请退出后重新打开 JS Agent</strong>
+        <span class="text-gray-400">请从菜单栏 JS Agent 图标选择“退出”，再从“应用程序”重新打开。安全令牌只能使用一次，本页面不会重复使用或自行重试。</span>
+      </div>
+    </div>
+  </section>
+
+  <script type="module" src="/static/js/shell.js"></script>
+  <script type="module" src="/static/app.js?v=5"></script>
 </body>
 </html>

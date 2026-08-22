@@ -9,11 +9,28 @@ The parser is intentionally NOT a full sh implementation — it only
 extracts the structural elements relevant to security decisions:
 command names, arguments, redirections, pipes, subshells, and
 command separators.
+
+Security invariants (fail-closed — a violation makes ``parse`` return
+``None``, and every caller treats ``None`` as "deny"):
+
+- Full consumption: every input character must belong to a token.  Nothing
+  is silently skipped — a bare ``&`` is a command separator, never dropped.
+- Single line: line continuations ``\\<newline>`` are removed up front
+  (exactly like sh, so ``$\\<newline>(`` is seen as ``$(``); any remaining
+  ``\\n``/``\\r`` is a command separator this parser cannot model, so the
+  command is rejected.
+- Word joining: escape sequences (``\\x``), quote fragments, and adjacent
+  unquoted fragments join into ONE argument exactly like sh does, so
+  ``-\\c`` / ``-"c"`` are seen as ``-c``.
+- Redirection targets must be statically determinable words — a variable
+  expansion or glob in target position is rejected.
+- Anything else that cannot be modelled statically (bare parentheses,
+  ANSI-C ``$'...'`` / locale ``$"..."`` quoting, unterminated quotes or
+  expansions) is rejected.
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 # ---------------------------------------------------------------------------
@@ -25,18 +42,21 @@ from dataclasses import dataclass, field
 class RedirectNode:
     """A redirection like ``> /dev/null`` or ``2>&1``."""
 
-    fd: str = ""          # e.g. "", "2", "&" (for >&)
-    direction: str = ">"  # ">", ">>", "<", "<<", ">&", "<&"
-    target: str = ""      # file path or fd number
+    fd: str = ""  # e.g. "", "2" (for 2>)
+    direction: str = ">"  # ">", ">>", "<", "<<", ">&", "<&", "&>", "&>>"
+    target: str = ""  # file path, fd number (merges), or "-" (fd close)
 
 
 @dataclass
 class CommandNode:
     """A single command with arguments and redirections."""
 
-    command: str                               # executable name (basename or full path)
+    command: str  # executable name (basename or full path)
     args: list[str] = field(default_factory=list)  # all arguments including the command
     redirects: list[RedirectNode] = field(default_factory=list)
+    # Parallel to ``args``: True when the argument contains an UNQUOTED glob
+    # character (``*``, ``?``, ``[``) that sh would expand at runtime.
+    arg_globs: list[bool] = field(default_factory=list)
 
 
 @dataclass
@@ -56,69 +76,393 @@ class SubshellNode:
 
 @dataclass
 class ChainedCommands:
-    """A list of commands separated by ``;``, ``&&``, or ``||``."""
+    """A list of commands separated by ``;``, ``&&``, ``||``, or ``&``."""
 
     commands: list[CommandNode | PipeNode] = field(default_factory=list)
-    separators: list[str] = field(default_factory=list)  # ";", "&&", "||"
+    separators: list[str] = field(default_factory=list)  # ";", "&&", "||", "&"
 
 
 # ---------------------------------------------------------------------------
-# Tokeniser
+# Lexer
 # ---------------------------------------------------------------------------
 
-# Regex patterns for tokenising a shell command line
-_TOKEN_PATTERNS: list[tuple[str, str]] = [
-    # Subshells and command substitution
-    ("SUBSHELL_DOLLAR", r"\$\((?:\\.|[^()]|\((?:\\.|[^()])*\))*\)"),
-    ("SUBSHELL_BACKTICK", r"`[^`]*`"),
-    # Variable expansions
-    ("VAR_BRACE", r"\$\{[^}]+\}"),
-    ("VAR_SIMPLE", r"\$[a-zA-Z_][a-zA-Z0-9_]*"),
-    # Redirections
-    ("REDIR_APPEND", r"\d*>>"),      # N>>
-    ("REDIR_MERGE_OUT", r"\d*>&\d+"),  # N>&M  (must be before REDIR_OUT)
-    ("REDIR_MERGE_IN", r"\d*<&\d+"),   # N<&M
-    ("REDIR_HEREDOC", r"\d*<<"),     # N<<
-    ("REDIR_OUT", r"\d*>"),          # N>
-    ("REDIR_IN", r"\d*<"),           # N<
-    # Control operators
-    ("AND_IF", r"&&"),
-    ("OR_IF", r"\|\|"),
-    ("PIPE", r"\|"),
-    ("SEMI", r";"),
-    # Quoted strings
-    ("DOUBLE_QUOTED", r'"(?:\\.|[^"\\])*"'),
-    ("SINGLE_QUOTED", r"'(?:\\.|[^'\\])*'"),
-    # Unquoted tokens
-    ("TOKEN", r"[^\s;|&><$`\"'\\]+"),
-    # Whitespace (discarded)
-    ("WS", r"\s+"),
-]
+# Characters that, when unquoted and unescaped, sh would expand into
+# (possibly many) words at runtime.
+_GLOB_CHARS = frozenset("*?[")
+
+# POSIX special parameters: ``$?``, ``$$``, ``$!``, ``$#``, ``$*``, ``$@``,
+# ``$-`` (``$0``–``$9`` are covered by the digit check).
+_SPECIAL_PARAMS = frozenset("?$!#*@-")
 
 
-def _compile_token_re() -> re.Pattern[str]:
-    """Build a combined tokenisation regex."""
-    parts = [f"(?P<{name}>{pattern})" for name, pattern in _TOKEN_PATTERNS]
-    return re.compile("|".join(parts))
+@dataclass
+class _Word:
+    """A scanned word: joined text plus security-relevant properties."""
+
+    text: str = ""
+    unquoted_glob: bool = False
+    has_var: bool = False  # $name / ${...} / $ special parameter, verbatim
 
 
-_TOKEN_RE = _compile_token_re()
+@dataclass
+class _Sep:
+    """A control operator: ``;``, ``&&``, ``||``, ``&`` (background), ``|``."""
+
+    value: str
 
 
-def tokenize(command: str) -> list[tuple[str, str]]:
-    """Tokenize a shell command line.
+@dataclass
+class _Redir:
+    """A redirection operator; ``node.target`` is filled by the parser when
+    ``needs_target`` is True (file redirects) and preset for fd merges."""
 
-    Returns a list of ``(token_type, token_value)`` tuples.
-    Whitespace tokens are filtered out.
+    node: RedirectNode
+    needs_target: bool
+
+
+_Token = _Word | _Sep | _Redir
+
+
+def _skip_quoted(command: str, i: int, quote: str, *, escape: bool) -> int | None:
+    """Return the position after the closing ``quote`` for the one at ``i``.
+
+    Only the extent matters here (used for backtick bodies and quoted
+    strings inside ``$(...)`` spans), not the content.
     """
-    tokens: list[tuple[str, str]] = []
-    for m in _TOKEN_RE.finditer(command):
-        kind = m.lastgroup
-        value = m.group()
-        if kind == "WS":
+    n = len(command)
+    i += 1
+    while i < n:
+        ch = command[i]
+        if escape and ch == "\\":
+            i += 2
             continue
-        assert kind is not None
-        tokens.append((kind, value))
+        if ch == quote:
+            return i + 1
+        i += 1
+    return None
+
+
+def _consume_parens(command: str, i: int) -> int | None:
+    """Return the position after the ``)`` matching the ``(`` at ``i``.
+
+    Handles nesting, ``\\x`` escapes, and quoted bodies inside the span.
+    Returns ``None`` when unterminated (fail-closed).
+    """
+    n = len(command)
+    depth = 0
+    while i < n:
+        ch = command[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "(":
+            depth += 1
+            i += 1
+            continue
+        if ch == ")":
+            depth -= 1
+            i += 1
+            if depth == 0:
+                return i
+            continue
+        if ch in "'\"":
+            end = _skip_quoted(command, i, ch, escape=(ch == '"'))
+            if end is None:
+                return None
+            i = end
+            continue
+        if ch == "`":
+            end = _skip_quoted(command, i, "`", escape=True)
+            if end is None:
+                return None
+            i = end
+            continue
+        i += 1
+    return None
+
+
+def _consume_brace(command: str, i: int) -> int | None:
+    """Return the position after the ``}`` matching the ``{`` at ``i``."""
+    n = len(command)
+    depth = 0
+    while i < n:
+        ch = command[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return None
+
+
+def _scan_dollar(command: str, i: int, *, in_dquote: bool) -> tuple[str, bool, int] | None:
+    """Scan a ``$`` expansion at ``i``; returns (verbatim text, has_var, pos).
+
+    Expansions are kept verbatim so downstream checks can see them.
+    ANSI-C (``$'...'``) and locale (``$"..."``) quoting decode escapes we do
+    not model — outside double quotes they are rejected.  A ``$`` that
+    introduces no expansion is a literal character.
+    """
+    n = len(command)
+    nxt = command[i + 1] if i + 1 < n else ""
+    if nxt == "(":
+        end = _consume_parens(command, i + 1)
+        if end is None:
+            return None
+        return command[i:end], False, end
+    if nxt == "{":
+        end = _consume_brace(command, i + 1)
+        if end is None:
+            return None
+        return command[i:end], True, end
+    if nxt in "'\"":
+        if in_dquote:
+            return "$", False, i + 1  # literal inside double quotes
+        return None  # ANSI-C / locale quoting — not statically modelable
+    if nxt.isalpha() or nxt == "_":
+        j = i + 1
+        while j < n and (command[j].isalnum() or command[j] == "_"):
+            j += 1
+        return command[i:j], True, j
+    if nxt.isdigit() or nxt in _SPECIAL_PARAMS:
+        return command[i : i + 2], True, i + 2
+    return "$", False, i + 1
+
+
+def _scan_dquoted(command: str, i: int) -> tuple[str, bool, int] | None:
+    """Scan a double-quoted fragment starting at the opening quote.
+
+    Only ``\\$``, ``\\```, ``\\"``, and ``\\\\`` are escapes inside double
+    quotes; any other backslash is literal.  ``$``/backtick expansions are
+    kept verbatim.  Returns (text, has_var, new pos) or ``None``.
+    """
+    n = len(command)
+    i += 1  # opening quote
+    parts: list[str] = []
+    has_var = False
+    while i < n:
+        ch = command[i]
+        if ch == '"':
+            return "".join(parts), has_var, i + 1
+        if ch == "\\":
+            nxt = command[i + 1] if i + 1 < n else ""
+            if nxt in ("$", "`", '"', "\\"):
+                parts.append(nxt)
+                i += 2
+            else:
+                parts.append("\\")
+                i += 1
+            continue
+        if ch == "`":
+            end = _skip_quoted(command, i, "`", escape=True)
+            if end is None:
+                return None
+            parts.append(command[i:end])
+            i = end
+            continue
+        if ch == "$":
+            dollar = _scan_dollar(command, i, in_dquote=True)
+            if dollar is None:
+                return None
+            text, is_var, i = dollar
+            parts.append(text)
+            has_var = has_var or is_var
+            continue
+        parts.append(ch)
+        i += 1
+    return None  # unterminated double quote
+
+
+def _scan_word(command: str, i: int) -> tuple[_Word, int] | None:
+    """Scan one word starting at ``i``, joining fragments like sh does.
+
+    Adjacent quoted/unquoted fragments form ONE argument, with ``\\x``
+    escapes resolved (``-\\c`` → ``-c``).  Returns ``None`` for anything
+    that cannot be modelled safely.
+    """
+    n = len(command)
+    word = _Word()
+    while i < n:
+        ch = command[i]
+        if ch in " \t;|&":
+            break
+        if ch in "<>":
+            if command.startswith("(", i + 1):
+                # Process substitution <(...) / >(...) — kept verbatim.
+                end = _consume_parens(command, i + 1)
+                if end is None:
+                    return None
+                word.text += command[i:end]
+                i = end
+                continue
+            break
+        if ch == "\\":
+            if i + 1 >= n:
+                return None  # trailing backslash
+            word.text += command[i + 1]
+            i += 2
+            continue
+        if ch == "'":
+            end = command.find("'", i + 1)
+            if end == -1:
+                return None  # unterminated single quote
+            word.text += command[i + 1 : end]
+            i = end + 1
+            continue
+        if ch == '"':
+            scanned = _scan_dquoted(command, i)
+            if scanned is None:
+                return None
+            text, has_var, i = scanned
+            word.text += text
+            word.has_var = word.has_var or has_var
+            continue
+        if ch == "`":
+            end = _skip_quoted(command, i, "`", escape=True)
+            if end is None:
+                return None
+            word.text += command[i:end]
+            i = end
+            continue
+        if ch == "$":
+            dollar = _scan_dollar(command, i, in_dquote=False)
+            if dollar is None:
+                return None
+            text, is_var, i = dollar
+            word.text += text
+            word.has_var = word.has_var or is_var
+            continue
+        if ch in "()":
+            # Bare parentheses are subshell/group syntax we do not model.
+            return None
+        if ch in _GLOB_CHARS:
+            word.unquoted_glob = True
+        word.text += ch
+        i += 1
+    return word, i
+
+
+def _scan_redirect(command: str, i: int, fd: str) -> tuple[_Redir, int] | None:
+    """Scan one redirection operator starting at ``i`` (``<`` or ``>``).
+
+    Fd merges (``2>&1``, ``<&0``) and closes (``>&-``) carry their target
+    inline; file redirects (``>``, ``>>``, ``<<``, ``&>``, ``&>>``) need the
+    following word as target.  ``<&`` followed by anything but an fd or
+    ``-`` is not valid sh — rejected.
+    """
+    n = len(command)
+    target = ""
+    needs_target = True
+    if command.startswith(">&", i) or command.startswith("<&", i):
+        direction = command[i : i + 2]
+        i += 2
+        start = i
+        while i < n and command[i].isdigit():
+            i += 1
+        if i > start:
+            target = command[start:i]  # fd merge: 2>&1
+            needs_target = False
+        elif i < n and command[i] == "-":
+            target = "-"  # fd close: 2>&-
+            i += 1
+            needs_target = False
+        elif direction == ">&":
+            # bash ``>&word`` == ``&>word``: both streams to a file.
+            direction = "&>"
+        else:
+            return None
+    elif command.startswith(">>", i):
+        direction = ">>"
+        i += 2
+    elif command.startswith("<<", i):
+        direction = "<<"
+        i += 2
+        if i < n and command[i] == "-":  # <<- strips leading tabs
+            i += 1
+    else:
+        direction = command[i]
+        i += 1
+    node = RedirectNode(fd=fd, direction=direction, target=target)
+    return _Redir(node, needs_target), i
+
+
+def _scan(command: str) -> list[_Token] | None:
+    """Lex a command line into word/operator tokens, or ``None``.
+
+    Fail-closed: any character sequence this lexer cannot model exactly the
+    way sh would makes the whole command unparseable.
+    """
+    # Line continuations are removed before any other lexing, exactly like
+    # sh: ``$\<newline>(`` becomes ``$(``.  Any remaining line break is a
+    # command separator this single-line parser cannot model — reject it.
+    command = command.replace("\\\r\n", "").replace("\\\n", "").replace("\\\r", "")
+    if "\n" in command or "\r" in command:
+        return None
+
+    tokens: list[_Token] = []
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if ch in " \t":
+            i += 1
+            continue
+        if ch == ";":
+            tokens.append(_Sep(";"))
+            i += 1
+            continue
+        if ch == "|":
+            if command.startswith("||", i):
+                tokens.append(_Sep("||"))
+                i += 2
+            else:
+                tokens.append(_Sep("|"))
+                i += 1
+            continue
+        if ch == "&":
+            if command.startswith("&&", i):
+                tokens.append(_Sep("&&"))
+                i += 2
+            elif command.startswith("&>>", i):
+                tokens.append(_Redir(RedirectNode(direction="&>>"), True))
+                i += 3
+            elif command.startswith("&>", i):
+                tokens.append(_Redir(RedirectNode(direction="&>"), True))
+                i += 2
+            else:
+                tokens.append(_Sep("&"))
+                i += 1
+            continue
+
+        # A run of digits immediately followed by < or > (but not the
+        # process-substitution forms <( / >() is an fd prefix: ``2>err``.
+        j = i
+        while j < n and command[j].isdigit():
+            j += 1
+        fd = ""
+        if j > i and j < n and command[j] in "<>" and not command.startswith("(", j + 1):
+            fd = command[i:j]
+            i = j
+
+        if i < n and command[i] in "<>" and not command.startswith("(", i + 1):
+            scanned_redir = _scan_redirect(command, i, fd)
+            if scanned_redir is None:
+                return None
+            redir_token, i = scanned_redir
+            tokens.append(redir_token)
+            continue
+
+        scanned_word = _scan_word(command, i)
+        if scanned_word is None:
+            return None
+        word_token, i = scanned_word
+        tokens.append(word_token)
+
     return tokens
 
 
@@ -127,123 +471,56 @@ def tokenize(command: str) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 
 
-def _is_chained(tokens: list[tuple[str, str]], pos: int) -> bool:
-    """Check if tokens[pos] is a command separator (AND_IF, OR_IF, SEMI)."""
-    if pos >= len(tokens):
-        return False
-    return tokens[pos][0] in ("AND_IF", "OR_IF", "SEMI")
+def _is_pipe_token(token: _Token) -> bool:
+    """Check if token is the pipe operator."""
+    return isinstance(token, _Sep) and token.value == "|"
 
 
-def _is_pipe(tokens: list[tuple[str, str]], pos: int) -> bool:
-    """Check if tokens[pos] is a pipe operator."""
-    if pos >= len(tokens):
-        return False
-    return tokens[pos][0] == "PIPE"
+def _collect_segment(
+    tokens: list[_Token], pos: int
+) -> tuple[list[str], list[bool], list[RedirectNode], int] | None:
+    """Collect words and redirections for one command, starting at ``pos``.
 
-
-def _collect_redirects(
-    tokens: list[tuple[str, str]], pos: int,
-) -> tuple[list[RedirectNode], int]:
-    """Collect consecutive redirection tokens and their targets starting at pos.
-
-    Returns (redirects, new_pos).
-    """
-    redirects: list[RedirectNode] = []
-    while pos < len(tokens):
-        kind, value = tokens[pos]
-        if not kind.startswith("REDIR_"):
-            break
-
-        # Extract fd from the redirection token
-        fd = ""
-        if kind == "REDIR_OUT":
-            fd = value[:-1]  # strip trailing >
-            direction = ">"
-        elif kind == "REDIR_APPEND":
-            fd = value[:-2]  # strip trailing >>
-            direction = ">>"
-        elif kind == "REDIR_IN":
-            fd = value[:-1]
-            direction = "<"
-        elif kind == "REDIR_HEREDOC":
-            fd = value[:-2]
-            direction = "<<"
-        elif kind == "REDIR_MERGE_OUT":
-            fd = value[:-2]  # strip trailing >&
-            direction = ">&"
-        elif kind == "REDIR_MERGE_IN":
-            fd = value[:-2]
-            direction = "<&"
-        else:
-            fd = ""
-            direction = ">"
-
-        pos += 1
-        # Target: the next token (unless it's another redirect or control op)
-        target = ""
-        if pos < len(tokens) and tokens[pos][0] not in (
-            "REDIR_OUT", "REDIR_APPEND", "REDIR_IN", "REDIR_HEREDOC",
-            "REDIR_MERGE_OUT", "REDIR_MERGE_IN",
-            "PIPE", "AND_IF", "OR_IF", "SEMI", "SUBSHELL_DOLLAR",
-            "SUBSHELL_BACKTICK", "VAR_BRACE", "VAR_SIMPLE",
-        ):
-            target = tokens[pos][1]
-            pos += 1
-
-        redirects.append(RedirectNode(fd=fd, direction=direction, target=target))
-
-    return redirects, pos
-
-
-def _collect_arg_tokens(
-    tokens: list[tuple[str, str]], pos: int,
-) -> tuple[list[str], list[RedirectNode], int]:
-    """Collect argument tokens and redirections for one command.
-
-    Stops at PIPE, AND_IF, OR_IF, SEMI, or end of tokens.
-    Redirections can appear anywhere among arguments in shell syntax.
-
-    Returns (args, redirects, new_pos).
+    Stops at a control operator or end of input.  Returns ``None`` when a
+    redirection is missing its target word or the target is not statically
+    determinable (variable expansion, glob).
     """
     args: list[str] = []
+    arg_globs: list[bool] = []
     redirects: list[RedirectNode] = []
-
     while pos < len(tokens):
-        kind, value = tokens[pos]
-
-        # Stop at control operators
-        if kind in ("PIPE", "AND_IF", "OR_IF", "SEMI"):
+        token = tokens[pos]
+        if isinstance(token, _Sep):
             break
-
-        # Redirections
-        if kind.startswith("REDIR_"):
-            redirs, pos = _collect_redirects(tokens, pos)
-            redirects.extend(redirs)
+        if isinstance(token, _Redir):
+            pos += 1
+            node = token.node
+            if token.needs_target:
+                if pos >= len(tokens):
+                    return None  # missing target — a syntax error in sh
+                target_token = tokens[pos]
+                if not isinstance(target_token, _Word):
+                    return None
+                if target_token.has_var or target_token.unquoted_glob:
+                    # Target not statically determinable — fail closed.
+                    return None
+                node.target = target_token.text
+                pos += 1
+            redirects.append(node)
             continue
-
-        # Collect the value
-        if kind in ("DOUBLE_QUOTED",):
-            # Strip surrounding quotes but keep inner content
-            args.append(value[1:-1])
-        elif kind in ("SINGLE_QUOTED",):
-            args.append(value[1:-1])
-        elif kind in ("SUBSHELL_DOLLAR", "SUBSHELL_BACKTICK", "VAR_BRACE", "VAR_SIMPLE"):
-            # Record variable/expansion tokens as-is
-            args.append(value)
-        else:
-            args.append(value)
-
+        args.append(token.text)
+        arg_globs.append(token.unquoted_glob)
         pos += 1
-
-    return args, redirects, pos
+    return args, arg_globs, redirects, pos
 
 
 def parse(command: str) -> ChainedCommands | None:
     """Parse a shell command line into a ``ChainedCommands`` AST.
 
-    Returns ``None`` if parsing fails (empty input or fatal syntax error).
+    Returns ``None`` when the command is empty or cannot be modelled
+    exactly (fail-closed: callers treat ``None`` as "deny").
     """
-    tokens = tokenize(command)
+    tokens = _scan(command)
     if not tokens:
         return None
 
@@ -252,14 +529,21 @@ def parse(command: str) -> ChainedCommands | None:
 
     while pos < len(tokens):
         # Collect args and redirections for this command
-        args, redirects, pos = _collect_arg_tokens(tokens, pos)
+        segment = _collect_segment(tokens, pos)
+        if segment is None:
+            return None
+        args, arg_globs, redirects, pos = segment
 
         if not args:
-            # Only separators/redirects — skip to next separator
-            if pos < len(tokens) and tokens[pos][0] in ("AND_IF", "OR_IF", "SEMI"):
-                result.separators.append(tokens[pos][1])
-                pos += 1
-            elif pos < len(tokens) and tokens[pos][0] == "PIPE":
+            if redirects:
+                # A redirection without a command has no AST home — and no
+                # legitimate use in this harness.  Fail closed.
+                return None
+            # Only a separator — record it and move on.
+            token = tokens[pos]
+            if isinstance(token, _Sep):
+                if token.value != "|":
+                    result.separators.append(token.value)
                 pos += 1
             continue
 
@@ -267,23 +551,32 @@ def parse(command: str) -> ChainedCommands | None:
             command=args[0],
             args=args,
             redirects=redirects,
+            arg_globs=arg_globs,
         )
 
         # Check for pipe chain
-        if pos < len(tokens) and tokens[pos][0] == "PIPE":
+        if pos < len(tokens) and _is_pipe_token(tokens[pos]):
             pipe = PipeNode(stages=[cmd])
             pos += 1  # skip PIPE
             # Collect subsequent pipe stages
             while pos < len(tokens):
-                pipe_args, pipe_redirs, pos = _collect_arg_tokens(tokens, pos)
-                if not pipe_args:
+                stage = _collect_segment(tokens, pos)
+                if stage is None:
+                    return None
+                stage_args, stage_globs, stage_redirs, pos = stage
+                if not stage_args:
+                    if stage_redirs:
+                        return None
                     break
-                pipe.stages.append(CommandNode(
-                    command=pipe_args[0],
-                    args=pipe_args,
-                    redirects=pipe_redirs,
-                ))
-                if pos < len(tokens) and tokens[pos][0] == "PIPE":
+                pipe.stages.append(
+                    CommandNode(
+                        command=stage_args[0],
+                        args=stage_args,
+                        redirects=stage_redirs,
+                        arg_globs=stage_globs,
+                    )
+                )
+                if pos < len(tokens) and _is_pipe_token(tokens[pos]):
                     pos += 1
                 else:
                     break
@@ -291,10 +584,13 @@ def parse(command: str) -> ChainedCommands | None:
         else:
             result.commands.append(cmd)
 
-        # Record separator if present
-        if pos < len(tokens) and tokens[pos][0] in ("AND_IF", "OR_IF", "SEMI"):
-            result.separators.append(tokens[pos][1])
-            pos += 1
+        # Record separator if present (";", "&&", "||", "&")
+        if pos < len(tokens):
+            token = tokens[pos]
+            if isinstance(token, _Sep):
+                if token.value != "|":
+                    result.separators.append(token.value)
+                pos += 1
 
     return result
 
@@ -343,9 +639,26 @@ def extract_redirect_targets(ast: ChainedCommands) -> list[str]:
 
 
 def has_subshell(ast: ChainedCommands) -> bool:
-    """Check whether the command line contains any subshell expression."""
-    raw = str(ast)
-    return "$(" in raw or "`" in raw
+    """Check whether the command line contains any subshell expression.
+
+    Structured traversal of args and redirect targets — never a repr scan.
+    Detects command substitution (``$(...)`` / backticks, which the lexer
+    preserves verbatim, including inside quoted strings for a conservative
+    fail-safe) and process substitution (``<(...)`` / ``>(...)``, which bash
+    executes even when ``sh`` is bash in POSIX mode).
+    """
+
+    def _token_is_subshell(token: str) -> bool:
+        return "$(" in token or "`" in token or "<(" in token or ">(" in token
+
+    for item in ast.commands:
+        nodes = item.stages if isinstance(item, PipeNode) else [item]
+        for node in nodes:
+            if any(_token_is_subshell(arg) for arg in node.args):
+                return True
+            if any(_token_is_subshell(r.target) for r in node.redirects):
+                return True
+    return False
 
 
 def _basename(path: str) -> str:

@@ -22,7 +22,7 @@ from typing import Any, Literal, cast
 
 from js.config import EchoLedgerConfig, JSSettings
 from js.echo.execution_contract import ReplayClass, build_effect_bridge
-from js.echo.ledger._hashing import stable_hash
+from js.echo.ledger._hashing import canonical_json, stable_hash
 from js.echo.ledger.effects import DurableEffectLog, EffectReceipt, OutboxRow
 from js.echo.ledger.journal import (
     FileEchoLedger,
@@ -35,10 +35,15 @@ from js.echo.ledger.partition_retention import (
     GENESIS_HASH as RETENTION_GENESIS_HASH,
 )
 from js.echo.ledger.partition_retention import (
+    PartitionArtifactCapacityError,
     PartitionRetentionError,
     RetentionReceiptInput,
-    append_retirement_receipt,
+    RetiredArtifactReceiptInput,
+    clear_pending_retirement,
     load_and_verify_checkpoint,
+    retired_artifact_entries,
+    retired_history_complete,
+    stage_retirement,
 )
 from js.echo.ledger.policy import (
     IdentityContext,
@@ -56,6 +61,7 @@ from js.echo.ledger.privacy import (
     contains_secret_shape,
 )
 from js.echo.ledger.types import EffectIntent, IntakeEvent, KernelSnapshot
+from js.echo.mode_contract import AppMode, ArtifactRefV1
 from js.echo.primitives import (
     ECHO_2_ARCHITECTURE,
     ScopeGate,
@@ -81,6 +87,8 @@ _DATA_URL_BASE64_RE = re.compile(
 )
 _SHA256_REF_RE = re.compile(r"sha256:[0-9a-f]{64}")
 _MAX_TENANT_STATES = 512
+_MAX_TOOL_ARTIFACT_REFS = 32
+_MAX_TOOL_ARTIFACT_BYTES = 128 * 1024
 _TOKEN_SOURCES = {"provider_actual", "tokenizer", "estimated", "unavailable"}
 
 
@@ -146,6 +154,78 @@ class ManualReviewRow:
     tenant_id: str
     action_kind: str
     status: Literal["manual_review"]
+    session_id: str | None = None
+    run_id: str | None = None
+    product_id: str | None = None
+    effect_digest: str | None = None
+    args_digest: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedArtifactReceiptV1:
+    """Artifact-bearing receipt reconstructed only from verified journal state."""
+
+    receipt_id: str
+    effect_id: str
+    tenant_id: str
+    run_id: str
+    artifact_refs: tuple[ArtifactRefV1, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedArtifactProjectionV1:
+    """Verified active and retired artifact history with explicit coverage."""
+
+    receipts: tuple[VerifiedArtifactReceiptV1, ...]
+    refs: tuple[ArtifactRefV1, ...]
+    retired_history_complete: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactVisibilityQueryV1:
+    """Typed AppShell visibility filter applied before projection truncation."""
+
+    session: str | None = None
+    run: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.session is not None and (
+            not isinstance(self.session, str) or not self.session.strip()
+        ):
+            raise ValueError("artifact visibility session is invalid")
+        if self.run is not None and (
+            not isinstance(self.run, str) or not self.run.strip()
+        ):
+            raise ValueError("artifact visibility run is invalid")
+
+
+def artifact_ref_visible(
+    ref: ArtifactRefV1,
+    query: ArtifactVisibilityQueryV1,
+) -> bool:
+    """Apply the shared owner/workspace/session/private ACL query."""
+    if type(ref) is not ArtifactRefV1 or type(query) is not ArtifactVisibilityQueryV1:
+        raise TypeError("artifact visibility requires exact typed values")
+    if query.session is not None and query.session != ref.session:
+        return False
+    if query.run is not None and query.run != ref.created_by_run:
+        return False
+    if ref.acl == "owner":
+        return True
+    if ref.acl == "workspace":
+        if ref.mode is AppMode.PERSONAL:
+            raise ValueError("Personal artifact cannot carry workspace ACL")
+        return True
+    if ref.acl == "session":
+        return query.session is not None and query.session == ref.session
+    if ref.acl == "private":
+        return (
+            query.session is not None
+            and query.run is not None
+            and query.session == ref.session
+            and query.run == ref.created_by_run
+        )
+    raise ValueError("artifact ACL is invalid")
 
 
 @dataclass(frozen=True)
@@ -175,6 +255,50 @@ class EchoToolEffectContext:
     outbox_id: str
     record_start: int
     permit_seal: PermitSeal
+    workspace: str | None = None
+
+
+@dataclass(frozen=True)
+class EchoConnectorEffectContext:
+    """Durable context for one connector effect execution.
+
+    Mirrors :class:`EchoToolEffectContext` but binds connector-specific
+    fields (connector_type, operation, connection_id, manifest/binding hashes).
+    """
+
+    tenant_id: str
+    product_id: str
+    session_id: str
+    run_id: str
+    workspace: str | None
+    connector_type: str
+    operation: Literal["read", "write"]
+    connection_id: str
+    task_ref_hash: str
+    manifest_digest: str
+    binding_hash: str
+    params_digest: str
+    directory_grant_hash: str | None
+    vault_ref_hash: str | None
+    approval_id: str | None
+    lease_id: str
+    replay_class: Literal["idempotent", "non_idempotent"]
+    effect_id: str
+    outbox_id: str
+    record_start: int
+    permit_seal: PermitSeal
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedEffectBinding:
+    tenant_id: str
+    product_id: str
+    session_id: str
+    run_id: str
+    effect_id: str
+    outbox_id: str
+    args_digest: str
+    workspace: str | None
 
 
 @dataclass(frozen=True)
@@ -906,6 +1030,7 @@ class EchoSafetyService:
         args_hash: str,
         lease_id: str,
         replay_class: ReplayClass,
+        workspace: str | None = None,
     ) -> EchoToolEffectContext:
         """Durably authorize and claim one exact tool effect before execution."""
         _validate_tool_effect_binding(
@@ -990,6 +1115,7 @@ class EchoSafetyService:
                 outbox_id=outbox_row.outbox_id,
                 record_start=record_start,
                 permit_seal=seal,
+                workspace=workspace,
             )
             execution_bridge = build_effect_bridge(
                 tenant_id=tenant_id,
@@ -1007,11 +1133,13 @@ class EchoSafetyService:
                 state_refs={
                     "journal_record_start": record_start,
                     "permit_journal_seq": seal.journal_seq,
+                    "partition_bound": True,
                     "product_id": product_id,
                     "tool_name": tool_name,
                     "tool_call_id": tool_call_id,
                     "args_hash": args_hash,
                     "lease_id": lease_id,
+                    "workspace": workspace,
                 },
             )
             safe_metadata = {
@@ -1021,6 +1149,7 @@ class EchoSafetyService:
                 "tool_call_id": tool_call_id,
                 "args_hash": args_hash,
                 "lease_id": lease_id,
+                "workspace": workspace,
             }
             entries: tuple[JournalEntry, ...] = (
                 {
@@ -1170,6 +1299,599 @@ class EchoSafetyService:
             )
             self._append_many(tenant_id, entries, state=tenant_state)
 
+    # ------------------------------------------------------------------
+    # R4-B Task B5: Connector durable effect (begin / finish / mark unknown)
+    # ------------------------------------------------------------------
+
+    def begin_connector_effect(
+        self,
+        *,
+        tenant_id: str,
+        product_id: str,
+        session_id: str,
+        run_id: str,
+        workspace: str | None,
+        connector_type: str,
+        operation: Literal["read", "write"],
+        connection_id: str,
+        task_ref_hash: str,
+        manifest_digest: str,
+        binding_hash: str,
+        params_digest: str,
+        directory_grant_hash: str | None,
+        vault_ref_hash: str | None,
+        approval_id: str | None,
+        lease_id: str,
+    ) -> EchoConnectorEffectContext:
+        """Begin a durable connector effect with outbox claim.
+
+        Reuses the existing ``begin_tool_effect`` infrastructure with
+        ``tool_name="connector.<type>.<op>"`` and ``tool_call_id=connection_id``.
+        The binding hash serves as ``args_hash``.
+        """
+        action_kind = f"connector.{connector_type}.{operation}"
+        replay_class: ReplayClass = (
+            "idempotent" if operation == "read" else "non_idempotent"
+        )
+        tool_ctx = self.begin_tool_effect(
+            tenant_id=tenant_id,
+            product_id=product_id,
+            session_id=session_id,
+            run_id=run_id,
+            tool_name=action_kind,
+            tool_call_id=connection_id,
+            args_hash=binding_hash,
+            lease_id=lease_id,
+            replay_class=replay_class,
+            workspace=workspace,
+        )
+        return EchoConnectorEffectContext(
+            tenant_id=tool_ctx.tenant_id,
+            product_id=tool_ctx.product_id,
+            session_id=tool_ctx.session_id,
+            run_id=tool_ctx.run_id,
+            workspace=tool_ctx.workspace,
+            connector_type=connector_type,
+            operation=operation,
+            connection_id=connection_id,
+            task_ref_hash=task_ref_hash,
+            manifest_digest=manifest_digest,
+            binding_hash=binding_hash,
+            params_digest=params_digest,
+            directory_grant_hash=directory_grant_hash,
+            vault_ref_hash=vault_ref_hash,
+            approval_id=approval_id,
+            lease_id=lease_id,
+            replay_class=cast(
+                "Literal['idempotent', 'non_idempotent']", replay_class
+            ),
+            effect_id=tool_ctx.effect_id,
+            outbox_id=tool_ctx.outbox_id,
+            record_start=tool_ctx.record_start,
+            permit_seal=tool_ctx.permit_seal,
+        )
+
+    def finish_connector_effect(
+        self,
+        context: EchoConnectorEffectContext,
+        *,
+        status: Literal["ok", "failed", "cancelled"],
+        output_hash: str,
+        artifact_refs: tuple[ArtifactRefV1, ...] = (),
+        error_code: str | None = None,
+    ) -> EchoRecordResult:
+        """Finish a connector effect with a durable receipt."""
+        # Build a tool-like context adapter for finish_tool_effect
+        tool_ctx = EchoToolEffectContext(
+            tenant_id=context.tenant_id,
+            product_id=context.product_id,
+            session_id=context.session_id,
+            run_id=context.run_id,
+            tool_name=f"connector.{context.connector_type}.{context.operation}",
+            tool_call_id=context.connection_id,
+            args_hash=context.binding_hash,
+            lease_id=context.lease_id,
+            replay_class=context.replay_class,
+            effect_id=context.effect_id,
+            outbox_id=context.outbox_id,
+            record_start=context.record_start,
+            permit_seal=context.permit_seal,
+            workspace=context.workspace,
+        )
+        return self.finish_tool_effect(
+            tool_ctx,
+            status=status,
+            output_hash=output_hash,
+            artifact_refs=artifact_refs,
+        )
+
+    def mark_connector_unknown(
+        self,
+        context: EchoConnectorEffectContext,
+        *,
+        reason: str,
+    ) -> None:
+        """Mark a connector effect as manual_review (unknown outcome)."""
+        with self._state_lock, self._partition_operation_guard(
+            tenant_id=context.tenant_id,
+            product_id=context.product_id,
+            session_id=context.session_id,
+        ):
+            tenant_state = self._partition_state_locked(
+                tenant_id=context.tenant_id,
+                product_id=context.product_id,
+                session_id=context.session_id,
+            )
+            outbox_id = context.outbox_id
+            entries: tuple[JournalEntry, ...] = (
+                {
+                    "record_type": "outbox_manual_review",
+                    "tenant_id": context.tenant_id,
+                    "run_id": context.run_id,
+                    "payload": {
+                        "effect_id": context.effect_id,
+                        "outbox_id": outbox_id,
+                        "reason": reason,
+                        "connector_type": context.connector_type,
+                        "operation": context.operation,
+                    },
+                },
+            )
+            self._append_many(
+                context.tenant_id,
+                entries,
+                state=tenant_state,
+            )
+            tenant_state.effects.mark_manual_review(outbox_id)
+            self._release_claim_lock(tenant_state, outbox_id)
+
+    # ------------------------------------------------------------------
+    # R4A-B2: Atomic approval binding claim (CAS in Echo journal)
+    # ------------------------------------------------------------------
+    class _ApprovalClaimAlreadyExistsError(Exception):
+        """Internal: raised inside semantic_check to abort duplicate append."""
+
+    @dataclass(frozen=True, slots=True)
+    class ApprovalClaimReceipt:
+        """Durable proof of an atomic approval binding claim.
+
+        ``claimed_now`` distinguishes a fresh claim from a pre-existing
+        one (idempotent recovery).  Even an ``already_claimed`` receipt
+        must NOT re-authorize execution; it only confirms the binding
+        was previously claimed.
+        """
+
+        request_id: str
+        binding_hash: str
+        journal_record_hash: str
+        journal_seq: int
+        claimed_now: bool
+
+    def claim_approval_binding_once(
+        self,
+        *,
+        tenant_id: str,
+        product_id: str,
+        session_id: str,
+        run_id: str,
+        request_id: str,
+        tool_name: str,
+        arguments_hash: str,
+        approval_mode: str,
+        expires_at: float,
+        requested_at: float,
+    ) -> EchoSafetyService.ApprovalClaimReceipt:
+        """Atomically claim one approval binding at most once.
+
+        Uses the Echo journal's cross-process ``fcntl.flock`` via
+        ``_append_many(semantic_check=...)`` to ensure check + append +
+        fsync are atomic.  If the same ``request_id`` with the exact same
+        binding already has a claim, returns the existing receipt with
+        ``claimed_now=False`` (idempotent recovery).  If the same
+        ``request_id`` has a claim with a *different* binding, raises
+        ``ValueError`` (corruption/conflict).
+        """
+
+        binding_hash = self._approval_binding_hash(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            run_id=run_id,
+            tool_name=tool_name,
+            arguments_hash=arguments_hash,
+            approval_mode=approval_mode,
+        )
+        with self._state_lock, self._partition_operation_guard(
+            tenant_id=tenant_id,
+            product_id=product_id,
+            session_id=session_id,
+        ):
+            tenant_state = self._partition_state_locked(
+                tenant_id=tenant_id,
+                product_id=product_id,
+                session_id=session_id,
+            )
+
+            # Pre-scan cached state for existing claim (fast path).
+            for record in tenant_state.journal.records:
+                p = record.payload
+                if not isinstance(p, dict):
+                    continue
+                if p.get("event_type") != "approval_execution_claimed":
+                    continue
+                if p.get("request_id") != request_id:
+                    continue
+                existing_hash = p.get("binding_hash", "")
+                if existing_hash != binding_hash:
+                    raise ValueError(
+                        "approval binding conflict: request_id already"
+                        " claimed with different binding"
+                    )
+                return EchoSafetyService.ApprovalClaimReceipt(
+                    request_id=request_id,
+                    binding_hash=binding_hash,
+                    journal_record_hash=getattr(record, "record_hash", ""),
+                    journal_seq=getattr(record, "seq", 0),
+                    claimed_now=False,
+                )
+
+            # No existing claim in cached state: append with semantic_check
+            # that re-verifies inside the journal's cross-process flock.
+            payload: dict[str, Any] = {
+                "event_type": "approval_execution_claimed",
+                "request_id": request_id,
+                "tool_name": tool_name,
+                "arguments_hash": arguments_hash,
+                "session_id": session_id,
+                "run_id": run_id,
+                "owner_key_hash": tenant_id,
+                "approval_mode": approval_mode,
+                "expires_at": expires_at,
+                "requested_at": requested_at,
+                "binding_hash": binding_hash,
+            }
+            entries: tuple[JournalEntry, ...] = (
+                {
+                    "record_type": "approval",
+                    "tenant_id": tenant_id,
+                    "run_id": run_id,
+                    "payload": payload,
+                },
+            )
+
+            found_existing: list[Any] = []
+
+            def check_before_append(
+                _effects: DurableEffectLog,
+                _disk_changed: bool,
+            ) -> None:
+                # Scan the journal's in-memory records (synced from disk
+                # inside the flock).  Do NOT call verified_logical_records()
+                # here -- it would re-acquire the same lock and deadlock.
+                for rec in tenant_state.journal.records:
+                    p = rec.payload
+                    if not isinstance(p, dict):
+                        continue
+                    if p.get("event_type") != "approval_execution_claimed":
+                        continue
+                    if p.get("request_id") != request_id:
+                        continue
+                    existing_hash = p.get("binding_hash", "")
+                    if existing_hash != binding_hash:
+                        raise ValueError(
+                            "approval binding conflict: request_id already"
+                            " claimed with different binding"
+                        )
+                    found_existing.append(rec)
+                    raise EchoSafetyService._ApprovalClaimAlreadyExistsError()
+
+            try:
+                self._append_many(
+                    tenant_id,
+                    entries,
+                    state=tenant_state,
+                    semantic_check=check_before_append,
+                )
+            except EchoSafetyService._ApprovalClaimAlreadyExistsError:
+                rec = found_existing[0]
+                return EchoSafetyService.ApprovalClaimReceipt(
+                    request_id=request_id,
+                    binding_hash=binding_hash,
+                    journal_record_hash=getattr(rec, "record_hash", ""),
+                    journal_seq=getattr(rec, "seq", 0),
+                    claimed_now=False,
+                )
+
+            # Read back the just-appended record from cached journal state
+            for record in tenant_state.journal.records:
+                p = record.payload
+                if (
+                    isinstance(p, dict)
+                    and p.get("event_type") == "approval_execution_claimed"
+                    and p.get("request_id") == request_id
+                    and p.get("binding_hash") == binding_hash
+                ):
+                    return EchoSafetyService.ApprovalClaimReceipt(
+                        request_id=request_id,
+                        binding_hash=binding_hash,
+                        journal_record_hash=getattr(record, "record_hash", ""),
+                        journal_seq=getattr(record, "seq", 0),
+                        claimed_now=True,
+                    )
+            raise RuntimeError("approval claim append succeeded but record not found")
+
+    def lookup_approval_claim(
+        self,
+        *,
+        tenant_id: str,
+        product_id: str,
+        session_id: str,
+        request_id: str,
+    ) -> EchoSafetyService.ApprovalClaimReceipt | None:
+        """Query whether an approval binding claim exists in the Echo journal.
+
+        Used by ``ApprovalQueue._durable_resolved_record`` to detect
+        claims that exist in the Echo authority but are missing from the
+        local mirror (e.g. mirror truncation).
+        """
+
+        with self._state_lock, self._partition_operation_guard(
+            tenant_id=tenant_id,
+            product_id=product_id,
+            session_id=session_id,
+        ):
+            tenant_state = self._partition_state_locked(
+                tenant_id=tenant_id,
+                product_id=product_id,
+                session_id=session_id,
+            )
+            for record in tenant_state.journal.records:
+                p = record.payload
+                if not isinstance(p, dict):
+                    continue
+                if p.get("event_type") != "approval_execution_claimed":
+                    continue
+                if p.get("request_id") != request_id:
+                    continue
+                return EchoSafetyService.ApprovalClaimReceipt(
+                    request_id=request_id,
+                    binding_hash=str(p.get("binding_hash", "")),
+                    journal_record_hash=getattr(record, "record_hash", ""),
+                    journal_seq=getattr(record, "seq", 0),
+                    claimed_now=False,
+                )
+            return None
+
+    @staticmethod
+    def _approval_binding_hash(
+        *,
+        tenant_id: str,
+        session_id: str,
+        run_id: str,
+        tool_name: str,
+        arguments_hash: str,
+        approval_mode: str,
+    ) -> str:
+        """Compute a domain-separated canonical binding hash."""
+        import hashlib as _hl
+
+        payload = _stable_json_for_hash(
+            {
+                "owner_key_hash": tenant_id,
+                "session_id": session_id,
+                "run_id": run_id,
+                "tool_name": tool_name,
+                "arguments_hash": arguments_hash,
+                "approval_mode": approval_mode,
+            }
+        )
+        return (
+            "sha256:"
+            + _hl.sha256(
+                b"js-agent:approval-binding:v1\0" + payload.encode("utf-8")
+            ).hexdigest()
+        )
+
+    # ------------------------------------------------------------------
+    # R4A-B1: Two-phase lease consume anchor
+    # ------------------------------------------------------------------
+    _LEASE_ANCHOR_EVENT_TYPES = frozenset(
+        {
+            "lease_consume_pending",
+            "lease_consume_finalized",
+        }
+    )
+
+    def record_lease_consume_pending(
+        self,
+        *,
+        tenant_id: str,
+        product_id: str,
+        session_id: str,
+        run_id: str,
+        lease_id: str,
+        nonce: str,
+    ) -> str:
+        """Phase 1: record a durable *intent* to consume a lease.
+
+        Must be called **before** ``LeaseAuthority.consume_bound()``.
+        If the process crashes between this write and the actual consume,
+        restart recovery can detect the pending intent and mark the
+        operation for manual review.
+        """
+
+        return self._append_lease_anchor(
+            tenant_id=tenant_id,
+            product_id=product_id,
+            session_id=session_id,
+            run_id=run_id,
+            event_type="lease_consume_pending",
+            lease_id=lease_id,
+            nonce=nonce,
+            consume_receipt_hash=None,
+        )
+
+    def record_lease_consume_finalized(
+        self,
+        *,
+        tenant_id: str,
+        product_id: str,
+        session_id: str,
+        run_id: str,
+        lease_id: str,
+        nonce: str,
+        consume_receipt_hash: str,
+    ) -> str:
+        """Phase 2: record the durable, finalized consume anchor.
+
+        Must be called **after** ``LeaseAuthority.consume_bound()`` succeeds.
+        The ``consume_receipt_hash`` binds the Echo anchor to the exact
+        lease ledger record, detecting valid-prefix rollback of the lease
+        ledger alone.
+        """
+
+        return self._append_lease_anchor(
+            tenant_id=tenant_id,
+            product_id=product_id,
+            session_id=session_id,
+            run_id=run_id,
+            event_type="lease_consume_finalized",
+            lease_id=lease_id,
+            nonce=nonce,
+            consume_receipt_hash=consume_receipt_hash,
+        )
+
+    def lookup_lease_consume_anchor(
+        self,
+        *,
+        tenant_id: str,
+        product_id: str,
+        session_id: str,
+        lease_id: str,
+        nonce: str,
+    ) -> str | None:
+        """Query whether a finalized consume anchor exists.
+
+        Returns the ``consume_receipt_hash`` if a finalized anchor is found,
+        ``None`` otherwise.  Used by ``LeaseAuthority.verify_consume_anchor``
+        to detect valid-prefix rollback of the lease ledger.
+        """
+
+        with self._state_lock, self._partition_operation_guard(
+            tenant_id=tenant_id,
+            product_id=product_id,
+            session_id=session_id,
+        ):
+            tenant_state = self._partition_state_locked(
+                tenant_id=tenant_id,
+                product_id=product_id,
+                session_id=session_id,
+            )
+            for record in tenant_state.journal.records:
+                payload = record.payload
+                if not isinstance(payload, dict):
+                    continue
+                if payload.get("event_type") != "lease_consume_finalized":
+                    continue
+                if payload.get("lease_id") != lease_id:
+                    continue
+                if payload.get("nonce") != nonce:
+                    continue
+                result = payload.get("consume_receipt_hash")
+                if isinstance(result, str):
+                    return result
+            return None
+
+    def _append_lease_anchor(
+        self,
+        *,
+        tenant_id: str,
+        product_id: str,
+        session_id: str,
+        run_id: str,
+        event_type: str,
+        lease_id: str,
+        nonce: str,
+        consume_receipt_hash: str | None,
+    ) -> str:
+        """Append a lease anchor record to the Echo journal.
+
+        Uses ``semantic_check`` to ensure idempotency: if the same
+        ``(lease_id, nonce, event_type)`` anchor already exists, returns
+        the existing record hash without appending a duplicate.
+        """
+
+        with self._state_lock, self._partition_operation_guard(
+            tenant_id=tenant_id,
+            product_id=product_id,
+            session_id=session_id,
+        ):
+            tenant_state = self._partition_state_locked(
+                tenant_id=tenant_id,
+                product_id=product_id,
+                session_id=session_id,
+            )
+            payload: dict[str, Any] = {
+                "event_type": event_type,
+                "lease_id": lease_id,
+                "nonce": nonce,
+                "session_id": session_id,
+                "run_id": run_id,
+                "owner_key_hash": tenant_id,
+            }
+            if consume_receipt_hash is not None:
+                payload["consume_receipt_hash"] = consume_receipt_hash
+            entries: tuple[JournalEntry, ...] = (
+                {
+                    "record_type": "lease_anchor",
+                    "tenant_id": tenant_id,
+                    "run_id": run_id,
+                    "payload": payload,
+                },
+            )
+            existing_hash: str | None = None
+
+            def ensure_not_duplicate(
+                _effects: DurableEffectLog,
+                _disk_changed: bool,
+            ) -> None:
+                nonlocal existing_hash
+                for record in tenant_state.journal.records:
+                    p = record.payload
+                    if not isinstance(p, dict):
+                        continue
+                    if p.get("event_type") != event_type:
+                        continue
+                    if p.get("lease_id") != lease_id:
+                        continue
+                    if p.get("nonce") != nonce:
+                        continue
+                    existing_hash = getattr(record, "record_hash", None)
+                    if isinstance(existing_hash, str):
+                        return
+                    return
+
+            self._append_many(
+                tenant_id,
+                entries,
+                state=tenant_state,
+                semantic_check=ensure_not_duplicate,
+            )
+            if existing_hash is not None:
+                return existing_hash
+            # Return the hash of the just-appended record
+            for record in tenant_state.journal.records:
+                p = record.payload
+                if (
+                    isinstance(p, dict)
+                    and p.get("event_type") == event_type
+                    and p.get("lease_id") == lease_id
+                    and p.get("nonce") == nonce
+                ):
+                    rh = getattr(record, "record_hash", None)
+                    if isinstance(rh, str):
+                        return rh
+            return ""
+
     _DAEMON_EVENT_TYPES = frozenset(
         {
             "daemon_started",
@@ -1228,8 +1950,14 @@ class EchoSafetyService:
         *,
         status: Literal["ok", "failed", "cancelled"],
         output_hash: str,
+        artifact_refs: tuple[ArtifactRefV1, ...] = (),
     ) -> EchoRecordResult:
         """Durably receipt and merge a previously claimed tool effect."""
+        _validate_artifact_refs_for_context(
+            context,
+            status=status,
+            artifact_refs=artifact_refs,
+        )
         with self._state_lock, self._turn_partition_operation_guard(context):
             if status not in {"ok", "failed", "cancelled"}:
                 raise ValueError("invalid tool effect status")
@@ -1261,6 +1989,7 @@ class EchoSafetyService:
                 status=status,
                 output_ref=output_hash,
                 replay_class=context.replay_class,
+                artifact_refs=artifact_refs,
             )
             entries: tuple[JournalEntry, ...] = (
                 {
@@ -1274,6 +2003,7 @@ class EchoSafetyService:
                         "output_ref": output_hash,
                         "output_hash": output_hash,
                         "replay_class": context.replay_class,
+                        "artifact_refs": [ref.to_dict() for ref in artifact_refs],
                     },
                 },
                 {
@@ -1549,6 +2279,7 @@ class EchoSafetyService:
                 "journal_record_start": record_start,
                 "permit_journal_seq": seal.journal_seq,
                 "model_id": model_id or "default",
+                "partition_bound": product_id is not None and session_id is not None,
                 "provider_id": provider_id,
                 "product_id": str((call_metadata or {}).get("product_id") or "js-agent"),
             },
@@ -1964,11 +2695,32 @@ class EchoSafetyService:
                 reason=reason,
             )
 
-    def list_manual_reviews(self, *, tenant_id: str) -> tuple[ManualReviewRow, ...]:
-        """Return owner reviews aggregated across all physical session partitions."""
+    def list_manual_reviews(
+        self,
+        *,
+        tenant_id: str,
+        product_id: str | None = None,
+    ) -> tuple[ManualReviewRow, ...]:
+        """Return verified owner reviews, optionally from one exact product root."""
         with self._state_lock, self._partition_lifecycle_lock(exclusive=False):
             reviews: list[ManualReviewRow] = []
-            for tenant_state in self._known_journal_states(recover_claims=False):
+            if product_id is None:
+                states = self._known_journal_states(recover_claims=False)
+                if self._tenant_scan_truncated:
+                    raise EchoUnavailableError(
+                        "Echo manual review projection is truncated and incomplete"
+                    )
+            else:
+                if product_id not in {"js-agent", "js-work"}:
+                    raise ValueError("manual review product is unsupported")
+                states = (
+                    self._tenant_state_locked(tenant_id),
+                    *self._artifact_projection_states(
+                        tenant_id=tenant_id,
+                        product_id=product_id,
+                    ),
+                )
+            for tenant_state in states:
 
                 def semantic_sync(
                     records: tuple[Any, ...],
@@ -1991,6 +2743,7 @@ class EchoSafetyService:
                         + ",".join(archive_report.errors)
                     )
                 self._recover_abandoned_claims(tenant_state, refresh=False)
+                bindings = _verified_effect_bindings(tenant_state.journal.records)
                 reviews.extend(
                     ManualReviewRow(
                         effect_id=row.seal.effect_id,
@@ -1998,13 +2751,273 @@ class EchoSafetyService:
                         tenant_id=row.seal.tenant_id,
                         action_kind=row.seal.action_kind,
                         status="manual_review",
+                        session_id=(
+                            bindings[row.seal.effect_id].session_id
+                            if row.seal.effect_id in bindings
+                            else None
+                        ),
+                        run_id=(
+                            bindings[row.seal.effect_id].run_id
+                            if row.seal.effect_id in bindings
+                            else None
+                        ),
+                        product_id=(
+                            bindings[row.seal.effect_id].product_id
+                            if row.seal.effect_id in bindings
+                            else None
+                        ),
+                        effect_digest=(
+                            stable_hash(
+                                {
+                                    "domain": "js-agent:manual-review:v1",
+                                    "effect_id": row.seal.effect_id,
+                                    "outbox_id": row.outbox_id,
+                                    "tenant_id": row.seal.tenant_id,
+                                    "session_id": bindings[row.seal.effect_id].session_id,
+                                    "run_id": bindings[row.seal.effect_id].run_id,
+                                }
+                            )
+                            if row.seal.effect_id in bindings
+                            else None
+                        ),
+                        args_digest=(
+                            bindings[row.seal.effect_id].args_digest
+                            if row.seal.effect_id in bindings
+                            else None
+                        ),
                     )
                     for row in tenant_state.effects.manual_review_rows()
                     if row.seal.tenant_id == tenant_id
+                    and (
+                        product_id is None
+                        or row.seal.effect_id not in bindings
+                        or bindings[row.seal.effect_id].product_id == product_id
+                    )
                 )
             return tuple(
                 sorted(reviews, key=lambda review: (review.effect_id, review.outbox_id))
             )
+
+    def project_verified_artifacts(
+        self,
+        *,
+        tenant_id: str,
+        mode: AppMode,
+        workspace: str | None,
+        limit: int = 50,
+        visibility: ArtifactVisibilityQueryV1 | None = None,
+    ) -> VerifiedArtifactProjectionV1:
+        """Verify and merge active/archive and retired-catalog artifact history."""
+        if type(mode) is not AppMode:
+            raise TypeError("artifact receipt mode must be AppMode")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("artifact receipt limit must be between 1 and 100")
+        if mode is AppMode.PERSONAL and workspace is not None:
+            raise ValueError("personal artifact receipt workspace must be null")
+        if mode is AppMode.WORK and not isinstance(workspace, str):
+            raise ValueError("work artifact receipt workspace is required")
+        if visibility is not None and type(visibility) is not ArtifactVisibilityQueryV1:
+            raise TypeError("artifact visibility must be ArtifactVisibilityQueryV1")
+
+        with self._state_lock, self._partition_lifecycle_lock(exclusive=False):
+            product_id = "js-work" if mode is AppMode.WORK else "js-agent"
+            verified: list[VerifiedArtifactReceiptV1] = []
+            for tenant_state in self._artifact_projection_states(
+                tenant_id=tenant_id,
+                product_id=product_id,
+            ):
+
+                def semantic_sync(
+                    records: tuple[Any, ...],
+                    disk_changed: bool,
+                    current_state: _TenantJournalState = tenant_state,
+                ) -> None:
+                    if disk_changed:
+                        current_state.effects.replace_from(
+                            _replay_state_effects(current_state, records)
+                        )
+
+                _disk_changed, archive_report = (
+                    tenant_state.journal.refresh_and_verify_required_archives(
+                        semantic_sync=semantic_sync
+                    )
+                )
+                if not archive_report.ok:
+                    raise EchoUnavailableError(
+                        "Echo required archive verification failed: "
+                        + ",".join(archive_report.errors)
+                    )
+                logical_records = tenant_state.journal.verified_logical_records()
+                logical_effects = _replay_effects(logical_records)
+                bindings = _verified_effect_bindings(logical_records)
+                for active_receipt in logical_effects.receipt_snapshot():
+                    if active_receipt.tenant_id != tenant_id or active_receipt.status != "ok":
+                        continue
+                    if not active_receipt.artifact_refs:
+                        continue
+                    binding = bindings.get(active_receipt.effect_id)
+                    if binding is None:
+                        raise ValueError("artifact receipt has no verified effect binding")
+                    refs = tuple(
+                        ref
+                        for ref in active_receipt.artifact_refs
+                        if ref.mode is mode and ref.workspace == workspace
+                        and (
+                            visibility is None
+                            or artifact_ref_visible(ref, visibility)
+                        )
+                    )
+                    if not refs:
+                        continue
+                    for ref in refs:
+                        _validate_artifact_ref_binding(ref, binding)
+                    _append_bounded_artifact_receipt(
+                        verified,
+                        VerifiedArtifactReceiptV1(
+                            receipt_id=active_receipt.receipt_id,
+                            effect_id=active_receipt.effect_id,
+                            tenant_id=active_receipt.tenant_id,
+                            run_id=binding.run_id,
+                            artifact_refs=refs,
+                        ),
+                        limit=limit,
+                    )
+            checkpoint = self._artifact_retention_checkpoint_locked(
+                tenant_id=tenant_id,
+                product_id=product_id,
+            )
+            coverage_complete = True
+            if checkpoint is not None:
+                if checkpoint.get("pending_retirement") is not None:
+                    raise EchoUnavailableError("Echo artifact retirement is incomplete")
+                coverage_complete = retired_history_complete(checkpoint)
+                retired_groups: dict[
+                    tuple[str, str, str, str],
+                    list[tuple[int, ArtifactRefV1]],
+                ] = {}
+                for entry in retired_artifact_entries(checkpoint):
+                    binding = entry["binding"]
+                    ref = ArtifactRefV1.from_dict(entry["artifact_ref"])
+                    if (
+                        entry["tenant_id"] != tenant_id
+                        or binding["tenant_id"] != tenant_id
+                        or binding["product_id"] != product_id
+                        or ref.owner != tenant_id
+                        or ref.mode is not mode
+                    ):
+                        raise ValueError("retired artifact owner or product binding mismatch")
+                    if ref.workspace != workspace:
+                        continue
+                    if visibility is not None and not artifact_ref_visible(ref, visibility):
+                        continue
+                    key = (
+                        str(entry["receipt_id"]),
+                        str(entry["effect_id"]),
+                        str(entry["tenant_id"]),
+                        str(entry["run_id"]),
+                    )
+                    retired_groups.setdefault(key, []).append((entry["ordinal"], ref))
+                for key, indexed_refs in retired_groups.items():
+                    indexed_refs.sort(key=lambda item: item[0])
+                    _append_bounded_artifact_receipt(
+                        verified,
+                        VerifiedArtifactReceiptV1(
+                            receipt_id=key[0],
+                            effect_id=key[1],
+                            tenant_id=key[2],
+                            run_id=key[3],
+                            artifact_refs=tuple(ref for _ordinal, ref in indexed_refs),
+                        ),
+                        limit=limit,
+                    )
+            receipts = tuple(
+                sorted(
+                    verified,
+                    key=lambda item: (item.run_id, item.receipt_id, item.effect_id),
+                )[:limit]
+            )
+            projected_refs = [
+                ref for current_receipt in receipts for ref in current_receipt.artifact_refs
+            ]
+            projected_refs.sort(
+                key=lambda ref: (
+                    ref.created_by_run,
+                    ref.session,
+                    ref.digest,
+                    ref.uri,
+                )
+            )
+            return VerifiedArtifactProjectionV1(
+                receipts=receipts,
+                refs=tuple(projected_refs[:limit]),
+                retired_history_complete=coverage_complete,
+            )
+
+    def list_verified_artifact_receipts(
+        self,
+        *,
+        tenant_id: str,
+        mode: AppMode,
+        workspace: str | None,
+        limit: int = 50,
+    ) -> tuple[VerifiedArtifactReceiptV1, ...]:
+        """Compatibility wrapper that never represents incomplete history as complete."""
+        projection = self.project_verified_artifacts(
+            tenant_id=tenant_id,
+            mode=mode,
+            workspace=workspace,
+            limit=limit,
+        )
+        if not projection.retired_history_complete:
+            raise EchoUnavailableError("retired artifact history is incomplete")
+        return projection.receipts
+
+    def list_verified_artifact_refs(
+        self,
+        *,
+        tenant_id: str,
+        mode: AppMode,
+        workspace: str | None,
+        limit: int = 50,
+    ) -> tuple[ArtifactRefV1, ...]:
+        """Return the exact R1 refs consumed by the AppShell Artifact Center."""
+        projection = self.project_verified_artifacts(
+            tenant_id=tenant_id,
+            mode=mode,
+            workspace=workspace,
+            limit=limit,
+        )
+        if not projection.retired_history_complete:
+            raise EchoUnavailableError("retired artifact history is incomplete")
+        return projection.refs
+
+    def _artifact_retention_checkpoint_locked(
+        self,
+        *,
+        tenant_id: str,
+        product_id: str,
+    ) -> dict[str, Any] | None:
+        product_slug, owner_slug, _unused_session = _scope_partition_slugs(
+            tenant_id=tenant_id,
+            product_id=product_id,
+            session_id="artifact-projection",
+        )
+        owner_root = self._root / "partitions" / product_slug / owner_slug
+        checkpoint_path = owner_root / "retired-sessions.json"
+        if not checkpoint_path.exists():
+            return None
+        retention_key = _read_strict_key(owner_root / "retention.key")
+        return load_and_verify_checkpoint(
+            checkpoint_path,
+            mac_key=retention_key,
+            product_partition=product_slug,
+            owner_partition=owner_slug,
+            max_receipts=self._ledger_config.max_retired_session_receipts_per_owner,
+            max_artifact_refs=self._ledger_config.max_retired_artifact_refs_per_owner,
+            max_artifact_bytes=(
+                self._ledger_config.max_retired_artifact_bytes_per_owner
+            ),
+        )
 
     def _resolve_manual_review_locked(
         self,
@@ -2193,6 +3206,7 @@ class EchoSafetyService:
         self,
         *,
         recover_claims: bool = True,
+        strict: bool = False,
     ) -> tuple[_TenantJournalState, ...]:
         tenants_root = self._root / "tenants"
         partitions_root = self._root / "partitions"
@@ -2229,6 +3243,10 @@ class EchoSafetyService:
                     for remaining_key, _remaining_path in candidates[index:]
                     if remaining_key not in self._tenant_states
                 )
+                if strict:
+                    raise EchoUnavailableError(
+                        "Echo journal projection exceeded verified state capacity"
+                    )
                 break
             if cache_key not in self._tenant_states:
                 try:
@@ -2238,11 +3256,61 @@ class EchoSafetyService:
                     self._trim_tenant_states()
                 except Exception as exc:  # noqa: BLE001 - health should report, not raise
                     self._last_error = exc.__class__.__name__
+                    if strict:
+                        raise EchoUnavailableError(
+                            "Echo journal unavailable during verified projection"
+                        ) from exc
         states = (self._default_state, *self._tenant_states.values())
         if recover_claims:
             for state in states:
                 self._recover_abandoned_claims(state)
         return states
+
+    def _artifact_projection_states(
+        self,
+        *,
+        tenant_id: str,
+        product_id: str,
+    ) -> tuple[_TenantJournalState, ...]:
+        """Load only the exact owner/product partitions eligible for Artifact Center."""
+        product_slug, owner_slug, _unused_session = _scope_partition_slugs(
+            tenant_id=tenant_id,
+            product_id=product_id,
+            session_id="artifact-projection",
+        )
+        owner_root = self._root / "partitions" / product_slug / owner_slug
+        if not owner_root.exists():
+            return ()
+        if owner_root.is_symlink() or not owner_root.is_dir():
+            raise EchoUnavailableError("Echo artifact owner partition is invalid")
+        try:
+            session_roots = _session_partition_roots(owner_root)
+        except (OSError, ValueError, PartitionRetentionError) as exc:
+            raise EchoUnavailableError("Echo artifact session partitions are invalid") from exc
+        if len(session_roots) > self._ledger_config.max_session_partitions_per_owner:
+            raise EchoUnavailableError("Echo artifact session partition capacity is invalid")
+
+        states: list[_TenantJournalState] = []
+        for session_root in sorted(session_roots, key=lambda path: path.name):
+            journal_path = session_root / "chat.jsonl"
+            if not journal_path.is_file() or journal_path.is_symlink():
+                raise EchoUnavailableError("Echo artifact journal partition is invalid")
+            cache_key = str(session_root.relative_to(self._root))
+            state = self._tenant_states.get(cache_key)
+            if state is None:
+                try:
+                    state = _load_journal_state(session_root)
+                except Exception as exc:  # noqa: BLE001 - exact authority must fail closed
+                    raise EchoUnavailableError(
+                        "Echo journal unavailable during verified projection"
+                    ) from exc
+                self._remember_health_verified(state)
+                self._tenant_states[cache_key] = state
+                self._trim_tenant_states()
+            else:
+                self._tenant_states.move_to_end(cache_key)
+            states.append(state)
+        return tuple(states)
 
     def _trim_tenant_states(self) -> None:
         while len(self._tenant_states) > _MAX_TENANT_STATES:
@@ -2375,6 +3443,10 @@ class EchoSafetyService:
             product_partition=product_slug,
             owner_partition=owner_slug,
             max_receipts=self._ledger_config.max_retired_session_receipts_per_owner,
+            max_artifact_refs=self._ledger_config.max_retired_artifact_refs_per_owner,
+            max_artifact_bytes=(
+                self._ledger_config.max_retired_artifact_bytes_per_owner
+            ),
         )
         prior_session_receipt = next(
             (
@@ -2410,7 +3482,15 @@ class EchoSafetyService:
                         raise PartitionRetentionError(
                             "partition owner root is not a private directory"
                         )
-                    self._finish_interrupted_retirement_locked(owner_root)
+                    try:
+                        self._finish_interrupted_retirement_locked(owner_root)
+                    except (OSError, ValueError, PartitionRetentionError) as exc:
+                        retiring_root = owner_root / ".retiring"
+                        if retiring_root.exists() or retiring_root.is_symlink():
+                            raise
+                        self._partition_retention_error = (
+                            f"{exc.__class__.__name__}: {exc}"
+                        )
         except (OSError, ValueError, PartitionRetentionError) as exc:
             raise EchoUnavailableError(
                 f"Echo partition retirement recovery failed: {exc}"
@@ -2441,11 +3521,18 @@ class EchoSafetyService:
                 key=_partition_retirement_order,
             )
             retired = False
+            capacity_error: PartitionArtifactCapacityError | None = None
             for candidate in candidates:
-                if self._retire_partition_locked(owner_root, candidate):
-                    retired = True
-                    break
+                try:
+                    if self._retire_partition_locked(owner_root, candidate):
+                        retired = True
+                        break
+                except PartitionArtifactCapacityError as exc:
+                    capacity_error = exc
+                    continue
             if not retired:
+                if capacity_error is not None:
+                    raise capacity_error
                 break
             session_roots = _session_partition_roots(owner_root)
         return len(session_roots)
@@ -2478,19 +3565,27 @@ class EchoSafetyService:
             if state.effects.open_count() != 0 or _contains_nonretirable_terminal(state.journal):
                 return False
             self._prune_claim_lock_files(state)
+            logical_records = state.journal.verified_logical_records()
+            artifact_receipts = _retired_artifact_receipt_inputs(logical_records)
             evidence = _partition_source_evidence(session_root)
             records = state.journal.records
             tip_hash = records[-1].record_hash if records else RETENTION_GENESIS_HASH
             product_slug = owner_root.parent.name
             owner_slug = owner_root.name
             retention_key = _load_or_create_key(owner_root / "retention.key")
-            _checkpoint, receipt = append_retirement_receipt(
+            _checkpoint, receipt = stage_retirement(
                 owner_root / "retired-sessions.json",
                 mac_key=retention_key,
                 product_partition=product_slug,
                 owner_partition=owner_slug,
                 max_receipts=(
                     self._ledger_config.max_retired_session_receipts_per_owner
+                ),
+                max_artifact_refs=(
+                    self._ledger_config.max_retired_artifact_refs_per_owner
+                ),
+                max_artifact_bytes=(
+                    self._ledger_config.max_retired_artifact_bytes_per_owner
                 ),
                 receipt=RetentionReceiptInput(
                     session_partition=session_root.name,
@@ -2501,6 +3596,7 @@ class EchoSafetyService:
                     journal_tip_hash=tip_hash,
                     retired_at=datetime.now(UTC).isoformat(),
                 ),
+                artifact_receipts=artifact_receipts,
             )
             if receipt["source_files_hash"] != evidence.source_files_hash:
                 raise PartitionRetentionError("retirement receipt source hash mismatch")
@@ -2512,6 +3608,9 @@ class EchoSafetyService:
             self._finish_interrupted_retirement_locked(owner_root)
             self._partition_retention_error = None
             return True
+        except PartitionArtifactCapacityError as exc:
+            self._partition_retention_error = f"{exc.__class__.__name__}: {exc}"
+            raise
         except (OSError, ValueError, PartitionRetentionError) as exc:
             self._partition_retention_error = f"{exc.__class__.__name__}: {exc}"
             raise PartitionRetentionError(
@@ -2520,14 +3619,14 @@ class EchoSafetyService:
 
     def _finish_interrupted_retirement_locked(self, owner_root: Path) -> None:
         retiring_root = owner_root / ".retiring"
-        if not retiring_root.exists() and not retiring_root.is_symlink():
-            return
-        if retiring_root.is_symlink() or not retiring_root.is_dir():
-            raise PartitionRetentionError("retiring partition is not a private directory")
         checkpoint_path = owner_root / "retired-sessions.json"
         key_path = owner_root / "retention.key"
-        if not checkpoint_path.is_file() or not key_path.is_file():
-            raise PartitionRetentionError("retiring partition has no durable checkpoint")
+        if not checkpoint_path.exists():
+            if retiring_root.exists() or retiring_root.is_symlink():
+                raise PartitionRetentionError("retiring partition has no durable checkpoint")
+            return
+        if not checkpoint_path.is_file() or checkpoint_path.is_symlink() or not key_path.is_file():
+            raise PartitionRetentionError("retirement checkpoint is not a private file")
         retention_key = _read_strict_key(key_path)
         checkpoint = load_and_verify_checkpoint(
             checkpoint_path,
@@ -2535,7 +3634,62 @@ class EchoSafetyService:
             product_partition=owner_root.parent.name,
             owner_partition=owner_root.name,
             max_receipts=self._ledger_config.max_retired_session_receipts_per_owner,
+            max_artifact_refs=self._ledger_config.max_retired_artifact_refs_per_owner,
+            max_artifact_bytes=(
+                self._ledger_config.max_retired_artifact_bytes_per_owner
+            ),
         )
+        pending = checkpoint.get("pending_retirement")
+        if pending is not None:
+            if retiring_root.is_symlink():
+                raise PartitionRetentionError("retiring partition is not a private directory")
+            active_root = owner_root / pending["session_partition"]
+            if active_root.is_symlink():
+                raise PartitionRetentionError("pending retirement source is not private")
+            if active_root.exists() and retiring_root.exists():
+                raise PartitionRetentionError("pending retirement has conflicting sources")
+            if active_root.exists():
+                evidence = _partition_source_evidence(active_root)
+                if evidence.source_files_hash != pending["source_files_hash"]:
+                    raise PartitionRetentionError(
+                        "pending retirement source no longer matches its receipt"
+                    )
+                os.rename(active_root, retiring_root)
+                _fsync_directory(owner_root)
+            if retiring_root.exists():
+                if not retiring_root.is_dir():
+                    raise PartitionRetentionError(
+                        "retiring partition is not a private directory"
+                    )
+                evidence = _partition_source_evidence(retiring_root)
+                if evidence.source_files_hash != pending["source_files_hash"]:
+                    raise PartitionRetentionError(
+                        "retiring partition no longer matches its receipt"
+                    )
+                _remove_retired_partition(retiring_root)
+                _fsync_directory(owner_root)
+            clear_pending_retirement(
+                checkpoint_path,
+                mac_key=retention_key,
+                product_partition=owner_root.parent.name,
+                owner_partition=owner_root.name,
+                max_receipts=(
+                    self._ledger_config.max_retired_session_receipts_per_owner
+                ),
+                max_artifact_refs=(
+                    self._ledger_config.max_retired_artifact_refs_per_owner
+                ),
+                max_artifact_bytes=(
+                    self._ledger_config.max_retired_artifact_bytes_per_owner
+                ),
+                session_partition=pending["session_partition"],
+                source_files_hash=pending["source_files_hash"],
+            )
+            return
+        if not retiring_root.exists() and not retiring_root.is_symlink():
+            return
+        if retiring_root.is_symlink() or not retiring_root.is_dir():
+            raise PartitionRetentionError("retiring partition is not a private directory")
         receipts = checkpoint["receipts"]
         if not receipts:
             raise PartitionRetentionError("retiring partition receipt is missing")
@@ -2576,7 +3730,15 @@ class EchoSafetyService:
                     max_receipts=(
                         self._ledger_config.max_retired_session_receipts_per_owner
                     ),
+                    max_artifact_refs=(
+                        self._ledger_config.max_retired_artifact_refs_per_owner
+                    ),
+                    max_artifact_bytes=(
+                        self._ledger_config.max_retired_artifact_bytes_per_owner
+                    ),
                 )
+                if checkpoint.get("pending_retirement") is not None:
+                    raise PartitionRetentionError("partition retirement is incomplete")
                 retired_count += int(checkpoint["retired_count"])
         except (OSError, ValueError, PartitionRetentionError) as exc:
             return active_count, retired_count, f"{exc.__class__.__name__}: {exc}"
@@ -2748,6 +3910,209 @@ def _ensure_private_directory(path: Path) -> None:
     os.chmod(path, 0o700)
 
 
+def _mode_for_product(product_id: str) -> AppMode:
+    if product_id == "js-agent":
+        return AppMode.PERSONAL
+    if product_id == "js-work":
+        return AppMode.WORK
+    raise ValueError("artifact receipt product is not a supported AppShell mode")
+
+
+def _validate_artifact_ref_binding(
+    ref: ArtifactRefV1,
+    binding: _VerifiedEffectBinding,
+) -> None:
+    expected_mode = _mode_for_product(binding.product_id)
+    if ref.owner != binding.tenant_id:
+        raise ValueError("artifact ref owner does not match effect binding")
+    if ref.mode is not expected_mode:
+        raise ValueError("artifact ref mode does not match effect binding")
+    if ref.workspace != binding.workspace:
+        raise ValueError("artifact ref workspace does not match effect binding")
+    if ref.session != binding.session_id:
+        raise ValueError("artifact ref session does not match effect binding")
+    if ref.created_by_run != binding.run_id:
+        raise ValueError("artifact ref created_by_run does not match effect binding")
+    if ArtifactRefV1.from_dict(ref.to_dict()) != ref:
+        raise ValueError("artifact ref does not survive strict R1 round-trip")
+
+
+def _validate_artifact_refs_for_context(
+    context: EchoToolEffectContext,
+    *,
+    status: Literal["ok", "failed", "cancelled"],
+    artifact_refs: tuple[ArtifactRefV1, ...],
+) -> None:
+    if type(artifact_refs) is not tuple:
+        raise TypeError("artifact_refs must be an immutable tuple")
+    if artifact_refs and status != "ok":
+        raise ValueError("artifact refs require a successful tool receipt")
+    if len(artifact_refs) > _MAX_TOOL_ARTIFACT_REFS:
+        raise ValueError("artifact refs count limit exceeded")
+    if any(type(ref) is not ArtifactRefV1 for ref in artifact_refs):
+        raise TypeError("artifact_refs must contain exact ArtifactRefV1 values")
+    serialized_bytes = len(
+        canonical_json([ref.to_dict() for ref in artifact_refs]).encode("utf-8")
+    )
+    if serialized_bytes > _MAX_TOOL_ARTIFACT_BYTES:
+        raise ValueError("artifact refs byte limit exceeded")
+    binding = _VerifiedEffectBinding(
+        tenant_id=context.tenant_id,
+        product_id=context.product_id,
+        session_id=context.session_id,
+        run_id=context.run_id,
+        effect_id=context.effect_id,
+        outbox_id=context.outbox_id,
+        args_digest=context.args_hash,
+        workspace=context.workspace,
+    )
+    for ref in artifact_refs:
+        _validate_artifact_ref_binding(ref, binding)
+
+
+def _verified_effect_binding_from_outbox(record: Any) -> _VerifiedEffectBinding | None:
+    payload = getattr(record, "payload", None)
+    if not isinstance(payload, dict):
+        return None
+    contract = payload.get("execution_contract")
+    seal_payload = payload.get("seal")
+    if not isinstance(contract, dict) or not isinstance(seal_payload, dict):
+        return None
+    state_mapping = contract.get("state_mapping")
+    effect = contract.get("effect")
+    outbox = contract.get("outbox")
+    if not isinstance(state_mapping, dict) or not isinstance(effect, dict):
+        return None
+    if not isinstance(outbox, dict):
+        return None
+    tenant_id = getattr(record, "tenant_id", None)
+    run_id = getattr(record, "run_id", None)
+    product_id = state_mapping.get("product_id")
+    session_id = contract.get("session_id")
+    effect_id = payload.get("effect_id")
+    outbox_id = payload.get("outbox_id")
+    args_digest = payload.get("sealed_input_ref")
+    workspace = state_mapping.get("workspace")
+    if workspace is not None and not isinstance(workspace, str):
+        return None
+    if state_mapping.get("partition_bound") is not True:
+        return None
+    required = (
+        tenant_id,
+        run_id,
+        product_id,
+        session_id,
+        effect_id,
+        outbox_id,
+        args_digest,
+    )
+    if not all(isinstance(value, str) and value for value in required):
+        return None
+    args_digest_text = cast("str", args_digest)
+    if (
+        contract.get("tenant_id") != tenant_id
+        or contract.get("run_id") != run_id
+        or effect.get("effect_id") != effect_id
+        or outbox.get("outbox_id") != outbox_id
+        or outbox.get("effect_id") != effect_id
+        or seal_payload.get("effect_id") != effect_id
+        or _SHA256_REF_RE.fullmatch(args_digest_text) is None
+    ):
+        return None
+    return _VerifiedEffectBinding(
+        tenant_id=cast("str", tenant_id),
+        product_id=cast("str", product_id),
+        session_id=cast("str", session_id),
+        run_id=cast("str", run_id),
+        effect_id=cast("str", effect_id),
+        outbox_id=cast("str", outbox_id),
+        args_digest=args_digest_text,
+        workspace=workspace,
+    )
+
+
+def _verified_effect_bindings(
+    records: Sequence[Any],
+) -> dict[str, _VerifiedEffectBinding]:
+    bindings: dict[str, _VerifiedEffectBinding] = {}
+    for record in records:
+        if getattr(record, "record_type", "") != "outbox":
+            continue
+        binding = _verified_effect_binding_from_outbox(record)
+        if binding is None:
+            continue
+        prior = bindings.get(binding.effect_id)
+        if prior is not None and prior != binding:
+            raise ValueError("effect has conflicting verified outbox bindings")
+        bindings[binding.effect_id] = binding
+    return bindings
+
+
+def _retired_artifact_receipt_inputs(
+    records: Sequence[Any],
+) -> tuple[RetiredArtifactReceiptInput, ...]:
+    effects = _replay_effects(records)
+    bindings = _verified_effect_bindings(records)
+    inputs: list[RetiredArtifactReceiptInput] = []
+    for receipt in effects.receipt_snapshot():
+        if receipt.status != "ok" or not receipt.artifact_refs:
+            continue
+        binding = bindings.get(receipt.effect_id)
+        if binding is None:
+            raise ValueError("retired artifact receipt has no verified binding")
+        if receipt.tenant_id != binding.tenant_id:
+            raise ValueError("retired artifact receipt tenant binding mismatch")
+        for ref in receipt.artifact_refs:
+            _validate_artifact_ref_binding(ref, binding)
+        inputs.append(
+            RetiredArtifactReceiptInput(
+                receipt_id=receipt.receipt_id,
+                effect_id=receipt.effect_id,
+                tenant_id=receipt.tenant_id,
+                run_id=binding.run_id,
+                product_id=binding.product_id,
+                workspace=binding.workspace,
+                session_id=binding.session_id,
+                artifact_refs=receipt.artifact_refs,
+            )
+        )
+    return tuple(
+        sorted(
+            inputs,
+            key=lambda item: (item.run_id, item.receipt_id, item.effect_id),
+        )
+    )
+
+
+def _append_bounded_artifact_receipt(
+    receipts: list[VerifiedArtifactReceiptV1],
+    candidate: VerifiedArtifactReceiptV1,
+    *,
+    limit: int,
+) -> None:
+    identity = (
+        candidate.receipt_id,
+        candidate.effect_id,
+        candidate.tenant_id,
+        candidate.run_id,
+    )
+    for prior in receipts:
+        prior_identity = (
+            prior.receipt_id,
+            prior.effect_id,
+            prior.tenant_id,
+            prior.run_id,
+        )
+        if prior_identity != identity:
+            continue
+        if prior != candidate:
+            raise ValueError("artifact receipt has conflicting active and retired data")
+        return
+    receipts.append(candidate)
+    receipts.sort(key=lambda item: (item.run_id, item.receipt_id, item.effect_id))
+    del receipts[limit:]
+
+
 def _replay_state_effects(
     state: _TenantJournalState,
     records: Sequence[Any],
@@ -2756,6 +4121,13 @@ def _replay_state_effects(
         records,
         completed_effect_lookup=state.journal.contains_archived_effect,
     )
+
+
+def _stable_json_for_hash(value: object) -> str:
+    """Canonical JSON for hash computation (sorted keys, no whitespace)."""
+    import json as _json
+
+    return _json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _replay_effects(
@@ -2767,6 +4139,7 @@ def _replay_effects(
     # archive lookups until replay finishes so loading an outbox row cannot
     # recursively acquire the same journal lock through contains_archived_effect.
     effects = DurableEffectLog()
+    bindings = _verified_effect_bindings(records)
     snapshot_seen = False
     known_effects: set[str] = set()
     for index, record in enumerate(records):
@@ -2832,15 +4205,35 @@ def _replay_effects(
                 replay_class = str(payload.get("replay_class") or row.seal.replay_class)
                 if replay_class not in {"idempotent", "probe_required", "non_idempotent"}:
                     raise ValueError("receipt replay class is invalid")
+                raw_artifact_refs = payload.get("artifact_refs", [])
+                if not isinstance(raw_artifact_refs, list):
+                    raise ValueError("receipt artifact_refs must be a list")
+                artifact_refs = tuple(
+                    ArtifactRefV1.from_dict(item) for item in raw_artifact_refs
+                )
+                receipt_status = _receipt_status(str(payload.get("status", "")))
+                if artifact_refs and receipt_status != "ok":
+                    raise ValueError("failed receipt cannot contain artifact refs")
+                if artifact_refs:
+                    binding = bindings.get(effect_id)
+                    if binding is None:
+                        raise ValueError("artifact receipt has no verified effect binding")
+                    if getattr(record, "tenant_id", "") != binding.tenant_id:
+                        raise ValueError("artifact receipt tenant does not match effect binding")
+                    if getattr(record, "run_id", "") != binding.run_id:
+                        raise ValueError("artifact receipt run does not match effect binding")
+                    for ref in artifact_refs:
+                        _validate_artifact_ref_binding(ref, binding)
                 effects.record_receipt(
                     outbox_id,
                     EffectReceipt(
                         receipt_id=f"receipt:{effect_id}",
                         effect_id=effect_id,
                         tenant_id=str(getattr(record, "tenant_id", "")),
-                        status=_receipt_status(str(payload.get("status", ""))),
+                        status=receipt_status,
                         output_ref=str(payload.get("output_ref", "")),
                         replay_class=replay_class,
+                        artifact_refs=artifact_refs,
                     ),
                 )
             elif record_type in {"merge", "manual_review_resolution"}:

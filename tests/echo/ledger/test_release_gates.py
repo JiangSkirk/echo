@@ -777,6 +777,7 @@ def test_release_source_digest_version_and_surfaces_cover_release_inputs() -> No
     assert rg._TOKENIZER_TREE_DIGEST_VERSION.startswith(b"ECHO-TOKENIZER-TREE-V1")
     surfaces = {path.as_posix() for path in rg._RELEASE_SOURCE_DIGEST_SURFACES}
     required = {
+        "desktop",
         "resources",
         "benchmarks",
         "LICENSE",
@@ -1706,6 +1707,65 @@ def test_echo_ip_boundary_allows_clean_room_avoidance_matrix(
     report = verify_echo_ip_boundary(tmp_path)
 
     assert report.ok
+
+
+def test_ip_boundary_handoff_vault_narrow_exemption_passes(
+    tmp_path: pathlib.Path,
+) -> None:
+    """handoff_vault.py 中合法内部 handoff 命名应通过。"""
+    code_path = tmp_path / "js" / "echo" / "handoff_vault.py"
+    code_path.parent.mkdir(parents=True)
+    code_path.write_text(
+        'HANDOFF_VAULT_MAC_DOMAIN = b"js-agent:handoff-vault:v1\\0"\n',
+        encoding="utf-8",
+    )
+
+    report = verify_echo_ip_boundary(tmp_path)
+
+    assert report.ok, f"handoff_vault.py internal handoff should pass: {report.findings}"
+
+
+def test_ip_boundary_handoff_vault_still_blocks_other_tokens(
+    tmp_path: pathlib.Path,
+) -> None:
+    """handoff_vault.py 中出现 StateGraph/Workflow/guardrail 仍应失败。"""
+    code_path = tmp_path / "js" / "echo" / "handoff_vault.py"
+    code_path.parent.mkdir(parents=True)
+    code_path.write_text(
+        'HANDOFF_VAULT_MAC_DOMAIN = b"js-agent:handoff-vault:v1\\0"\n'
+        "class StateGraph:\n    pass\n",
+        encoding="utf-8",
+    )
+
+    report = verify_echo_ip_boundary(tmp_path)
+
+    assert not report.ok
+    assert any("StateGraph" in f for f in report.findings)
+
+
+def test_ip_boundary_other_files_handoff_still_fails(
+    tmp_path: pathlib.Path,
+) -> None:
+    """其他文件出现 handoff 仍应失败。"""
+    code_path = tmp_path / "js" / "echo" / "other.py"
+    code_path.parent.mkdir(parents=True)
+    code_path.write_text("def handoff(agent): return agent\n", encoding="utf-8")
+
+    report = verify_echo_ip_boundary(tmp_path)
+
+    assert not report.ok
+    assert any("handoff" in f for f in report.findings)
+
+
+def test_ip_boundary_token_exemption_has_documented_reason() -> None:
+    """例外有明确原因注释，不能扩展成整文件 allowlist。"""
+    from js.echo.ledger.release_gates import _TOKEN_EXEMPTIONS
+
+    key = ("js/echo/handoff_vault.py", "handoff")
+    assert key in _TOKEN_EXEMPTIONS
+    reason = _TOKEN_EXEMPTIONS[key]
+    assert "internal" in reason.lower() or "vault" in reason.lower()
+    assert "framework" in reason.lower() or "not" in reason.lower()
 
 
 def test_release_gate_accepts_external_evidence_only_when_approved(

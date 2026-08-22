@@ -24,6 +24,22 @@ from js.echo.ledger.evidence_export import (
 DIGEST = "b" * 64
 
 
+@pytest.fixture(autouse=True)
+def _formal_validator_for_export_mechanics(monkeypatch: pytest.MonkeyPatch) -> None:
+    import js.echo.ledger.release_gates as release_gates
+
+    report = release_gates.FinalLocalGateEvidenceReport(
+        all_local_gates_passed=False,
+        passed_gates=("ruff",),
+        blockers=("remaining_required_gates_not_seeded",),
+        product_internal_ready=False,
+    )
+    monkeypatch.setattr(release_gates, "release_source_digest", lambda _root: DIGEST)
+    monkeypatch.setattr(
+        release_gates, "validate_final_local_gate_evidence", lambda *_a, **_k: report
+    )
+
+
 def _seed_evidence(root: Path, *, repo: Path) -> None:
     (root / "final").mkdir(parents=True)
     (root / "gates").mkdir(parents=True)
@@ -69,10 +85,12 @@ def _seed_evidence(root: Path, *, repo: Path) -> None:
         archive.writestr("demo/__init__.py", "x=1\n")
     sdist = root / "e2e" / "artifacts" / "demo-0.0.1.tar.gz"
     sdist_content = b"x=1\n"
-    with tarfile.open(sdist, "w:gz") as archive:
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
         info = tarfile.TarInfo("demo/__init__.py")
         info.size = len(sdist_content)
         archive.addfile(info, io.BytesIO(sdist_content))
+    sdist.write_bytes(stream.getvalue())
     wheel_payload = whl.read_bytes()
     sdist_payload = sdist.read_bytes()
     (root / "e2e" / "ECHO_ISOLATED_VENV_E2E.json").write_text(
@@ -136,6 +154,20 @@ def test_sanitized_export_excludes_runtime_keys_and_builds_envelope(tmp_path: Pa
     evidence = tmp_path / "evidence"
     repo.mkdir()
     _seed_evidence(evidence, repo=repo)
+    private_manifest = evidence / "desktop-build/manifest.json"
+    private_manifest.parent.mkdir()
+    private_manifest.write_text(
+        json.dumps(
+            {
+                "schema": "JSAgentDesktopProvenanceV4",
+                "build_environment": {
+                    "python": {"path": "/Users/private-builder/.venv/bin/python"}
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     top = tmp_path / "JS_AGENT_FINAL_EVIDENCE.json"
     payload = {
         "schema_version": "js-agent-final-evidence-v1",
@@ -160,6 +192,8 @@ def test_sanitized_export_excludes_runtime_keys_and_builds_envelope(tmp_path: Pa
     assert not (export / "wheelhouse").exists()
     assert not (export / "e2e" / "keys" / "ledger.ed25519.private").exists()
     assert not (export / "pre_fix").exists()
+    assert not (export / "desktop-build/manifest.json").exists()
+    assert not (export / "desktop-build/sanitized-descriptor.json").exists()
     assert (export / MANIFEST_NAME).is_file()
     assert (evidence / ENVELOPE_NAME).is_file()
     verify_manifest_v2(export)
@@ -173,6 +207,9 @@ def test_sanitized_export_excludes_runtime_keys_and_builds_envelope(tmp_path: Pa
     receipt_text = (export / "final" / "ruff.receipt.json").read_text(encoding="utf-8")
     assert str(repo) not in receipt_text
     assert "<REPO_ROOT>" in receipt_text
+    assert "/Users/private-builder" not in b"\n".join(
+        path.read_bytes() for path in export.rglob("*") if path.is_file()
+    ).decode("utf-8", errors="ignore")
 
     export_doc = export / "docs" / top.name
     assert_docs_byte_identical(top, export_doc)

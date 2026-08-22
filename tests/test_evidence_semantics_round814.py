@@ -24,6 +24,22 @@ from js.echo.ledger.evidence_export import (
 DIGEST = "e" * 64
 
 
+@pytest.fixture(autouse=True)
+def _formal_validator_for_export_mechanics(monkeypatch: pytest.MonkeyPatch) -> None:
+    import js.echo.ledger.release_gates as release_gates
+
+    report = release_gates.FinalLocalGateEvidenceReport(
+        all_local_gates_passed=False,
+        passed_gates=("ruff",),
+        blockers=("remaining_required_gates_not_seeded",),
+        product_internal_ready=False,
+    )
+    monkeypatch.setattr(release_gates, "release_source_digest", lambda _root: DIGEST)
+    monkeypatch.setattr(
+        release_gates, "validate_final_local_gate_evidence", lambda *_a, **_k: report
+    )
+
+
 def _open_fd_count() -> int:
     fd_root = "/proc/self/fd" if Path("/proc/self/fd").is_dir() else "/dev/fd"
     return len(os.listdir(fd_root))
@@ -68,10 +84,12 @@ def _seed_evidence(root: Path) -> None:
         archive.writestr("demo/__init__.py", "x = 1\n")
     sdist = artifacts_dir / "demo-0.0.1.tar.gz"
     sdist_contents = b"x = 1\n"
-    with tarfile.open(sdist, "w:gz") as archive:
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
         info = tarfile.TarInfo("demo/__init__.py")
         info.size = len(sdist_contents)
         archive.addfile(info, io.BytesIO(sdist_contents))
+    sdist.write_bytes(stream.getvalue())
     wheel_bytes = wheel.read_bytes()
     sdist_bytes = sdist.read_bytes()
     (root / "e2e" / "ECHO_ISOLATED_VENV_E2E.json").write_text(

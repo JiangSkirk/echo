@@ -45,8 +45,8 @@ class _AgentRunLoop:
 def _echo_agent() -> MagicMock:
     agent = MagicMock()
     agent.settings = JSSettings(
-        workspace=Path("/tmp/js_test"),
-        state_dir=Path("/tmp/js_test"),
+        workspace=Path("/tmp/js_test/workspace"),
+        state_dir=Path("/tmp/js_test/state"),
         security=SecurityConfig(api_key_required=False),
     )
     agent._shutdown_requested = False
@@ -64,8 +64,8 @@ def _make_app() -> FastAPI:
     app.include_router(chat_router)
     # Provide a valid settings object with auth disabled so tests don't need API keys
     _settings = JSSettings(
-        workspace=Path("/tmp/js_test"),
-        state_dir=Path("/tmp/js_test"),
+        workspace=Path("/tmp/js_test/workspace"),
+        state_dir=Path("/tmp/js_test/state"),
         security=SecurityConfig(api_key_required=False),
     )
     patch("js.web.server._settings", _settings).start()
@@ -77,7 +77,7 @@ def _client(app: FastAPI) -> TestClient:
     """TestClient carrying a valid user key (anonymous guests are read-only)."""
     from js.web.auth import AuthManager
 
-    key = AuthManager(Path("/tmp/js_test")).create_key("chat-test", role="user")
+    key = AuthManager(Path("/tmp/js_test/state")).create_key("chat-test", role="user")
     return TestClient(
         app,
         base_url="http://localhost",
@@ -299,7 +299,7 @@ def test_chat_on_mode_calls_echo_turn_runtime_without_changing_response(monkeypa
     app = _make_app()
     # A keyed request must run under that key's owner hash (per-user scoping),
     # not the anonymous "local-user" partition.
-    chat_key = AuthManager(Path("/tmp/js_test")).create_key("chat-owner", role="user")
+    chat_key = AuthManager(Path("/tmp/js_test/state")).create_key("chat-owner", role="user")
     client = TestClient(
         app,
         base_url="http://localhost",
@@ -320,7 +320,7 @@ def test_chat_on_mode_calls_echo_turn_runtime_without_changing_response(monkeypa
     assert runtime_calls[0]["agent"] is agent
     assert runtime_calls[0]["message"] == "hello"
     assert runtime_calls[0]["channel"] == "api_chat"
-    expected_owner = AuthManager(Path("/tmp/js_test")).verify(chat_key)["key_hash"]
+    expected_owner = AuthManager(Path("/tmp/js_test/state")).verify(chat_key)["key_hash"]
     assert runtime_calls[0]["owner_key_hash"] == expected_owner
     assert runtime_calls[0]["session_id"] == "sess-runtime"
     assert runtime_calls[0]["model"] == "mock"

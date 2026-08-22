@@ -75,25 +75,45 @@ def client(tmp_path: Path) -> TestClient:
     async def _execute_setup_state(effect, _context):
         assert effect.tool_name == CONTROL_SETUP_STATE_TOOL
         action = json.loads(effect.arguments_json)["action"]
-        settings.first_run_completed = action == "complete"
+        status_map = {
+            "complete": "completed",
+            "skip": "skipped",
+            "start": "in_progress",
+            "reset": "pending",
+        }
+        if action not in status_map:
+            return (
+                ChatMessage(role="tool", content="invalid", name=effect.tool_name),
+                ToolResult(
+                    success=False,
+                    error="Invalid setup state action",
+                    metadata={"status_code": 400},
+                ),
+            )
+        settings.onboarding_status = status_map[action]
+        settings.first_run_completed = status_map[action] in {"completed", "skipped"}
         return (
             ChatMessage(role="tool", content="updated", name=effect.tool_name),
             ToolResult(
                 success=True,
                 output="updated",
-                metadata={"first_run_completed": settings.first_run_completed},
+                metadata={
+                    "first_run_completed": settings.first_run_completed,
+                    "onboarding_status": settings.onboarding_status,
+                },
             ),
         )
 
-    mock_agent.echo_runtime.execute_tool_effect = AsyncMock(
-        side_effect=_execute_setup_state
-    )
+    mock_agent.echo_runtime.execute_tool_effect = AsyncMock(side_effect=_execute_setup_state)
 
     web_server._agent = mock_agent
     web_server._settings = settings
     set_globals(mock_agent, settings)
     app = create_app()
-    return TestClient(app)
+    from js.web.auth import AuthManager
+
+    user_key = AuthManager(settings.state_dir).create_key("setup-wizard", role="user")
+    return TestClient(app, headers={"X-API-Key": user_key})
 
 
 class TestSetupFirstStart:
@@ -191,6 +211,7 @@ class TestSetupTestModel:
     def _get_router(self, client: TestClient):
         """Get the mock router from the deps module."""
         from js.web import deps
+
         agent = deps.get_agent()
         return agent.router
 
@@ -199,9 +220,7 @@ class TestSetupTestModel:
 
         router = self._get_router(client)
         router.select_model = AsyncMock(
-            return_value=RoutingDecision(
-                provider=None, model="", provider_name="", reason=""
-            )
+            return_value=RoutingDecision(provider=None, model="", provider_name="", reason="")
         )
         res = client.post("/api/setup/test-model", json={"model_id": "nonexistent"})
         assert res.status_code == 404

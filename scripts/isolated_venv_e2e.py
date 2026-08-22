@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ISOLATED_VENV_E2E_SCHEMA_VERSION = "isolated-venv-e2e-v7"
+ISOLATED_VENV_E2E_SCHEMA_VERSION = "isolated-venv-e2e-v8"
 ISO_E2E_EVIDENCE_DIR_ENV = "JS_ISO_E2E_EVIDENCE_DIR"
 ISO_E2E_SANDBOX_ENV = "JS_ISO_E2E_SANDBOX"
 ISO_E2E_HOME_ENV = "JS_ISO_E2E_HOME"
@@ -1442,8 +1442,24 @@ def _check_artifact(
         source_digest=source_digest,
     )
     ok &= _run(
+        f"{kind}: CLI js work --help",
+        [str(venv_dir / "bin" / "js"), "work", "--help"],
+        cwd=sandbox,
+        env=env,
+        results=results,
+        source_digest=source_digest,
+    )
+    ok &= _run(
         f"{kind}: CLI js-work --help",
         [str(venv_dir / "bin" / "js-work"), "--help"],
+        cwd=sandbox,
+        env=env,
+        results=results,
+        source_digest=source_digest,
+    )
+    ok &= _run(
+        f"{kind}: CLI python -m js_work --help",
+        [str(venv_python), "-m", "js_work", "--help"],
         cwd=sandbox,
         env=env,
         results=results,
@@ -1525,8 +1541,8 @@ def _validate_summary_schema(summary: Mapping[str, Any]) -> list[str]:
     results = summary.get("results")
     if not isinstance(results, list):
         errors.append("results must be a list")
-    elif len(results) != 18:
-        errors.append("results must contain exactly 18 steps")
+    elif len(results) != 22:
+        errors.append("results must contain exactly 22 steps")
     else:
         for idx, step in enumerate(results):
             if not isinstance(step, dict):
@@ -1952,9 +1968,12 @@ def main() -> int:
                     )
                 work_output = work_outputs.get("sdist")
 
-            evidence_root = (
-                evidence_dir.relative_to(REPO_ROOT).as_posix() if evidence_dir is not None else "."
-            )
+            try:
+                evidence_root = (
+                    evidence_dir.relative_to(REPO_ROOT).as_posix() if evidence_dir is not None else "."
+                )
+            except ValueError:
+                evidence_root = str(evidence_dir) if evidence_dir is not None else "."
             summary = {
                 "schema_version": ISOLATED_VENV_E2E_SCHEMA_VERSION,
                 "offline": True,

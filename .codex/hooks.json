@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '/Users/jiangxuanzhen/titan-agent/.codex/hooks/format-python.sh'"
+          },
+          {
+            "type": "command",
+            "command": "bash '/Users/jiangxuanzhen/titan-agent/.codex/hooks/check-js.sh'"
+          }
+        ]
+      }
+    ]
+  }
+}

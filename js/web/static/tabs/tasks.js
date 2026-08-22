@@ -1,4 +1,4 @@
-import { escapeHtml, showToast } from '../utils/dom.js';
+import { bindDataClicks, escapeHtml, sanitizeRuntimeId, showToast } from '../utils/dom.js';
 
 let tasksPollInterval = null;
 
@@ -34,8 +34,12 @@ function renderTasks(tasks, container) {
 
   container.innerHTML = tasks.map(t => {
     const cfg = statusConfig[t.status] || statusConfig.pending;
-    const progressPct = Math.round((t.progress || 0) * 100);
+    const progressRaw = Number(t.progress);
+    const progressPct = Number.isFinite(progressRaw)
+      ? Math.min(100, Math.max(0, Math.round(progressRaw * 100)))
+      : 0;
     const timeStr = t.updated_at ? new Date(t.updated_at * 1000).toLocaleString() : '--';
+    const taskId = escapeHtml(String(t.id ?? ''));
     return `
       <div class="bg-gray-800 rounded-lg p-3 border border-gray-700">
         <div class="flex items-center justify-between mb-2">
@@ -47,9 +51,9 @@ function renderTasks(tasks, container) {
             <span class="text-[10px] text-gray-500">${escapeHtml(t.type)}</span>
           </div>
           <div class="flex items-center gap-1">
-            ${t.status === 'running' ? `<button onclick="pauseTask('${escapeHtml(t.id)}')" class="text-[10px] bg-yellow-900/30 hover:bg-yellow-900/50 text-yellow-400 px-2 py-1 rounded transition" title="暂停"><i class="fas fa-pause"></i></button>` : ''}
-            ${t.status === 'paused' ? `<button onclick="resumeTask('${escapeHtml(t.id)}')" class="text-[10px] bg-blue-900/30 hover:bg-blue-900/50 text-blue-400 px-2 py-1 rounded transition" title="恢复"><i class="fas fa-play"></i></button>` : ''}
-            ${t.status === 'completed' || t.status === 'failed' ? `<button onclick="deleteTask('${escapeHtml(t.id)}')" class="text-[10px] bg-red-900/30 hover:bg-red-900/50 text-red-400 px-2 py-1 rounded transition" title="删除"><i class="fas fa-trash"></i></button>` : ''}
+            ${t.status === 'running' ? `<button type="button" data-task-action="pause" data-task-id="${taskId}" class="text-[10px] bg-yellow-900/30 hover:bg-yellow-900/50 text-yellow-400 px-2 py-1 rounded transition" title="暂停"><i class="fas fa-pause"></i></button>` : ''}
+            ${t.status === 'paused' ? `<button type="button" data-task-action="resume" data-task-id="${taskId}" class="text-[10px] bg-blue-900/30 hover:bg-blue-900/50 text-blue-400 px-2 py-1 rounded transition" title="恢复"><i class="fas fa-play"></i></button>` : ''}
+            ${t.status === 'completed' || t.status === 'failed' ? `<button type="button" data-task-action="delete" data-task-id="${taskId}" class="text-[10px] bg-red-900/30 hover:bg-red-900/50 text-red-400 px-2 py-1 rounded transition" title="删除"><i class="fas fa-trash"></i></button>` : ''}
           </div>
         </div>
         <div class="w-full bg-gray-700 rounded-full h-1.5 mb-2">
@@ -64,6 +68,14 @@ function renderTasks(tasks, container) {
       </div>
     `;
   }).join('');
+  bindDataClicks(container, 'taskId', (rawId, event) => {
+    const taskId = sanitizeRuntimeId(rawId);
+    if (!taskId) return;
+    const action = event.currentTarget.dataset.taskAction;
+    if (action === 'pause') pauseTask(taskId);
+    else if (action === 'resume') resumeTask(taskId);
+    else if (action === 'delete') deleteTask(taskId);
+  });
 }
 
 export async function pauseTask(taskId) {

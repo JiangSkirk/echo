@@ -1,4 +1,4 @@
-import { showLoading, showError, showToast, escapeHtml } from '../utils/dom.js';
+import { bindDataClicks, showLoading, showError, showToast, escapeHtml } from '../utils/dom.js';
 import { state } from '../state/store.js';
 
 // Fixed Tailwind classes per health state (no string interpolation, so the
@@ -117,13 +117,14 @@ async function loadDesktopWizard() {
       const errText = await res.text();
       let errMsg = errText;
       try { const j = JSON.parse(errText); errMsg = j.detail || j.error || errText; } catch (_) {}
-      container.innerHTML = `<div class="text-xs text-red-400"><i class="fas fa-exclamation-triangle mr-1"></i>服务器错误 (${res.status}): ${errMsg.substring(0, 300)}</div>`;
+      const raw = typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg);
+      container.innerHTML = `<div class="text-xs text-red-400"><i class="fas fa-exclamation-triangle mr-1"></i>服务器错误 (${res.status}): ${escapeHtml(raw.substring(0, 300))}</div>`;
       return;
     }
     const data = await res.json();
     renderWizard(container, data);
   } catch (e) {
-    container.innerHTML = `<div class="text-xs text-red-400"><i class="fas fa-exclamation-triangle mr-1"></i>网络错误: ${e.message}。请检查服务器是否在运行。</div>`;
+    container.innerHTML = `<div class="text-xs text-red-400"><i class="fas fa-exclamation-triangle mr-1"></i>网络错误: ${escapeHtml(e.message)}。请检查服务器是否在运行。</div>`;
   }
 }
 
@@ -151,17 +152,17 @@ function renderWizard(container, data) {
     html += `<div class="flex items-center justify-between py-0.5">
       <div class="flex items-center gap-1.5">
         <i class="fas fa-${_stepIcon(step.status)} ${_stepColor(step.status)} text-xs"></i>
-        <span class="text-xs ${_stepColor(step.status)}">${step.title}</span>
-        <span class="text-xs text-gray-600">— ${step.detail}</span>
+        <span class="text-xs ${_stepColor(step.status)}">${escapeHtml(step.title)}</span>
+        <span class="text-xs text-gray-600">— ${escapeHtml(step.detail)}</span>
       </div>`;
     if (step.action_type === 'install') {
-      html += `<button onclick="window._wizardConfirmInstall()"
+      html += `<button type="button" data-wizard-action="confirm-install"
         class="px-2 py-0.5 bg-blue-600/30 hover:bg-blue-600/50 text-blue-400 text-xs rounded transition-colors flex-shrink-0 ml-1">
         一键安装</button>`;
     } else if (step.action_type === 'open_accessibility' || step.action_type === 'open_screen_recording') {
-      html += `<button onclick="window._wizardAction('${step.action_type}')"
+      html += `<button type="button" data-wizard-action="${escapeHtml(step.action_type)}"
         class="px-2 py-0.5 bg-yellow-600/30 hover:bg-yellow-600/50 text-yellow-400 text-xs rounded transition-colors flex-shrink-0 ml-1">
-        ${step.action_label}</button>`;
+        ${escapeHtml(step.action_label)}</button>`;
     }
     html += '</div>';
   }
@@ -171,8 +172,8 @@ function renderWizard(container, data) {
   if (data.install_summary && !data.ready) {
     html += `<div class="mt-2 p-2 bg-red-900/20 border border-red-900/30 rounded text-xs">
       <div class="text-red-400 font-medium mb-1">安装详情</div>
-      <pre class="text-red-300 whitespace-pre-wrap break-all max-h-20 overflow-y-auto">${data.install_summary}</pre>
-      <button onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent);showToast('已复制到剪贴板','success')"
+      <pre class="text-red-300 whitespace-pre-wrap break-all max-h-20 overflow-y-auto">${escapeHtml(data.install_summary)}</pre>
+      <button type="button" data-wizard-action="copy-install"
         class="mt-1 px-2 py-0.5 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs rounded">复制错误信息</button>
     </div>`;
   }
@@ -180,7 +181,7 @@ function renderWizard(container, data) {
   // All ready — staged enable
   if (data.ready && !data.enabled) {
     html += `<div class="mt-2 pt-2 border-t border-gray-700">
-      <button onclick="window._wizardEnableDesktop()"
+      <button type="button" data-wizard-action="enable-desktop"
         class="w-full py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-xs rounded transition-colors font-medium">
         启用桌面控制（仅截图和诊断）
       </button>
@@ -192,7 +193,7 @@ function renderWizard(container, data) {
   if (data.enabled && !data.write_tools_enabled) {
     html += `<div class="mt-2 pt-2 border-t border-gray-700">
       <div class="text-xs text-green-400 mb-1"><i class="fas fa-check-circle mr-1"></i>只读工具已启用（截图、列表、诊断、操作日志、紧急停止）</div>
-      <button onclick="window._wizardEnableWrites()"
+      <button type="button" data-wizard-action="enable-writes"
         class="w-full py-1.5 bg-yellow-600 hover:bg-yellow-700 text-white text-xs rounded transition-colors font-medium">
         确认启用手写操作工具
       </button>
@@ -208,6 +209,25 @@ function renderWizard(container, data) {
   }
 
   container.innerHTML = html;
+  bindDataClicks(container, 'wizardAction', (raw, event) => {
+    const action = String(raw || '');
+    if (action === 'confirm-install') {
+      window._wizardConfirmInstall();
+      return;
+    }
+    if (action === 'open_accessibility' || action === 'open_screen_recording') {
+      window._wizardAction(action);
+      return;
+    }
+    if (action === 'copy-install') {
+      const text = event.currentTarget.previousElementSibling?.textContent || '';
+      navigator.clipboard.writeText(text);
+      showToast('已复制到剪贴板', 'success');
+      return;
+    }
+    if (action === 'enable-desktop') window._wizardEnableDesktop();
+    else if (action === 'enable-writes') window._wizardEnableWrites();
+  });
 
   // Auto-poll
   if (!data.ready && !_wizardPollTimer) {

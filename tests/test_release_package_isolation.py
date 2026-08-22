@@ -201,6 +201,9 @@ def test_artifact_isolated_install_smoke(
     env["PYTHONPATH"] = str(release_artifacts["dependencies"])
     env["PIP_NO_INDEX"] = "1"
     env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    env["HOME"] = str(venv_dir)
+    env["XDG_CONFIG_HOME"] = str(venv_dir / ".config")
+    env["XDG_STATE_HOME"] = str(venv_dir / ".local" / "state")
     install_args = [str(python), "-m", "pip", "install", "--no-index", "--no-deps"]
     if artifact == "sdist":
         install_args.append("--no-build-isolation")
@@ -214,8 +217,9 @@ def test_artifact_isolated_install_smoke(
     )
 
     for command in (
-        [str(venv_dir / "bin" / "js"), "--help"],
+        [str(venv_dir / "bin" / "js"), "work", "--help"],
         [str(venv_dir / "bin" / "js-work"), "--help"],
+        [str(python), "-m", "js_work", "--help"],
         [
             str(python),
             "-c",

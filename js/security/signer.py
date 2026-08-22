@@ -890,8 +890,8 @@ def sign_skill_manifest(manifest_path: Path, state_dir: Path) -> tuple[str, str]
 
     Returns ``(signature, public_key)`` as base64 strings.
     The content being signed is the SHA-256 hash of the manifest file
-    and all code files in the skill directory (same scope as
-    ``SkillSpec.compute_hash()``).
+    and all regular files in the skill directory (same scope as
+    ``SkillSpec.compute_hash()`` — see ``js.skills.spec.compute_skill_dir_hash``).
 
     This MUST be called after ``generate_signing_key()``.
     """
@@ -918,38 +918,17 @@ def verify_skill_manifest(
 
 
 def _compute_skill_content_hash(manifest_path: Path) -> str:
-    """Compute a SHA-256 hash of the skill manifest + all code files."""
-    h = hashlib.sha256()
-    skill_dir = manifest_path.parent
+    """Compute a SHA-256 hash of the skill manifest + all regular files.
 
-    # Hash manifest
-    if manifest_path.exists():
-        h.update(manifest_path.read_bytes())
+    Delegates to ``js.skills.spec.compute_skill_dir_hash`` so manifest
+    signatures and ``SkillSpec.compute_hash()`` cover exactly the same file
+    set (the whole skill directory, minus volatile dirs/symlinks).
+    """
+    # Local import: keeps js.security free of import-order coupling with the
+    # skills package (which lazy-imports this module in the other direction).
+    from js.skills.spec import compute_skill_dir_hash
 
-    # Hash code files
-    for pattern in (
-        "*.py",
-        "*.sh",
-        "*.bash",
-        "*.js",
-        "*.json",
-        "*.yaml",
-        "*.yml",
-        "*.toml",
-        "requirements.txt",
-    ):
-        for f in sorted(skill_dir.glob(pattern)):
-            if not f.is_symlink() and f.is_file():
-                h.update(f.read_bytes())
-
-    # Hash scripts/ directory
-    scripts_dir = skill_dir / "scripts"
-    if scripts_dir.exists():
-        for f in sorted(scripts_dir.rglob("*")):
-            if f.is_file() and not f.is_symlink():
-                h.update(f.read_bytes())
-
-    return h.hexdigest()
+    return compute_skill_dir_hash(manifest_path.parent)
 
 
 def is_builtin_public_key(public_key_b64: str) -> bool:

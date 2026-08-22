@@ -87,6 +87,60 @@ class TestStaticAssets:
 
         assert "enable_tools: true" in app_js
 
+    def test_memory_files_use_dataset_clicks_not_onclick(self, client: TestClient) -> None:
+        memory_js = client.get("/static/tabs/memory.js").text
+        assert 'onclick="openMemoryFileEditor' not in memory_js
+        assert "onDataClick" in memory_js
+        assert "sanitizeRuntimeId" in memory_js
+
+    def test_dynamic_tab_templates_do_not_interpolate_onclick(self, client: TestClient) -> None:
+        paths = (
+            "app.js",
+            "tabs/tasks.js",
+            "tabs/skills.js",
+            "tabs/scenarios.js",
+            "tabs/cron.js",
+            "tabs/memory.js",
+            "tabs/status.js",
+        )
+        for path in paths:
+            text = client.get(f"/static/{path}").text
+            assert 'onclick="pauseTask' not in text, path
+            assert "JSON.stringify(s.id)" not in text, path
+            assert 'onclick="fillScenarioPrompt' not in text, path
+            assert "runCronJob('${job.id}')" not in text, path
+            assert 'onclick="verifyMemory(${' not in text, path
+            assert "removeAttachment('${escapeHtml" not in text, path
+            assert "removeFleetRoleCard('${id}')" not in text, path
+            assert "window._wizardAction('${step.action_type}')" not in text, path
+            for match in re.finditer(r"""onclick=["']([^"']*)["']""", text):
+                assert "${" not in match.group(1), (
+                    f"{path} interpolates into onclick: {match.group(0)}"
+                )
+            for match in re.finditer(r"""onchange=["']([^"']*)["']""", text):
+                assert "${" not in match.group(1), (
+                    f"{path} interpolates into onchange: {match.group(0)}"
+                )
+
+    def test_task_and_skill_clicks_use_data_attributes(self, client: TestClient) -> None:
+        tasks_js = client.get("/static/tabs/tasks.js").text
+        skills_js = client.get("/static/tabs/skills.js").text
+        memory_js = client.get("/static/tabs/memory.js").text
+        status_js = client.get("/static/tabs/status.js").text
+        assert "data-task-action" in tasks_js
+        assert "bindDataClicks" in tasks_js
+        assert "data-skill-id" in skills_js
+        assert "data-mem-action" in memory_js
+        assert "data-wizard-action" in status_js
+        assert "bindDataClicks" in status_js
+
+    def test_desktop_wizard_errors_escape_html(self, client: TestClient) -> None:
+        status_js = client.get("/static/tabs/status.js").text
+        assert "${errMsg.substring" not in status_js
+        assert "${e.message}" not in status_js
+        assert "escapeHtml(raw.substring" in status_js
+        assert "escapeHtml(e.message)" in status_js
+
     @pytest.mark.parametrize(
         "path",
         [
@@ -95,9 +149,7 @@ class TestStaticAssets:
             "vendor/fontawesome/webfonts/fa-solid-900.woff2",
         ],
     )
-    def test_local_ui_asset_is_packaged_and_served(
-        self, client: TestClient, path: str
-    ) -> None:
+    def test_local_ui_asset_is_packaged_and_served(self, client: TestClient, path: str) -> None:
         response = client.get(f"/static/{path}")
 
         assert response.status_code == 200
@@ -106,11 +158,37 @@ class TestStaticAssets:
     def test_stream_errors_clear_transient_ui_state(self, client: TestClient) -> None:
         app_js = client.get("/static/app.js").text
 
-        assert "function abortStream()" in app_js
+        assert "function abortStream(terminalState = 'cancelled')" in app_js
         assert "data.type === 'stream_diagnostic'" in app_js
         assert "abortStream();\n      appendMessage('system', '流式通道错误:" not in app_js
         assert "data.type === 'error'" in app_js
-        assert "abortStream();\n      appendMessage('system', '错误:" in app_js
+        assert "abortStream('failed');\n      appendMessage('system', '错误:" in app_js
+        assert "socket.onclose = () => {" in app_js
+        assert "state.streamGeneration += 1;" in app_js
+        assert "state.activeStream = null;\n    abortStream('failed');" in app_js
+
+    def test_fleet_history_uses_selected_session_and_accessible_controls(
+        self, client: TestClient
+    ) -> None:
+        app_js = client.get("/static/app.js").text
+
+        history_start = app_js.index("async function loadFleetSessionToChat(sessionId)")
+        history_end = app_js.index("// ===== Fleet UI Helpers =====", history_start)
+        history_js = app_js[history_start:history_end]
+
+        assert "encodeURIComponent(state.sessionId)" not in history_js
+        assert "state.currentFleetSessionId = state.sessionId" not in history_js
+        assert "deleteFleetSession(state.sessionId)" not in history_js
+        assert "loadFleetSessionToChat(state.sessionId)" not in history_js
+        assert 'class="fleet-open-btn' in history_js
+        assert 'type="button"' in history_js
+        assert 'aria-label="打开协作历史：' in history_js
+        assert 'aria-label="删除协作历史：' in history_js
+        assert "deleteFleetSession(sessionId)" in history_js
+        assert "loadFleetSessionToChat(sessionId)" in history_js
+        assert "div.dataset.messageRole = 'assistant';" in history_js
+        assert "div.setAttribute('role', 'article');" in history_js
+        assert "div.setAttribute('aria-label', 'JS Agent 协作历史结果');" in history_js
 
     def test_echo_approval_ui_uses_safe_rendering_and_validates_decisions(
         self, client: TestClient
@@ -149,7 +227,7 @@ class TestHtmlIntegrity:
 
         # Get all imported names
         declared = set()
-        for m in re.finditer(r'import\s*\{([^}]+)\}\s*from', app_js):
+        for m in re.finditer(r"import\s*\{([^}]+)\}\s*from", app_js):
             for part in m.group(1).split(","):
                 part = part.strip()
                 if not part:
@@ -159,23 +237,37 @@ class TestHtmlIntegrity:
                 else:
                     name = part.strip()
                 declared.add(name)
-        for m in re.finditer(r'import\s+(\w+)\s+from', app_js):
+        for m in re.finditer(r"import\s+(\w+)\s+from", app_js):
             declared.add(m.group(1))
-        for m in re.finditer(r'(?:async\s+)?function\s+(\w+)', app_js):
+        for m in re.finditer(r"(?:async\s+)?function\s+(\w+)", app_js):
             declared.add(m.group(1))
-        for m in re.finditer(r'(?:let|const|var)\s+(\w+)', app_js):
+        for m in re.finditer(r"(?:let|const|var)\s+(\w+)", app_js):
             declared.add(m.group(1))
 
         # Get _windowFuncs entries
-        wf_match = re.search(r'const _windowFuncs = \{([^}]+)\};', app_js, re.DOTALL)
+        wf_match = re.search(r"const _windowFuncs = \{([^}]+)\};", app_js, re.DOTALL)
         assert wf_match, "_windowFuncs not found in app.js"
         window_funcs = set()
-        for m in re.finditer(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', wf_match.group(1)):
+        for m in re.finditer(r"\b[a-zA-Z_][a-zA-Z0-9_]*\b", wf_match.group(1)):
             window_funcs.add(m.group())
         # Remove non-function keywords
         window_funcs -= {
-            "state", "const", "let", "var", "function", "async", "await",
-            "return", "if", "else", "for", "while", "true", "false", "null", "undefined",
+            "state",
+            "const",
+            "let",
+            "var",
+            "function",
+            "async",
+            "await",
+            "return",
+            "if",
+            "else",
+            "for",
+            "while",
+            "true",
+            "false",
+            "null",
+            "undefined",
         }
 
         # Every window func must be declared
@@ -184,14 +276,16 @@ class TestHtmlIntegrity:
 
         # Every HTML handler must be in window funcs
         missing_handlers = handlers - window_funcs
-        assert not missing_handlers, f"HTML onclick handlers without window mount: {missing_handlers}"
+        assert not missing_handlers, (
+            f"HTML onclick handlers without window mount: {missing_handlers}"
+        )
 
     def test_no_duplicate_window_func_entries(self, client: TestClient) -> None:
         """_windowFuncs should not have duplicate keys."""
         app_js = client.get("/static/app.js").text
-        wf_match = re.search(r'const _windowFuncs = \{([^}]+)\};', app_js, re.DOTALL)
+        wf_match = re.search(r"const _windowFuncs = \{([^}]+)\};", app_js, re.DOTALL)
         assert wf_match
-        entries = re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*[,}]', wf_match.group(1))
+        entries = re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*[,}]", wf_match.group(1))
         duplicates = {k for k in entries if entries.count(k) > 1}
         assert not duplicates, f"Duplicate entries in _windowFuncs: {duplicates}"
 
@@ -249,12 +343,12 @@ class TestIndexHtml:
     def test_sidebar_toggle_present(self, client: TestClient) -> None:
         res = client.get("/")
         assert res.status_code == 200
-        assert 'onclick="toggleSidebar()"' in res.text
+        assert 'id="btn-toggle-session-column"' in res.text
 
     def test_app_js_loaded_as_module(self, client: TestClient) -> None:
         res = client.get("/")
         assert res.status_code == 200
-        assert '<script type="module" src="/static/app.js?v=4"></script>' in res.text
+        assert '<script type="module" src="/static/app.js?v=' in res.text
 
     def test_browser_assets_are_local_and_csp_disallows_public_cdns(
         self, client: TestClient
@@ -268,16 +362,18 @@ class TestIndexHtml:
         assert "script-src 'self' 'unsafe-inline'" in html
         assert "font-src 'self'" in html
 
-    def test_echo_approvals_navigation_and_container_are_present(
-        self, client: TestClient
-    ) -> None:
+    def test_echo_approvals_navigation_and_container_are_present(self, client: TestClient) -> None:
         html = client.get("/").text
         app_js = client.get("/static/app.js").text
 
-        assert 'id="nav-approvals"' in html
-        assert "switchTab('approvals')" in html
-        assert 'id="approvals-pending-count"' in html
+        # Approvals entry is generated into the more menu by shell.js; the
+        # badge lives inside it, and the tab container stays server-rendered.
+        assert 'id="more-menu"' in html
+        assert 'id="approvals-pending-count"' not in html  # built client-side
         assert 'id="tab-approvals"' in html
         assert 'id="approvals-list"' in html
+        shell_js = client.get("/static/js/shell.js").text
+        assert "nav-${entry.id}" in shell_js
+        assert "'approvals'" in shell_js
         assert "from './tabs/approvals.js'" in app_js
         assert "if (tab === 'approvals') loadApprovals();" in app_js

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Request
 
 from js import __version__
 from js.utils.log import get_logger
-from js.web.auth import require_auth_dep
+from js.web.auth import require_auth_dep, require_user_write
 from js.web.deps import get_agent, get_echo_safety_service, get_stats_store
 from js.web.echo_status import echo_ledger_status, echo_status
 from js.web.messages import health_summary
@@ -113,7 +113,7 @@ async def appshell_prefs(auth: dict[str, Any] = Depends(require_auth_dep)) -> di
 @router.get("/api/diag")
 async def diag(
     request: Request,
-    auth: dict[str, Any] = Depends(require_auth_dep),
+    auth: dict[str, Any] = Depends(require_user_write),
 ) -> dict[str, Any]:
     """Diagnostic endpoint to verify server version, routes and subsystem health."""
     from js.web.runtime_context import current_web_runtime

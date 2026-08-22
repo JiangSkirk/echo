@@ -1,5 +1,5 @@
 import { state } from '../state/store.js';
-import { escapeHtml, showToast, showLoading, showError } from '../utils/dom.js';
+import { bindDataClicks, escapeHtml, showToast, showLoading, showError, sanitizeRuntimeId } from '../utils/dom.js';
 
 export async function loadSkills() {
   showLoading('skills-content', '加载 Skills...');
@@ -48,7 +48,7 @@ export async function loadSkills() {
       const riskBadge = s.risk_flags && s.risk_flags.length > 0 ? `<span class="text-xs bg-red-900 text-red-400 px-2 py-0.5 rounded ml-1">${s.risk_flags.length} risk</span>` : '';
 
       return `
-      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 cursor-pointer hover:border-blue-500 transition" onclick="showSkillDetail(${JSON.stringify(s.id)})">
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 cursor-pointer hover:border-blue-500 transition" data-skill-id="${escapeHtml(String(s.id ?? ''))}">
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center gap-2">
             <h3 class="font-bold">${escapeHtml(s.name)}</h3>
@@ -67,6 +67,10 @@ export async function loadSkills() {
         ${s.tags && s.tags.length > 0 ? `<div class="flex flex-wrap gap-1 mt-2">${s.tags.map(t => `<span class="text-xs bg-gray-800 px-2 py-0.5 rounded">${escapeHtml(t)}</span>`).join('')}</div>` : ''}
       </div>
     `}).join('');
+    bindDataClicks(container, 'skillId', (rawId) => {
+      const skillId = sanitizeRuntimeId(rawId);
+      if (skillId) showSkillDetail(skillId);
+    });
   } catch (e) {
     showError('skills-content', '加载失败: ' + e.message);
   }

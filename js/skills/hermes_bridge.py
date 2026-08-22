@@ -510,6 +510,13 @@ def _try_hermes_guard_scan(skill_path: Path) -> ScanResult | None:
     This provides an additional security layer by leveraging Hermes's
     80+ threat pattern database. Falls back gracefully if Hermes is not
     installed or the module is unavailable.
+
+    The guard module is attacker-controlled code (it ships with the Hermes
+    installation), so it never runs on the bare host: it executes inside
+    the same strict OS sandbox used for skill execution, with a scrubbed
+    environment that carries no API keys. When no sandbox backend is
+    available the scan is skipped (fail-closed) and the JS Agent base
+    scan remains the only verdict.
     """
     try:
         # Add Hermes agent tools to path temporarily
@@ -546,11 +553,42 @@ def _try_hermes_guard_scan(skill_path: Path) -> ScanResult | None:
         )
         import subprocess
 
+        from js.echo.os_sandbox import SandboxExecutor
+
+        sandbox = SandboxExecutor(
+            skills_dir.resolve(),
+            timeout=30.0,
+            strict_isolation=True,
+            trusted_executables=[Path(sys.executable)],
+        )
+        cmd = [sys.executable, "-c", script, str(skill_path)]
+        try:
+            wrapped = sandbox._wrap_filesystem_isolation(
+                cmd,
+                fs_restricted=True,
+                read_only_paths=(hermes_tools.resolve(),),
+                network_allowed=False,
+            )
+        except RuntimeError:
+            # No sandbox backend — never run attacker-controlled guard code
+            # on the bare host; the JS Agent base scan still applies.
+            logger.warning(
+                "Hermes guard scan skipped: no OS sandbox backend available "
+                "(fail-closed, base scan still applies)"
+            )
+            return None
+
         proc = subprocess.run(
-            [sys.executable, "-c", script, str(skill_path)],
+            wrapped,
             capture_output=True,
             text=True,
             timeout=30,
+            env=sandbox._build_env(),
+            # Keep the child's cwd inside the sandbox workspace: sys.path's
+            # implicit '' entry resolves to the cwd, and importing anything
+            # (e.g. pathlib) from the guard would otherwise list a directory
+            # the sandbox denies — and fail-closed looks like "no scanner".
+            cwd=str(skills_dir.resolve()),
         )
         if proc.returncode == 0:
             # Parse simple output format

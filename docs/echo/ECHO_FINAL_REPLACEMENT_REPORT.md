@@ -6,7 +6,7 @@
 - The old off/shadow architecture modes have been removed from the normal JS Agent configuration surface.
 - Local engineering gates support running the JS Agent on Echo-only default.
 - GitHub stable release remains blocked until external approvals are signed.
-- Benchmark SHA-256: `0f49eebbeae91162d5bcbbc4658c44de42076e139b26dca54d5f2a64a4fc57f6`
+- Benchmark SHA-256: `a0522361696a1212651eeb7ab07e12937eede4c27bc4605c7ace8a67f16d1e11`
 
 ## Safety
 
@@ -25,15 +25,15 @@
 ## Performance
 
 - Measurements use a deterministic local fake provider with no network LLM calls; latency does not include network or provider latency variance; cl100k tokenizer counts are not DeepSeek or provider billing data.
-- api_full_agent: p95 median `40.655` ms across `5` independent groups (`50` measured requests per group).
-- api_wrapper_only: p95 median `0.663` ms across `5` independent groups (`50` measured requests per group).
-- ws_message_wrapper: p95 median `1.266` ms across `5` independent groups (`50` measured requests per group).
-- ws_stream_wrapper: p95 median `1.482` ms across `5` independent groups (`50` measured requests per group).
+- api_full_agent: p95 median `38.298` ms across `5` independent groups (`50` measured requests per group).
+- api_wrapper_only: p95 median `0.617` ms across `5` independent groups (`50` measured requests per group).
+- ws_message_wrapper: p95 median `1.244` ms across `5` independent groups (`50` measured requests per group).
+- ws_stream_wrapper: p95 median `1.406` ms across `5` independent groups (`50` measured requests per group).
 - api_full_agent prompt token p95: Echo `3257.0`, limit `9000.0`, within_limit `True`, source `tokenizer`.
-- Concurrency: `150/150` successful, 5xx `0`, crosstalk `0`, peak RSS `234.969` MB.
-- Recovery: 10k replay `0.0902` s; compaction `29.637` ms.
-- Corrected detached-baseline comparison: API p95 old `46.964` ms vs Echo `40.655` ms (`-13.434%`); prompt p95 old `8857.0` vs Echo `3257.0` tokenizer tokens (`63.227%` reduction).
-- Five-run API p95 median: `40.655` ms; limit `45.0` ms; faster than detached old baseline `True`.
+- Concurrency: `150/150` successful, 5xx `0`, crosstalk `0`, peak RSS `239.438` MB.
+- Recovery: 10k replay `0.1077` s; compaction `29.096` ms.
+- Corrected detached-baseline comparison: API p95 old `47.398` ms vs Echo `38.298` ms (`-19.199%`); prompt p95 old `8857.0` vs Echo `3257.0` tokenizer tokens (`63.227%` reduction).
+- Five-run API p95 median: `38.298` ms; limit `45.0` ms; faster than detached old baseline `True`.
 
 ## JS Agent Work
 

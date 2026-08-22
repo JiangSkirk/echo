@@ -10,6 +10,7 @@ import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -34,6 +35,12 @@ _FLEET_OWNER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 _FLEET_SESSION: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "echo_fleet_session", default=None
 )
+_FLEET_REQUEST: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "echo_fleet_request", default=None
+)
+_FLEET_TURN: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "echo_fleet_turn", default=None
+)
 _FLEET_PRODUCT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "echo_fleet_product", default=None
 )
@@ -43,6 +50,67 @@ _FLEET_MODES = frozenset({"auto", "debate", "sequential", "manager"})
 _MAX_FLEET_TASK_CHARS = 20_000
 _MAX_FLEET_SUBTASK_CHARS = 2_000
 _LOCAL_FLEET_OWNER = "fleet-local"
+_MAX_FLEET_RUNTIME_ID_CHARS = 128
+
+
+def _validate_fleet_request_or_turn_id(value: Any, field_name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value) > _MAX_FLEET_RUNTIME_ID_CHARS
+    ):
+        raise ValueError(f"invalid Fleet {field_name}")
+    return value
+
+
+def validate_fleet_event_identity(
+    request_id: Any,
+    turn_id: Any,
+    session_id: Any,
+) -> tuple[str, str, str]:
+    """Validate and preserve the exact public identity of one Fleet run."""
+    request = _validate_fleet_request_or_turn_id(request_id, "request_id")
+    turn = _validate_fleet_request_or_turn_id(turn_id, "turn_id")
+    if not isinstance(session_id, str) or not _SAFE_FLEET_SESSION_RE.fullmatch(session_id):
+        raise ValueError("invalid Fleet session_id")
+    return request, turn, session_id
+
+
+@contextmanager
+def bind_fleet_event_identity(
+    request_id: str,
+    turn_id: str,
+    session_id: str,
+) -> Any:
+    """Bind an authoritative Fleet event identity for the current async context."""
+    request, turn, session = validate_fleet_event_identity(
+        request_id,
+        turn_id,
+        session_id,
+    )
+    inherited = (_FLEET_REQUEST.get(), _FLEET_TURN.get(), _FLEET_SESSION.get())
+    if any(value is not None for value in inherited) and inherited != (
+        request,
+        turn,
+        session,
+    ):
+        raise PermissionError("Fleet event identity cannot override its parent context")
+    request_token = _FLEET_REQUEST.set(request)
+    turn_token = _FLEET_TURN.set(turn)
+    session_token = _FLEET_SESSION.set(session)
+    try:
+        yield
+    finally:
+        _FLEET_SESSION.reset(session_token)
+        _FLEET_TURN.reset(turn_token)
+        _FLEET_REQUEST.reset(request_token)
+
+
+def _current_fleet_event_identity() -> tuple[str, str, str]:
+    identity = (_FLEET_REQUEST.get(), _FLEET_TURN.get(), _FLEET_SESSION.get())
+    if any(value is None for value in identity):
+        raise RuntimeError("Fleet event identity context is required")
+    return validate_fleet_event_identity(*identity)
 
 
 class FleetCapacityError(RuntimeError):
@@ -286,9 +354,17 @@ class AgentFleet:
             for subscription in self._event_callbacks[:]
             if subscription.product_id == product and subscription.owner_key_hash == owner
         ]
+        request_id, turn_id, session_id = _current_fleet_event_identity()
         public_event = {
             key: value for key, value in event.items() if key not in {"owner", "owner_key_hash"}
         }
+        public_event.update(
+            {
+                "request_id": request_id,
+                "turn_id": turn_id,
+                "session_id": session_id,
+            }
+        )
         for subscription in subscriptions:
             try:
                 await subscription.callback(dict(public_event))
@@ -428,21 +504,37 @@ class AgentFleet:
         )
         if not product:
             raise RuntimeError("Fleet product context is required")
-        resolved_session = normalized_session_id or str(uuid.uuid4())
+        inherited_identity = (
+            _FLEET_REQUEST.get(),
+            _FLEET_TURN.get(),
+            _FLEET_SESSION.get(),
+        )
+        if any(value is not None for value in inherited_identity):
+            if any(value is None for value in inherited_identity):
+                raise RuntimeError("Fleet event identity context is incomplete")
+            request_id, turn_id, inherited_session = validate_fleet_event_identity(
+                *inherited_identity
+            )
+            if normalized_session_id and normalized_session_id != inherited_session:
+                raise PermissionError("Fleet session cannot override its parent event identity")
+            resolved_session = inherited_session
+        else:
+            request_id = f"fleet-request-{uuid.uuid4().hex}"
+            turn_id = f"fleet-turn-{uuid.uuid4().hex}"
+            resolved_session = normalized_session_id or str(uuid.uuid4())
         owner_token = _FLEET_OWNER.set(owner)
         product_token = _FLEET_PRODUCT.set(product)
-        session_token = _FLEET_SESSION.set(resolved_session)
         try:
-            return await self._collaborate_scoped(
-                normalized_task,
-                subtasks=normalized_subtasks,
-                session_id=resolved_session,
-                role_mapping=normalized_role_mapping,
-                mode=normalized_mode,
-                owner_key_hash=owner,
-            )
+            with bind_fleet_event_identity(request_id, turn_id, resolved_session):
+                return await self._collaborate_scoped(
+                    normalized_task,
+                    subtasks=normalized_subtasks,
+                    session_id=resolved_session,
+                    role_mapping=normalized_role_mapping,
+                    mode=normalized_mode,
+                    owner_key_hash=owner,
+                )
         finally:
-            _FLEET_SESSION.reset(session_token)
             _FLEET_PRODUCT.reset(product_token)
             _FLEET_OWNER.reset(owner_token)
 
@@ -1375,6 +1467,35 @@ class AgentFleet:
         return results
 
     async def _execute_single(
+        self, task: Task, worker: AgentInstance, override_prompt: str | None = None
+    ) -> tuple[str, str]:
+        """Run one worker inside exactly one Fleet event-identity scope.
+
+        Public collaboration binds the authoritative request/turn/session
+        triple before it fans out workers.  A few internal callers (including
+        the real-time stream harness) execute one worker directly, so give
+        that *single invocation* its own context-local identity rather than
+        weakening ``_emit`` or sharing a lazy process-global fallback.
+        """
+        inherited_identity = (
+            _FLEET_REQUEST.get(),
+            _FLEET_TURN.get(),
+            _FLEET_SESSION.get(),
+        )
+        if any(value is not None for value in inherited_identity):
+            if any(value is None for value in inherited_identity):
+                raise RuntimeError("Fleet event identity context is incomplete")
+            validate_fleet_event_identity(*inherited_identity)
+            return await self._execute_single_scoped(task, worker, override_prompt)
+
+        parent = current_runtime_context()
+        session_id = parent.session_id if parent is not None else str(uuid.uuid4())
+        request_id = f"fleet-request-{uuid.uuid4().hex}"
+        turn_id = f"fleet-turn-{uuid.uuid4().hex}"
+        with bind_fleet_event_identity(request_id, turn_id, session_id):
+            return await self._execute_single_scoped(task, worker, override_prompt)
+
+    async def _execute_single_scoped(
         self, task: Task, worker: AgentInstance, override_prompt: str | None = None
     ) -> tuple[str, str]:
         """Run one task on one worker. Returns (task_id, result_text).

@@ -325,6 +325,64 @@ class FileEchoLedger:
     def verify_required_archives(self) -> VerificationReport:
         return self.refresh_and_verify_required_archives()[1]
 
+    def verified_logical_records(self) -> tuple[CommitRecord | ArchiveRecord, ...]:
+        """Return authenticated logical history across required archives and active tail."""
+        lock_path = _journal_lock_path(self._path)
+        with _path_lock(self._path), lock_path.open("a+b") as lock_handle:
+            _make_handle_private(lock_handle)
+            _lock_file(lock_handle)
+            try:
+                with self._path.open("r+", encoding="utf-8") as handle:
+                    _make_handle_private(handle)
+                    self._sync_from_disk_locked(handle)
+                report = self._verify_required_archives_locked()
+                if not report.ok:
+                    raise ValueError(
+                        "invalid required journal archive: " + ",".join(report.errors)
+                    )
+                anchors = tuple(self._archive_anchors)
+                if not anchors:
+                    return tuple(self._records)
+                if len(anchors) != 1 or anchors[0] != self._records[0]:
+                    raise ValueError(
+                        "invalid journal archive chain: ambiguous_snapshot_anchor"
+                    )
+                anchor = anchors[0]
+                if not _is_sqlite_archive_anchor(anchor.payload):
+                    return tuple(
+                        _logical_history_records(
+                            self._path,
+                            records=self._records,
+                            mac_key=self._mac_key,
+                        )
+                    )
+                ref = _archive_ref_from_payload(anchor.payload)
+                store = _open_anchored_archive_store(
+                    self._path,
+                    payload=anchor.payload,
+                    ref=ref,
+                    mac_key=self._mac_key,
+                )
+                archived = tuple(store.iter_records(ref))
+                retained_count = anchor.payload.get("retained_record_count")
+                current = tuple(
+                    record
+                    for record in self._records
+                    if record.record_type != "snapshot_anchor"
+                )
+                if (
+                    not isinstance(retained_count, int)
+                    or isinstance(retained_count, bool)
+                    or retained_count < 0
+                    or retained_count > len(current)
+                ):
+                    raise ValueError(
+                        "invalid journal archive chain: retained_record_count"
+                    )
+                return archived + current[retained_count:]
+            finally:
+                _unlock_file(lock_handle)
+
     def contains_archived_effect(self, effect_id: str) -> bool:
         """Return whether a verified archive contains this exact effect tombstone."""
         if not isinstance(effect_id, str) or not effect_id:

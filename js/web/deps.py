@@ -7,6 +7,8 @@ import secrets
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
+from js.web.auth import require_auth
+
 if TYPE_CHECKING:
     from fastapi import Request
 
@@ -21,6 +23,9 @@ _settings: JSSettings | None = None
 _stats_store: TokenStatsStore | None = None
 _echo_safety_service: EchoSafetyService | None = None
 _active_model: str = ""
+
+# Backward-compatible FastAPI dependency alias; auth remains single-sourced.
+require_auth_dep = require_auth
 
 
 @dataclass
@@ -146,13 +151,6 @@ def set_active_model(model: str) -> None:
         runtime.active_model = model
         return
     _active_model = model
-
-
-# Auth dependency (import here to avoid circular import at module level)
-async def require_auth_dep() -> dict[str, object]:
-    from js.web.auth import require_auth
-
-    return await require_auth()
 
 
 # NOTE: admin gating is provided by js.web.auth.require_admin (which also runs

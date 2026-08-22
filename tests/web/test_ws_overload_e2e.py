@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -18,6 +17,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from js.config import JSSettings, SecurityConfig
 from js.web import ws_inbox as ws_inbox_mod
+from js.web.auth import AuthManager
 
 
 class TinyInbox(ws_inbox_mod.BoundedWebSocketInbox):
@@ -91,11 +91,11 @@ class _SlowAgent:
         return True
 
 
-def _build_app() -> Any:
-    os.environ["JS_ALLOWED_ORIGINS"] = "http://localhost"
+def _build_app(monkeypatch: pytest.MonkeyPatch) -> Any:
+    monkeypatch.setenv("JS_ALLOWED_ORIGINS", "http://localhost")
     import js.web.auth as auth_mod
 
-    auth_mod._ALLOWED_ORIGINS = None
+    monkeypatch.setattr(auth_mod, "_ALLOWED_ORIGINS", None)
 
     @asynccontextmanager
     async def _noop_lifespan(_app: Any) -> AsyncIterator[None]:
@@ -152,7 +152,7 @@ def test_ws_inbox_overload_closes_1008_and_cancels_turn(
 
     monkeypatch.setattr(ws_inbox_mod.BoundedWebSocketInbox, "__init__", _tiny_init)
     monkeypatch.setattr(ws_inbox_mod, "BoundedWebSocketInbox", TinyInbox)
-    app = _build_app()
+    app = _build_app(monkeypatch)
     from js.web.deps import set_globals
 
     set_globals(agent, settings)  # type: ignore[arg-type]
@@ -163,13 +163,18 @@ def test_ws_inbox_overload_closes_1008_and_cancels_turn(
     monkeypatch.setattr("js.web.deps._settings", settings)
     monkeypatch.setattr("js.web.server.run_echo_turn", slow_turn)
 
-    client = TestClient(app, base_url="http://localhost", headers={"Origin": "http://localhost"})
+    user_key = AuthManager(settings.state_dir).create_key("ws-overload", role="user")
+    client = TestClient(
+        app,
+        base_url="http://localhost",
+        headers={"Origin": "http://localhost", "X-API-Key": user_key},
+    )
     before = agent.echo_turn_calls
     close_code: int | None = None
 
     with (
         pytest.raises(WebSocketDisconnect) as exc_info,
-        client.websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws,
+        client.websocket_connect("/ws") as ws,
     ):
         ws.send_json(
             {
@@ -249,7 +254,7 @@ def test_ws_inbox_overload_cancels_turn_task_when_request_cancel_misses(
 
     monkeypatch.setattr(ws_inbox_mod.BoundedWebSocketInbox, "__init__", _tiny_init)
     monkeypatch.setattr(ws_inbox_mod, "BoundedWebSocketInbox", TinyInbox)
-    app = _build_app()
+    app = _build_app(monkeypatch)
     from js.web.deps import set_globals
 
     set_globals(agent, settings)  # type: ignore[arg-type]
@@ -260,12 +265,17 @@ def test_ws_inbox_overload_cancels_turn_task_when_request_cancel_misses(
     monkeypatch.setattr("js.web.deps._settings", settings)
     monkeypatch.setattr("js.web.server.run_echo_turn", stubborn_turn)
 
-    client = TestClient(app, base_url="http://localhost", headers={"Origin": "http://localhost"})
+    user_key = AuthManager(settings.state_dir).create_key("ws-overload", role="user")
+    client = TestClient(
+        app,
+        base_url="http://localhost",
+        headers={"Origin": "http://localhost", "X-API-Key": user_key},
+    )
     before = agent.echo_turn_calls
 
     with (
         pytest.raises(WebSocketDisconnect) as exc_info,
-        client.websocket_connect("/ws", headers={"Origin": "http://localhost"}) as ws,
+        client.websocket_connect("/ws") as ws,
     ):
         ws.send_json(
             {

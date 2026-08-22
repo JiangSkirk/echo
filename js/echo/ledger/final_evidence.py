@@ -7,6 +7,8 @@ artifacts. Validators are strictly read-only: they never rewrite inputs.
 from __future__ import annotations
 
 import hashlib
+import re
+import stat
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -90,16 +92,178 @@ def _load_object(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _read_frozen_digest(evidence_dir: Path) -> str:
+    path = evidence_dir / "FROZEN_DIGEST.txt"
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError("FROZEN_DIGEST.txt missing or unreadable") from exc
+    if re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError("FROZEN_DIGEST.txt must contain one lowercase SHA-256 digest")
+    return value
+
+
+def _desktop_manifest_binding(
+    *,
+    root: Path,
+    evidence_dir: Path,
+    expected_source_digest: str,
+) -> tuple[str | None, list[str]]:
+    manifest_path = evidence_dir / "desktop-build" / "manifest.json"
+    try:
+        manifest_stat = manifest_path.lstat()
+    except OSError:
+        return None, ["desktop_manifest_missing"]
+    if stat.S_ISLNK(manifest_stat.st_mode) or not stat.S_ISREG(manifest_stat.st_mode):
+        return None, ["desktop_manifest_not_regular"]
+    manifest = _load_object(manifest_path)
+    if not manifest:
+        return None, ["desktop_manifest_invalid_json"]
+    errors: list[str] = []
+    if manifest.get("source_digest") != expected_source_digest:
+        errors.append("desktop_manifest_source_digest_mismatch")
+    try:
+        from desktop.build_driver import verify_manifest
+
+        verify_errors = verify_manifest(manifest_path, repo_root=root)
+    except (ImportError, OSError, RuntimeError, ValueError, TypeError):
+        verify_errors = ["desktop manifest verifier failed"]
+    if verify_errors:
+        errors.append("desktop_manifest_verification_failed")
+    return sha256_file(manifest_path), errors
+
+
+def _derive_formal_state(*, root: Path, evidence_dir: Path) -> dict[str, Any]:
+    from js.echo.ledger.release_gates import (
+        REQUIRED_FINAL_LOCAL_GATES,
+        release_source_digest,
+        validate_final_local_gate_evidence,
+        verify_release_readiness,
+    )
+
+    resolved_root = root.resolve()
+    resolved_evidence = evidence_dir.resolve()
+    current_digest = release_source_digest(resolved_root)
+    frozen_digest = _read_frozen_digest(resolved_evidence)
+    if frozen_digest != current_digest:
+        raise ValueError("frozen source digest does not match current source digest")
+    report = validate_final_local_gate_evidence(
+        resolved_root,
+        final_dir=resolved_evidence / "final",
+        evidence_dir=resolved_evidence,
+        expected_source_digest=current_digest,
+    )
+    passed = tuple(report.passed_gates)
+    if any(gate not in REQUIRED_FINAL_LOCAL_GATES for gate in passed):
+        raise ValueError("formal validator returned unknown passed gate")
+    expected_all = all(gate in passed for gate in REQUIRED_FINAL_LOCAL_GATES) and not report.blockers
+    if report.all_local_gates_passed is not expected_all:
+        raise ValueError("formal validator gate closure is inconsistent")
+    readiness = verify_release_readiness(
+        resolved_root,
+        require_audit_reports=False,
+        require_live_acceptance=False,
+    )
+    internal_ready = bool(readiness.internal_ready)
+    desktop_digest, desktop_errors = _desktop_manifest_binding(
+        root=resolved_root,
+        evidence_dir=resolved_evidence,
+        expected_source_digest=current_digest,
+    )
+    product_ready = bool(
+        report.product_internal_ready
+        and report.all_local_gates_passed
+        and internal_ready
+        and desktop_digest is not None
+        and not desktop_errors
+    )
+    blockers = list(report.blockers)
+    if report.product_internal_ready or "desktop_build" in passed:
+        blockers.extend(desktop_errors)
+    raw_receipts = load_gate_receipt_summaries(resolved_evidence / "final")
+    receipts = {
+        gate: raw_receipts[gate]
+        for gate in REQUIRED_FINAL_LOCAL_GATES
+        if gate in passed and gate in raw_receipts
+    }
+    if set(receipts) != set(passed):
+        raise ValueError("formal validator passed_gates receipt summary closure mismatch")
+    return {
+        "source_digest": current_digest,
+        "report": report,
+        "passed_gates": passed,
+        "blockers": tuple(dict.fromkeys(blockers)),
+        "validation_ok": bool(report.all_local_gates_passed),
+        "internal_ready": internal_ready,
+        "product_internal_ready": product_ready,
+        "desktop_manifest_digest": desktop_digest,
+        "gate_receipts": receipts,
+    }
+
+
+def _artifact_is_formally_bound(
+    formal: Mapping[str, Any],
+    *,
+    gate_name: str,
+    path: Path,
+) -> bool:
+    passed = formal.get("passed_gates")
+    if not isinstance(passed, tuple) or gate_name not in passed or not path.is_file():
+        return False
+    receipts = _as_dict(formal.get("gate_receipts"))
+    receipt = _as_dict(receipts.get(gate_name))
+    expected = receipt.get("artifact_sha256")
+    return bool(
+        isinstance(expected, str)
+        and re.fullmatch(r"[0-9a-f]{64}", expected)
+        and sha256_file(path) == expected
+    )
+
+
+def _derive_summary_artifacts(
+    *,
+    root: Path,
+    formal: Mapping[str, Any],
+    soak_path: Path,
+    slo_path: Path,
+    e2e_path: Path,
+) -> tuple[dict[str, Any], bool | None, bool]:
+    passed_obj = formal.get("passed_gates")
+    passed = set(passed_obj) if isinstance(passed_obj, tuple) else set()
+
+    soak_doc = _load_object(soak_path)
+    soak_summary = extract_soak_summary(soak_doc)
+    soak_bound = _artifact_is_formally_bound(formal, gate_name="soak_3600", path=soak_path)
+    if "soak_3600" in passed and not soak_bound:
+        raise ValueError("selected soak artifact is not bound by formal gate receipt")
+    soak_summary["validated_by_gate"] = soak_bound
+
+    raw_slo_ok = bool(slo_artifact_ok(slo_path, root=root)) if slo_path.is_file() else None
+    slo_gates = {f"slo_run_{index}" for index in range(1, 6)}
+    slo_bound = slo_gates.issubset(passed)
+    if slo_bound and raw_slo_ok is not True:
+        raise ValueError("selected SLO artifact is not valid for formal passed gates")
+    slo_ok = raw_slo_ok if slo_bound else (False if raw_slo_ok is not None else None)
+
+    e2e_doc = _load_object(e2e_path)
+    e2e_bound = _artifact_is_formally_bound(
+        formal,
+        gate_name="isolated_venv_e2e",
+        path=e2e_path,
+    )
+    if "isolated_venv_e2e" in passed and (not e2e_bound or e2e_doc.get("ok") is not True):
+        raise ValueError("selected E2E artifact is not bound by formal gate receipt")
+    e2e_ok = bool(e2e_bound and e2e_doc.get("ok") is True)
+    return soak_summary, slo_ok, e2e_ok
+
+
 def build_final_evidence_payload(
     *,
     root: Path,
-    digest: str,
+    evidence_dir: Path,
     branch: str,
     head: str,
     evidence_root_relative: str,
-    gate_receipts: Mapping[str, object],
-    internal_ready: bool,
-    validation_ok: bool,
     generated_utc: str | None = None,
     round_label: str = "8.15",
     pre_key_diagnostic_digest: str | None = None,
@@ -109,15 +273,24 @@ def build_final_evidence_payload(
     e2e_path: Path | None = None,
 ) -> dict[str, Any]:
     resolved = root.resolve()
-    soak_doc = _load_object(soak_path or resolved / "docs/security/ECHO_LIVE_ACCEPTANCE.json")
+    formal = _derive_formal_state(root=resolved, evidence_dir=evidence_dir)
+    digest = str(formal["source_digest"])
+    gate_receipts = _as_dict(formal["gate_receipts"])
+    internal_ready = bool(formal["internal_ready"])
+    validation_ok = bool(formal["validation_ok"])
+    product_internal_ready = bool(formal["product_internal_ready"])
+    desktop_manifest_digest = formal["desktop_manifest_digest"]
+    resolved_evidence = evidence_dir.resolve()
+    soak_doc_path = soak_path or resolved_evidence / "soak" / "ECHO_LIVE_ACCEPTANCE.json"
     slo_doc_path = slo_path or resolved / "docs/security/ECHO_SLO_BENCHMARK.json"
-    e2e_doc = _load_object(e2e_path or resolved / "docs/security/ECHO_ISOLATED_VENV_E2E.json")
-    soak_summary = extract_soak_summary(soak_doc)
-    slo_ok: bool | None
-    if slo_doc_path.is_file():
-        slo_ok = bool(slo_artifact_ok(slo_doc_path, root=resolved))
-    else:
-        slo_ok = None
+    e2e_doc_path = e2e_path or resolved_evidence / "e2e" / "ECHO_ISOLATED_VENV_E2E.json"
+    soak_summary, slo_ok, e2e_ok = _derive_summary_artifacts(
+        root=resolved,
+        formal=formal,
+        soak_path=soak_doc_path,
+        slo_path=slo_doc_path,
+        e2e_path=e2e_doc_path,
+    )
 
     payload: dict[str, Any] = {
         "schema_version": FINAL_EVIDENCE_SCHEMA_VERSION,
@@ -125,35 +298,27 @@ def build_final_evidence_payload(
         "branch": branch,
         "HEAD": head,
         "frozen_source_digest": digest,
+        "current_source_digest": digest,
         "generated_utc": generated_utc or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "evidence_root_relative": evidence_root_relative,
         "stable_ready": False,
         "internal_ready": bool(internal_ready),
+        "product_internal_ready": bool(product_internal_ready),
+        "desktop_manifest_digest": desktop_manifest_digest,
+        "validation_blockers": list(formal["blockers"]),
         "not_a_third_party_signature": True,
-        "classification": {
-            "passed": [
-                "bulk_truncation_recovery",
-                "release_source_integrity_preflight",
-                "echo_model_and_tool_authorization_fail_closed",
-                "work_owner_session_snapshot_and_descriptor_output",
-                "atomic_context_compression_and_verified_token_accounting",
-                "external_old_baseline_provenance_v2",
-                "required_local_gates",
-                "real_3600_soak",
-            ],
-            "failed": [],
-            "partial": [],
-            "not_tested": ["real_office_business_files"],
-            "external_pending": [
-                "legal_fto_review_pending",
-                "clean_room_reviewer_pending",
-                "external_security_audit_missing",
-                "redteam_report_missing",
-            ],
-        },
+        "classification": _build_classification(
+            validation_ok=bool(validation_ok),
+            product_internal_ready=bool(product_internal_ready),
+            internal_ready=bool(internal_ready),
+            gate_receipts=gate_receipts,
+            soak_summary=soak_summary,
+            slo_ok=slo_ok,
+            e2e_ok=e2e_ok,
+        ),
         "gate_receipts": dict(gate_receipts),
         "soak": soak_summary,
-        "e2e_ok": e2e_doc.get("ok"),
+        "e2e_ok": e2e_ok,
         "slo_ok": slo_ok,
         "validation_ok": bool(validation_ok),
         "notes": notes
@@ -168,12 +333,102 @@ def build_final_evidence_payload(
     return payload
 
 
+def _build_classification(
+    *,
+    validation_ok: bool,
+    product_internal_ready: bool,
+    internal_ready: bool,
+    gate_receipts: Mapping[str, object],
+    soak_summary: Mapping[str, object] | None,
+    slo_ok: bool | None,
+    e2e_ok: object,
+) -> dict[str, list[str]]:
+    """Classify evidence buckets with accurate gate-readiness semantics.
+
+    ``required_local_gates`` is only listed under ``passed`` when every required
+    local gate has passed (``validation_ok`` / product-ready path). An 18/19
+    partial result must land in ``partial``/``blocked``, never ``passed``.
+    """
+    # Every passed item below is derived from the formal gate report and bound
+    # artifacts. Historical prose labels are not evidence and must not be
+    # pre-populated as green.
+    passed: list[str] = []
+    failed: list[str] = []
+    partial: list[str] = []
+
+    receipt_map = dict(gate_receipts) if isinstance(gate_receipts, Mapping) else {}
+    if validation_ok and product_internal_ready:
+        passed.append("required_local_gates")
+        passed.append("desktop_product_internal_ready")
+    elif validation_ok:
+        # Local gates green but product readiness still blocked (should be rare).
+        passed.append("required_local_gates")
+        partial.append("product_internal_ready_blocked")
+    else:
+        # Count how many gate receipts claim passed for partial signaling.
+        passed_count = 0
+        for value in receipt_map.values():
+            if value is True or (
+                isinstance(value, Mapping) and value.get("passed") is True
+            ):
+                passed_count += 1
+        if passed_count > 0:
+            partial.append("required_local_gates")
+        else:
+            failed.append("required_local_gates")
+
+    soak_ok = False
+    if isinstance(soak_summary, Mapping):
+        soak_ok = (
+            soak_summary.get("ok") is True
+            and soak_summary.get("validated_by_gate") is True
+        )
+    if soak_ok and validation_ok:
+        passed.append("real_3600_soak")
+    elif soak_ok:
+        partial.append("real_3600_soak")
+    else:
+        # Keep soak out of passed when validation is incomplete.
+        if soak_summary:
+            partial.append("real_3600_soak")
+
+    if slo_ok is True:
+        passed.append("slo_contract")
+    elif slo_ok is False:
+        failed.append("slo_contract")
+
+    if e2e_ok is True:
+        passed.append("isolated_venv_e2e")
+    elif e2e_ok is False:
+        failed.append("isolated_venv_e2e")
+
+    if internal_ready and not product_internal_ready:
+        partial.append("echo_internal_ready_without_desktop_product")
+
+    return {
+        "passed": passed,
+        "failed": failed,
+        "partial": partial,
+        "not_tested": ["real_office_business_files"],
+        "external_pending": [
+            "legal_fto_review_pending",
+            "clean_room_reviewer_pending",
+            "external_security_audit_missing",
+            "redteam_report_missing",
+            "developer_id_and_notarization",
+            "automatic_update_channel",
+        ],
+    }
+
+
 def validate_final_evidence_document(
     payload: Mapping[str, Any],
     *,
     soak_path: Path,
     slo_path: Path,
     root: Path,
+    evidence_dir: Path,
+    e2e_path: Path | None = None,
     require_audit_artifact_sha: bool = True,
 ) -> list[str]:
     """Read-only validation of a final-evidence summary against raw artifacts.
@@ -202,14 +457,6 @@ def validate_final_evidence_document(
         if expected is not None and actual is None:
             errors.append(f"soak.{field} is null while raw acceptance has {expected!r}")
 
-    if slo_path.is_file():
-        expected_slo_ok = bool(slo_artifact_ok(slo_path, root=root))
-        actual_slo_ok = payload.get("slo_ok")
-        if actual_slo_ok is None:
-            errors.append("slo_ok is null while SLO artifact is present")
-        elif actual_slo_ok is not expected_slo_ok:
-            errors.append(f"slo_ok expected {expected_slo_ok!r}, got {actual_slo_ok!r}")
-
     if require_audit_artifact_sha:
         receipts = _as_dict(payload.get("gate_receipts"))
         audit_receipt = _as_dict(receipts.get("echo_full_audit"))
@@ -219,6 +466,58 @@ def validate_final_evidence_document(
                 "gate_receipts.echo_full_audit.artifact_sha256 must bind the "
                 "final audit markdown SHA-256"
             )
+
+    try:
+        formal = _derive_formal_state(root=root, evidence_dir=evidence_dir)
+    except ValueError as exc:
+        errors.append(str(exc))
+        return errors
+
+    resolved_e2e_path = e2e_path or evidence_dir / "e2e" / "ECHO_ISOLATED_VENV_E2E.json"
+    try:
+        expected_soak, expected_slo_ok, expected_e2e_ok = _derive_summary_artifacts(
+            root=root,
+            formal=formal,
+            soak_path=soak_path,
+            slo_path=slo_path,
+            e2e_path=resolved_e2e_path,
+        )
+    except ValueError as exc:
+        errors.append(str(exc))
+        return errors
+
+    expected_digest = formal["source_digest"]
+    for field in ("frozen_source_digest", "current_source_digest"):
+        if payload.get(field) != expected_digest:
+            errors.append(f"{field} does not match current/frozen source digest")
+    expected_scalars = {
+        "validation_ok": formal["validation_ok"],
+        "internal_ready": formal["internal_ready"],
+        "product_internal_ready": formal["product_internal_ready"],
+        "desktop_manifest_digest": formal["desktop_manifest_digest"],
+        "validation_blockers": list(formal["blockers"]),
+        "slo_ok": expected_slo_ok,
+        "e2e_ok": expected_e2e_ok,
+    }
+    for field, expected in expected_scalars.items():
+        if payload.get(field) != expected:
+            errors.append(f"{field} expected {expected!r}, got {payload.get(field)!r}")
+    if _as_dict(payload.get("gate_receipts")) != formal["gate_receipts"]:
+        errors.append("gate_receipts do not match formal validator passed_gates")
+    if _as_dict(payload.get("soak")) != expected_soak:
+        errors.append("soak summary does not match formally bound artifact")
+
+    expected_classification = _build_classification(
+        validation_ok=bool(formal["validation_ok"]),
+        product_internal_ready=bool(formal["product_internal_ready"]),
+        internal_ready=bool(formal["internal_ready"]),
+        gate_receipts=_as_dict(formal["gate_receipts"]),
+        soak_summary=expected_soak,
+        slo_ok=expected_slo_ok,
+        e2e_ok=expected_e2e_ok,
+    )
+    if payload.get("classification") != expected_classification:
+        errors.append("classification does not match formal validator/readiness state")
 
     return errors
 
@@ -315,7 +614,7 @@ def write_final_evidence_json(path: Path, payload: Mapping[str, Any]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp_path, path)
-    except Exception:
+    except BaseException:
         try:
             tmp_path.unlink()
         except OSError:

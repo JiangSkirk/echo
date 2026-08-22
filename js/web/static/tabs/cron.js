@@ -1,4 +1,4 @@
-import { escapeHtml, showToast } from '../utils/dom.js';
+import { bindDataClicks, escapeHtml, sanitizeRuntimeId, showToast } from '../utils/dom.js';
 
 export async function refreshCronJobs() {
   try {
@@ -42,24 +42,32 @@ export function renderCronJobs(jobs) {
     const nextRun = job.next_run_at ? new Date(job.next_run_at * 1000).toLocaleString('zh-CN', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '-';
     const isEnabled = job.enabled;
     return `<tr class="hover:bg-gray-800/50">
-      <td class="p-3"><span class="${statusColor} text-xs">● ${job.status}</span></td>
+      <td class="p-3"><span class="${statusColor} text-xs">● ${escapeHtml(String(job.status || ''))}</span></td>
       <td class="p-3">${escapeHtml(job.name)}</td>
       <td class="p-3 text-gray-400 text-xs">${escapeHtml(job.schedule_summary || job.cron_expr)}</td>
-      <td class="p-3 text-xs"><span class="bg-gray-800 px-2 py-0.5 rounded">${job.task_type}</span></td>
-      <td class="p-3 text-gray-400 text-xs">${nextRun}</td>
-      <td class="p-3 text-xs">${job.run_count} / ${job.fail_count}</td>
+      <td class="p-3 text-xs"><span class="bg-gray-800 px-2 py-0.5 rounded">${escapeHtml(String(job.task_type || ''))}</span></td>
+      <td class="p-3 text-gray-400 text-xs">${escapeHtml(nextRun)}</td>
+      <td class="p-3 text-xs">${escapeHtml(String(job.run_count))} / ${escapeHtml(String(job.fail_count))}</td>
       <td class="p-3 text-right">
-        <button onclick="runCronJob('${job.id}')" class="text-xs text-blue-400 hover:text-blue-300 mr-2" title="立即执行"><i class="fas fa-play"></i></button>
-        <button onclick="toggleCronJob('${job.id}', ${!isEnabled})" class="text-xs ${isEnabled ? 'text-yellow-400' : 'text-green-400'} hover:opacity-80 mr-2" title="${isEnabled ? '暂停' : '启用'}"><i class="fas fa-${isEnabled ? 'pause' : 'play'}"></i></button>
-        <button onclick="deleteCronJob('${job.id}')" class="text-xs text-red-400 hover:text-red-300" title="删除"><i class="fas fa-trash"></i></button>
+        <button type="button" data-cron-action="run" data-job-id="${escapeHtml(String(job.id ?? ''))}" class="text-xs text-blue-400 hover:text-blue-300 mr-2" title="立即执行"><i class="fas fa-play"></i></button>
+        <button type="button" data-cron-action="toggle" data-job-id="${escapeHtml(String(job.id ?? ''))}" data-enabled="${isEnabled ? '0' : '1'}" class="text-xs ${isEnabled ? 'text-yellow-400' : 'text-green-400'} hover:opacity-80 mr-2" title="${isEnabled ? '暂停' : '启用'}"><i class="fas fa-${isEnabled ? 'pause' : 'play'}"></i></button>
+        <button type="button" data-cron-action="delete" data-job-id="${escapeHtml(String(job.id ?? ''))}" class="text-xs text-red-400 hover:text-red-300" title="删除"><i class="fas fa-trash"></i></button>
       </td>
     </tr>`;
   }).join('');
+  bindDataClicks(tbody, 'jobId', (rawId, event) => {
+    const jobId = sanitizeRuntimeId(rawId);
+    if (!jobId) return;
+    const action = event.currentTarget.dataset.cronAction;
+    if (action === 'run') runCronJob(jobId);
+    else if (action === 'toggle') toggleCronJob(jobId, event.currentTarget.dataset.enabled === '1');
+    else if (action === 'delete') deleteCronJob(jobId);
+  });
 }
 
 export async function runCronJob(jobId) {
   try {
-    const res = await fetch(`/api/cron/jobs/${jobId}/run`, {method: 'POST'});
+    const res = await fetch(`/api/cron/jobs/${encodeURIComponent(jobId)}/run`, {method: 'POST'});
     const data = await res.json();
     if (data.success) {
       showToast('任务执行成功', 'success');
@@ -74,7 +82,7 @@ export async function runCronJob(jobId) {
 
 export async function toggleCronJob(jobId, enabled) {
   try {
-    await fetch(`/api/cron/jobs/${jobId}`, {
+    await fetch(`/api/cron/jobs/${encodeURIComponent(jobId)}`, {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({enabled})
@@ -89,7 +97,7 @@ export async function toggleCronJob(jobId, enabled) {
 export async function deleteCronJob(jobId) {
   if (!confirm('确定要删除这个定时任务吗？')) return;
   try {
-    await fetch(`/api/cron/jobs/${jobId}`, {method: 'DELETE'});
+    await fetch(`/api/cron/jobs/${encodeURIComponent(jobId)}`, {method: 'DELETE'});
     showToast('任务已删除', 'success');
     refreshCronJobs();
   } catch (e) {

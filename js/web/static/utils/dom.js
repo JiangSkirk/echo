@@ -35,6 +35,15 @@ export function onDataClick(node, dataKey, handler) {
   return node;
 }
 
+/** Bind onDataClick for every descendant that already has the matching data-* attr. */
+export function bindDataClicks(root, dataKey, handler) {
+  if (!root) return;
+  const attr = 'data-' + String(dataKey).replace(/[A-Z]/g, (ch) => '-' + ch.toLowerCase());
+  root.querySelectorAll('[' + attr + ']').forEach((node) => {
+    onDataClick(node, dataKey, handler);
+  });
+}
+
 export function onDataChange(node, dataKey, handler) {
   node.addEventListener('change', (event) => {
     handler(node.dataset[dataKey] ?? node.value, event);
@@ -56,15 +65,42 @@ export function sanitizeRuntimeId(value) {
 }
 
 export function showToast(message, type) {
+  const normalizedType = type === 'success' || type === 'error' || type === 'warning'
+    ? type
+    : 'info';
+  let region = document.getElementById('toast-region');
+  if (!region) {
+    region = document.createElement('div');
+    region.id = 'toast-region';
+    region.className = 'fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2 pointer-events-none';
+    region.setAttribute('aria-live', 'polite');
+    region.setAttribute('aria-relevant', 'additions text');
+    region.setAttribute('aria-atomic', 'false');
+    document.body.appendChild(region);
+  }
   const div = document.createElement('div');
-  const color = type === 'success' ? 'bg-green-600' : type === 'error' ? 'bg-red-600' : 'bg-blue-600';
-  div.className = `fixed bottom-4 right-4 ${color} text-white px-4 py-2 rounded-lg text-sm shadow-lg z-50 transition-opacity`;
-  div.textContent = message;
-  document.body.appendChild(div);
+  const color = normalizedType === 'success'
+    ? 'bg-green-600'
+    : normalizedType === 'error'
+      ? 'bg-red-600'
+      : normalizedType === 'warning'
+        ? ''
+        : 'bg-blue-600';
+  div.className = `${color} text-white px-4 py-2 rounded-lg text-sm shadow-lg transition-opacity pointer-events-auto max-w-sm`;
+  // The bundled offline Tailwind stylesheet does not contain bg-yellow-600.
+  // Keep warnings visually distinct in the packaged app without a network or
+  // runtime Tailwind dependency.
+  if (normalizedType === 'warning') div.style.backgroundColor = '#a16207';
+  div.dataset.toastType = normalizedType;
+  div.setAttribute('role', normalizedType === 'error' ? 'alert' : 'status');
+  div.setAttribute('aria-live', normalizedType === 'error' ? 'assertive' : 'polite');
+  div.setAttribute('aria-atomic', 'true');
+  div.textContent = String(message ?? '');
+  region.appendChild(div);
   setTimeout(() => {
     div.style.opacity = '0';
     setTimeout(() => div.remove(), 300);
-  }, 3000);
+  }, 5000);
 }
 
 export function toggleSidebar() {

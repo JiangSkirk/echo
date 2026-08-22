@@ -44,13 +44,18 @@ def find_wheel(artifact_dir: Path) -> Path:
 
 def verify_wheel(wheel: Path, venv_dir: Path, *, audit: bool = False) -> None:
     env = clean_environment()
+    env["HOME"] = str(venv_dir)
+    env["XDG_CONFIG_HOME"] = str(venv_dir / ".config")
+    env["XDG_STATE_HOME"] = str(venv_dir / ".local" / "state")
     python = venv_dir / "bin" / "python"
     commands = (
         ([sys.executable, "-m", "venv", str(venv_dir)], venv_dir.parent),
         ([str(python), "-m", "pip", "--isolated", "install", "--upgrade", "pip"], venv_dir),
         ([str(python), "-m", "pip", "--isolated", "install", str(wheel)], venv_dir),
         ([str(venv_dir / "bin" / "js"), "--help"], venv_dir),
+        ([str(venv_dir / "bin" / "js"), "work", "--help"], venv_dir),
         ([str(venv_dir / "bin" / "js-work"), "--help"], venv_dir),
+        ([str(python), "-m", "js_work", "--help"], venv_dir),
         ([str(python), "-c", IMPORT_CHECK], venv_dir),
     )
     for command, cwd in commands:

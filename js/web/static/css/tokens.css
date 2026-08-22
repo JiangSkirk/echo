@@ -1,0 +1,140 @@
+/* ═══════════════════════════════════════════════════════════════
+   JS Agent — Design Tokens
+   Single source of truth for the unified light/dark visual system.
+   Light and dark share ONE DOM; only the data-theme attribute differs.
+   No gradients, no glassmorphism, no neon, no generic bright blue.
+   ═══════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Light theme (default) — warm ivory base */
+  --color-bg: #F7F4EC;
+  --color-surface: #FCFBF7;
+  --color-surface-2: #F1EDE2;
+  --color-nav: #F2EFE6;
+  --color-text: #23221F;
+  --color-text-secondary: #77736B;
+  --color-text-muted: #6B675E; /* AA-compliant small labels (≥4.5:1 on ivory) */
+  --color-border: #E3DED0;
+  --color-border-strong: #D4CDBC;
+  --color-pine: #355D4C;
+  --color-celadon: #6E8D7C;
+  --color-primary: #355D4C;
+  --color-primary-hover: #2C4F41;
+  --color-on-primary: #FCFBF7;
+  --color-cinnabar: #B84F3B;
+  --color-on-cinnabar: #FCFBF7;
+  --color-selected: #E5EAE1;
+  --color-hover: #ECE8DC;
+  --color-focus-ring: #355D4C;
+  --color-success: #3F7A5A;
+  --color-danger: #A6463A;
+  --color-warning: #8A6D2F;
+  --color-track: #DCD6C6;
+
+  /* Typography */
+  --font-ui: -apple-system, BlinkMacSystemFont, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-brand: "Songti SC", "STSong", "SimSun", serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Geometry */
+  --rail-width: 64px;
+  --session-width: 244px;
+  --context-width: 280px;
+  --topbar-height: 56px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+}
+
+:root[data-theme="dark"] {
+  --color-bg: #181916;
+  --color-nav: #151613;
+  --color-surface: #1E201C;
+  --color-surface-2: #22241F;
+  --color-text: #ECE9DF;
+  --color-text-secondary: #AAA69C;
+  --color-text-muted: #AAA69C;
+  --color-border: #343630;
+  --color-border-strong: #454840;
+  --color-pine: #789A87;
+  --color-celadon: #789A87;
+  --color-primary: #466E59;
+  --color-primary-hover: #527E67;
+  --color-on-primary: #ECE9DF;
+  --color-cinnabar: #C76048;
+  --color-on-cinnabar: #F4EFE6;
+  --color-selected: #272C25;
+  --color-hover: #262824;
+  --color-focus-ring: #789A87;
+  --color-success: #6FA383;
+  --color-danger: #C76048;
+  --color-warning: #BFA25A;
+  --color-track: #3A3D35;
+}
+
+/* ── Base ─────────────────────────────────────────────────── */
+html, body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+}
+body { font-size: 15px; line-height: 1.55; }
+
+::selection { background: var(--color-selected); }
+
+/* Visible keyboard focus everywhere */
+:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ── Legacy Tailwind utility → token bridge ─────────────────
+   Lets pre-existing tab interiors follow the theme without
+   rewriting every tab. One DOM, two themes.                  */
+.bg-gray-950 { background-color: var(--color-bg); }
+.bg-gray-900 { background-color: var(--color-surface); }
+.bg-gray-800 { background-color: var(--color-surface-2); }
+.bg-gray-700 { background-color: var(--color-hover); }
+.bg-gray-800\/50 { background-color: var(--color-selected); }
+.bg-gray-900\/30 { background-color: transparent; }
+.hover\:bg-gray-800:hover { background-color: var(--color-hover); }
+.hover\:bg-gray-700:hover { background-color: var(--color-hover); }
+.border-gray-800, .border-gray-700 { border-color: var(--color-border); }
+.text-gray-100, .text-gray-200, .text-gray-300, .text-white { color: var(--color-text); }
+.text-gray-400, .text-gray-500, .text-gray-600 { color: var(--color-text-secondary); }
+
+/* Blue accents → pine/celadon */
+.text-blue-400, .text-blue-300 { color: var(--color-pine); }
+.bg-blue-600 { background-color: var(--color-primary); }
+.bg-blue-900, .bg-blue-900\/50 { background-color: var(--color-selected); }
+.hover\:bg-blue-700:hover, .hover\:bg-blue-500:hover { background-color: var(--color-primary-hover); }
+.bg-blue-900\/40 { background-color: var(--color-selected); }
+.bg-blue-600\/20 { background-color: var(--color-selected); }
+.bg-blue-600\/80 { background-color: var(--color-primary); }
+.border-blue-600\/30, .border-blue-500 { border-color: var(--color-pine); }
+.focus\:border-blue-500:focus { border-color: var(--color-pine); }
+.ring-blue-500 { --tw-ring-color: var(--color-pine); }
+.accent-blue-500 { accent-color: var(--color-pine); }
+.shadow-blue-600\/20 { box-shadow: none; }
+
+/* Primary actions need an explicit foreground.  The generic ``text-white``
+   bridge above intentionally follows body text for legacy neutral surfaces. */
+.bg-blue-600.text-white,
+.bg-blue-600\/80.text-white,
+.bg-green-600.text-white {
+  color: var(--color-on-primary);
+}
+.bg-green-600 { background-color: var(--color-primary); }
+.hover\:bg-green-700:hover { background-color: var(--color-primary-hover); }
+
+/* ── Accessibility: reduced motion ────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

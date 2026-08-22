@@ -12,6 +12,10 @@ from js.security.guard import BehaviorGuard
 from js.security.net_guard import OutboundURLError, PinnedTransport, resolve_and_validate
 from js.tools.registry import ToolParam, ToolResult, ToolSpec
 
+# Hard cap on fetched response bodies; enforced while streaming so oversized
+# bodies never land in memory.
+MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB
+
 
 class BrowserTool:
     """Fetch and extract web content."""
@@ -20,17 +24,6 @@ class BrowserTool:
         self.limits = limits
         self.guard = guard
         self._client: httpx.AsyncClient | None = None
-
-    def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(self.limits.browser_timeout),
-                follow_redirects=False,  # Prevent redirect-based SSRF bypass
-                headers={
-                    "User-Agent": f"JS-Agent/{__version__} (Research Bot)",
-                },
-            )
-        return self._client
 
     def get_specs(self) -> list[ToolSpec]:
         return [
@@ -66,16 +59,37 @@ class BrowserTool:
                 ),
                 timeout=httpx.Timeout(self.limits.browser_timeout),
                 follow_redirects=False,  # Prevent redirect-based SSRF bypass
+                # Ignore proxy env vars; a proxy would bypass the pinned IPs.
+                trust_env=False,
                 headers={
                     "User-Agent": f"JS-Agent/{__version__} (Research Bot)",
                 },
             ) as client:
-                response = await client.get(url)
-                if response.is_redirect:
-                    return ToolResult(success=False, error="Redirects are not followed for security")
-                response.raise_for_status()
+                async with client.stream("GET", url) as response:
+                    if response.is_redirect:
+                        return ToolResult(
+                            success=False, error="Redirects are not followed for security"
+                        )
+                    response.raise_for_status()
 
-                content = response.text
+                    chunks: list[bytes] = []
+                    total_bytes = 0
+                    async for chunk in response.aiter_bytes():
+                        total_bytes += len(chunk)
+                        if total_bytes > MAX_RESPONSE_BYTES:
+                            return ToolResult(
+                                success=False,
+                                error=(
+                                    f"Response body exceeds size limit ({total_bytes} > "
+                                    f"{MAX_RESPONSE_BYTES} bytes)"
+                                ),
+                            )
+                        chunks.append(chunk)
+                    raw = b"".join(chunks)
+
+                # Decode the full body like httpx Response.text does, but only
+                # after the streamed byte cap above has been enforced.
+                content = raw.decode(response.encoding or "utf-8", errors="replace")
                 if len(content) > max_chars:
                     content = content[:max_chars] + "\n... [truncated]"
 

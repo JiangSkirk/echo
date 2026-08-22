@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import fcntl
 import hashlib
 import json
 import os
 import re
+import secrets
+import stat
 import threading
 import time
 from pathlib import Path
@@ -28,6 +31,7 @@ from js.echo.turn_context import current_runtime_context
 from js.models.providers import ChatMessage
 from js.security.approvals import ApprovalDecision, ApprovalDecisionType
 from js.security.audit import AuditEventType
+from js.security.untrusted import is_untrusted_tool_name, wrap_untrusted_for_model
 from js.tools.registry import (
     EchoToolExecutionContext,
     ToolResult,
@@ -1884,20 +1888,44 @@ class ToolExecutorMixin(AgentBase):
                 or any(not character.isprintable() for character in model_id)
             ):
                 return failure("Invalid model selection", 400)
-            valid_models = {
-                f"{provider.name}/{model.id}"
-                for provider in self.settings.providers
-                for model in provider.models
-            }
-            from js.models.cloud_providers import ALL_PRESETS
+            configured_providers = {provider.name for provider in self.settings.providers}
+            # A model may only become active when its provider is actually
+            # configured AND the model is explicitly declared.  Router
+            # mappings alone are insufficient: a stale or dynamic mapping
+            # does not prove configuration.  This logic is shared with the
+            # HTTP endpoint via validate_model_for_activation() to prevent
+            # drift between the two layers.
+            from js.models.router import (
+                ModelSwitchValidationError,
+                validate_model_for_activation,
+            )
 
-            for preset in ALL_PRESETS:
-                for model in preset.models:
-                    valid_models.add(f"{preset.id}/{model.id}")
-            get_model_config = getattr(self.router, "get_model_config", None)
-            router_model = get_model_config(model_id) if callable(get_model_config) else None
-            if model_id not in valid_models and router_model is None:
-                return failure("Invalid model selection", 400)
+            def _get_preset(name: str) -> Any:
+                from js.models.cloud_providers import get_preset
+
+                return get_preset(name)
+
+            try:
+                validate_model_for_activation(
+                    model_id,
+                    configured_providers,
+                    get_model_binding=getattr(self.router, "get_model_binding", None),
+                    get_preset=_get_preset,
+                    provider_models={
+                        p.name: {m.id for m in p.models} for p in self.settings.providers
+                    },
+                )
+            except ModelSwitchValidationError as exc:
+                if exc.needs_config:
+                    return ToolResult(
+                        success=False,
+                        error=exc.detail,
+                        metadata={
+                            "status_code": exc.status_code,
+                            "needs_config": True,
+                        },
+                    )
+                return failure(exc.detail, exc.status_code)
 
             from js.utils.atomic_state import read_text_state, write_text_state
 
@@ -1942,33 +1970,98 @@ class ToolExecutorMixin(AgentBase):
             )
 
         async def setup_state_handler(action: str) -> ToolResult:
-            if action not in {"complete", "reset"}:
+            # complete/skip dismiss the wizard; start tracks mid-wizard progress;
+            # reopen re-shows the wizard after skip/complete without reopening auth
+            # bootstrap; reset returns to pending (admin constraints still apply).
+            if action not in {"complete", "reset", "skip", "start", "reopen"}:
                 return failure("Invalid setup state action", 400)
 
             from js.web.auth import AuthManager
+
+            previous_first_run = bool(getattr(self.settings, "first_run_completed", False))
+            previous_status = str(getattr(self.settings, "onboarding_status", None) or "pending")
+
+            if action == "complete":
+                next_status = "completed"
+                next_first_run = True
+            elif action == "skip":
+                next_status = "skipped"
+                next_first_run = True
+            elif action == "start":
+                next_status = "in_progress"
+                # Never reopen the auth bootstrap window via start once dismissed.
+                next_first_run = bool(
+                    previous_first_run or previous_status in {"completed", "skipped"}
+                )
+            elif action == "reopen":
+                # Settings "重新运行向导": show wizard again; bootstrap stays closed.
+                if previous_status not in {"completed", "skipped"} and not previous_first_run:
+                    return failure(
+                        "Onboarding reopen requires a prior completed or skipped state",
+                        409,
+                    )
+                next_status = "in_progress"
+                next_first_run = True
+            else:  # reset
+                next_status = "pending"
+                next_first_run = False
+
+            # Skip/complete may mint a bootstrap *admin* auth key when required.
+            # Never invent provider/model API keys.
+            mint_admin = action in {"complete", "skip"}
+
+            def _persist_onboarding(target_settings: Any) -> None:
+                target_settings.onboarding_status = next_status
+                target_settings.first_run_completed = next_first_run
+                try:
+                    target_settings.save(fields=["first_run_completed", "onboarding_status"])
+                except PermissionError:
+                    fallback = Path(target_settings.state_dir) / "config.yaml"
+                    target_settings.save(fallback, ["first_run_completed", "onboarding_status"])
+
+            def _restore_onboarding(target_settings: Any, *, status: str, first_run: bool) -> None:
+                target_settings.onboarding_status = status
+                target_settings.first_run_completed = first_run
 
             async with setup_mutation_lock:
                 auth_manager = AuthManager(Path(self.settings.state_dir))
                 if action == "reset" and auth_manager.has_admin():
                     return failure("Setup reset is unavailable while an admin key exists", 409)
 
-                previous = bool(getattr(self.settings, "first_run_completed", False))
+                peer = getattr(self.settings, "_appshell_peer_settings", None)
+                peer_previous_first_run = (
+                    bool(getattr(peer, "first_run_completed", False)) if peer is not None else None
+                )
+                peer_previous_status = (
+                    str(getattr(peer, "onboarding_status", None) or "pending")
+                    if peer is not None
+                    else None
+                )
                 plaintext_admin_key: str | None = None
                 try:
-                    if action == "complete" and bool(
+                    if mint_admin and bool(
                         getattr(getattr(self.settings, "security", None), "api_key_required", False)
                     ):
                         plaintext_admin_key = auth_manager.ensure_bootstrap_admin_key()
 
-                    self.settings.first_run_completed = action == "complete"
-                    try:
-                        self.settings.save(fields=["first_run_completed"])
-                    except PermissionError:
-                        fallback = Path(self.settings.state_dir) / "config.yaml"
-                        self.settings.save(fallback, ["first_run_completed"])
+                    _persist_onboarding(self.settings)
+                    # AppShell: one product skip/complete entry mirrors to peer mode.
+                    # Workspace paths, leases, and approvals are never mirrored.
+                    if peer is not None and bool(
+                        getattr(self.settings, "_appshell_managed", False)
+                    ):
+                        _persist_onboarding(peer)
                 except Exception:
                     self.logger.error("Setup state mutation failed", exc_info=True)
-                    self.settings.first_run_completed = previous
+                    _restore_onboarding(
+                        self.settings, status=previous_status, first_run=previous_first_run
+                    )
+                    if peer is not None and peer_previous_status is not None:
+                        _restore_onboarding(
+                            peer,
+                            status=peer_previous_status,
+                            first_run=bool(peer_previous_first_run),
+                        )
                     if plaintext_admin_key:
                         try:
                             auth_manager.revoke_key(
@@ -1982,17 +2075,33 @@ class ToolExecutorMixin(AgentBase):
                     return failure("Setup state could not be saved safely", 500)
 
                 payload: dict[str, Any] = {
-                    "first_run_completed": action == "complete",
+                    "first_run_completed": next_first_run,
+                    "onboarding_status": next_status,
+                    "appshell_mirrored": bool(
+                        peer is not None and getattr(self.settings, "_appshell_managed", False)
+                    ),
                 }
                 if plaintext_admin_key:
                     key_reference = self.stage_setup_admin_key(plaintext_admin_key)
                     if not key_reference:
-                        self.settings.first_run_completed = previous
+                        _restore_onboarding(
+                            self.settings,
+                            status=previous_status,
+                            first_run=previous_first_run,
+                        )
+                        if peer is not None and peer_previous_status is not None:
+                            _restore_onboarding(
+                                peer,
+                                status=peer_previous_status,
+                                first_run=bool(peer_previous_first_run),
+                            )
                         try:
                             auth_manager.revoke_key(
                                 hashlib.sha256(plaintext_admin_key.encode("utf-8")).hexdigest()
                             )
-                            self.settings.save(fields=["first_run_completed"])
+                            self.settings.save(fields=["first_run_completed", "onboarding_status"])
+                            if peer is not None:
+                                peer.save(fields=["first_run_completed", "onboarding_status"])
                         except Exception:
                             self.logger.critical(
                                 "Setup key staging rollback failed",
@@ -2276,6 +2385,9 @@ class ToolExecutorMixin(AgentBase):
                 "embedder_recover",
                 "capsule_store",
                 "capsule_delete",
+                "compression_create",
+                "compression_approve",
+                "compression_reject",
             }
             if action not in allowed_actions:
                 return failure("Invalid memory mutation action", 400)
@@ -2316,6 +2428,10 @@ class ToolExecutorMixin(AgentBase):
                         name = payload.get("name")
                         content = payload.get("content")
                         if not isinstance(name, str) or not isinstance(content, str):
+                            return memory_failure("Invalid memory file payload", 400)
+                        from js.memory.store import MemoryStore
+
+                        if name not in MemoryStore._VALID_MEMORY_FILES:
                             return memory_failure("Invalid memory file payload", 400)
                         await asyncio.to_thread(
                             memory.write_memory_file,
@@ -2584,6 +2700,112 @@ class ToolExecutorMixin(AgentBase):
                                 for key, value in capsule_meta.items()
                                 if key != "capsule_text"
                             }
+                        }
+                    elif action == "compression_create":
+                        from js.memory.layers import (
+                            MemoryCompressionAuthorityV1,
+                            MemoryRecordKind,
+                            MemorySourceRefV1,
+                        )
+
+                        source_refs_raw = payload.get("source_refs")
+                        proposed_summary = payload.get("proposed_summary")
+                        if not isinstance(source_refs_raw, list) or not source_refs_raw:
+                            return memory_failure("source_refs must be a non-empty list", 400)
+                        if not isinstance(proposed_summary, str) or not proposed_summary.strip():
+                            return memory_failure("proposed_summary must be non-empty string", 400)
+                        if context.task_ref is None:
+                            return memory_failure("Compression requires signed TaskRef", 403)
+                        role_val = getattr(context, "role", "user") or "user"
+                        comp_auth = MemoryCompressionAuthorityV1(
+                            task_ref_hash=context.task_ref.canonical_hash(),
+                            owner=context.task_ref.owner,
+                            mode=context.task_ref.mode.value,
+                            workspace=context.task_ref.workspace,
+                            role=role_val,
+                            session=context.task_ref.session,
+                            run=context.task_ref.run,
+                        )
+                        comp_refs: list[MemorySourceRefV1] = []
+                        for sr in source_refs_raw:
+                            if (
+                                not isinstance(sr, dict)
+                                or "kind" not in sr
+                                or "record_id" not in sr
+                            ):
+                                return memory_failure("Invalid source_ref entry", 400)
+                            comp_refs.append(
+                                MemorySourceRefV1(
+                                    kind=MemoryRecordKind(str(sr["kind"])),
+                                    record_id=str(sr["record_id"]),
+                                )
+                            )
+                        comp_proposal = await asyncio.to_thread(
+                            memory.create_compression_proposal,
+                            authority=comp_auth,
+                            source_refs=tuple(comp_refs),
+                            proposed_summary=proposed_summary,
+                        )
+                        response = {"success": True, "proposal": comp_proposal.as_dict()}
+                    elif action == "compression_approve":
+                        from js.memory.layers import MemoryCompressionAuthorityV1
+
+                        comp_pid = payload.get("proposal_id")
+                        if not isinstance(comp_pid, str) or not comp_pid:
+                            return memory_failure("proposal_id must be non-empty string", 400)
+                        if context.task_ref is None:
+                            return memory_failure("Compression requires signed TaskRef", 403)
+                        role_val = getattr(context, "role", "user") or "user"
+                        comp_auth = MemoryCompressionAuthorityV1(
+                            task_ref_hash=context.task_ref.canonical_hash(),
+                            owner=context.task_ref.owner,
+                            mode=context.task_ref.mode.value,
+                            workspace=context.task_ref.workspace,
+                            role=role_val,
+                            session=context.task_ref.session,
+                            run=context.task_ref.run,
+                        )
+                        comp_result = await asyncio.to_thread(
+                            memory.approve_compression_proposal,
+                            comp_pid,
+                            authority=comp_auth,
+                        )
+                        response = {
+                            "success": comp_result.success,
+                            "error_code": comp_result.error_code,
+                            "proposal": comp_result.proposal.as_dict()
+                            if comp_result.proposal
+                            else None,
+                            "capsule": comp_result.capsule.as_dict()
+                            if comp_result.capsule
+                            else None,
+                        }
+                    elif action == "compression_reject":
+                        from js.memory.layers import MemoryCompressionAuthorityV1
+
+                        comp_pid = payload.get("proposal_id")
+                        if not isinstance(comp_pid, str) or not comp_pid:
+                            return memory_failure("proposal_id must be non-empty string", 400)
+                        if context.task_ref is None:
+                            return memory_failure("Compression requires signed TaskRef", 403)
+                        role_val = getattr(context, "role", "user") or "user"
+                        comp_auth = MemoryCompressionAuthorityV1(
+                            task_ref_hash=context.task_ref.canonical_hash(),
+                            owner=context.task_ref.owner,
+                            mode=context.task_ref.mode.value,
+                            workspace=context.task_ref.workspace,
+                            role=role_val,
+                            session=context.task_ref.session,
+                            run=context.task_ref.run,
+                        )
+                        comp_rejected = await asyncio.to_thread(
+                            memory.reject_compression_proposal,
+                            comp_pid,
+                            authority=comp_auth,
+                        )
+                        response = {
+                            "success": comp_rejected is not None,
+                            "proposal": comp_rejected.as_dict() if comp_rejected else None,
                         }
                     else:
                         session_id = payload.get("session_id")
@@ -3554,7 +3776,7 @@ class ToolExecutorMixin(AgentBase):
                             "action",
                             "string",
                             "Setup state action",
-                            enum=["complete", "reset"],
+                            enum=["complete", "reset", "skip", "start", "reopen"],
                         )
                     ],
                     model_visible=False,
@@ -3639,6 +3861,9 @@ class ToolExecutorMixin(AgentBase):
                                 "embedder_recover",
                                 "capsule_store",
                                 "capsule_delete",
+                                "compression_create",
+                                "compression_approve",
+                                "compression_reject",
                             ],
                         ),
                         ToolParam("payload_ref", "string", "Opaque one-time memory payload"),
@@ -4145,12 +4370,23 @@ class ToolExecutorMixin(AgentBase):
             raise RuntimeError("Echo tool execution requires an initialized EchoSafetyService")
         runtime_context = current_runtime_context()
         product_id = str(getattr(self.settings, "product_id", "js-agent"))
+        effect_workspace: str | None = None
         if (
             runtime_context is not None
             and runtime_context.session_id == session_id
             and runtime_context.run_id == run_id
         ):
             product_id = runtime_context.product_id
+            task_ref = runtime_context.task_ref
+            if task_ref is not None:
+                if (
+                    task_ref.owner != echo_context.owner_key_hash
+                    or task_ref.session != session_id
+                    or task_ref.run != run_id
+                    or task_ref.legacy_product_id != product_id
+                ):
+                    raise RuntimeError("Echo TaskRef does not match tool effect authority")
+                effect_workspace = task_ref.workspace
         replay_class: ReplayClass = (
             "idempotent" if spec is not None and spec.read_only else "non_idempotent"
         )
@@ -4179,30 +4415,12 @@ class ToolExecutorMixin(AgentBase):
                 args_hash=echo_context.args_hash,
                 lease_id=echo_context.lease_id,
                 replay_class=replay_class,
+                workspace=effect_workspace,
             ),
             on_cancel=_finish_cancelled_tool_effect,
             executor=self._echo_durable_executor,
         )
         tool_effect = claimed_effect.value
-        if approval_ref is not None:
-            # Link the approved execution back to its approval in the
-            # authoritative EchoLedger (claim is exactly-once via the outbox).
-            await asyncio.to_thread(
-                lambda: echo_service.record_approval_event(
-                    tenant_id=approval_ref["tenant_id"],
-                    product_id=product_id,
-                    session_id=session_id,
-                    run_id=run_id,
-                    event_type="approval_execution_claimed",
-                    request_id=approval_ref["request_id"],
-                    tool_name=tool_name,
-                    arguments_hash=echo_context.args_hash,
-                    extra={
-                        "approval_effect_id": approval_ref["approval_effect_id"],
-                        "execution_effect_id": tool_effect.effect_id,
-                    },
-                )
-            )
 
         def _record_approval_finalized(final_status: str) -> None:
             if approval_ref is None:
@@ -4224,6 +4442,28 @@ class ToolExecutorMixin(AgentBase):
             )
 
         try:
+            if approval_ref is not None:
+                # Link the approved execution back to its approval in the
+                # authoritative EchoLedger (claim is exactly-once via the
+                # outbox).  This must stay inside the try: if journaling fails,
+                # the except handlers below release the claim by finishing the
+                # tool effect instead of leaking it.
+                await asyncio.to_thread(
+                    lambda: echo_service.record_approval_event(
+                        tenant_id=approval_ref["tenant_id"],
+                        product_id=product_id,
+                        session_id=session_id,
+                        run_id=run_id,
+                        event_type="approval_execution_claimed",
+                        request_id=approval_ref["request_id"],
+                        tool_name=tool_name,
+                        arguments_hash=echo_context.args_hash,
+                        extra={
+                            "approval_effect_id": approval_ref["approval_effect_id"],
+                            "execution_effect_id": tool_effect.effect_id,
+                        },
+                    )
+                )
             result = await self.registry.execute(
                 run_id,
                 tool_name,
@@ -4278,6 +4518,7 @@ class ToolExecutorMixin(AgentBase):
         )
         # Prefer excel_write's content digest. Work result policy rewrites
         # metadata.path to a public handle, so path-based hashing is unreliable.
+        artifact_refs: tuple[Any, ...] = ()
         if tool_name == "excel_write" and result.success and isinstance(result.metadata, dict):
             content_digest = result.metadata.get("content_sha256")
             if (
@@ -4286,11 +4527,38 @@ class ToolExecutorMixin(AgentBase):
                 and all(char in "0123456789abcdef" for char in content_digest.lower())
             ):
                 durable_output_hash = f"sha256:{content_digest.lower()}"
+                # Build verified ArtifactRefV1 for excel_write results
+                from js.echo.mode_contract import AppMode, ArtifactRefV1
+
+                eff_mode = AppMode.WORK if product_id == "js-work" else AppMode.PERSONAL
+                eff_owner = owner_key_hash or "local-user"
+                if not eff_owner or len(eff_owner) < 1:
+                    eff_owner = "0" * 16
+                eff_workspace: str | None = tool_effect.workspace
+                # Only build artifact ref if workspace is valid for the mode
+                if eff_mode is AppMode.WORK and not eff_workspace:
+                    # Work mode requires non-empty workspace for ArtifactRefV1
+                    # Skip artifact ref if binding doesn't have workspace
+                    artifact_refs = ()
+                else:
+                    artifact_ref = ArtifactRefV1(
+                        mode=eff_mode,
+                        owner=eff_owner,
+                        session=session_id,
+                        workspace=eff_workspace,
+                        kind="spreadsheet",
+                        uri=f"echo://artifact/excel_write/{content_digest.lower()}",
+                        digest=f"sha256:{content_digest.lower()}",
+                        acl="owner",
+                        created_by_run=run_id,
+                    )
+                    artifact_refs = (artifact_ref,)
         await durable_to_thread(
             lambda: echo_service.finish_tool_effect(
                 tool_effect,
                 status=receipt_status,
                 output_hash=durable_output_hash,
+                artifact_refs=artifact_refs,
             ),
             claim=claimed_effect,
         )
@@ -4308,10 +4576,14 @@ class ToolExecutorMixin(AgentBase):
         if fail_check.decision == "block":
             result = ToolResult(success=False, error=f"Security: {fail_check.reason}")
 
+        content = result.to_text()
+        if is_untrusted_tool_name(tool_name):
+            content = wrap_untrusted_for_model(content)
+
         return (
             ChatMessage(
                 role="tool",
-                content=result.to_text(),
+                content=content,
                 tool_call_id=tool_call_id,
                 name=tool_name,
             ),
@@ -4737,13 +5009,91 @@ class ToolExecutorMixin(AgentBase):
         self.registry.register(spec, search_handler)
 
 
+def _read_tool_lease_key_strict(path: Path) -> bytes:
+    """Read the tool-lease MAC key with the same hardening as the Echo ledger
+    journal key (see ``_read_strict_key`` in js/echo/ledger/service.py):
+    lstat+fstat identity checks, no symlink following, single hardlink, and a
+    mandatory 0600 mode."""
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"invalid tool lease key {path}: expected a 32-byte key file") from exc
+    if path.is_symlink() or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise ValueError(f"invalid tool lease key {path}: expected a 32-byte regular file")
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino)
+        ):
+            raise ValueError(f"invalid tool lease key {path}: key file changed while opening")
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            encoded = handle.read().strip()
+        current = path.lstat()
+        if (
+            stat.S_ISLNK(current.st_mode)
+            or current.st_nlink != 1
+            or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
+        ):
+            raise ValueError(f"invalid tool lease key {path}: key file changed while reading")
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    try:
+        key = bytes.fromhex(encoded)
+    except ValueError as exc:
+        raise ValueError(
+            f"invalid tool lease key {path}: expected 32-byte hexadecimal data"
+        ) from exc
+    if len(encoded) != 64 or len(key) != 32:
+        raise ValueError(f"invalid tool lease key {path}: expected 32-byte hexadecimal data")
+    if stat.S_IMODE(current.st_mode) != 0o600:
+        raise ValueError(f"invalid tool lease key {path}: expected mode 0600")
+    return key
+
+
 def _load_or_create_tool_lease_key(path: Path) -> bytes:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        os.chmod(path, 0o600)
-        return bytes.fromhex(path.read_text(encoding="utf-8").strip())
-    key = os.urandom(32)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(key.hex())
-    return key
+    # Serialize first-start creation through a lock file so concurrent
+    # processes cannot race and end up with different keys or a torn write.
+    lock_path = path.with_name(path.name + ".lock")
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        if path.exists() or path.is_symlink():
+            return _read_tool_lease_key_strict(path)
+        key = secrets.token_bytes(32)
+        tmp_path: Path | None = None
+        try:
+            tmp_path = path.with_name(
+                f".{path.name}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(8)}.tmp"
+            )
+            key_fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.fchmod(key_fd, 0o600)
+            with os.fdopen(key_fd, "w", encoding="utf-8") as handle:
+                handle.write(key.hex())
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, path)
+            tmp_path = None
+            os.chmod(path, 0o600)
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink()
+                except FileNotFoundError:
+                    pass
+        return _read_tool_lease_key_strict(path)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
