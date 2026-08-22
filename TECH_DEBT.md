@@ -89,4 +89,16 @@
 
 ---
 
-*最后更新：2026-08-19*
+## 🔵 Orin 安全架构文档（机器生成，需人工评审）
+
+| 文件 | 性质 | 状态 |
+|------|------|------|
+| `docs/security/orin/ORIN_DESIGN.md` v1.3 | sidecar 增强路线（迁移期设计 + 机制库存） | 已冻结归档（基线 `5a97781`） |
+| `docs/security/orin/ORIN_EFFECT_KERNEL_V1.md` | 效果内核路线（终态基线） | 已冻结；勘误：`registry.py` 引用行号 655/78 互换（论断成立） |
+| `docs/security/orin/ORIN_MERGE_REVIEW.md` | 合并评审：33 项机制判定 + 17 条决策（已拍板） | 引用已核验；实施以阶段 A 规格为准 |
+| `docs/security/orin/ORIN_STAGE_A_SPEC.md` | 阶段 A 实施规格 | 机器生成，未经人工评审不得施工 |
+
+
+---
+
+*最后更新：2026-08-22*
