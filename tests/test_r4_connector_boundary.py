@@ -448,6 +448,52 @@ async def test_signed_standalone_context_reaches_only_runtime_connector_boundary
     assert outcome.effects[0].effect_type == "read"
 
 
+class _IpcLeaseAdapter:
+    """No MAC key; forwards verify/consume like an orind IPC handle."""
+
+    def __init__(self, inner: LeaseAuthority) -> None:
+        self._inner = inner
+        self._now = inner._now
+
+    def verify_bound(self, *args: object, **kwargs: object) -> None:
+        self._inner.verify_bound(*args, **kwargs)
+
+    def consume_bound(self, *args: object, **kwargs: object) -> object:
+        return self._inner.consume_bound(*args, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_ipc_lease_adapter_is_accepted_by_connector_boundary(
+    tmp_path: Path,
+) -> None:
+    agent, runtime, context, authority, _store, _principal, _token = _runtime_bundle(tmp_path)
+    agent._get_echo_tool_lease_authority = lambda: _IpcLeaseAdapter(authority)
+    source_file = tmp_path / "workspace" / "source.txt"
+    source_file.write_text("test content", encoding="utf-8")
+    params = {"path": "source.txt"}
+    request = _read_request(context, authority, params=params)
+
+    outcome = await runtime.execute_connector_effect(request, params=params, context=context)
+
+    assert outcome.success is True
+    assert outcome.effects[0].effect_type == "read"
+
+
+@pytest.mark.asyncio
+async def test_unrelated_lease_handle_is_rejected_by_connector_boundary(
+    tmp_path: Path,
+) -> None:
+    agent, runtime, context, authority, _store, _principal, _token = _runtime_bundle(tmp_path)
+    agent._get_echo_tool_lease_authority = lambda: object()
+    source_file = tmp_path / "workspace" / "source.txt"
+    source_file.write_text("test content", encoding="utf-8")
+    params = {"path": "source.txt"}
+    request = _read_request(context, authority, params=params)
+
+    with pytest.raises(RuntimeError, match="lease authority is invalid"):
+        await runtime.execute_connector_effect(request, params=params, context=context)
+
+
 @pytest.mark.asyncio
 async def test_tampered_taskref_and_params_fail_before_connector_dispatch(
     tmp_path: Path,
@@ -565,8 +611,7 @@ async def test_appshell_connector_preflight_failure_releases_operation_exactly_o
 
     binding = principal.epoch_binding()
     held = [
-        store.begin_operation(binding, operation_kind=f"preflight_{index}")
-        for index in range(255)
+        store.begin_operation(binding, operation_kind=f"preflight_{index}") for index in range(255)
     ]
     try:
         with pytest.raises(PermissionError):
@@ -592,10 +637,7 @@ async def test_appshell_connector_preserves_256_operation_capacity_code(
     )
     assert store is not None and principal is not None
     binding = principal.epoch_binding()
-    held = [
-        store.begin_operation(binding, operation_kind=f"held_{index}")
-        for index in range(256)
-    ]
+    held = [store.begin_operation(binding, operation_kind=f"held_{index}") for index in range(256)]
     request = _read_request(context, authority, params={"path": "source.txt"})
     try:
         with pytest.raises(AppShellOperationLimitError):
@@ -667,7 +709,6 @@ def test_runtime_object_cannot_authorize_dispatch() -> None:
     # _dispatch_authorized no longer accepts runtime_authority parameter
     # Passing it as a kwarg should raise TypeError
     import asyncio
-
 
     async def _try_dispatch() -> None:
         # Constructing a valid request is not necessary -- the signature

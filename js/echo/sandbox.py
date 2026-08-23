@@ -21,6 +21,7 @@ from js.echo.capability import (
     LeaseDenied,
     LeaseOwnerMismatch,
     LeaseUnknownTool,
+    is_lease_authority_handle,
 )
 from js.echo.types import CapabilityLease
 
@@ -71,21 +72,23 @@ class LeasedSandbox:
         authority: LeaseAuthority,
         now_fn: Callable[[], int],
     ) -> None:
-        """Construct a sandbox bound to a :class:`LeaseAuthority` and clock.
+        """Construct a sandbox bound to a lease authority handle and clock.
 
         Parameters
         ----------
         authority:
-            The :class:`LeaseAuthority` used to issue, verify and consume
-            leases. Must be a real ``LeaseAuthority`` instance.
+            The authority used to issue, verify and consume leases. Must be
+            a real ``LeaseAuthority`` instance or an Orin IPC handle
+            (subclassing ``LeaseAuthority`` is rejected — the handle check
+            is fail-closed).
         now_fn:
             Injected clock returning integer milliseconds. The sandbox
             uses this only for :meth:`execute` verify / consume calls; the
             authority owns its own ``now_fn`` for lease expiry math.
         """
 
-        if not isinstance(authority, LeaseAuthority):
-            raise TypeError("authority must be a LeaseAuthority instance")
+        if not is_lease_authority_handle(authority):
+            raise TypeError("authority must be a lease authority handle")
         if not callable(now_fn):
             raise TypeError("now_fn must be callable")
 

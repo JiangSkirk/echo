@@ -608,6 +608,7 @@ def test_verified_artifact_ref_round_trips_through_endpoint_and_orphans_never_ap
             for key, value in expected.to_dict().items()
             if key != "owner"
         }
+        | {"orin_taint": 2048}  # Orin WP2 site 9: INBOX_CONTENT provenance bit
     ]
     assert "orphan.xlsx" not in response.text
     assert str(workspace) not in response.text

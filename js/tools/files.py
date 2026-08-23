@@ -553,22 +553,34 @@ class FileTools:
             result = "\n".join(lines)
             budget = self.limits.tool_output_budget_chars
 
+            # Orin WP2 site 11: credential-path reads mark the result so the
+            # turn loop stamps SECRET on the tool-result message (D §6.1
+            # deterministic credential table — never a semantic judgment).
+            from js.orin.taint import METADATA_SECRET_FLAG, path_is_credential, secret_hint
+
+            secret_hit = path_is_credential(str(logical)) or secret_hint(content)
+            from js.orin.hooks import inspect_canary_text
+
+            inspect_canary_text(content, surface="read")
+            metadata: dict[str, Any] = {"lines": len(lines), "total_lines": total_lines}
+            if secret_hit:
+                metadata[METADATA_SECRET_FLAG] = True
+
             if len(result) > budget:
+                overflow_meta: dict[str, Any] = {
+                    "too_large": True,
+                    "size": len(content),
+                    "suggestion": "Use file_read with offset and limit to paginate",
+                }
+                if secret_hit:
+                    overflow_meta[METADATA_SECRET_FLAG] = True
                 return ToolResult(
                     success=True,
                     output="",
-                    metadata={
-                        "too_large": True,
-                        "size": len(content),
-                        "suggestion": "Use file_read with offset and limit to paginate",
-                    },
+                    metadata=overflow_meta,
                 )
 
-            return ToolResult(
-                success=True,
-                output=result,
-                metadata={"lines": len(lines), "total_lines": total_lines},
-            )
+            return ToolResult(success=True, output=result, metadata=metadata)
         except Exception as e:
             return ToolResult(success=False, error=str(e))
 
@@ -580,6 +592,12 @@ class FileTools:
                 return ToolResult(success=False, error=decision.reason)
         except Exception as e:
             return ToolResult(success=False, error=str(e))
+
+        from js.orin.hooks import inspect_canary_text
+
+        canary_block = inspect_canary_text(content, surface="write")
+        if canary_block is not None:
+            return ToolResult(success=False, error=canary_block)
 
         if len(content) > self.limits.file_write_max_chars:
             return ToolResult(

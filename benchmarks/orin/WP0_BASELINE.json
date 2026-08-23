@@ -1,0 +1,396 @@
+{
+  "generated_at": "2026-08-22T16:44:50.517324+00:00",
+  "git": {
+    "branch": "feature/orin-stage-a",
+    "head": "e308fea185b81963bc16ba86b2361d388866fc2d",
+    "dirty": true
+  },
+  "tasks": {
+    "task_count": 11,
+    "repeats": 3,
+    "note": "End-to-end mock-provider task wall time, not isolated tool-handler latency. Scoring duration from runner.score_task is ignored.",
+    "overall_ms": {
+      "n": 33,
+      "p50": 94.021,
+      "p99": 215.412,
+      "min": 78.555,
+      "max": 256.431,
+      "mean": 100.464,
+      "samples": [
+        256.431,
+        104.91,
+        94.489,
+        97.971,
+        113.352,
+        93.671,
+        98.362,
+        100.071,
+        105.431,
+        80.041,
+        87.202,
+        89.813,
+        100.914,
+        89.451,
+        91.82,
+        94.021,
+        90.28,
+        93.671,
+        100.224,
+        99.451,
+        78.555,
+        92.181,
+        89.184,
+        99.743,
+        89.136,
+        92.009,
+        94.312,
+        88.361,
+        93.573,
+        100.386,
+        98.288,
+        89.745,
+        128.247
+      ]
+    },
+    "per_task_ms": {
+      "code_review_python": {
+        "n": 3,
+        "p50": 89.813,
+        "p99": 253.098,
+        "min": 89.184,
+        "max": 256.431,
+        "mean": 145.142,
+        "samples": [
+          256.431,
+          89.813,
+          89.184
+        ]
+      },
+      "file_delete_cleanup": {
+        "n": 3,
+        "p50": 100.914,
+        "p99": 104.831,
+        "min": 99.743,
+        "max": 104.91,
+        "mean": 101.856,
+        "samples": [
+          104.91,
+          100.914,
+          99.743
+        ]
+      },
+      "file_read_greet": {
+        "n": 3,
+        "p50": 89.451,
+        "p99": 94.388,
+        "min": 89.136,
+        "max": 94.489,
+        "mean": 91.025,
+        "samples": [
+          94.489,
+          89.451,
+          89.136
+        ]
+      },
+      "file_search_glob": {
+        "n": 3,
+        "p50": 92.009,
+        "p99": 97.852,
+        "min": 91.82,
+        "max": 97.971,
+        "mean": 93.934,
+        "samples": [
+          97.971,
+          91.82,
+          92.009
+        ]
+      },
+      "file_write_hello": {
+        "n": 3,
+        "p50": 94.312,
+        "p99": 112.971,
+        "min": 94.021,
+        "max": 113.352,
+        "mean": 100.562,
+        "samples": [
+          113.352,
+          94.021,
+          94.312
+        ]
+      },
+      "large_file_truncation": {
+        "n": 3,
+        "p50": 90.28,
+        "p99": 93.603,
+        "min": 88.361,
+        "max": 93.671,
+        "mean": 90.771,
+        "samples": [
+          93.671,
+          90.28,
+          88.361
+        ]
+      },
+      "multi_step_analysis": {
+        "n": 3,
+        "p50": 93.671,
+        "p99": 98.269,
+        "min": 93.573,
+        "max": 98.362,
+        "mean": 95.202,
+        "samples": [
+          98.362,
+          93.671,
+          93.573
+        ]
+      },
+      "multi_step_create_and_list": {
+        "n": 3,
+        "p50": 100.224,
+        "p99": 100.382,
+        "min": 100.071,
+        "max": 100.386,
+        "mean": 100.227,
+        "samples": [
+          100.071,
+          100.224,
+          100.386
+        ]
+      },
+      "multi_tool_pipeline": {
+        "n": 3,
+        "p50": 99.451,
+        "p99": 105.312,
+        "min": 98.288,
+        "max": 105.431,
+        "mean": 101.057,
+        "samples": [
+          105.431,
+          99.451,
+          98.288
+        ]
+      },
+      "security_path_traversal": {
+        "n": 3,
+        "p50": 80.041,
+        "p99": 89.551,
+        "min": 78.555,
+        "max": 89.745,
+        "mean": 82.78,
+        "samples": [
+          80.041,
+          78.555,
+          89.745
+        ]
+      },
+      "shell_echo": {
+        "n": 3,
+        "p50": 92.181,
+        "p99": 127.526,
+        "min": 87.202,
+        "max": 128.247,
+        "mean": 102.543,
+        "samples": [
+          87.202,
+          92.181,
+          128.247
+        ]
+      }
+    },
+    "scores": {
+      "code_review_python": {
+        "mean": 1.0,
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "file_delete_cleanup": {
+        "mean": 1.0,
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "file_read_greet": {
+        "mean": 1.0,
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "file_search_glob": {
+        "mean": 1.0,
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "file_write_hello": {
+        "mean": 1.0,
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "large_file_truncation": {
+        "mean": 1.0,
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "multi_step_analysis": {
+        "mean": 1.0,
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "multi_step_create_and_list": {
+        "mean": 1.0,
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "multi_tool_pipeline": {
+        "mean": 1.0,
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "security_path_traversal": {
+        "mean": 1.0,
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "shell_echo": {
+        "mean": 1.0,
+        "samples": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    "failures": []
+  },
+  "lease_in_memory": {
+    "ledger_path": null,
+    "issue": {
+      "n": 10000,
+      "p50_us": 13.667,
+      "p99_us": 32.335,
+      "total_s": 0.15265,
+      "ops_per_s": 65509.4
+    },
+    "consume": {
+      "n": 10000,
+      "p50_us": 12.625,
+      "p99_us": 21.084,
+      "total_s": 0.130434,
+      "ops_per_s": 76667.0
+    }
+  },
+  "lease_jsonl_separate": {
+    "ledger_path": "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/orin-wp0-ledger-60n9q5m0/echo_tool_lease.jsonl",
+    "issue": {
+      "n": 1000,
+      "p50_us": 6645.771,
+      "p99_us": 13343.592,
+      "total_s": 6.760086,
+      "ops_per_s": 147.9
+    },
+    "consume": {
+      "n": 1000,
+      "p50_us": 16372.958,
+      "p99_us": 26395.826,
+      "total_s": 16.625724,
+      "ops_per_s": 60.1
+    }
+  },
+  "cold_start": {
+    "n_requested": 10,
+    "elapsed_ms": {
+      "n": 10,
+      "p50": 102.95,
+      "p99": 109.104,
+      "min": 101.866,
+      "max": 109.688,
+      "mean": 103.377,
+      "samples": [
+        109.688,
+        103.195,
+        102.121,
+        102.37,
+        102.827,
+        103.081,
+        102.422,
+        101.866,
+        103.127,
+        103.072
+      ]
+    },
+    "rss_bytes": {
+      "n": 10,
+      "p50": 125771776.0,
+      "p99": 125905141.76,
+      "min": 125599744.0,
+      "max": 125911040.0,
+      "mean": 125776691.2,
+      "samples": [
+        125747200.0,
+        125747200.0,
+        125845504.0,
+        125911040.0,
+        125714432.0,
+        125812736.0,
+        125763584.0,
+        125779968.0,
+        125599744.0,
+        125845504.0
+      ]
+    },
+    "rss_mib": {
+      "n": 10,
+      "p50": 119.945,
+      "p99": 120.073,
+      "min": 119.781,
+      "max": 120.078,
+      "mean": 119.95,
+      "samples": [
+        119.922,
+        119.922,
+        120.016,
+        120.078,
+        119.891,
+        119.984,
+        119.938,
+        119.953,
+        119.781,
+        120.016
+      ]
+    },
+    "errors": []
+  },
+  "pytest": {
+    "skipped": false,
+    "returncode": 1,
+    "elapsed_s": 483.979,
+    "summary_tail": "  /Users/jiangxuanzhen/titan-agent/tests/test_work_cli_surface.py:118: FutureWarning: js-work is a compatibility shim; use `js work`.\n    work_cli.compat_main()\n\ntests/test_work_cli_surface.py::test_compat_and_module_dispatch_through_same_canonical_hook\n  /Users/jiangxuanzhen/titan-agent/js_work/__main__.py:8: FutureWarning: js-work is a compatibility shim; use `js work`.\n    compat_main()\n\ntests/test_work_cli_surface.py::test_compat_web_inherits_canonical_overlap_gate\n  /Users/jiangxuanzhen/titan-agent/tests/test_work_cli_surface.py:148: FutureWarning: js-work is a compatibility shim; use `js work`.\n    work_cli.compat_main()\n\ntests/test_work_cli_surface.py::test_compat_web_serves_parent_appshell_instead_of_work_only_host\n  /Users/jiangxuanzhen/titan-agent/tests/test_work_cli_surface.py:208: FutureWarning: js-work is a compatibility shim; use `js work`.\n    work_cli.compat_main()\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/test_net_guard.py::TestOriginCheck::test_no_origin_requires_api_key\nFAILED tests/web/test_auth_security.py::TestSessionCookieLogin::test_login_rejects_invalid_key\n2 failed, 6216 passed, 2 skipped, 113 deselected, 207 warnings in 482.49s (0:08:02)"
+  }
+}

@@ -633,6 +633,18 @@ def validate_chat_attachments(
         )
 
 
+def attachment_entry_taint(has_attachments: bool) -> int:
+    """Orin WP2 site 3: the taint bit for content entering via attachments.
+
+    The turn loop ORs this into the user message whenever an attachment
+    context is present, so attachment-derived text keeps its provenance.
+    """
+
+    from js.orin.taint import ATTACHMENT
+
+    return ATTACHMENT if has_attachments else 0
+
+
 def build_attachment_manifest(
     *,
     workspace: Path,

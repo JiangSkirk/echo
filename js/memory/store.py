@@ -15,6 +15,36 @@ from js.utils.log import get_logger
 
 logger = get_logger("js.memory")
 
+
+def _orin_write_taint(key: str, value: str) -> int:
+    """Orin WP2 site 5: provenance record for memory writes.
+
+    The legacy memories table has no taint column (that migration is P4,
+    D §6.10); Stage A records the write's taint in the structured log so
+    every memory write carries its source bits in the durable trail.
+    """
+
+    from js.orin.taint import (
+        MEMORY_READ,
+        current_tool_taint_snapshot,
+        secret_hint,
+    )
+
+    taint = MEMORY_READ
+    snapshot = current_tool_taint_snapshot()
+    if snapshot is not None:
+        taint |= snapshot.context_taint
+    if secret_hint(value) or secret_hint(key):
+        from js.orin.taint import SECRET
+
+        taint |= SECRET
+    logger.info(
+        "memory_write_taint",
+        extra={"memory_key": key[:80], "orin_taint": taint},
+    )
+    return taint
+
+
 # Word tokens for building safe FTS5 MATCH queries. ``\w+`` is Unicode-aware
 # (covers CJK), and tokens carry no FTS operator characters so they are safe to
 # embed in a MATCH expression without further quoting.
@@ -364,6 +394,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         owner_key_hash: str | None = None,
     ) -> None:
         """Store a working memory entry for the current session."""
+        _orin_write_taint(key, value)
         self.enhanced.store_working(
             session_id, key, value, category, importance, owner_key_hash=owner_key_hash
         )
@@ -531,6 +562,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         evidence: str = "",
     ) -> dict[str, Any]:
         """Store a semantic memory."""
+        _orin_write_taint(key, value)
         if hasattr(self, "enhanced"):
             return self.enhanced.store_semantic(
                 key,

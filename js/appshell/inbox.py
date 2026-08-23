@@ -22,6 +22,7 @@ from js.echo.mode_contract import (
     AttentionItemV1,
     ModeContractError,
 )
+from js.orin import taint as orin_taint
 
 ProjectionStatusV1 = Literal["ok", "partial", "blocked"]
 ProjectionItemV1 = AttentionItemV1 | ArtifactRefV1
@@ -100,6 +101,9 @@ def _public_item(item: ProjectionItemV1) -> dict[str, object]:
     payload.pop("owner", None)
     if type(item) is AttentionItemV1:
         payload.pop("eligible_approver", None)
+    # Orin WP2 site 9: inbox projections carry the INBOX_CONTENT provenance
+    # bit so downstream consumers can tag context derived from them.
+    payload["orin_taint"] = orin_taint.INBOX_CONTENT
     return payload
 
 

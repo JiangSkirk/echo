@@ -16,7 +16,7 @@ from js.connectors.contracts import (
     canonical_params_digest,
 )
 from js.connectors.manager import ConnectorManager
-from js.echo.capability import LeaseAuthority
+from js.echo.capability import is_lease_authority_handle
 from js.echo.turn_context import (
     RuntimeContext,
     reset_current_owner_key_hash,
@@ -394,8 +394,7 @@ class EffectInterpreter:
             grant_path = Path(grant.root)
             runtime_roots = tuple(Path(root).resolve(strict=False) for root in context.fs_roots)
             if not any(
-                grant_path == root or grant_path.is_relative_to(root)
-                for root in runtime_roots
+                grant_path == root or grant_path.is_relative_to(root) for root in runtime_roots
             ):
                 raise PermissionError("connector directory grant exceeds runtime filesystem roots")
 
@@ -403,18 +402,14 @@ class EffectInterpreter:
         if not callable(authority_getter):
             raise RuntimeError("Echo connector lease authority is unavailable")
         lease_authority = authority_getter()
-        if type(lease_authority) is not LeaseAuthority:
+        if not is_lease_authority_handle(lease_authority):
             raise RuntimeError("Echo connector lease authority is invalid")
         now_fn = getattr(lease_authority, "_now", None)
         if not callable(now_fn):
             raise RuntimeError("Echo connector lease authority clock is unavailable")
         now = int(now_fn())
-        expected_tool = (
-            f"connector.{request.connection.ref.connector_type}.{request.operation}"
-        )
-        expected_scope = (
-            f"connection:{request.connection.ref.connection_id}:{request.scope}"
-        )
+        expected_tool = f"connector.{request.connection.ref.connector_type}.{request.operation}"
+        expected_scope = f"connection:{request.connection.ref.connection_id}:{request.scope}"
         expected_fs_roots = () if grant is None else (grant.root,)
         approvals: ApprovalQueue | None = None
         approval_kwargs: dict[str, Any] | None = None
@@ -484,9 +479,7 @@ class EffectInterpreter:
             nonce=request.lease.nonce,
         )
         if existing_anchor is not None:
-            raise PermissionError(
-                "lease consume anchor detects valid-prefix rollback"
-            )
+            raise PermissionError("lease consume anchor detects valid-prefix rollback")
         echo_service.record_lease_consume_pending(
             tenant_id=request.task_ref.owner,
             product_id=request.task_ref.legacy_product_id,

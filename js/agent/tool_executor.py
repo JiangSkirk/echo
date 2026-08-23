@@ -24,11 +24,16 @@ from urllib.parse import urlsplit
 
 from js.agent.base import AgentBase
 from js.echo import stable_payload_hash
-from js.echo.capability import LeaseAuthority, LeaseDenied, sign_tool_execution_context
+from js.echo.capability import (
+    LeaseAuthority,
+    LeaseDenied,
+    sign_tool_execution_context,
+)
 from js.echo.durable_thread import claim_to_thread, durable_to_thread
 from js.echo.private_handoff import PrivateHandoffVault
 from js.echo.turn_context import current_runtime_context
 from js.models.providers import ChatMessage
+from js.orin.client import OrinLeaseClientAdapter
 from js.security.approvals import ApprovalDecision, ApprovalDecisionType
 from js.security.audit import AuditEventType
 from js.security.untrusted import is_untrusted_tool_name, wrap_untrusted_for_model
@@ -4815,12 +4820,14 @@ class ToolExecutorMixin(AgentBase):
                 bounded_roots = (source,)
             elif tool_name in CONTROL_PLANE_TOOL_NAMES:
                 bounded_roots = ()
-            lease = authority.issue(
+            lease = self._issue_echo_tool_lease(
+                authority,
                 product_id=product_id,
                 session_id=session_id,
                 owner_key_hash=owner,
                 run_id=run_id,
                 tool_name=tool_name,
+                arguments=arguments,
                 args_schema=args_hash,
                 resource_scope=session_scope,
                 fs_roots=bounded_roots,
@@ -4830,6 +4837,7 @@ class ToolExecutorMixin(AgentBase):
                 max_duration_ms=int(timeout_seconds * 1000),
                 ttl_ms=60_000,
                 max_invocations=1,
+                profile=profile,
             )
             if lease.run_id != run_id:
                 raise LeaseDenied("lease run_id does not match current run")
@@ -4878,6 +4886,44 @@ class ToolExecutorMixin(AgentBase):
                 None,
             )
 
+    def _issue_echo_tool_lease(
+        self,
+        authority: Any,
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        profile: str,
+        **kwargs: Any,
+    ) -> Any:
+        """Issue a lease; Orin handles also pre-sign the execution context.
+
+        The in-process ``LeaseAuthority`` path is byte-identical to the
+        pre-Orin call. The Orin adapter path rides ``issue_with_context``:
+        orind signs the context server-side and evaluates the policy table
+        against the turn's taint snapshot (context bits + argument overlap).
+        """
+
+        issue_with_context = getattr(authority, "issue_with_context", None)
+        if not callable(issue_with_context):
+            return authority.issue(tool_name=tool_name, **kwargs)
+        from js.orin import taint as orin_taint
+
+        snapshot = orin_taint.current_tool_taint_snapshot()
+        if snapshot is not None:
+            kwargs.setdefault("context_taint", snapshot.context_taint)
+            kwargs.setdefault("clearance", snapshot.clearance)
+            try:
+                args_text = json.dumps(arguments, ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                args_text = str(arguments)
+            arg_bits = (
+                orin_taint.arg_taint(args_text, list(snapshot.dirty_samples))
+                if snapshot.dirty_samples
+                else 0
+            )
+            kwargs.setdefault("arg_taint", arg_bits)
+        return issue_with_context(profile=profile, tool_name=tool_name, **kwargs)
+
     def _normalize_control_skill_install_arguments(
         self,
         arguments: dict[str, Any],
@@ -4913,20 +4959,58 @@ class ToolExecutorMixin(AgentBase):
     def _echo_tool_execution_mode(self) -> str:
         return self.settings.echo_engine
 
-    def _get_echo_tool_lease_authority(self) -> LeaseAuthority:
+    def _get_echo_tool_lease_authority(self) -> Any:
+        """Return the lease authority handle (Orin adapter or in-process).
+
+        ``orin_enabled=false`` (default) keeps the original in-process
+        ``LeaseAuthority`` path byte-for-byte. When Orin is enabled the
+        handle is an :class:`OrinLeaseClientAdapter`: it holds no MAC key
+        and never subclasses ``LeaseAuthority`` (the handle check rejects
+        subclasses). After enabling Orin the main process must never read
+        the adopted ``echo_tool_lease.key`` again — that key lives only
+        in the orind KeyBox.
+        """
+
         authority = getattr(self, "_tool_lease_authority", None)
         if authority is not None:
-            return cast("LeaseAuthority", authority)
-        key = _load_or_create_tool_lease_key(Path(self.settings.state_dir) / "echo_tool_lease.key")
-        authority = LeaseAuthority(
-            mac_key=key,
-            now_fn=lambda: int(time.time() * 1000),
-            ledger_path=Path(self.settings.state_dir) / "echo_tool_lease.jsonl",
-        )
+            return authority
+        orin_config = getattr(self.settings, "orin", None)
+        if orin_config is not None and getattr(orin_config, "enabled", False):
+            socket_path = orin_config.socket_path or (
+                Path(self.settings.state_dir) / "orin" / "orind.sock"
+            )
+            authority = OrinLeaseClientAdapter(
+                socket_path=Path(socket_path),
+                state_dir=Path(self.settings.state_dir),
+                fail_mode=str(getattr(orin_config, "fail_mode", "closed")),
+                readonly_tool_classifier=self._orin_readonly_tool_classifier(),
+            )
+        else:
+            key = _load_or_create_tool_lease_key(
+                Path(self.settings.state_dir) / "echo_tool_lease.key"
+            )
+            authority = LeaseAuthority(
+                mac_key=key,
+                now_fn=lambda: int(time.time() * 1000),
+                ledger_path=Path(self.settings.state_dir) / "echo_tool_lease.jsonl",
+            )
         self._tool_lease_authority = authority
         return authority
 
-    def _install_echo_tool_context_verifier(self, authority: LeaseAuthority) -> None:
+    def _orin_readonly_tool_classifier(self) -> Any:
+        """Classify tools as read-only for orind's readonly fail-mode."""
+
+        registry = getattr(self, "registry", None)
+
+        def classify(tool_name: str) -> bool:
+            if registry is None:
+                return False
+            spec = registry.get(tool_name)
+            return bool(spec is not None and spec.read_only)
+
+        return classify
+
+    def _install_echo_tool_context_verifier(self, authority: Any) -> None:
         existing = getattr(self, "_echo_tool_verifier_installed", None)
         if existing is authority:
             return

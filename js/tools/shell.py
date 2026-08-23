@@ -449,6 +449,12 @@ class ShellTool:
         if allowlist_error is not None:
             return ToolResult(success=False, error=allowlist_error)
 
+        from js.orin.hooks import inspect_canary_text
+
+        canary_block = inspect_canary_text(command, surface="shell")
+        if canary_block is not None:
+            return ToolResult(success=False, error=canary_block)
+
         # Security check
         decision = self.guard.check_command(command, cwd)
         if decision.decision == SecurityDecisionType.BLOCK:

@@ -295,7 +295,11 @@ class SkillManager:
                 success=result.get("success", False),
                 output=result.get("output", ""),
                 error=result.get("error", ""),
-                metadata={"skill_id": spec.id, "skill_type": spec.type.value},
+                metadata={
+                    "skill_id": spec.id,
+                    "skill_type": spec.type.value,
+                    "orin_taint_extra": int(result.get("orin_taint", 0)),
+                },
             )
 
         return tool_spec, _handler
@@ -1676,6 +1680,7 @@ entry: main.py
                 }
 
         # Execute
+        sanitized_failure = False
         try:
             exec_result: dict[str, Any] = await execute_skill(
                 spec,
@@ -1694,6 +1699,7 @@ entry: main.py
                 type(exc).__name__,
             )
             exec_result = {"success": False, "error": "Skill execution failed safely"}
+            sanitized_failure = True
 
         latency = (time.time() - start) * 1000
         success = exec_result.get("success", False)
@@ -1749,6 +1755,14 @@ entry: main.py
         # Record composition chain for learning
         self._record_chain(skill_id, success, session_id)
 
+        # Orin WP2 site 6: skill output entering the model context carries
+        # SKILL_CONTENT provenance (third-party instruction text). Sanitized
+        # harness errors are not skill output and must stay field-identical.
+        if not sanitized_failure:
+            from js.orin.taint import SKILL_CONTENT as _SKILL_TAINT
+
+            exec_result.setdefault("orin_taint", 0)
+            exec_result["orin_taint"] = int(exec_result.get("orin_taint", 0)) | _SKILL_TAINT
         return exec_result
 
     async def _execute_dependencies(

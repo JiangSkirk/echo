@@ -20,6 +20,7 @@ from js.echo.attachment_gate import AttachmentGateError, validate_chat_attachmen
 from js.echo.effect_interpreter import EffectInterpreter, ModelEffect, ToolEffect
 from js.echo.private_handoff import PrivateHandoffVault
 from js.echo.runtime import EchoPulseRuntime, get_pulse_runtime
+from js.orin import taint as orin_taint
 
 if TYPE_CHECKING:
     from js.models.providers import ChatMessage, ChatResponse
@@ -766,16 +767,22 @@ async def run_echo_turn(
         raise AttachmentGateError(400, "attachments must be a list")
 
     runtime = authoritative_runtime(agent)
-    return await EchoRuntime.run_agent_turn(
-        runtime,
-        message,
-        channel=channel,
-        owner_key_hash=owner_key_hash,
-        session_id=session_id,
-        model=model,
-        attachments=normalized_attachments,
-        **run_kwargs,
-    )
+    # Orin WP2 site 8: automatic entry channels (cron / daemon) carry the
+    # AUTO_TASK taint bit on their user input for the whole turn.
+    entry_token = orin_taint.set_entry_source(channel)
+    try:
+        return await EchoRuntime.run_agent_turn(
+            runtime,
+            message,
+            channel=channel,
+            owner_key_hash=owner_key_hash,
+            session_id=session_id,
+            model=model,
+            attachments=normalized_attachments,
+            **run_kwargs,
+        )
+    finally:
+        orin_taint.reset_entry_source(entry_token)
 
 
 __all__ = [

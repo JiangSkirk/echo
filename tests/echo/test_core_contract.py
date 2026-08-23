@@ -302,9 +302,17 @@ def test_capability_lease_fields() -> None:
         "expires_at",
         "parent_lease_id",
         "mac",
+        # Orin Stage A v2 extension (ORIN_STAGE_A_SPEC §3.3): four appended
+        # fields with D appendix D.2 defaults. All-default leases keep the
+        # legacy MAC pre-image byte-for-byte; non-default values switch to
+        # the authority-hmac-sha256-v2 pre-image (legacy block + appended).
+        "taint_floor",
+        "taint_sink",
+        "sandbox_profile",
+        "clearance",
     }
     assert fields == expected, f"CapabilityLease fields drifted: {fields!r}"
-    assert len(fields) == 18, f"CapabilityLease must have exactly 18 fields, got {len(fields)}"
+    assert len(fields) == 22, f"CapabilityLease must have exactly 22 fields, got {len(fields)}"
 
 
 def test_node_status_enum_values() -> None:

@@ -157,6 +157,12 @@ def resolve_and_validate(
     if not hostname:
         raise OutboundURLError("URL has no host")
 
+    from js.orin.hooks import inspect_canary_text
+
+    blocked = inspect_canary_text(url, surface="net")
+    if blocked is not None:
+        raise OutboundURLError(blocked)
+
     host_lower = hostname.lower().rstrip(".")
     if host_lower in _BLOCKED_HOSTNAMES:
         raise OutboundURLError("metadata hostname is blocked")
@@ -187,6 +193,7 @@ def resolve_and_validate(
 
 
 # ── DNS-rebinding defense: pin connections to validated IPs ──
+
 
 class PinnedIPBackend(httpcore.AsyncNetworkBackend):
     """Network backend that forces TCP connections to a pre-validated IP.
@@ -275,9 +282,7 @@ class PinnedTransport(httpx.AsyncHTTPTransport):
         self._pool = httpcore.AsyncConnectionPool(
             ssl_context=getattr(self._pool, "_ssl_context", None),
             max_connections=getattr(self._pool, "_max_connections", None),
-            max_keepalive_connections=getattr(
-                self._pool, "_max_keepalive_connections", None
-            ),
+            max_keepalive_connections=getattr(self._pool, "_max_keepalive_connections", None),
             keepalive_expiry=getattr(self._pool, "_keepalive_expiry", None),
             http1=getattr(self._pool, "_http1", True),
             http2=getattr(self._pool, "_http2", False),

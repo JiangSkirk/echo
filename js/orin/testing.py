@@ -1,0 +1,138 @@
+"""In-process orind for tests — no launchd, no separate process.
+
+``TestOrind`` runs the *real* :class:`js.orind.daemon.OrinDaemon` on a
+temporary Unix domain socket inside a background thread of the test
+process. This exercises the full protocol stack (handshake, session key
+file, MAC, seq) exactly as production does.
+
+macOS caps AF_UNIX paths at 104 bytes, and pytest tmp_path trees can
+exceed that. When the requested socket path is too long the socket is
+relocated to a short temporary directory (``$TMPDIR/orind-*/orind.sock``)
+while the ledger/keybox stay in ``state_dir``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import tempfile
+import threading
+from pathlib import Path
+from typing import Any
+
+from js.orind.daemon import OrinDaemon
+
+_MAX_UNIX_PATH = 100
+
+
+class TestOrind:
+    """Real daemon on a temp socket; start/stop from sync test code."""
+
+    def __init__(
+        self,
+        *,
+        state_dir: Path,
+        keybox_tier: str = "dev",
+        socket_path: Path | None = None,
+        policy_profile: str | None = None,
+        shadow_mode: bool = False,
+        canary_enabled: bool = True,
+        responder_lock_l0: bool = False,
+        patrol_record_only: bool = False,
+        now_fn: Any = None,
+    ) -> None:
+        self._state_dir = state_dir
+        requested = socket_path or (state_dir / "orin" / "orind.sock")
+        if len(str(requested)) > _MAX_UNIX_PATH:
+            short_dir = Path(tempfile.mkdtemp(prefix="orind-test-"))
+            requested = short_dir / "orind.sock"
+        self._socket_path = requested
+        self._keybox_tier = keybox_tier
+        self._policy_profile = policy_profile
+        self._shadow_mode = shadow_mode
+        self._canary_enabled = canary_enabled
+        self._responder_lock_l0 = responder_lock_l0
+        self._patrol_record_only = patrol_record_only
+        self._now_fn = now_fn
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._ready = threading.Event()
+        self._daemon: OrinDaemon | None = None
+        self._startup_error: BaseException | None = None
+
+    @property
+    def socket_path(self) -> Path:
+        return self._socket_path
+
+    @property
+    def daemon(self) -> OrinDaemon:
+        assert self._daemon is not None, "TestOrind not started"
+        return self._daemon
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._ready.clear()
+        self._thread = threading.Thread(target=self._run, name="test-orind", daemon=True)
+        self._thread.start()
+        if not self._ready.wait(timeout=10.0):
+            raise RuntimeError("TestOrind failed to start (timeout)")
+        if self._startup_error is not None:
+            raise RuntimeError("TestOrind failed to start") from self._startup_error
+
+    def _run(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        try:
+            self._loop.run_until_complete(self._start_daemon())
+            self._ready.set()
+            self._loop.run_forever()
+        except BaseException as exc:  # noqa: BLE001 - surface to start()
+            self._startup_error = exc
+            self._ready.set()
+        finally:
+            self._loop.close()
+
+    async def _start_daemon(self) -> None:
+        kwargs: dict[str, Any] = {
+            "state_dir": self._state_dir,
+            "socket_path": self._socket_path,
+            "orin_dir": self._state_dir / "orin",
+            "keybox_tier": self._keybox_tier,
+            "shadow_mode": self._shadow_mode,
+            "canary_enabled": self._canary_enabled,
+            "responder_lock_l0": self._responder_lock_l0,
+            "patrol_record_only": self._patrol_record_only,
+        }
+        if self._policy_profile is not None:
+            kwargs["policy_profile"] = self._policy_profile
+        if self._now_fn is not None:
+            kwargs["now_fn"] = self._now_fn
+        self._daemon = OrinDaemon(**kwargs)
+        await self._daemon.start()
+        self._ready.set()
+
+    def stop(self) -> None:
+        """Simulate ``kill orind``: stop serving, unlink the socket."""
+
+        loop = self._loop
+        daemon = self._daemon
+        if loop is not None and not loop.is_closed() and daemon is not None:
+            future = asyncio.run_coroutine_threadsafe(daemon.stop(), loop)
+            try:
+                future.result(timeout=10.0)
+            except Exception:  # noqa: BLE001 - teardown must not raise in tests
+                pass
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(loop.stop)
+        if self._thread is not None:
+            self._thread.join(timeout=10.0)
+
+    def __enter__(self) -> TestOrind:
+        self.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.stop()
+
+
+__all__ = ["TestOrind"]

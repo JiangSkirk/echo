@@ -36,6 +36,7 @@ from js.echo.capability import (
     LeaseScopeMismatch,
     LeaseToolMismatch,
     compute_lease_mac,
+    is_lease_authority_handle,
 )
 from js.echo.types import CapabilityLease
 
@@ -416,8 +417,7 @@ def test_persistent_lease_ledger_rejects_middle_corruption(tmp_path: Path) -> No
     rows = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
     rows[0]["payload"]["lease"]["run_id"] = "tampered"
     ledger_path.write_text(
-        "\n".join(json.dumps(row, sort_keys=True, separators=(",", ":")) for row in rows)
-        + "\n",
+        "\n".join(json.dumps(row, sort_keys=True, separators=(",", ":")) for row in rows) + "\n",
         encoding="utf-8",
     )
 
@@ -1139,9 +1139,7 @@ def test_delete_final_consume_line_echo_anchor_detects(tmp_path: Path) -> None:
     ledger_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     # Restart: prefix is self-consistent, nonce appears unconsumed
-    restarted = LeaseAuthority(
-        mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path
-    )
+    restarted = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
     # But Echo anchor detects the rollback
     is_consumed = restarted.verify_consume_anchor(
         lease.lease_id, lease.nonce, echo_lookup=echo_lookup
@@ -1180,17 +1178,14 @@ def test_lease_only_rollback_echo_anchor_intact(tmp_path: Path) -> None:
 
     # Keep only issue lines (delete consume entirely)
     lines = ledger_path.read_text(encoding="utf-8").splitlines()
-    issue_lines = [
-        line for line in lines if json.loads(line).get("event_type") == "issue"
-    ]
+    issue_lines = [line for line in lines if json.loads(line).get("event_type") == "issue"]
     ledger_path.write_text("\n".join(issue_lines) + "\n", encoding="utf-8")
 
-    restarted = LeaseAuthority(
-        mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path
+    restarted = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    assert (
+        restarted.verify_consume_anchor(lease.lease_id, lease.nonce, echo_lookup=echo_lookup)
+        is True
     )
-    assert restarted.verify_consume_anchor(
-        lease.lease_id, lease.nonce, echo_lookup=echo_lookup
-    ) is True
 
 
 def test_echo_anchor_unavailable_fails_closed(tmp_path: Path) -> None:
@@ -1218,13 +1213,9 @@ def test_echo_anchor_unavailable_fails_closed(tmp_path: Path) -> None:
     def echo_unavailable(lid: str, nonce: str) -> str | None:
         raise RuntimeError("echo service is down")
 
-    restarted = LeaseAuthority(
-        mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path
-    )
+    restarted = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
     with pytest.raises(EchoAnchorUnavailable):
-        restarted.verify_consume_anchor(
-            lease.lease_id, lease.nonce, echo_lookup=echo_unavailable
-        )
+        restarted.verify_consume_anchor(lease.lease_id, lease.nonce, echo_lookup=echo_unavailable)
 
 
 def test_full_state_dir_rollback_is_external_limitation(
@@ -1258,9 +1249,7 @@ def test_full_state_dir_rollback_is_external_limitation(
 
     # Full rollback: restore to pre-consume state
     ledger_path.write_bytes(pre_consume)
-    restarted = LeaseAuthority(
-        mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path
-    )
+    restarted = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
 
     # No local mechanism can detect full rollback. Document this boundary.
     # The lease appears unconsumed.
@@ -1269,6 +1258,34 @@ def test_full_state_dir_rollback_is_external_limitation(
     def echo_lookup(lid: str, nonce: str) -> str | None:
         return anchor_registry.get((lid, nonce))
 
-    assert restarted.verify_consume_anchor(
-        lease.lease_id, lease.nonce, echo_lookup=echo_lookup
-    ) is False  # Echo also rolled back, so anchor is gone
+    assert (
+        restarted.verify_consume_anchor(lease.lease_id, lease.nonce, echo_lookup=echo_lookup)
+        is False
+    )  # Echo also rolled back, so anchor is gone
+
+
+def test_is_lease_authority_handle_accepts_exact_class() -> None:
+    auth, _clock = _make_authority()
+    assert is_lease_authority_handle(auth) is True
+
+
+def test_is_lease_authority_handle_accepts_ipc_adapter() -> None:
+    class _IpcAdapter:
+        def verify_bound(self, *args: object, **kwargs: object) -> None:
+            return None
+
+        def consume_bound(self, *args: object, **kwargs: object) -> object:
+            return None
+
+    assert is_lease_authority_handle(_IpcAdapter()) is True
+
+
+def test_is_lease_authority_handle_rejects_unrelated_and_subclasses() -> None:
+    class _Hostile(LeaseAuthority):
+        def verify_bound(self, *args: object, **kwargs: object) -> None:
+            return None
+
+    hostile = _Hostile(mac_key=_TEST_KEY, now_fn=lambda: 0)
+    assert is_lease_authority_handle(object()) is False
+    assert is_lease_authority_handle(None) is False
+    assert is_lease_authority_handle(hostile) is False

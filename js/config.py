@@ -369,6 +369,93 @@ class SecurityConfig(BaseModel):
         return normalized
 
 
+class OrinKeyboxTier(StrEnum):
+    """Orin keybox hardware anchoring tier."""
+
+    DEV = "dev"
+    PRODUCTION = "production"
+
+
+class OrinFailMode(StrEnum):
+    """Behavior when orind is unreachable while ``orin_enabled`` is on."""
+
+    CLOSED = "closed"
+    READONLY = "readonly"
+
+
+class OrinPolicyProfile(StrEnum):
+    """Lease policy table profile served by orind."""
+
+    CONSERVATIVE = "conservative"
+    COMPAT = "compat"
+
+
+class OrinConfig(BaseModel):
+    """Orin Stage A gatekeeper (orind) configuration.
+
+    Orin moves lease issuance / consumption / revocation into a separate
+    daemon. Stage A claims only model-layer hardening — never process-RCE
+    containment (tool handlers still run in-process). All defaults keep
+    pre-Orin behavior: ``orin_enabled=False`` routes every lease call
+    through the in-process ``LeaseAuthority`` exactly as before.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Route lease issue/consume/revoke through orind. Disabled by default "
+            "until merge; must keep pre-Orin behavior when False."
+        ),
+    )
+    fail_mode: OrinFailMode = Field(
+        default=OrinFailMode.CLOSED,
+        description=(
+            "orind unreachable: 'closed' stops issuing new leases (chat-only "
+            "continues); 'readonly' additionally allows read-only leases."
+        ),
+    )
+    socket_path: Path | None = Field(
+        default=None,
+        description=(
+            "Unix domain socket path for orind. Defaults to <state_dir>/orin/orind.sock when unset."
+        ),
+    )
+    keybox_tier: OrinKeyboxTier = Field(
+        default=OrinKeyboxTier.DEV,
+        description=(
+            "Key storage tier: 'dev' = 0600 key file (adopts the legacy "
+            "echo_tool_lease.key on first start); 'production' = macOS "
+            "Keychain controlled extraction."
+        ),
+    )
+    shadow_mode: bool = Field(
+        default=False,
+        description=(
+            "Log Orin policy verdicts without changing enforcement outcome "
+            "(calibration aid; verdict fields still recorded)."
+        ),
+    )
+    policy_profile: OrinPolicyProfile = Field(
+        default=OrinPolicyProfile.CONSERVATIVE,
+        description=(
+            "Policy table profile: 'conservative' (fallback row requires "
+            "approval) or 'compat' (legacy behavior + logging only)."
+        ),
+    )
+    canary_enabled: bool = Field(
+        default=True,
+        description="WP3 honeytoken matching. Independent rollback: set False to disable.",
+    )
+    responder_lock_l0: bool = Field(
+        default=False,
+        description="WP3 ladder rollback: keep Responder at L0 (observe only).",
+    )
+    patrol_record_only: bool = Field(
+        default=False,
+        description="WP3 patrol rollback: record signals, never emit tighten advice.",
+    )
+
+
 class MemoryConfig(BaseModel):
     """Memory and context management."""
 
@@ -577,6 +664,7 @@ class JSSettings(BaseSettings):
     echo_budget: EchoBudgetConfig = Field(default_factory=EchoBudgetConfig)
     echo_ledger: EchoLedgerConfig = Field(default_factory=EchoLedgerConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
+    orin: OrinConfig = Field(default_factory=OrinConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
@@ -638,9 +726,7 @@ class JSSettings(BaseSettings):
             return "pending"
         text = str(value).strip().lower()
         if text not in allowed:
-            raise ValueError(
-                f"onboarding_status must be one of {sorted(allowed)}, got {value!r}"
-            )
+            raise ValueError(f"onboarding_status must be one of {sorted(allowed)}, got {value!r}")
         return text
 
     @model_validator(mode="after")

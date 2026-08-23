@@ -23,6 +23,10 @@ from js.echo.mode_contract import (
     TaskRef,
 )
 from js.echo.primitives import canonical_json_bytes
+from js.orin import taint as orin_taint
+from js.utils.log import get_logger
+
+_LOGGER = get_logger("js.echo.handoff_vault")
 
 # ruff: noqa: TC006
 
@@ -376,6 +380,18 @@ class HandoffVaultV1:
                 del self._entries[reference]
                 raise _vault_error("mac_mismatch")
             del self._entries[reference]
+            # Orin WP2 site 10: provenance record for the read (per-source
+            # labels from the binding). Stage A boundary: handoff payloads
+            # are opaque references, not model-context text — the reference
+            # entering context is tagged TOOL_RESULT by the turn loop.
+            _LOGGER.info(
+                "handoff_read_taint",
+                extra={
+                    "orin_taint": orin_taint.SECRET | orin_taint.MEMORY_READ,
+                    "handoff_mode": record.binding.mode,
+                    "handoff_session": record.binding.session[:64],
+                },
+            )
             return record
 
     # -- Internal test/recovery interfaces (not for normal issue path) --

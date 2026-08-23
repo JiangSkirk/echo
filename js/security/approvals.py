@@ -1152,8 +1152,13 @@ class ApprovalQueue:
     def _cli_prompt(self, req: ApprovalRequest) -> bool:
         """Synchronous CLI prompt for approval."""
         try:
-            args_str = ", ".join(f"{k}={v!r}" for k, v in req.arguments.items())
-            prompt_text = f"\n[Approval] {req.tool_name}({args_str})\nApprove? [y/N]: "
+            from js.security.approval_display import sanitize_approval_display
+
+            card = sanitize_approval_display(
+                tool_name=req.tool_name,
+                arguments=req.arguments,
+            )
+            prompt_text = f"\n[Approval] {card}\nApprove? [y/N]: "
             response = self._input_stream(prompt_text).strip().lower()
             approved = response in ("y", "yes")
             req.resolved = True
@@ -1364,10 +1369,7 @@ class ApprovalQueue:
                 record = None
         # If mirror has no claim but Echo authority is available, check Echo
         # for a durable claim.  This detects mirror truncation.
-        if (
-            record is not None
-            and self._echo_authority is not None
-        ):
+        if record is not None and self._echo_authority is not None:
             echo_claim = self._echo_authority.lookup_claim(
                 tenant_id=record.owner_key_hash or "",
                 session_id=record.session_id,

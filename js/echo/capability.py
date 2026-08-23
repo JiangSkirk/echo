@@ -34,6 +34,7 @@ import json
 import os
 import secrets
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -50,6 +51,18 @@ DEFAULT_NETWORK_POLICY: Final[str] = "deny"
 
 LEASE_MAC_DOMAIN: Final[bytes] = b"echo-capability-lease-v1:"
 """Domain separator prefixed to every lease MAC pre-image."""
+
+LEASE_MAC_PREFIX: Final[str] = "authority-hmac-sha256:"
+"""String form of a legacy lease MAC (default v2 fields)."""
+
+LEASE_MAC_PREFIX_V2: Final[str] = "authority-hmac-sha256-v2:"
+"""String form of a lease MAC covering the Orin v2 extension fields."""
+
+DEFAULT_TAINT_FLOOR: Final[int] = 0xFFFFFFFFFFFFFFFF
+DEFAULT_TAINT_SINK: Final[int] = 0
+DEFAULT_SANDBOX_PROFILE: Final[int] = 0
+DEFAULT_CLEARANCE: Final[int] = 1
+"""Orin v2 extension defaults (D appendix D.2); all-default = legacy MAC."""
 
 TOOL_CONTEXT_MAC_DOMAIN: Final[bytes] = b"echo-tool-execution-context-v1:"
 """Domain separator for signed registry execution contexts."""
@@ -180,6 +193,11 @@ def _canonical_lease_payload(lease: CapabilityLease) -> bytes:
     The returned bytes already include the
     :data:`LEASE_MAC_DOMAIN` prefix; callers should feed them directly
     into HMAC.
+
+    Orin compat red line: these bytes are frozen. The v2 extension fields
+    (``taint_floor`` / ``taint_sink`` / ``sandbox_profile`` / ``clearance``)
+    are NEVER part of this pre-image; they ride in
+    :func:`_canonical_lease_payload_v2` appended after the legacy block.
     """
 
     return b"".join(
@@ -204,6 +222,42 @@ def _canonical_lease_payload(lease: CapabilityLease) -> bytes:
             _enc_opt_str(lease.parent_lease_id),
         )
     )
+
+
+def _lease_v2_fields_nondefault(lease: CapabilityLease) -> bool:
+    """True when any Orin v2 extension field deviates from its default."""
+
+    return (
+        lease.taint_floor != DEFAULT_TAINT_FLOOR
+        or lease.taint_sink != DEFAULT_TAINT_SINK
+        or lease.sandbox_profile != DEFAULT_SANDBOX_PROFILE
+        or lease.clearance != DEFAULT_CLEARANCE
+    )
+
+
+def _canonical_lease_payload_v2(lease: CapabilityLease) -> bytes:
+    """v2 MAC pre-image: the frozen legacy block plus four appended fields.
+
+    Only used when :func:`_lease_v2_fields_nondefault` is true; the legacy
+    pre-image is byte-identical for default-valued leases either way.
+    """
+
+    return b"".join(
+        (
+            _canonical_lease_payload(lease),
+            _enc_u64_be(lease.taint_floor),
+            _enc_u64_be(lease.taint_sink),
+            _enc_u64_be(lease.sandbox_profile),
+            _enc_u64_be(lease.clearance),
+        )
+    )
+
+
+def lease_mac_tag(lease: CapabilityLease) -> str:
+    """Prefixed string form of a lease MAC (``authority-hmac-sha256[:v2:]…``)."""
+
+    prefix = LEASE_MAC_PREFIX_V2 if _lease_v2_fields_nondefault(lease) else LEASE_MAC_PREFIX
+    return prefix + lease.mac.hex()
 
 
 def _tool_context_payload(context: Any) -> bytes:
@@ -236,10 +290,17 @@ def sign_tool_execution_context(
     context: Any,
     *,
     lease: CapabilityLease,
-    authority: LeaseAuthority | None = None,
+    authority: Any = None,
     now: int | None = None,
 ) -> Any:
-    """Return ``context`` with an Echo registry signature attached."""
+    """Return ``context`` with an Echo registry signature attached.
+
+    ``authority`` may be the in-process :class:`LeaseAuthority` (which
+    holds the MAC key and signs locally) or an Orin IPC handle exposing
+    ``sign_execution_context(context, lease, now)`` — the handle path
+    never touches a local key: the signature was produced by orind at
+    issue time. Any other object fails closed.
+    """
 
     if authority is None:
         raise ValueError("Echo tool context signing requires a lease authority")
@@ -268,29 +329,35 @@ def sign_tool_execution_context(
         raise LeaseContextMismatch("context max_bytes does not match lease")
     if int(getattr(context, "max_duration_ms", -1)) != int(lease.max_duration_ms):
         raise LeaseContextMismatch("context max_duration_ms does not match lease")
-    if authority is not None:
-        authority.verify_execution_context(
-            lease_id=lease.lease_id,
-            lease_mac=lease.mac.hex(),
-            product_id=lease.product_id,
-            owner_key_hash=lease.owner_key_hash,
-            session_id=lease.session_id,
-            run_id=lease.run_id,
-            tool_name=lease.tool_name,
-            args_schema=lease.args_schema,
-            resource_scope=lease.resource_scope,
-            fs_roots=lease.fs_roots,
-            network_policy=lease.network_policy,
-            network_hosts=lease.network_hosts,
-            max_bytes=lease.max_bytes,
-            max_duration_ms=lease.max_duration_ms,
-            now=now if now is not None else int(authority._now()),
-        )
     signed = dataclasses.replace(
         context,
         lease_id=lease.lease_id,
         lease_mac=lease.mac.hex(),
         signature="",
+    )
+    remote_sign = getattr(authority, "sign_execution_context", None)
+    if callable(remote_sign) and type(authority) is not LeaseAuthority:
+        # Orin IPC handle: the signature was produced by orind at issue
+        # time; the main process holds no MAC key to sign locally.
+        effective_now = now if now is not None else int(time.time() * 1000)
+        signature = remote_sign(signed, lease, effective_now)
+        return dataclasses.replace(signed, signature=str(signature))
+    authority.verify_execution_context(
+        lease_id=lease.lease_id,
+        lease_mac=lease.mac.hex(),
+        product_id=lease.product_id,
+        owner_key_hash=lease.owner_key_hash,
+        session_id=lease.session_id,
+        run_id=lease.run_id,
+        tool_name=lease.tool_name,
+        args_schema=lease.args_schema,
+        resource_scope=lease.resource_scope,
+        fs_roots=lease.fs_roots,
+        network_policy=lease.network_policy,
+        network_hosts=lease.network_hosts,
+        max_bytes=lease.max_bytes,
+        max_duration_ms=lease.max_duration_ms,
+        now=now if now is not None else int(authority._now()),
     )
     mac = hmac.new(
         authority._context_signing_key(),
@@ -303,13 +370,22 @@ def sign_tool_execution_context(
 def compute_lease_mac(mac_key: bytes, lease: CapabilityLease) -> bytes:
     """Compute the HMAC-SHA-256 MAC tag for ``lease`` under ``mac_key``.
 
-    The lease's own ``mac`` field is ignored; only the 14 non-MAC fields
-    contribute to the pre-image (see :func:`_canonical_lease_payload`).
+    The lease's own ``mac`` field is ignored; only the non-MAC fields
+    contribute to the pre-image. Pre-image dispatch (Orin v2): leases
+    whose four extension fields are all default use the frozen legacy
+    pre-image byte-for-byte; any non-default extension field switches to
+    the v2 pre-image (legacy block + appended fields), matching the
+    ``authority-hmac-sha256-v2:`` string prefix in :func:`lease_mac_tag`.
     Returns 32 raw bytes.
     """
 
+    payload = (
+        _canonical_lease_payload_v2(lease)
+        if _lease_v2_fields_nondefault(lease)
+        else _canonical_lease_payload(lease)
+    )
     digest = hmac.new(mac_key, digestmod=hashlib.sha256)
-    digest.update(_canonical_lease_payload(lease))
+    digest.update(payload)
     return digest.digest()
 
 
@@ -410,8 +486,16 @@ class LeaseAuthority:
         product_id: str = "",
         session_id: str = "",
         network_hosts: tuple[str, ...] = (),
+        taint_floor: int = DEFAULT_TAINT_FLOOR,
+        taint_sink: int = DEFAULT_TAINT_SINK,
+        sandbox_profile: int = DEFAULT_SANDBOX_PROFILE,
+        clearance: int = DEFAULT_CLEARANCE,
     ) -> CapabilityLease:
         """Issue a fresh :class:`CapabilityLease` and register its bookkeeping.
+
+        The Orin v2 extension kwargs (``taint_floor`` / ``taint_sink`` /
+        ``sandbox_profile`` / ``clearance``) default to the D-appendix-D.2
+        values; all-default keeps the legacy MAC pre-image byte-for-byte.
 
         Raises
         ------
@@ -439,7 +523,9 @@ class LeaseAuthority:
                 if parent_lease_id in self._revoked:
                     raise LeaseRevoked(f"parent lease {parent_lease_id!r} is revoked")
                 parent = self._issued[parent_lease_id]
-                owner_matches = len(parent.owner_key_hash) == len(owner_key_hash) and hmac.compare_digest(
+                owner_matches = len(parent.owner_key_hash) == len(
+                    owner_key_hash
+                ) and hmac.compare_digest(
                     parent.owner_key_hash.encode("utf-8"),
                     owner_key_hash.encode("utf-8"),
                 )
@@ -484,6 +570,10 @@ class LeaseAuthority:
                 product_id=product_id,
                 session_id=session_id,
                 network_hosts=tuple(network_hosts),
+                taint_floor=int(taint_floor),
+                taint_sink=int(taint_sink),
+                sandbox_profile=int(sandbox_profile),
+                clearance=int(clearance),
             )
             mac = compute_lease_mac(self._mac_key, template)
             lease = dataclasses.replace(template, mac=mac)
@@ -625,7 +715,11 @@ class LeaseAuthority:
             raise LeaseBindingMismatch("bound lease tuple fields must be immutable")
         if any(type(item) is not str for item in (*expected_fs_roots, *expected_network_hosts)):
             raise LeaseBindingMismatch("bound lease tuple values must be text")
-        if type(now) is not int or type(expected_max_bytes) is not int or type(expected_max_duration_ms) is not int:
+        if (
+            type(now) is not int
+            or type(expected_max_bytes) is not int
+            or type(expected_max_duration_ms) is not int
+        ):
             raise LeaseBindingMismatch("bound lease numeric expectations must be integers")
 
         stored = self._canonical_check(lease)
@@ -791,9 +885,7 @@ class LeaseAuthority:
         try:
             anchor_hash = echo_lookup(lease_id, nonce)
         except Exception as exc:
-            raise EchoAnchorUnavailable(
-                "echo anchor authority is unavailable"
-            ) from exc
+            raise EchoAnchorUnavailable("echo anchor authority is unavailable") from exc
         return anchor_hash is not None
 
     # -- consumption -------------------------------------------------------
@@ -981,7 +1073,9 @@ class LeaseAuthority:
 
         root = self._issued.get(root_id)
         if root is None:
-            raise LeaseBindingMismatch(f"selected lease {root_id!r} is missing from authority ledger")
+            raise LeaseBindingMismatch(
+                f"selected lease {root_id!r} is missing from authority ledger"
+            )
         current_id = root_id
         seen = {root_id}
         while True:
@@ -1317,6 +1411,26 @@ class LeaseAuthority:
             raise ValueError(f"unknown lease ledger event_type {event_type!r}")
 
 
+def is_lease_authority_handle(obj: object) -> bool:
+    """Return True for the in-process authority or a remote consume handle.
+
+    ``orind`` holds the MAC key, so the main-process IPC adapter cannot be
+    ``LeaseAuthority`` itself. Accept the exact in-process class, or any
+    other object that exposes ``verify_bound`` and ``consume_bound``.
+
+    ``LeaseAuthority`` subclasses are rejected: they can override
+    verification while still looking like the TCB class.
+    """
+
+    if type(obj) is LeaseAuthority:
+        return True
+    if isinstance(obj, LeaseAuthority):
+        return False
+    return callable(getattr(obj, "verify_bound", None)) and callable(
+        getattr(obj, "consume_bound", None)
+    )
+
+
 def _stable_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
@@ -1333,7 +1447,7 @@ def _ledger_mac(mac_key: bytes, value: object) -> str:
 
 
 def _lease_to_payload(lease: CapabilityLease) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "lease_id": lease.lease_id,
         "product_id": lease.product_id,
         "owner_key_hash": lease.owner_key_hash,
@@ -1353,6 +1467,14 @@ def _lease_to_payload(lease: CapabilityLease) -> dict[str, object]:
         "parent_lease_id": lease.parent_lease_id,
         "mac": lease.mac.hex(),
     }
+    # Orin v2 extension: serialize only when non-default so default-field
+    # leases produce ledger records byte-identical to pre-Orin ones.
+    if _lease_v2_fields_nondefault(lease):
+        payload["taint_floor"] = lease.taint_floor
+        payload["taint_sink"] = lease.taint_sink
+        payload["sandbox_profile"] = lease.sandbox_profile
+        payload["clearance"] = lease.clearance
+    return payload
 
 
 def _payload_int(payload: dict[str, object], key: str) -> int:
@@ -1398,6 +1520,12 @@ def _lease_from_payload(payload: dict[str, object]) -> CapabilityLease:
             str(payload["parent_lease_id"]) if payload.get("parent_lease_id") is not None else None
         ),
         mac=bytes.fromhex(str(payload["mac"])),
+        taint_floor=_payload_int(payload, "taint_floor") if "taint_floor" in payload else DEFAULT_TAINT_FLOOR,
+        taint_sink=_payload_int(payload, "taint_sink") if "taint_sink" in payload else DEFAULT_TAINT_SINK,
+        sandbox_profile=(
+            _payload_int(payload, "sandbox_profile") if "sandbox_profile" in payload else DEFAULT_SANDBOX_PROFILE
+        ),
+        clearance=_payload_int(payload, "clearance") if "clearance" in payload else DEFAULT_CLEARANCE,
     )
 
 
@@ -1416,9 +1544,17 @@ __all__ = [
     "LeaseContextMismatch",
     "LeaseBindingMismatch",
     "LeaseAuthority",
+    "is_lease_authority_handle",
     "compute_lease_mac",
     "sign_tool_execution_context",
     "DEFAULT_NETWORK_POLICY",
+    "DEFAULT_CLEARANCE",
+    "DEFAULT_SANDBOX_PROFILE",
+    "DEFAULT_TAINT_FLOOR",
+    "DEFAULT_TAINT_SINK",
     "LEASE_MAC_DOMAIN",
+    "LEASE_MAC_PREFIX",
+    "LEASE_MAC_PREFIX_V2",
     "TOOL_CONTEXT_MAC_DOMAIN",
+    "lease_mac_tag",
 ]

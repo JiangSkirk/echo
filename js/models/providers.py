@@ -115,6 +115,10 @@ class ChatMessage:
     tool_call_id: str | None = None
     name: str | None = None
     reasoning_content: str | None = None
+    # Orin Stage A taint tag: a u64 source bitmask (js.orin.taint). Local
+    # bookkeeping only — providers serialize explicit fields above and
+    # NEVER this one (Orin decision 11: taint must not reach model APIs).
+    taint: int = 0
 
 
 @dataclass

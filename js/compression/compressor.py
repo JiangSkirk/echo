@@ -527,6 +527,11 @@ class ContextCompressor:
         """Replace compressible middle units while retaining original system messages."""
         replacement: list[ChatMessage] = []
         summary_inserted = False
+        # Orin WP2 site 7: the summary inherits the compressed units' taint
+        # (OR | MODEL_OUTPUT | COMPRESSED); SECRET is force-inherited.
+        from js.orin.taint import combine, compressed_summary_taint
+
+        middle_taint = combine(*(message.taint for message in middle))
         for unit in self._conversation_units(middle):
             if any(message.role == "system" for message in unit):
                 replacement.extend(unit)
@@ -538,6 +543,7 @@ class ContextCompressor:
                         role="user",
                         content=SUMMARY_PREFIX + summary,
                         name=_SUMMARY_MESSAGE_NAME,
+                        taint=compressed_summary_taint(middle_taint),
                     )
                 )
                 summary_inserted = True
@@ -574,6 +580,7 @@ class ContextCompressor:
         summary_message = messages[summary_index]
         assert isinstance(summary_message.content, str)
         summary = summary_message.content[len(SUMMARY_PREFIX) :]
+        summary_taint = summary_message.taint
         best_length: int | None = None
         lower = 0
         upper = len(summary)
@@ -584,6 +591,7 @@ class ContextCompressor:
                 role="user",
                 content=SUMMARY_PREFIX + summary[:candidate_length],
                 name=_SUMMARY_MESSAGE_NAME,
+                taint=summary_taint,
             )
             if (
                 self.estimate_tokens(

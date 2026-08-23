@@ -112,6 +112,14 @@ class CapabilityLease:
     product_id: str = ""
     session_id: str = ""
     network_hosts: tuple[str, ...] = ()
+    # Orin Stage A v2 extension (D appendix D.2 defaults). All-default values
+    # are byte-identical to the legacy 15-field MAC pre-image: old leases and
+    # old ledger records verify unchanged. Non-default values switch the MAC
+    # to the ``authority-hmac-sha256-v2:`` pre-image (appended encoding).
+    taint_floor: int = 0xFFFFFFFFFFFFFFFF
+    taint_sink: int = 0
+    sandbox_profile: int = 0
+    clearance: int = 1
 
 
 # ---------------------------------------------------------------------------

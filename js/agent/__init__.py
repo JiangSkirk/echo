@@ -460,9 +460,7 @@ class JSAgent(
         if identity_registry is not None and not isinstance(identity_registry, dict):
             return False
         client_identity = (
-            identity_registry.get(partition_key)
-            if isinstance(identity_registry, dict)
-            else None
+            identity_registry.get(partition_key) if isinstance(identity_registry, dict) else None
         )
         if client_identity is not None:
             if not isinstance(client_identity, tuple) or len(client_identity) != 3:
@@ -562,9 +560,7 @@ class JSAgent(
         if identity_registry is not None and not isinstance(identity_registry, dict):
             return OwnedCancelResult.IDLE
         client_identity = (
-            identity_registry.get(partition_key)
-            if isinstance(identity_registry, dict)
-            else None
+            identity_registry.get(partition_key) if isinstance(identity_registry, dict) else None
         )
         if client_identity is not None:
             if not isinstance(client_identity, tuple) or len(client_identity) != 3:
@@ -1388,6 +1384,7 @@ class JSAgent(
             ("skills", getattr(self, "skills", None)),
             ("promotion_store", getattr(self, "promotion_store", None)),
             ("echo_safety_service", getattr(self, "echo_safety_service", None)),
+            ("_tool_lease_authority", getattr(self, "_tool_lease_authority", None)),
         ]
         for name, obj in resources:
             if obj is None:
