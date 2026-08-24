@@ -1,6 +1,6 @@
 # Orin 阶段 C「强制模式」实施规格
 
-> 状态：已人工评审；C0 已冻结，C1 仅落身份检查点；AppShell/Echo 进程分离未通过，禁止进入 C2；阶段 C 未实施
+> 状态：已人工评审；C0 已冻结；C1 第一块与身份/env/path 仅在显式 harness 已测，默认生产路径仍单进程；本轮未授权 C2；阶段 C 未实施
 > 日期：2026-08-24（Asia/Shanghai）
 > 施工基线：commit `652d035e0fda0e945da97e55b73a8f4116716410`，分支 `feature/orin-stage-b`
 > 终态北极星：`ORIN_EFFECT_KERNEL_V1.md`（**K**）；阶段 C 对应 K P5，上线验收只听 K§15.6
@@ -392,8 +392,8 @@ C0 证据索引：[`ORIN_STAGE_C_C0_INVENTORY.md`](ORIN_STAGE_C_C0_INVENTORY.md)
 状态（2026-08-24）：
 
 - **已观察 / 身份检查点**：Build/File/Services 的严格 Orin 身份、逐 Cell 环境 allowlist 与 private-path 合同已在显式 `C1TestOrind` harness 验收；生产 orind 入口不传 `c1_test_harness`，`orin.enforce=true` 仍 fail-fast。
-- **blocked / 进程分离**：现有 `c1_harness` 只是 deny-default 下的固定 stdlib OS 子进程探针，不是真实 Echo runtime，也未接入 launcher/server/sidecar。真实 provider token、Keychain/Mach 与正式打包边界仍为 `untested` / `external-pending`。
-- 因第一块验收门槛未通过，WP-C1 **未完成**，不得进入 WP-C2；本检查点不构成阶段 C 已实施或 Echo RCE 已收口的证据。
+- **已观察 / macOS 显式 harness 进程分离**：测试宿主先持有 owner-witness 私钥并按既有 B schema 签名，再以全新 OS 进程执行 `JSAgent → run_echo_turn → EchoTurnLoop`。worker 只读宿主生成的裁剪 runtime image、只写私有 scratch state，并只接收 task/handle ID、模型上下文与安全投影；宿主从 `create_subprocess_exec` 记录 Darwin `sandbox-exec` payload PID，固定攻击进程在同一 OS 策略下不能读主人私钥/宿主 state/仓库签发源码、不能发现 AppShell 签发模块或连接宿主 UDS。worker 能用临时自有 key 构造 `approved=True` DTO，但该签名不能通过宿主公钥验证，因而不能成为受信权威事件。旧 stdlib 探针仅保留为负对照。
+- **边界未扩张**：上述证据只通过显式 `c1_harness` 取得；默认 `launcher/server/sidecar` 仍是 `652d035` 的单进程产品路径，真实 provider token、Keychain/Mach 与正式打包边界仍为 `untested` / `external-pending`。本轮不授权或进入 WP-C2，也不构成阶段 C 已实施或 Echo RCE 已收口的证据。
 
 交付物：
 
@@ -636,7 +636,7 @@ RCE 验证使用“已获得任意控制流”的无害测试入口与哨兵资�
 
 只有以下全部满足，才允许把阶段 C 从“规格”改为“已实施候选”：
 
-- [x] 本规格已人工评审并仅授权 WP-C0；
+- [x] 本规格已人工评审；C0 已冻结，C1 仅获显式 construction harness 授权；
 - [ ] C0–C7 严格顺序完成；
 - [ ] Desktop 与 Memory 已整迁；
 - [ ] AppShell 可信确认面已离开 Echo 失陷域；

@@ -4,7 +4,7 @@
 > 日期：2026-08-24（Asia/Shanghai）
 > 文档基线：`245c208ce95bf6bb3c05702f8dce65b8483da542`
 > 运行时行为基线：`652d035e0fda0e945da97e55b73a8f4116716410`
-> 授权边界：仅 WP-C0；C1–C7 未获施工授权，所有阶段 C 开关保持关闭
+> 授权边界：本索引只冻结 WP-C0；C1 身份检查点与真实 Echo 第一块另经显式 construction harness 授权，C2–C7 未获授权，所有阶段 C 开关保持关闭
 
 本文件是 `ORIN_STAGE_C_SPEC.md` 的 C0 证据索引，不是实现报告。它不证明阶段 C 已实施，不证明 Echo RCE 已收口，也不授权修改产品路由、预建 Desktop/Memory Cell 或打开任何强制模式开关。
 
@@ -94,7 +94,8 @@
 - **已观察**：desktop host 自述为 single-process Python sidecar（`desktop/sidecar/host.py:1-6,278-303,388-405`）。
 - **已观察**：owner-witness 私钥从 state directory 加载为进程内 `Ed25519PrivateKey`，`/intent`、`ExactCommitApprovalV1`、ExportPass、unfreeze 路由在同一进程使用它（`js/orin/witness.py:1-9,67-90`；`js/appshell/routers.py:503-585,706-862`）。
 - **已观察（C1 身份检查点）**：存在测试专用 `c1_harness`，会在 deny-default 策略下启动固定 stdlib OS 子进程探针；它不是真实 Echo runtime，且未接入 launcher/server/sidecar 生产路径，不能作为生产进程分离证明。
-- **裁决**：书面边界已冻结，真实 AppShell/Echo 仍未离开同进程生产路径，实施与打包验证保持 **blocked**。`0600`、测试探针、现有 loopback 端口或 watchdog 都不是该信任边界的证明；真实 provider token、Keychain/Mach 与正式打包边界保持 `untested` / `external-pending`。
+- **已观察（C1 第一块 macOS construction harness）**：新增固定 `js.echo.c1_worker` 入口；测试宿主先持有 owner-witness 私钥并签署既有 Intent / ExactCommitApproval / ExportPass / unfreeze schema，再通过认证匿名管道只投影 task/handle ID、模型上下文与安全字段。worker 是另一 OS 进程并真实执行 `JSAgent → run_echo_turn → EchoTurnLoop`；只读 runtime image 排除 AppShell 签发面和生产 orind，私有 state 不含真实 provider token。父进程记录 Darwin `sandbox-exec` payload PID，固定攻击进程在相同 deny-default 策略下验证宿主 state/私钥/仓库控制面/UDS 不可达。worker 临时 key 可构造 `approved=True` DTO，但宿主公钥验证失败，不能成为受信权威事件；旧 stdlib 探针仅为负对照。
+- **裁决**：C1 第一块在显式 harness 已测，身份/env/path 其余门槛沿用已冻结检查点；默认 launcher/server/sidecar 仍是同进程产品路径，因此生产实施与打包验证保持 **blocked**。真实 provider token、Keychain/Mach 与正式打包边界保持 `untested` / `external-pending`；不得把 harness 写成生产隔离或阶段 C 收口证明。
 
 ### 2.3 macOS 生产隔离载体
 
@@ -317,14 +318,14 @@ C0 不向主测试套加入故意失败的 pytest。以下只登记为 C5 施工
 
 | C0 门槛 | 状态 | 结论 |
 |---|---|---|
-| 人工评审与明确 C0 授权 | **已观察** | 已落档；C1+ 仍禁止 |
+| 人工评审与明确 C0 授权 | **已观察** | 已落档；C1 有独立 construction harness 证据，C2+ 仍禁止 |
 | provider、Browser、Office、WebBridge、MCP、skills、cron/daemon/Fleet、`.js-code`、Desktop、Memory 全覆盖 | **已观察** | 已枚举并按四类人工分类 |
 | 每项有未来 Cell 或 enforce 禁用裁决 | **已观察** | 见 §§3–5；未知默认禁用 |
 | 未登记 handler 默认拒绝 | **拟议 / C5 必须测** | 已登记未来必红清单；C0 未制造红 pytest |
-| AppShell/Echo 进程分离 | **blocked** | 边界已冻结，当前仍同进程 |
+| AppShell/Echo 进程分离 | **显式 harness 已测 / 生产 blocked** | 真实 Echo 子进程边界只在 C1 harness 通过；默认产品仍同进程 |
 | macOS 真实打包隔离 | **external-pending** | 现有 ad-hoc unsigned 包不构成生产证明 |
 | Developer ID/notary 发布签名 | **external-pending** | 方案冻结，真实身份与产物未验证 |
 | Desktop/Memory 整迁 | **blocked** | 分别留给 C2/C3；未完成前不得进入发布声明 |
 | 阶段 B golden | **已观察** | 本轮选择集 31/31；两条 auth 红只登记 |
 
-因此，WP-C0 的文档盘点与书面冻结已经形成证据，但阶段 C 仍未实施；C1 未获授权且不得开工。当前不能宣称 Echo 进程失陷后的结构性收口，也不能进入 Stage C 上线声明。
+因此，WP-C0 的文档盘点与书面冻结已经形成证据，C1 仅有显式 construction harness 证据，但阶段 C 仍未实施；C2 未获授权且不得开工。当前不能宣称 Echo 进程失陷后的结构性收口，也不能进入 Stage C 上线声明。

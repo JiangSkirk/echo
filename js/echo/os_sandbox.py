@@ -65,6 +65,10 @@ class SandboxResult:
     duration_ms: float
     killed: bool = False
     oom_killed: bool = False
+    # Parent-observed PID captured immediately after create_subprocess_exec().
+    # This is evidence metadata only; callers must not treat child output as
+    # authoritative for process identity.
+    spawned_pid: int | None = None
 
 
 # Shared macOS sandbox whitelist fragment: both profiles start fail-closed
@@ -206,6 +210,7 @@ class SandboxExecutor:
             stderr="Sandbox rejected newly created .git metadata: " + ", ".join(planted[:8]),
             duration_ms=result.duration_ms,
             killed=True,
+            spawned_pid=result.spawned_pid,
         )
 
     def _build_env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -709,6 +714,7 @@ class SandboxExecutor:
                     duration_ms=duration_ms,
                     killed=killed,
                     oom_killed=oom_killed,
+                    spawned_pid=proc.pid,
                 ),
                 git_snapshot,
             )
@@ -725,6 +731,7 @@ class SandboxExecutor:
                     stderr=f"Execution error: {e}",
                     duration_ms=duration_ms,
                     killed=True,
+                    spawned_pid=proc.pid if proc is not None else None,
                 ),
                 git_snapshot,
             )
