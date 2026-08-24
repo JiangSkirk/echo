@@ -33,6 +33,7 @@ from typing import Any, Final
 from js.orin.draft import (
     CellPackage,
     CommitPermit,
+    FileCommitPreviewV1,
     Impact,
     StateWitness,
     cell_package_from_dict,
@@ -523,6 +524,13 @@ class FileCell(CellBase):
                 }
                 for index, change in enumerate(changes)
             }
+            normalized_diff = "".join(
+                _normalized_diff(change, sources[change.path]) for change in changes
+            )
+            overwrites = [
+                change.path for change in changes if sources[change.path].exists
+            ]
+            bytes_written = sum(len(change.content) for change in changes)
             report: dict[str, Any] = {
                 "schema": _STAGE_SCHEMA,
                 "draft_id": package.draft.draft_id,
@@ -533,16 +541,14 @@ class FileCell(CellBase):
                 "owner_root_identity": {"device": root.device, "inode": root.inode},
                 "files": [change.path for change in changes],
                 "file_count": len(changes),
-                "bytes_written": sum(len(change.content) for change in changes),
-                "overwrites": [change.path for change in changes if sources[change.path].exists],
+                "bytes_written": bytes_written,
+                "overwrites": overwrites,
                 "source_hashes": {change.path: sources[change.path].digest for change in changes},
                 "source_fingerprints": {
                     change.path: sources[change.path].fingerprint for change in changes
                 },
                 "stage_files": stage_files,
-                "normalized_diff": "".join(
-                    _normalized_diff(change, sources[change.path]) for change in changes
-                ),
+                "normalized_diff": normalized_diff,
             }
             witness_material = canonical_json(report).encode("utf-8")
             witness_id = (
@@ -579,6 +585,12 @@ class FileCell(CellBase):
                 idempotency_support="client_key",
                 created_at_ms=now,
                 expires_at_ms=now + _WITNESS_TTL_MS,
+                file_commit_preview=FileCommitPreviewV1(
+                    file_count=len(changes),
+                    bytes=bytes_written,
+                    overwrites=tuple(overwrites),
+                    diff_hash=_sha256(normalized_diff.encode("utf-8")),
+                ),
             )
         finally:
             os.close(root.fd)
@@ -668,6 +680,19 @@ class FileCell(CellBase):
                 raise ProtocolError("File Cell stage does not match the commit package")
             if witness.impact.writes != len(changes):
                 raise ProtocolError("File Cell witness impact does not match the staged report")
+            preview = witness.file_commit_preview
+            normalized_diff = report.get("normalized_diff")
+            overwrites = report.get("overwrites")
+            if (
+                preview is None
+                or not isinstance(normalized_diff, str)
+                or not isinstance(overwrites, list)
+                or preview.file_count != len(changes)
+                or preview.bytes != sum(len(change.content) for change in changes)
+                or preview.overwrites != tuple(overwrites)
+                or preview.diff_hash != _sha256(normalized_diff.encode("utf-8"))
+            ):
+                raise ProtocolError("File Cell approval preview does not match the staged report")
 
             raw_stage_files = report.get("stage_files")
             if not isinstance(raw_stage_files, dict) or set(raw_stage_files) != {

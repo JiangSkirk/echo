@@ -757,7 +757,7 @@ class TestOrinFileChangeAdapter:
             adapter.close()
         assert preflight_calls == []
 
-    def test_personal_exact_approval_denial_propagates_after_real_preflight(
+    def test_personal_exact_approval_stops_after_real_preflight_without_consuming(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -774,24 +774,54 @@ class TestOrinFileChangeAdapter:
             product_id="js-agent-personal",
         )
         calls: list[str] = []
+        submitted: dict[str, Any] = {}
+        preflight_count = 0
 
-        def submit(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        def submit(draft_data: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+            from js.orin.draft import draft_from_dict
+            from js.orind.kernel import canonical_effect_hash_of
+
             calls.append("submit")
+            draft = draft_from_dict(draft_data)
+            effect_hash = canonical_effect_hash_of(draft)
+            submitted.update({"draft": draft, "effect_hash": effect_hash})
             return {
                 "ok": True,
                 "verdict": "deny_missing_witness",
                 "missing": ["state_witness"],
+                "payload_hash": effect_hash,
             }
 
-        def preflight(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-            calls.append("preflight")
-            return {"ok": True, "witness": {"witness_id": "state:personal"}}
+        def preflight(draft_id: str, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            from js.orin.draft import FileCommitPreviewV1, Impact, StateWitness
 
-        denial = OrinApprovalRequired("orind approval_required: exact approval missing")
+            nonlocal preflight_count
+            preflight_count += 1
+            calls.append("preflight")
+            now = int(time.time() * 1000)
+            witness = StateWitness(
+                witness_id=f"state:personal-{preflight_count}",
+                draft_id=draft_id,
+                executor_id="cell.file",
+                target_version="file-stage:test",
+                canonical_effect_hash=str(submitted["effect_hash"]),
+                impact=Impact(writes=1),
+                reversibility="reversible_until_stage",
+                idempotency_support="client_key",
+                created_at_ms=now - 1,
+                expires_at_ms=now + 60_000,
+                file_commit_preview=FileCommitPreviewV1(
+                    file_count=1,
+                    bytes=4,
+                    overwrites=(),
+                    diff_hash="sha256:" + str(preflight_count) * 64,
+                ),
+            )
+            return {"ok": True, "witness": witness.to_dict()}
 
         def consume(_draft_id: str) -> dict[str, Any]:
             calls.append("consume")
-            raise denial
+            pytest.fail("Personal file.commit must stop before consume until owner approval")
 
         monkeypatch.setattr(adapter, "submit_draft", submit)
         monkeypatch.setattr(adapter, "preflight_draft", preflight)
@@ -805,14 +835,74 @@ class TestOrinFileChangeAdapter:
                 runtime_profile="personal-projection-not-orin-profile",
             ), pytest.raises(OrinApprovalRequired) as caught:
                 adapter.run_file_change({"path": "report.txt", "content": "text"})
+            first_pending = adapter.pending_file_approvals(
+                appshell_owner=_PRINCIPAL_OWNER,
+                appshell_session=_PARENT_SESSION,
+                appshell_epoch=_APPSHELL_EPOCH,
+                active_mode="personal",
+                product_id="js-agent-personal",
+                workspace_root=workspace,
+            )
+            with _active_file_context(
+                workspace,
+                active_mode="personal",
+                product_id="js-agent-personal",
+                epoch_workspace=None,
+                runtime_profile="personal-projection-not-orin-profile",
+            ), pytest.raises(OrinApprovalRequired) as duplicate:
+                adapter.run_file_change({"path": "second.txt", "content": "more"})
+            still_pending = adapter.pending_file_approvals(
+                appshell_owner=_PRINCIPAL_OWNER,
+                appshell_session=_PARENT_SESSION,
+                appshell_epoch=_APPSHELL_EPOCH,
+                active_mode="personal",
+                product_id="js-agent-personal",
+                workspace_root=workspace,
+            )
         finally:
             adapter.close()
 
-        assert caught.value is denial
-        assert calls == ["submit", "preflight", "consume"]
+        visible = str(caught.value)
+        assert "draft:" not in visible
+        assert "state:personal-1" not in visible
+        assert "witness" not in visible.lower()
+        duplicate_visible = str(duplicate.value)
+        assert "draft:" not in duplicate_visible
+        assert "state:" not in duplicate_visible
+        assert first_pending == still_pending
+        assert first_pending[0]["witness_id"] == "state:personal-1"
+        assert calls == ["submit", "preflight"]
 
 
 class TestFileToolsCellBoundary:
+    @pytest.mark.asyncio
+    async def test_personal_pending_approval_never_leaks_authority_or_falls_back(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        secret_draft = "draft:must-never-reach-echo"
+        secret_witness = "state:must-never-reach-echo"
+        secret_root = str(tmp_path.resolve())
+
+        def pending(_change: dict[str, Any]) -> dict[str, Any]:
+            raise OrinApprovalRequired(
+                f"pending {secret_draft} {secret_witness} root={secret_root}"
+            )
+
+        tools = _file_tools(tmp_path, pending)
+        local_calls = _forbid_local_write(tools, monkeypatch)
+
+        result = await tools.write("pending.txt", "owner must confirm")
+
+        assert result.success is False
+        assert result.error == "File Cell safety boundary unavailable"
+        visible = repr(result)
+        for secret in (secret_draft, secret_witness, secret_root, "owner must confirm"):
+            assert secret not in visible
+        assert local_calls == []
+        assert not (tmp_path / "pending.txt").exists()
+
     @pytest.mark.asyncio
     async def test_enabled_product_backend_without_binding_never_falls_back_locally(
         self,

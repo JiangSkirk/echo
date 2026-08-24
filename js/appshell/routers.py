@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from js.agent import OwnedCancelResult
 from js.appshell.inbox import (
@@ -399,6 +399,65 @@ class ExportPassRequest(BaseModel):
     ttl_ms: int = Field(default=600_000, ge=1_000, le=3_600_000)
 
 
+class FileCommitApproveRequest(BaseModel):
+    """Confirm the exact machine preview for the current Personal task."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    approved: StrictBool
+    witness_id: str = Field(min_length=7, max_length=256)
+    diff_hash: str = Field(min_length=71, max_length=71)
+    ttl_ms: int = Field(default=60_000, ge=1_000, le=60_000)
+
+    @field_validator("approved")
+    @classmethod
+    def _require_approval(cls, value: bool) -> bool:
+        if value is not True:
+            raise ValueError("approved must be true")
+        return value
+
+
+def _safe_file_commit_previews(raw: Any) -> list[dict[str, Any]]:
+    """Fail closed while stripping all authority-bearing adapter fields."""
+
+    from js.orin.draft import file_commit_preview_from_dict
+    from js.orin.protocol import ProtocolError
+
+    if not isinstance(raw, list) or len(raw) > 128:
+        raise HTTPException(502, {"code": "orind_invalid_projection"})
+    safe: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise HTTPException(502, {"code": "orind_invalid_projection"})
+        witness_id = item.get("witness_id")
+        if not isinstance(witness_id, str) or not witness_id.startswith("state:") or len(
+            witness_id
+        ) > 256:
+            raise HTTPException(502, {"code": "orind_invalid_projection"})
+        try:
+            preview = file_commit_preview_from_dict(
+                {
+                    "schema": "FileCommitPreviewV1",
+                    "file_count": item.get("file_count"),
+                    "bytes": item.get("bytes"),
+                    "overwrites": item.get("overwrites"),
+                    "diff_hash": item.get("diff_hash"),
+                }
+            )
+        except (ProtocolError, TypeError, ValueError) as exc:
+            raise HTTPException(502, {"code": "orind_invalid_projection"}) from exc
+        safe.append(
+            {
+                "file_count": preview.file_count,
+                "bytes": preview.bytes,
+                "overwrites": list(preview.overwrites),
+                "diff_hash": preview.diff_hash,
+                "witness_id": witness_id,
+            }
+        )
+    return safe
+
+
 class AdminUnfreezeRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     raw_request: str = Field(default="admin unfreeze", max_length=2_000)
@@ -588,6 +647,125 @@ async def get_active_intent(
         raise HTTPException(503, {"code": reason})
     active = adapter.active_intent(task_id)
     return {"schema": "AppShellActiveIntentV1", "task_id": task_id, "intent": active}
+
+
+@router.get("/file-commit/pending")
+async def get_pending_file_commits(
+    request: Request,
+    principal: AppShellPrincipalV1 = Depends(_trusted_principal),
+) -> JSONResponse:
+    """Project the current Personal task's machine-generated file preview."""
+
+    check_origin(request)
+    gate: AppShellModeGate | None = getattr(request.app.state, "appshell_mode_gate", None)
+    if gate is None:
+        raise HTTPException(503, {"code": "appshell_mode_gate_unavailable"})
+    try:
+        admission = await gate.admit(
+            principal,
+            operation_kind="appshell_orin_file_commit_pending",
+        )
+    except AppShellEpochClosedError as exc:
+        raise HTTPException(409, {"code": "appshell_epoch_closed"}) from exc
+    except AppShellOperationLimitError as exc:
+        raise HTTPException(429, {"code": "appshell_operation_limit"}) from exc
+    try:
+        if principal.active_mode != "personal":
+            raise HTTPException(403, {"code": "exact_file_approval_personal_only"})
+        if principal.workspace is not None:
+            raise HTTPException(409, {"code": "appshell_workspace_binding_mismatch"})
+        runtime = _mode_runtime(request, principal)
+        if runtime is None:
+            raise HTTPException(503, {"code": "runtime_unavailable"})
+        adapter, reason = _stage_b_adapter(runtime)
+        if adapter is None:
+            raise HTTPException(503, {"code": reason})
+        settings = runtime.settings
+        try:
+            pending = adapter.pending_file_approvals(
+                appshell_owner=principal.owner,
+                appshell_session=principal.session,
+                appshell_epoch=principal.epoch,
+                active_mode=principal.active_mode,
+                product_id=str(getattr(settings, "product_id", "js-agent")),
+                workspace_root=settings.workspace,
+            )
+        except LeaseDenied as exc:
+            raise HTTPException(502, {"code": "orind_rejected"}) from exc
+        return JSONResponse(
+            {
+                "schema": "AppShellFileCommitPendingV1",
+                "pending": _safe_file_commit_previews(pending),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+    finally:
+        await gate.release(admission)
+
+
+@router.post("/file-commit/approve")
+async def approve_pending_file_commit(
+    request: Request,
+    body: FileCommitApproveRequest,
+    principal: AppShellPrincipalV1 = Depends(_trusted_principal),
+) -> JSONResponse:
+    """Owner-sign and consume one exact Personal File Cell proposal."""
+
+    check_origin(request)
+    gate: AppShellModeGate | None = getattr(request.app.state, "appshell_mode_gate", None)
+    if gate is None:
+        raise HTTPException(503, {"code": "appshell_mode_gate_unavailable"})
+    try:
+        admission = await gate.admit(
+            principal,
+            operation_kind="appshell_orin_file_commit_approve",
+        )
+    except AppShellEpochClosedError as exc:
+        raise HTTPException(409, {"code": "appshell_epoch_closed"}) from exc
+    except AppShellOperationLimitError as exc:
+        raise HTTPException(429, {"code": "appshell_operation_limit"}) from exc
+    try:
+        if principal.active_mode != "personal":
+            raise HTTPException(403, {"code": "exact_file_approval_personal_only"})
+        if principal.workspace is not None:
+            raise HTTPException(409, {"code": "appshell_workspace_binding_mismatch"})
+        runtime = _mode_runtime(request, principal)
+        if runtime is None:
+            raise HTTPException(503, {"code": "runtime_unavailable"})
+        adapter, reason = _stage_b_adapter(runtime)
+        if adapter is None:
+            raise HTTPException(503, {"code": reason})
+        from js.orin.witness import ensure_witness_keypair
+
+        settings = runtime.settings
+        private_key, _public_key = ensure_witness_keypair(Path(settings.state_dir))
+        try:
+            result = adapter.approve_pending_file_change(
+                witness_id=body.witness_id,
+                diff_hash=body.diff_hash,
+                ttl_ms=body.ttl_ms,
+                private_key=private_key,
+                appshell_owner=principal.owner,
+                appshell_session=principal.session,
+                appshell_epoch=principal.epoch,
+                active_mode=principal.active_mode,
+                product_id=str(getattr(settings, "product_id", "js-agent")),
+                workspace_root=settings.workspace,
+            )
+        except LeaseDenied as exc:
+            raise HTTPException(502, {"code": "orind_rejected"}) from exc
+        if not isinstance(result, dict) or result.get("status") != "COMMITTED":
+            raise HTTPException(502, {"code": "orind_invalid_projection"})
+        return JSONResponse(
+            {
+                "schema": "AppShellFileCommitApprovalAckV1",
+                "ok": True,
+                "status": "COMMITTED",
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+    finally:
+        await gate.release(admission)
 
 
 @router.post("/export-pass")

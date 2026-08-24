@@ -42,7 +42,9 @@ from js.orin.draft import (
     CellPackage,
     CommitPermit,
     EffectDraft,
+    ExactCommitApprovalV1,
     draft_from_dict,
+    exact_commit_approval_from_dict,
     export_pass_from_dict,
     witness_from_dict,
 )
@@ -76,13 +78,20 @@ from js.orin.taint import CLEARANCE_INTERNAL, CLEARANCE_SECRET
 from js.orind.broker import HandleBroker
 from js.orind.gatekeeper import GateKeeper
 from js.orind.intent_store import IntentStore
-from js.orind.kernel import GateInputs, GateKernel, canonical_effect_hash_of, handle_refs
+from js.orind.kernel import (
+    EXPORT_EFFECTS,
+    GateInputs,
+    GateKernel,
+    canonical_effect_hash_of,
+    handle_refs,
+)
 from js.orind.keybox import KeyBox, KeyBoxError
 from js.orind.membrane import (
     AdmissionBackpressure,
     BudgetExhausted,
     CommitMembrane,
     CommitState,
+    ExactApprovalUnavailable,
     ExportPassUnavailable,
     InvalidTransition,
     MembraneError,
@@ -874,6 +883,94 @@ class OrinDaemon:
             if not grant_result.get("ok"):
                 return grant_result
             return {"ok": True}
+        if op == "grant_exact":
+            raw_grant = dict(envelope.get("grant") or {})
+            try:
+                approval = exact_commit_approval_from_dict(raw_grant)
+            except Exception as exc:
+                return {"ok": False, "code": "bad_message", "reason": str(exc)}
+            if str(envelope.get("task_id") or "") != approval.task_id:
+                return {"ok": False, "code": "denied", "reason": "task binding mismatch"}
+            now = self._now_ms()
+            record = self._store.get_effect_draft(approval.draft_id, now_ms=now)
+            if not isinstance(record, dict):
+                return {"ok": False, "code": "expired", "reason": "draft expired"}
+            try:
+                draft = draft_from_dict(dict(record.get("draft") or {}))
+            except Exception as exc:
+                return {"ok": False, "code": "bad_message", "reason": str(exc)}
+            if draft.task_id != approval.task_id or draft.effect_type != "file.commit":
+                return {
+                    "ok": False,
+                    "code": "denied",
+                    "reason": "approval is not bound to a Personal file commit",
+                }
+            entry = self._manifest_entry(draft)
+            if entry is None or str(getattr(entry, "executor_id", "")) != "cell.file":
+                return {"ok": False, "code": "denied", "reason": "manifest unavailable"}
+            effect_hash = str(record.get("canonical_effect_hash") or "")
+            if effect_hash != approval.canonical_effect_hash:
+                return {"ok": False, "code": "denied", "reason": "effect hash mismatch"}
+            raw_witness = self._store.state_witness_by_id(approval.witness_id, now_ms=now)
+            current_witness = self._store.current_state_witness(draft.draft_id, now_ms=now)
+            if (
+                not isinstance(raw_witness, dict)
+                or not isinstance(current_witness, dict)
+                or str(current_witness.get("witness_id") or "") != approval.witness_id
+            ):
+                return {"ok": False, "code": "stale_state", "reason": "witness superseded"}
+            try:
+                witness = witness_from_dict(raw_witness)
+            except Exception as exc:
+                return {"ok": False, "code": "stale_state", "reason": str(exc)}
+            if (
+                witness.draft_id != draft.draft_id
+                or witness.executor_id != "cell.file"
+                or witness.canonical_effect_hash != effect_hash
+                or witness.expired(now)
+            ):
+                return {"ok": False, "code": "stale_state", "reason": "witness mismatch"}
+            active = self._authority_for_draft(draft, now_ms=now)
+            if (
+                active is None
+                or active.profile != "personal"
+                or active.approval_policy != "exact_commit_required"
+                or "file.commit" not in active.allowed_effect_classes
+            ):
+                return {
+                    "ok": False,
+                    "code": "denied",
+                    "reason": "exact approval requires a Personal exact-commit intent",
+                }
+            directory_handle_id = self._file_directory_handle_id(draft)
+            if not directory_handle_id or directory_handle_id != approval.directory_handle_id:
+                return {
+                    "ok": False,
+                    "code": "denied",
+                    "reason": "DirectoryHandle binding mismatch",
+                }
+            _handles, handle_error = self._resolve_draft_handles(
+                draft,
+                intent=active,
+                clearance=int(record.get("clearance", CLEARANCE_INTERNAL)),
+                require_all=True,
+            )
+            if handle_error is not None:
+                return {"ok": False, "code": "unknown_handle", "reason": handle_error}
+            grant_result = intents.grant_exact(
+                raw_grant,
+                now_ms=now,
+                expected_binding={
+                    "task_id": draft.task_id,
+                    "draft_id": draft.draft_id,
+                    "witness_id": witness.witness_id,
+                    "canonical_effect_hash": effect_hash,
+                    "directory_handle_id": directory_handle_id,
+                },
+            )
+            if not grant_result.get("ok"):
+                return grant_result
+            return {"ok": True}
         return {"ok": False, "code": "unsupported", "reason": f"unknown intent op {op!r}"}
 
     def _on_admin_unfreeze(self, envelope: dict[str, Any]) -> dict[str, Any]:
@@ -959,6 +1056,93 @@ class OrinDaemon:
             destinations.extend(item for item in values if isinstance(item, str))
         return tuple(sorted(destinations))
 
+    @staticmethod
+    def _file_directory_handle_id(draft: EffectDraft) -> str:
+        if draft.effect_type != "file.commit":
+            return ""
+        value = draft.arguments.get("directory_handle")
+        if not isinstance(value, str) or not value.startswith("dirh:"):
+            return ""
+        return value
+
+    def _authority_for_draft(self, draft: EffectDraft, *, now_ms: int) -> Any | None:
+        """Return the enforcement view, never the broad informational view for files."""
+
+        intents = self._intents
+        if intents is None:
+            return None
+        if draft.effect_type == "file.commit":
+            return intents.effective_grant(draft.task_id, now_ms=now_ms)
+        return intents.active_envelope(draft.task_id, now_ms=now_ms)
+
+    def _active_personal_file_approvals(
+        self,
+        draft: EffectDraft,
+        *,
+        active: Any,
+        witness: Any,
+        canonical_effect_hash: str,
+        now_ms: int,
+    ) -> tuple[ExactCommitApprovalV1, ...]:
+        """Return exact owner approvals only for Personal ``file.commit``.
+
+        The profile/effect guard intentionally precedes the store call: Work
+        keeps its standing template path and must never query or claim this
+        one-shot Personal authority.
+        """
+
+        intents = self._intents
+        if (
+            intents is None
+            or draft.effect_type != "file.commit"
+            or active is None
+            or active.profile != "personal"
+            or active.approval_policy != "exact_commit_required"
+        ):
+            return ()
+        directory_handle_id = self._file_directory_handle_id(draft)
+        if not directory_handle_id:
+            return ()
+        rows = intents.active_exact_commit_approvals(
+            task_id=draft.task_id,
+            draft_id=draft.draft_id,
+            witness_id=str(witness.witness_id),
+            canonical_effect_hash=canonical_effect_hash,
+            directory_handle_id=directory_handle_id,
+            now_ms=now_ms,
+        )
+        parsed: list[ExactCommitApprovalV1] = []
+        for row in rows:
+            with contextlib.suppress(Exception):
+                parsed.append(exact_commit_approval_from_dict(row))
+        return tuple(parsed)
+
+    @staticmethod
+    def _commit_approval_satisfied(
+        draft: EffectDraft,
+        *,
+        active: Any,
+        export_passes_present: bool = False,
+        personal_export_claimed: bool = False,
+        exact_approvals_present: bool = False,
+        personal_exact_claimed: bool = False,
+    ) -> bool:
+        if draft.effect_type in EXPORT_EFFECTS and (
+            export_passes_present or personal_export_claimed
+        ):
+            return True
+        if (
+            draft.effect_type not in EXPORT_EFFECTS
+            and active.approval_policy == "preauthorized_exact_template"
+        ):
+            return True
+        return bool(
+            draft.effect_type == "file.commit"
+            and active.profile == "personal"
+            and active.approval_policy == "exact_commit_required"
+            and (exact_approvals_present or personal_exact_claimed)
+        )
+
     def _resolve_draft_handles(
         self,
         draft: EffectDraft,
@@ -1025,7 +1209,7 @@ class OrinDaemon:
     ) -> tuple[GateInputs, str | None]:
         assert self._intents is not None
         now = self._now_ms()
-        active = self._intents.active_envelope(draft.task_id, now_ms=now)
+        active = self._authority_for_draft(draft, now_ms=now)
         resolved, error = self._resolve_draft_handles(
             draft,
             intent=active,
@@ -1052,7 +1236,7 @@ class OrinDaemon:
                 inputs.witness = witness_from_dict(raw_witness)
             except Exception:
                 inputs.witness = None
-        if include_passes:
+        if include_passes and draft.effect_type in EXPORT_EFFECTS:
             passes = self._intents.export_passes_for_task(draft.task_id)
             parsed = []
             for raw_pass in passes:
@@ -1147,11 +1331,7 @@ class OrinDaemon:
         advisory = str(envelope.get("executor_id") or "")
         if not executor_id or (advisory and advisory != executor_id):
             return {"ok": False, "code": "denied", "reason": "executor mismatch"}
-        active = (
-            self._intents.active_envelope(draft.task_id, now_ms=now)
-            if self._intents is not None
-            else None
-        )
+        active = self._authority_for_draft(draft, now_ms=now)
         handles, handle_error = self._resolve_draft_handles(
             draft,
             intent=active,
@@ -1453,6 +1633,7 @@ class OrinDaemon:
             destinations=operation.destinations,
             bytes_out=operation.bytes_out,
             idempotency_key=operation.idempotency_key,
+            directory_handle_id=operation.directory_handle_id,
         )
 
     @staticmethod
@@ -1498,6 +1679,7 @@ class OrinDaemon:
             or str(record.get("executor_id") or "") != operation.executor_id
             or str(record.get("canonical_effect_hash") or "")
             != operation.canonical_effect_hash
+            or self._file_directory_handle_id(draft) != operation.directory_handle_id
         ):
             raise OperationConflict("durable operation draft authority changed")
         raw_witness = self._store.state_witness_by_id(operation.witness_id)
@@ -1584,9 +1766,10 @@ class OrinDaemon:
             != operation.side_effect_class
             or str(record.get("canonical_effect_hash") or "")
             != operation.canonical_effect_hash
+            or self._file_directory_handle_id(draft) != operation.directory_handle_id
         ):
             return "prepared operation identity changed"
-        active = intents.active_envelope(draft.task_id, now_ms=now)
+        active = self._authority_for_draft(draft, now_ms=now)
         if (
             active is None
             or active.intent_id != operation.intent_id
@@ -1625,7 +1808,7 @@ class OrinDaemon:
         if destinations != operation.destinations:
             return "prepared destination binding changed"
         parsed_passes = []
-        if draft.effect_type in {"net.send", "email.send_exact"}:
+        if draft.effect_type in EXPORT_EFFECTS:
             if operation.profile == "personal":
                 if not operation.export_pass_id or not operation.export_pass_claimed:
                     return "prepared Personal export authority is unavailable"
@@ -1647,6 +1830,18 @@ class OrinDaemon:
                     return "prepared Work export authority is no longer active"
             else:
                 return "prepared export profile is invalid"
+        personal_exact_claimed = bool(
+            draft.effect_type == "file.commit"
+            and operation.profile == "personal"
+            and operation.exact_approval_id
+            and operation.exact_approval_claimed
+        )
+        if (
+            draft.effect_type == "file.commit"
+            and operation.profile == "personal"
+            and not personal_exact_claimed
+        ):
+            return "prepared Personal exact approval is unavailable"
         inputs, gate_handle_error = self._gate_inputs_for_record(
             draft,
             record,
@@ -1656,11 +1851,14 @@ class OrinDaemon:
             return "prepared handle authority is no longer valid"
         inputs.witness = witness
         inputs.export_passes = tuple(parsed_passes)
-        inputs.approval_satisfied = (
-            operation.profile == "personal" and operation.export_pass_claimed
-        ) or bool(parsed_passes) or (
-            draft.effect_type not in {"net.send", "email.send_exact"}
-            and active.approval_policy == "preauthorized_exact_template"
+        inputs.approval_satisfied = self._commit_approval_satisfied(
+            draft,
+            active=active,
+            export_passes_present=bool(parsed_passes),
+            personal_export_claimed=(
+                operation.profile == "personal" and operation.export_pass_claimed
+            ),
+            personal_exact_claimed=personal_exact_claimed,
         )
         blockers = kernel.commit_blockers(draft, inputs)
         if operation.profile == "personal" and operation.export_pass_claimed:
@@ -1697,6 +1895,7 @@ class OrinDaemon:
                 expected_intent_id=operation.intent_id,
                 expected_witness_id=operation.witness_id,
                 expected_export_pass_id=operation.export_pass_id or None,
+                expected_exact_approval_id=operation.exact_approval_id or None,
                 now_ms=now,
             )
         try:
@@ -1821,22 +2020,38 @@ class OrinDaemon:
             return {"ok": False, "code": "unsupported", "reason": "membrane disabled"}
         if operation.state is CommitState.RECEIPTED:
             if operation.profile == "personal":
+                exact_file = operation.effect_type == "file.commit"
                 return {
                     "ok": False,
-                    "code": "export_gate",
-                    "reason": "Personal operation has already been consumed",
+                    "code": "denied" if exact_file else "export_gate",
+                    "reason": (
+                        "Personal exact approval has already been consumed"
+                        if exact_file
+                        else "Personal operation has already been consumed"
+                    ),
                 }
             return self._membrane_ack(operation)
         if operation.state is CommitState.COMMITTED:
             return self._membrane_ack(self._finalize_membrane_receipt(operation))
-        if operation.state in {CommitState.COMMITTING, CommitState.UNKNOWN_COMMIT}:
+        if operation.state is CommitState.COMMITTING:
+            return {
+                "ok": False,
+                "code": "stale_state",
+                "reason": "operation commit is still in progress",
+            }
+        if operation.state is CommitState.UNKNOWN_COMMIT:
             reconciled = await self._reconcile_membrane_operation(operation)
             if reconciled.state is CommitState.RECEIPTED:
                 if reconciled.profile == "personal":
+                    exact_file = reconciled.effect_type == "file.commit"
                     return {
                         "ok": False,
-                        "code": "export_gate",
-                        "reason": "Personal operation has already been consumed",
+                        "code": "denied" if exact_file else "export_gate",
+                        "reason": (
+                            "Personal exact approval has already been consumed"
+                            if exact_file
+                            else "Personal operation has already been consumed"
+                        ),
                     }
                 return self._membrane_ack(reconciled)
             return {
@@ -1867,7 +2082,7 @@ class OrinDaemon:
             return {"ok": False, "code": "expired", "reason": "draft expired"}
         draft = draft_from_dict(dict(record.get("draft") or {}))
         entry = self._manifest_entry(draft)
-        active = intents.active_envelope(draft.task_id, now_ms=now)
+        active = self._authority_for_draft(draft, now_ms=now)
         if entry is None or active is None or active.intent_id != operation.intent_id:
             return {"ok": False, "code": "denied", "reason": "owner authority changed"}
         raw_witness = self._store.state_witness_by_id(operation.witness_id, now_ms=now)
@@ -1875,8 +2090,11 @@ class OrinDaemon:
             return {"ok": False, "code": "stale_state", "reason": "witness expired"}
         witness = witness_from_dict(raw_witness)
         destinations = self._destination_handles(draft, entry)
+        directory_handle_id = self._file_directory_handle_id(draft)
+        if directory_handle_id != operation.directory_handle_id:
+            return {"ok": False, "code": "denied", "reason": "resource binding changed"}
         rows: list[dict[str, Any]] = []
-        if draft.effect_type in {"net.send", "email.send_exact"}:
+        if draft.effect_type in EXPORT_EFFECTS:
             rows = intents.active_exact_export_passes(
                 task_id=draft.task_id,
                 payload_hash=operation.canonical_effect_hash,
@@ -1888,6 +2106,13 @@ class OrinDaemon:
         for row in rows:
             with contextlib.suppress(Exception):
                 parsed.append(export_pass_from_dict(row))
+        exact_approvals = self._active_personal_file_approvals(
+            draft,
+            active=active,
+            witness=witness,
+            canonical_effect_hash=operation.canonical_effect_hash,
+            now_ms=now,
+        )
         inputs, handle_error = self._gate_inputs_for_record(
             draft,
             record,
@@ -1897,15 +2122,18 @@ class OrinDaemon:
             return {"ok": False, "code": "unknown_handle", "reason": handle_error}
         inputs.witness = witness
         inputs.export_passes = tuple(parsed)
-        inputs.approval_satisfied = bool(parsed) or (
-            draft.effect_type not in {"net.send", "email.send_exact"}
-            and active.approval_policy == "preauthorized_exact_template"
+        inputs.approval_satisfied = self._commit_approval_satisfied(
+            draft,
+            active=active,
+            export_passes_present=bool(parsed),
+            exact_approvals_present=bool(exact_approvals),
         )
         if kernel.commit_blockers(draft, inputs):
             return {"ok": False, "code": "denied", "reason": "commit prerequisites missing"}
         if operation.state is CommitState.PROPOSED:
             operation = membrane.transition(operation.operation_id, CommitState.PREFLIGHTED)
         pass_id = parsed[0].pass_id if parsed else None
+        exact_approval_id = exact_approvals[0].approval_id if exact_approvals else None
         try:
             prepared = membrane.prepare(
                 operation.operation_id,
@@ -1914,11 +2142,20 @@ class OrinDaemon:
                 export_pass_id=pass_id,
                 require_personal_pass=(
                     active.profile == "personal"
-                    and draft.effect_type in {"net.send", "email.send_exact"}
+                    and draft.effect_type in EXPORT_EFFECTS
+                ),
+                exact_approval_id=exact_approval_id,
+                require_personal_exact=(
+                    active.profile == "personal" and draft.effect_type == "file.commit"
                 ),
                 now_ms=now,
             )
-        except (BudgetExhausted, ExportPassUnavailable, InvalidTransition):
+        except (
+            BudgetExhausted,
+            ExactApprovalUnavailable,
+            ExportPassUnavailable,
+            InvalidTransition,
+        ):
             return {"ok": False, "code": "denied", "reason": "prepare failed"}
         self._membrane_fault("after_prepared_tx", draft.draft_id)
         return await self._commit_membrane_prepared(prepared)
@@ -1971,7 +2208,7 @@ class OrinDaemon:
         if not isinstance(raw_witness, dict):
             return {"ok": False, "code": "stale_state", "reason": "preflight required"}
         witness = witness_from_dict(raw_witness)
-        active = intents.active_envelope(draft.task_id, now_ms=now)
+        active = self._authority_for_draft(draft, now_ms=now)
         if active is None:
             return {"ok": False, "code": "unknown_intent", "reason": "no active intent"}
         handles, handle_error = self._resolve_draft_handles(
@@ -1983,8 +2220,9 @@ class OrinDaemon:
         if handle_error is not None:
             return {"ok": False, "code": "unknown_handle", "reason": handle_error}
         destinations = self._destination_handles(draft, entry)
+        directory_handle_id = self._file_directory_handle_id(draft)
         exact_rows: list[dict[str, Any]] = []
-        if draft.effect_type in {"net.send", "email.send_exact"}:
+        if draft.effect_type in EXPORT_EFFECTS:
             exact_rows = intents.active_exact_export_passes(
                 task_id=draft.task_id,
                 payload_hash=str(record.get("canonical_effect_hash") or ""),
@@ -1996,6 +2234,13 @@ class OrinDaemon:
         for row in exact_rows:
             with contextlib.suppress(Exception):
                 parsed_passes.append(export_pass_from_dict(row))
+        exact_approvals = self._active_personal_file_approvals(
+            draft,
+            active=active,
+            witness=witness,
+            canonical_effect_hash=str(record.get("canonical_effect_hash") or ""),
+            now_ms=now,
+        )
         inputs, gate_handle_error = self._gate_inputs_for_record(
             draft,
             record,
@@ -2005,9 +2250,11 @@ class OrinDaemon:
             return {"ok": False, "code": "unknown_handle", "reason": gate_handle_error}
         inputs.witness = witness
         inputs.export_passes = tuple(parsed_passes)
-        inputs.approval_satisfied = bool(parsed_passes) or (
-            draft.effect_type not in {"net.send", "email.send_exact"}
-            and active.approval_policy == "preauthorized_exact_template"
+        inputs.approval_satisfied = self._commit_approval_satisfied(
+            draft,
+            active=active,
+            export_passes_present=bool(parsed_passes),
+            exact_approvals_present=bool(exact_approvals),
         )
         blockers = kernel.commit_blockers(draft, inputs)
         if blockers:
@@ -2042,6 +2289,7 @@ class OrinDaemon:
             destinations=destinations,
             bytes_out=int(witness.impact.bytes_out),
             idempotency_key="idem:" + hashlib.sha256(idem_material.encode()).hexdigest(),
+            directory_handle_id=directory_handle_id,
         )
         try:
             ticket = membrane.admit(spec)
@@ -2052,6 +2300,7 @@ class OrinDaemon:
             if proposed.state is CommitState.PROPOSED:
                 proposed = membrane.transition(operation_id, CommitState.PREFLIGHTED)
             pass_id = parsed_passes[0].pass_id if parsed_passes else None
+            exact_approval_id = exact_approvals[0].approval_id if exact_approvals else None
             prepared = membrane.prepare(
                 operation_id,
                 max_invocations=active.budgets.max_invocations,
@@ -2059,13 +2308,17 @@ class OrinDaemon:
                 export_pass_id=pass_id,
                 require_personal_pass=(
                     active.profile == "personal"
-                    and draft.effect_type in {"net.send", "email.send_exact"}
+                    and draft.effect_type in EXPORT_EFFECTS
+                ),
+                exact_approval_id=exact_approval_id,
+                require_personal_exact=(
+                    active.profile == "personal" and draft.effect_type == "file.commit"
                 ),
                 now_ms=now,
             )
             self._membrane_fault("after_prepared_tx", draft.draft_id)
             return await self._commit_membrane_prepared(prepared)
-        except (BudgetExhausted, ExportPassUnavailable):
+        except (BudgetExhausted, ExactApprovalUnavailable, ExportPassUnavailable):
             return {"ok": False, "code": "denied", "reason": "prepare failed"}
         except OperationConflict:
             return {"ok": False, "code": "denied", "reason": "operation identity conflict"}
@@ -2105,7 +2358,7 @@ class OrinDaemon:
             witness = witness_from_dict(witness_raw)
         except Exception as exc:
             return {"ok": False, "code": "stale_state", "reason": str(exc)}
-        active = intents.active_envelope(draft.task_id, now_ms=now)
+        active = self._authority_for_draft(draft, now_ms=now)
         if active is None:
             return {"ok": False, "code": "unknown_intent", "reason": "no active intent"}
         handles, handle_error = self._resolve_draft_handles(
@@ -2117,8 +2370,9 @@ class OrinDaemon:
         if handle_error is not None:
             return {"ok": False, "code": "unknown_handle", "reason": handle_error}
         destinations = self._destination_handles(draft, entry)
+        directory_handle_id = self._file_directory_handle_id(draft)
         exact_rows: list[dict[str, Any]] = []
-        if draft.effect_type in {"net.send", "email.send_exact"}:
+        if draft.effect_type in EXPORT_EFFECTS:
             exact_rows = intents.active_exact_export_passes(
                 task_id=draft.task_id,
                 payload_hash=str(record.get("canonical_effect_hash") or ""),
@@ -2137,11 +2391,20 @@ class OrinDaemon:
                 parsed_passes.append(export_pass_from_dict(row))
             except Exception:
                 continue
+        exact_approvals = self._active_personal_file_approvals(
+            draft,
+            active=active,
+            witness=witness,
+            canonical_effect_hash=str(record.get("canonical_effect_hash") or ""),
+            now_ms=now,
+        )
         inputs.export_passes = tuple(parsed_passes)
         inputs.witness = witness
-        inputs.approval_satisfied = bool(parsed_passes) or (
-            draft.effect_type not in {"net.send", "email.send_exact"}
-            and active.approval_policy == "preauthorized_exact_template"
+        inputs.approval_satisfied = self._commit_approval_satisfied(
+            draft,
+            active=active,
+            export_passes_present=bool(parsed_passes),
+            exact_approvals_present=bool(exact_approvals),
         )
         blockers = kernel.commit_blockers(draft, inputs)
         if blockers:
@@ -2152,10 +2415,7 @@ class OrinDaemon:
         )
         if not canary.get("ok"):
             return canary
-        if active.profile == "personal" and draft.effect_type in {
-            "net.send",
-            "email.send_exact",
-        }:
+        if active.profile == "personal" and draft.effect_type in EXPORT_EFFECTS:
             if not parsed_passes:
                 return {"ok": False, "code": "export_gate", "reason": "export pass required"}
             claimed = intents.claim_personal_export_pass(
@@ -2168,6 +2428,20 @@ class OrinDaemon:
             )
             if not claimed:
                 return {"ok": False, "code": "export_gate", "reason": "export pass consumed"}
+        if active.profile == "personal" and draft.effect_type == "file.commit":
+            if not exact_approvals:
+                return {"ok": False, "code": "denied", "reason": "exact approval required"}
+            exact_claimed = intents.claim_personal_exact_commit_approval(
+                approval_id=exact_approvals[0].approval_id,
+                task_id=draft.task_id,
+                draft_id=draft.draft_id,
+                witness_id=witness.witness_id,
+                canonical_effect_hash=str(record.get("canonical_effect_hash") or ""),
+                directory_handle_id=directory_handle_id,
+                now_ms=now,
+            )
+            if not exact_claimed:
+                return {"ok": False, "code": "denied", "reason": "exact approval consumed"}
         bytes_out = int(witness.impact.bytes_out)
         sequence = self._store.reserve_effect_budget(
             draft.task_id,

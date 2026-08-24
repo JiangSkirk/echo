@@ -108,12 +108,12 @@
 | WP | 已落地 | 本轮门禁 | 未实测 / 阻断边界 |
 |----|---------|-----------|---------------------|
 | B0 | Stage B 开关默认关闭；`orind --dev` 已接通 `--stage-b` 及 Build/Secret/Net/File/Membrane 六个启动开关，非法组合 fail-fast；Stage A 旧命令不变 | CLI 8 passed；全 Orin 399 passed | 未在真实 launchd 生产配置中启停烟测；Stage C 未做 |
-| WP4 | `EffectDraft` / `StateWitness` / 严格 CommitPermit / CellPackage 与 Gate Kernel 合取；硬拒绝短路，软缺项合并，ExportPass 不顶替见证 | 纳入 Orin 399 passed | 普通精确审批尚无 Orind 可验签名证明；Personal `file.commit` 继续 fail-closed |
+| WP4 | `EffectDraft` / `StateWitness` / 严格 CommitPermit / CellPackage 与 Gate Kernel 合取；硬拒绝短路，软缺项合并，ExportPass 不顶替见证 | 纳入 Orin 399 passed | 精确批准已接；完整 diff UI / 真断电仍未做 |
 | WP5 | 签名 IntentEnvelope、Personal/Work 模板及 task/hash/destination/witness 全等 ExportPass；Personal 单次、Work 常设 | 纳入 Orin 399 passed | 真双控缺第二个独立 signer，R3/K4 只能权威硬阻断 |
 | WP6 | 封印 HandleBroker / Effect Manifest / K4 grid；能力位严格 bool，未知字段和伪布尔拒绝 | WP6 35 passed；Ruff/Mypy 绿 | 同 EUID 本地状态整体回滚/篡改仍无外部锚点 |
 | WP7 | Build Cell 保留旧 `commit(permit=WP7 payload)` 帧、shell/code 后端和故障隔离；不进 Commit Membrane | WP7–WP9 回归 84 passed；最终全库无新增红 | 未对所有操作系统/沙箱后端做真机组合烟测 |
 | WP8 | 唯一外发链 `draft → preflight → export-pass → consume(draft_id)`；package 与 permit 并列仅走认证 `cells.sock`；Connector/Network/Secret 集中于 `services.py`；`net.fetch` 不查/不核销出门证 | WP10 Cell 38 passed；全 Orin 399 passed | 真邮件/provider exactly-once 未测；L2 Keychain 只有 mock/可选 Darwin `-T` 烟测，真 Secret 仍是 JSONL 0600 dev fallback；不声称 Enclave/跨进程 ACL |
-| WP9 | File Cell 只从 socket 收 package；staging、规范 diff、CAS/原子 rename、owner-root、symlink/hardlink/设备/NFC/casefold/挂载逃逸防护已落地 | WP7–WP9 回归 84 passed；全 Orin 399 passed | 产品绑定已接；Personal 精确 diff UI / 真断电仍未做。 |
+| WP9 | File Cell 只从 socket 收 package；staging、规范 diff、CAS/原子 rename、owner-root、symlink/hardlink/设备/NFC/casefold/挂载逃逸防护已落地 | WP7–WP9 回归 84 passed；全 Orin 399 passed | 精确批准已接；完整 diff UI / 真断电仍未做 |
 | WP10 | File/Connector 共用唯一 SQLite WAL/FULL Commit Membrane；Personal 证核销+预算+PREPARED 同事务；Work 常设证重验；UNKNOWN 只读对账；四维 100 rps/burst 200 + 全局 1024 背压；关闭膜显式 `best_effort` | WP10 92 passed（core 39 / cells 38 / integration 15）；逐状态 crash/restart 矩阵通过；全 Orin 399 passed | 真 provider 回执/不可逆 exactly-once 和真断电未测；R0/R1/R3 持久化分级只有分类/阻断，非完整分层实现；完整签名 EffectReceipt 链未接入 |
 
 最终全库验收：`ruff check .` 通过；`mypy js` 覆盖 328 个源文件、零错误；`pytest tests/ -q` 为 6623 passed / 2 skipped / 113 deselected，仅保留两条已确认 auth 基线红；11/11 mock benchmark 通过，overall 1.000，delta +0.000，mock 工具参数已实际执行。

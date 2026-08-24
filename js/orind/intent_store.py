@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from js.orin.draft import export_pass_from_dict
+from js.orin.draft import exact_commit_approval_from_dict, export_pass_from_dict
 from js.orin.intent import (
     Budgets,
     IntentEnvelope,
@@ -84,11 +84,23 @@ class IntentStore:
                     "reason": "session permissions may only tighten",
                 }
         pub = _matching_key(envelope, candidates) or ""
-        self._store.record_intent(
+        status = self._store.record_intent(
             intent_id=envelope.intent_id,
             payload=envelope.to_dict(),
             public_key=pub,
         )
+        if status in {"conflict", "revoked"}:
+            return {
+                "ok": False,
+                "code": "denied",
+                "reason": "intent id is immutable and cannot be replayed",
+            }
+        if status == "task_key_conflict":
+            return {
+                "ok": False,
+                "code": "denied",
+                "reason": "task owner witness key is immutable",
+            }
         return {"ok": True, "intent": envelope.to_dict()}
 
     def _effective_grant(self, task_id: str, *, now_ms: int) -> IntentEnvelope | None:
@@ -162,6 +174,11 @@ class IntentStore:
         if now_ms >= envelope.expires_at_ms:
             return None
         return envelope
+
+    def effective_grant(self, task_id: str, *, now_ms: int) -> IntentEnvelope | None:
+        """Return the monotonic intersection used for authority decisions."""
+
+        return self._effective_grant(task_id, now_ms=now_ms)
 
     def revoke(self, intent_id: str) -> bool:
         return self._store.revoke_intent(intent_id)
@@ -307,6 +324,150 @@ class IntentStore:
             now_ms=now_ms,
         )
 
+    # -- Personal exact file-commit approval ---------------------------------
+    def grant_exact(
+        self,
+        data: dict[str, Any],
+        *,
+        now_ms: int,
+        expected_binding: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Verify and register one owner-signed exact Personal file approval."""
+
+        try:
+            approval = exact_commit_approval_from_dict(data)
+        except Exception as exc:
+            return {"ok": False, "code": "bad_message", "reason": str(exc)}
+        if not approval.signature:
+            return {"ok": False, "code": "unknown_intent", "reason": "approval is unsigned"}
+        if not approval.created_at_ms <= now_ms < approval.expires_at_ms:
+            return {"ok": False, "code": "expired", "reason": "exact approval expired"}
+        if expected_binding is None:
+            return {
+                "ok": False,
+                "code": "denied",
+                "reason": "current draft/witness binding required",
+            }
+        try:
+            expected = _normalize_exact_commit_binding(expected_binding)
+        except ValueError as exc:
+            return {"ok": False, "code": "bad_message", "reason": str(exc)}
+        actual = {
+            "task_id": approval.task_id,
+            "draft_id": approval.draft_id,
+            "witness_id": approval.witness_id,
+            "canonical_effect_hash": approval.canonical_effect_hash,
+            "directory_handle_id": approval.directory_handle_id,
+        }
+        if actual != expected:
+            return {
+                "ok": False,
+                "code": "denied",
+                "reason": "exact approval does not match current file binding",
+            }
+        effective = self.effective_grant(approval.task_id, now_ms=now_ms)
+        signer = self.active_envelope(approval.task_id, now_ms=now_ms)
+        if effective is None or signer is None:
+            return {"ok": False, "code": "unknown_intent", "reason": "no active owner intent"}
+        if (
+            effective.profile != "personal"
+            or effective.approval_policy != "exact_commit_required"
+            or "file.commit" not in effective.allowed_effect_classes
+            or approval.directory_handle_id not in effective.allowed_resource_handles
+        ):
+            return {
+                "ok": False,
+                "code": "denied",
+                "reason": "exact approval is limited to Personal file.commit",
+            }
+        public_key = self._store.intent_public_key(signer.intent_id)
+        task_keys = self._store.intent_public_keys_for_task(approval.task_id)
+        if (
+            not public_key
+            or task_keys != (public_key,)
+            or not approval.verify(public_key)
+        ):
+            return {
+                "ok": False,
+                "code": "unknown_intent",
+                "reason": "approval signature is not the active intent witness",
+            }
+        status = self._store.record_exact_commit_approval(
+            approval_id=approval.approval_id,
+            payload=approval.to_dict(),
+            public_key=public_key,
+        )
+        if status == "conflict":
+            return {
+                "ok": False,
+                "code": "denied",
+                "reason": "exact approval id already binds different bytes",
+            }
+        if not self._store.active_exact_commit_approvals(
+            task_id=approval.task_id,
+            draft_id=approval.draft_id,
+            witness_id=approval.witness_id,
+            canonical_effect_hash=approval.canonical_effect_hash,
+            directory_handle_id=approval.directory_handle_id,
+            now_ms=now_ms,
+            approval_id=approval.approval_id,
+        ):
+            return {
+                "ok": False,
+                "code": "denied",
+                "reason": "exact approval was already consumed",
+            }
+        return {
+            "ok": True,
+            "approval_id": approval.approval_id,
+            "replayed": status == "idempotent",
+        }
+
+    def exact_commit_approvals_for_task(self, task_id: str) -> list[dict[str, Any]]:
+        return self._store.exact_commit_approvals_for_task(task_id)
+
+    def active_exact_commit_approvals(
+        self,
+        *,
+        task_id: str,
+        draft_id: str,
+        witness_id: str,
+        canonical_effect_hash: str,
+        directory_handle_id: str,
+        now_ms: int,
+        approval_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._store.active_exact_commit_approvals(
+            task_id=task_id,
+            draft_id=draft_id,
+            witness_id=witness_id,
+            canonical_effect_hash=canonical_effect_hash,
+            directory_handle_id=directory_handle_id,
+            now_ms=now_ms,
+            approval_id=approval_id,
+        )
+
+    def claim_personal_exact_commit_approval(
+        self,
+        *,
+        approval_id: str,
+        task_id: str,
+        draft_id: str,
+        witness_id: str,
+        canonical_effect_hash: str,
+        directory_handle_id: str,
+        now_ms: int,
+    ) -> bool:
+        return self._store.claim_personal_exact_commit_approval(
+            approval_id=approval_id,
+            task_id=task_id,
+            draft_id=draft_id,
+            witness_id=witness_id,
+            canonical_effect_hash=canonical_effect_hash,
+            directory_handle_id=directory_handle_id,
+            now_ms=now_ms,
+        )
+
 
 def _matching_key(envelope: Any, keys: frozenset[str]) -> str | None:
     for key in keys:
@@ -347,6 +508,42 @@ def _normalize_export_binding(data: dict[str, Any]) -> dict[str, Any]:
         "destination_handles": _canonical_destinations(data.get("destination_handles")),
         "witness_id": witness_id,
     }
+
+
+def _normalize_exact_commit_binding(data: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("expected exact commit binding must be an object")
+    allowed = {
+        "task_id",
+        "draft_id",
+        "witness_id",
+        "canonical_effect_hash",
+        "directory_handle_id",
+    }
+    if set(data) != allowed:
+        raise ValueError("expected exact binding requires task/draft/witness/hash/directory")
+    prefixes = {
+        "task_id": "task:",
+        "draft_id": "draft:",
+        "witness_id": "state:",
+        "directory_handle_id": "dirh:",
+    }
+    normalized: dict[str, Any] = {}
+    for name, prefix in prefixes.items():
+        value = data.get(name)
+        if not isinstance(value, str) or not value.startswith(prefix) or len(value) > 512:
+            raise ValueError(f"expected exact {name} is malformed")
+        normalized[name] = value
+    digest = data.get("canonical_effect_hash")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 71
+        or not digest.startswith("sha256:")
+        or any(char not in "0123456789abcdef" for char in digest[7:])
+    ):
+        raise ValueError("expected exact canonical_effect_hash is malformed")
+    normalized["canonical_effect_hash"] = digest
+    return normalized
 
 
 __all__ = ["IntentStore"]

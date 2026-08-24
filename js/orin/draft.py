@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Final, cast
 
@@ -101,6 +102,8 @@ def draft_from_dict(data: dict[str, Any]) -> EffectDraft:
 
 
 PASS_ID_PREFIX: Final[str] = "export:"
+EXACT_APPROVAL_ID_PREFIX: Final[str] = "exact:"
+EXACT_APPROVAL_SCHEMA: Final[str] = "ExactCommitApprovalV1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +251,144 @@ def export_pass_from_dict(data: dict[str, Any]) -> ExportPass:
 
 
 @dataclass(frozen=True, slots=True)
+class ExactCommitApprovalV1:
+    """One owner-signed approval for one exact preflighted file commit.
+
+    This is deliberately not an :class:`ExportPass`: it has no destination
+    or standing-authority semantics and is consumable only by a Personal
+    ``file.commit`` whose draft, witness, effect hash, and DirectoryHandle all
+    match exactly.
+    """
+
+    approval_id: str
+    task_id: str
+    draft_id: str
+    witness_id: str
+    canonical_effect_hash: str
+    directory_handle_id: str
+    approved: bool
+    created_at_ms: int
+    expires_at_ms: int
+    signature: str = ""
+
+    def payload(self) -> str:
+        return canonical_json(
+            {
+                "schema": EXACT_APPROVAL_SCHEMA,
+                "approval_id": self.approval_id,
+                "task_id": self.task_id,
+                "draft_id": self.draft_id,
+                "witness_id": self.witness_id,
+                "canonical_effect_hash": self.canonical_effect_hash,
+                "directory_handle_id": self.directory_handle_id,
+                "approved": self.approved,
+                "created_at_ms": self.created_at_ms,
+                "expires_at_ms": self.expires_at_ms,
+            }
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data = cast("dict[str, Any]", json.loads(self.payload()))
+        data["signature"] = self.signature
+        return data
+
+    def sign_with(self, private_key: Any) -> ExactCommitApprovalV1:
+        from dataclasses import replace as _replace
+
+        raw = private_key.sign(self.payload().encode("utf-8"))
+        return _replace(self, signature=base64.b64encode(raw).decode("ascii"))
+
+    def verify(self, public_key_b64: str) -> bool:
+        try:
+            from cryptography.hazmat.primitives.asymmetric import ed25519
+
+            sig = base64.b64decode(self.signature, validate=True)
+            pub = ed25519.Ed25519PublicKey.from_public_bytes(
+                base64.b64decode(public_key_b64, validate=True)
+            )
+            pub.verify(sig, self.payload().encode("utf-8"))
+            return True
+        except Exception:  # noqa: BLE001 - any failure means invalid
+            return False
+
+
+def validate_exact_commit_approval_dict(data: Any) -> None:
+    if not isinstance(data, dict):
+        raise ProtocolError("exact commit approval must be an object")
+    known = {
+        "schema",
+        "approval_id",
+        "task_id",
+        "draft_id",
+        "witness_id",
+        "canonical_effect_hash",
+        "directory_handle_id",
+        "approved",
+        "created_at_ms",
+        "expires_at_ms",
+        "signature",
+    }
+    unknown = set(data) - known
+    missing = known - set(data)
+    if unknown:
+        raise ProtocolError(f"unknown exact-approval fields {sorted(unknown)!r}")
+    if missing:
+        raise ProtocolError(f"missing exact-approval fields {sorted(missing)!r}")
+    if data.get("schema") != EXACT_APPROVAL_SCHEMA:
+        raise ProtocolError(f"exact approval schema must be {EXACT_APPROVAL_SCHEMA!r}")
+    identifiers = {
+        "approval_id": EXACT_APPROVAL_ID_PREFIX,
+        "task_id": "task:",
+        "draft_id": DRAFT_ID_PREFIX,
+        "witness_id": WITNESS_ID_PREFIX,
+        "directory_handle_id": "dirh:",
+    }
+    for name, prefix in identifiers.items():
+        value = data.get(name)
+        if (
+            not isinstance(value, str)
+            or not value.startswith(prefix)
+            or len(value) > 512
+        ):
+            raise ProtocolError(f"exact approval {name} must be a bounded {prefix!r} id")
+    digest = data.get("canonical_effect_hash")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 71
+        or not digest.startswith("sha256:")
+        or any(char not in "0123456789abcdef" for char in digest[7:])
+    ):
+        raise ProtocolError("exact approval canonical_effect_hash must be sha256:<64 hex>")
+    if type(data.get("approved")) is not bool or data["approved"] is not True:
+        raise ProtocolError("exact approval approved must be the boolean true")
+    for key in ("created_at_ms", "expires_at_ms"):
+        value = data.get(key)
+        if type(value) is not int or not 0 < value <= MAX_SEQ:
+            raise ProtocolError(f"exact approval {key} must be a positive u64 integer")
+    if data["expires_at_ms"] <= data["created_at_ms"]:
+        raise ProtocolError("exact approval expiry must follow creation")
+    signature = data.get("signature")
+    if not isinstance(signature, str) or len(signature) > 256:
+        raise ProtocolError("exact approval signature must be a bounded string")
+
+
+def exact_commit_approval_from_dict(data: dict[str, Any]) -> ExactCommitApprovalV1:
+    validate_exact_commit_approval_dict(data)
+    return ExactCommitApprovalV1(
+        approval_id=data["approval_id"],
+        task_id=data["task_id"],
+        draft_id=data["draft_id"],
+        witness_id=data["witness_id"],
+        canonical_effect_hash=data["canonical_effect_hash"],
+        directory_handle_id=data["directory_handle_id"],
+        approved=data["approved"],
+        created_at_ms=data["created_at_ms"],
+        expires_at_ms=data["expires_at_ms"],
+        signature=data["signature"],
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class Impact:
     writes: int = 0
     recipients: int = 0
@@ -261,6 +402,93 @@ class Impact:
             "bytes_out": self.bytes_out,
             "cost_upper_bound": self.cost_upper_bound,
         }
+
+
+FILE_COMMIT_PREVIEW_SCHEMA: Final[str] = "FileCommitPreviewV1"
+
+
+@dataclass(frozen=True, slots=True)
+class FileCommitPreviewV1:
+    """Small machine-only projection of a File Cell staging report."""
+
+    file_count: int
+    bytes: int
+    overwrites: tuple[str, ...]
+    diff_hash: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": FILE_COMMIT_PREVIEW_SCHEMA,
+            "file_count": self.file_count,
+            "bytes": self.bytes,
+            "overwrites": list(self.overwrites),
+            "diff_hash": self.diff_hash,
+        }
+
+
+def validate_file_commit_preview_dict(data: Any) -> None:
+    if not isinstance(data, dict):
+        raise ProtocolError("file commit preview must be an object")
+    known = {"schema", "file_count", "bytes", "overwrites", "diff_hash"}
+    unknown = set(data) - known
+    missing = known - set(data)
+    if unknown:
+        raise ProtocolError(f"unknown file commit preview fields {sorted(unknown)!r}")
+    if missing:
+        raise ProtocolError(f"missing file commit preview fields {sorted(missing)!r}")
+    if data.get("schema") != FILE_COMMIT_PREVIEW_SCHEMA:
+        raise ProtocolError(f"file commit preview schema must be {FILE_COMMIT_PREVIEW_SCHEMA!r}")
+    file_count = data.get("file_count")
+    byte_count = data.get("bytes")
+    if type(file_count) is not int or not 1 <= file_count <= 128:
+        raise ProtocolError("file commit preview file_count must be an integer in 1..128")
+    if type(byte_count) is not int or not 0 <= byte_count <= 8 * 1024 * 1024:
+        raise ProtocolError("file commit preview bytes must be in 0..8 MiB")
+    overwrites = data.get("overwrites")
+    if not isinstance(overwrites, list) or len(overwrites) > file_count:
+        raise ProtocolError("file commit preview overwrites must be a bounded list")
+    normalized_paths: list[str] = []
+    for path in overwrites:
+        if not isinstance(path, str) or not path or len(path.encode("utf-8")) > 1_024:
+            raise ProtocolError("file commit preview overwrite must be a bounded path")
+        if path.startswith(("/", "\\")) or "\\" in path:
+            raise ProtocolError("file commit preview overwrite must be a relative POSIX path")
+        parts = path.split("/")
+        if any(part in {"", ".", ".."} for part in parts):
+            raise ProtocolError("file commit preview overwrite contains an unsafe component")
+        if unicodedata.normalize("NFC", path) != path:
+            raise ProtocolError("file commit preview overwrite must be NFC normalized")
+        if any(
+            len(part.encode("utf-8")) > 255
+            or part.casefold() == ".git"
+            or any(unicodedata.category(char).startswith("C") for char in part)
+            for part in parts
+        ):
+            raise ProtocolError("file commit preview overwrite contains an unsafe component")
+        normalized_paths.append(path)
+    folded_paths = {path.casefold() for path in normalized_paths}
+    if len(set(normalized_paths)) != len(normalized_paths) or len(folded_paths) != len(
+        normalized_paths
+    ):
+        raise ProtocolError("file commit preview overwrites must be NFC/casefold unique")
+    diff_hash = data.get("diff_hash")
+    if (
+        not isinstance(diff_hash, str)
+        or len(diff_hash) != 71
+        or not diff_hash.startswith("sha256:")
+        or any(char not in "0123456789abcdef" for char in diff_hash[7:])
+    ):
+        raise ProtocolError("file commit preview diff_hash must be sha256:<64 hex>")
+
+
+def file_commit_preview_from_dict(data: dict[str, Any]) -> FileCommitPreviewV1:
+    validate_file_commit_preview_dict(data)
+    return FileCommitPreviewV1(
+        file_count=data["file_count"],
+        bytes=data["bytes"],
+        overwrites=tuple(data["overwrites"]),
+        diff_hash=data["diff_hash"],
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,22 +505,24 @@ class StateWitness:
     idempotency_support: str
     created_at_ms: int
     expires_at_ms: int
+    file_commit_preview: FileCommitPreviewV1 | None = None
 
     def payload(self) -> str:
-        return canonical_json(
-            {
-                "witness_id": self.witness_id,
-                "draft_id": self.draft_id,
-                "executor_id": self.executor_id,
-                "target_version": self.target_version,
-                "canonical_effect_hash": self.canonical_effect_hash,
-                "impact": self.impact.to_dict(),
-                "reversibility": self.reversibility,
-                "idempotency_support": self.idempotency_support,
-                "created_at_ms": self.created_at_ms,
-                "expires_at_ms": self.expires_at_ms,
-            }
-        )
+        body: dict[str, Any] = {
+            "witness_id": self.witness_id,
+            "draft_id": self.draft_id,
+            "executor_id": self.executor_id,
+            "target_version": self.target_version,
+            "canonical_effect_hash": self.canonical_effect_hash,
+            "impact": self.impact.to_dict(),
+            "reversibility": self.reversibility,
+            "idempotency_support": self.idempotency_support,
+            "created_at_ms": self.created_at_ms,
+            "expires_at_ms": self.expires_at_ms,
+        }
+        if self.file_commit_preview is not None:
+            body["file_commit_preview"] = self.file_commit_preview.to_dict()
+        return canonical_json(body)
 
     def to_dict(self) -> dict[str, Any]:
         return cast("dict[str, Any]", json.loads(self.payload()))
@@ -315,6 +545,7 @@ def validate_witness_dict(data: Any) -> None:
         "idempotency_support",
         "created_at_ms",
         "expires_at_ms",
+        "file_commit_preview",
     }
     unknown = set(data) - known
     if unknown:
@@ -348,6 +579,13 @@ def validate_witness_dict(data: Any) -> None:
         value = data.get(key)
         if not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= MAX_SEQ:
             raise ProtocolError(f"witness field {key!r} must be a positive u64")
+    preview = data.get("file_commit_preview")
+    if preview is not None:
+        if data.get("executor_id") != "cell.file":
+            raise ProtocolError("file commit preview is valid only for cell.file witnesses")
+        validate_file_commit_preview_dict(preview)
+        if preview["file_count"] != impact["writes"]:
+            raise ProtocolError("file commit preview file_count must equal witness impact writes")
 
 
 def witness_from_dict(data: dict[str, Any]) -> StateWitness:
@@ -363,6 +601,11 @@ def witness_from_dict(data: dict[str, Any]) -> StateWitness:
         idempotency_support=data["idempotency_support"],
         created_at_ms=int(data["created_at_ms"]),
         expires_at_ms=int(data["expires_at_ms"]),
+        file_commit_preview=(
+            file_commit_preview_from_dict(data["file_commit_preview"])
+            if isinstance(data.get("file_commit_preview"), dict)
+            else None
+        ),
     )
 
 
@@ -775,9 +1018,14 @@ __all__ = [
     "CellPackage",
     "CommitPermit",
     "DRAFT_ID_PREFIX",
+    "EXACT_APPROVAL_ID_PREFIX",
+    "EXACT_APPROVAL_SCHEMA",
+    "ExactCommitApprovalV1",
     "ExportPass",
     "EffectDraft",
     "EffectReceipt",
+    "FILE_COMMIT_PREVIEW_SCHEMA",
+    "FileCommitPreviewV1",
     "IDEMPOTENCY_SUPPORTS",
     "Impact",
     "PERMIT_ID_PREFIX",
@@ -787,12 +1035,16 @@ __all__ = [
     "canonical_destination_handles",
     "cell_package_from_dict",
     "draft_from_dict",
+    "exact_commit_approval_from_dict",
     "export_pass_from_dict",
+    "file_commit_preview_from_dict",
     "permit_from_dict",
     "receipt_from_dict",
     "validate_draft_dict",
     "validate_cell_package_dict",
     "validate_export_pass_dict",
+    "validate_exact_commit_approval_dict",
+    "validate_file_commit_preview_dict",
     "validate_permit_dict",
     "validate_receipt_dict",
     "validate_witness_dict",

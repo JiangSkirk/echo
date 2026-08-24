@@ -8,11 +8,14 @@ before dispatch.  That distinction pins the no-blind-retry recovery contract.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -23,7 +26,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from js.echo.capability import LeaseDenied
 from js.orin.client import OrinLeaseClientAdapter, OrinUnavailable
-from js.orin.draft import EffectDraft, ExportPass
+from js.orin.draft import EffectDraft, ExactCommitApprovalV1, ExportPass
 from js.orin.intent import Budgets, IntentEnvelope
 from js.orin.testing import TestOrind
 from js.orind.membrane import AdmissionBackpressure
@@ -437,6 +440,143 @@ class TestSharedMembrane:
 
 
 class TestCrashRecovery:
+    def test_file_authority_paths_never_use_broad_active_envelope(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        state_dir = tmp_path / "state"
+        witness_key = ed25519.Ed25519PrivateKey.generate()
+        crash = _CrashAt("after_prepared_tx")
+        orind = _start_orind(
+            state_dir,
+            witness_key,
+            cell_file=True,
+            membrane_fault_hook=crash,
+        )
+        adapter: OrinLeaseClientAdapter | None = None
+        try:
+            intents = orind.daemon._intents  # noqa: SLF001
+            assert intents is not None
+            original_effective_grant = intents.effective_grant
+            effective_calls: list[str] = []
+
+            def effective_grant(task_id: str, *, now_ms: int) -> Any:
+                effective_calls.append(task_id)
+                return original_effective_grant(task_id, now_ms=now_ms)
+
+            def forbidden_active(*_args: Any, **_kwargs: Any) -> Any:
+                raise AssertionError("file authority must not use the broad active intent view")
+
+            monkeypatch.setattr(intents, "effective_grant", effective_grant)
+            monkeypatch.setattr(intents, "active_envelope", forbidden_active)
+            adapter, draft, target = _prepare_file(
+                orind,
+                witness_key,
+                tmp_path / "owner-effective",
+            )
+            raw_witness = orind.daemon._store.current_state_witness(  # noqa: SLF001
+                draft.draft_id
+            )
+            assert isinstance(raw_witness, dict)
+            now = _now_ms()
+            bogus_work_approval = ExactCommitApprovalV1(
+                approval_id=f"exact:{uuid4().hex}",
+                task_id=draft.task_id,
+                draft_id=draft.draft_id,
+                witness_id=str(raw_witness["witness_id"]),
+                canonical_effect_hash=str(raw_witness["canonical_effect_hash"]),
+                directory_handle_id=str(draft.arguments["directory_handle"]),
+                approved=True,
+                created_at_ms=now - 1,
+                expires_at_ms=now + 60_000,
+            ).sign_with(witness_key)
+            with pytest.raises(LeaseDenied):
+                adapter.grant_exact(bogus_work_approval.to_dict(), task_id=draft.task_id)
+
+            _expect_interrupted_consume(adapter, draft.draft_id)
+            assert _operation(orind, draft.draft_id).state == "PREPARED"
+            response = _consume_raw(adapter, draft.draft_id)
+            assert response["receipt_id"].startswith("receipt:")
+            assert target.read_text(encoding="utf-8") == "membrane-file-content\n"
+            assert len(effective_calls) >= 7
+            assert set(effective_calls) == {draft.task_id}
+        finally:
+            if adapter is not None:
+                adapter.close()
+            orind.stop()
+
+    def test_live_duplicate_consume_cannot_reconcile_committing_operation(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        state_dir = tmp_path / "state"
+        witness_key = ed25519.Ed25519PrivateKey.generate()
+        orind = _start_orind(state_dir, witness_key, cell_file=True)
+        first_adapter: OrinLeaseClientAdapter | None = None
+        second_adapter: OrinLeaseClientAdapter | None = None
+        entered_commit = threading.Event()
+        release_commit = threading.Event()
+        request_types: list[str] = []
+        executor = ThreadPoolExecutor(max_workers=1)
+        first_future: Any = None
+        try:
+            first_adapter, draft, target = _prepare_file(
+                orind,
+                witness_key,
+                tmp_path / "owner",
+            )
+            second_adapter = _adapter(orind)
+            original_request = orind.daemon._request_cell  # noqa: SLF001
+
+            async def hold_first_commit(
+                cap: str,
+                message_type: str,
+                *,
+                timeout_s: float = 90.0,
+                _allow_unready: bool = False,
+                **fields: Any,
+            ) -> dict[str, Any] | None:
+                request_types.append(message_type)
+                if message_type == "commit" and not entered_commit.is_set():
+                    entered_commit.set()
+                    released = await asyncio.to_thread(release_commit.wait, 10.0)
+                    if not released:
+                        raise AssertionError("timed out holding the first Cell commit")
+                return await original_request(
+                    cap,
+                    message_type,
+                    timeout_s=timeout_s,
+                    _allow_unready=_allow_unready,
+                    **fields,
+                )
+
+            monkeypatch.setattr(orind.daemon, "_request_cell", hold_first_commit)
+            first_future = executor.submit(_consume_raw, first_adapter, draft.draft_id)
+            assert entered_commit.wait(10.0), "first consume never reached Cell commit dispatch"
+            assert _operation(orind, draft.draft_id).state == "COMMITTING"
+
+            with pytest.raises((LeaseDenied, OrinUnavailable)):
+                _consume_raw(second_adapter, draft.draft_id)
+
+            assert _operation(orind, draft.draft_id).state == "COMMITTING"
+            assert "reconcile" not in request_types
+            assert not target.exists()
+            release_commit.set()
+            response = first_future.result(timeout=20.0)
+            assert response["receipt_id"].startswith("receipt:")
+            assert _operation(orind, draft.draft_id).state == "RECEIPTED"
+            _assert_one_effect("file", state_dir, target)
+        finally:
+            release_commit.set()
+            executor.shutdown(wait=True, cancel_futures=True)
+            if first_adapter is not None:
+                first_adapter.close()
+            if second_adapter is not None:
+                second_adapter.close()
+            orind.stop()
+
     @pytest.mark.parametrize("kind", ["file", "connector"])
     def test_crash_before_cell_call_reconciles_absent_without_blind_retry(
         self,

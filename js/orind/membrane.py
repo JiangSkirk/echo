@@ -68,6 +68,10 @@ class ExportPassUnavailable(MembraneError):  # noqa: N818 - public protocol name
     """Raised when no live, exact ExportPass can authorize an egress."""
 
 
+class ExactApprovalUnavailable(MembraneError):  # noqa: N818 - public protocol name
+    """Raised when no live exact approval can authorize a Personal file commit."""
+
+
 class AdmissionBackpressure(MembraneError):  # noqa: N818 - public protocol name
     """Raised when a membrane authority key exceeds its rate or queue bound."""
 
@@ -108,6 +112,7 @@ class OperationSpec:
     destinations: tuple[str, ...]
     bytes_out: int
     idempotency_key: str
+    directory_handle_id: str = ""
 
     def __post_init__(self) -> None:
         bounded = {
@@ -161,6 +166,10 @@ class OperationSpec:
             raise ValueError("destinations must not contain duplicates")
         if tuple(sorted(self.destinations)) != self.destinations:
             raise ValueError("destinations must use canonical sorted order")
+        if self.directory_handle_id and not _is_directory_handle_id(
+            self.directory_handle_id
+        ):
+            raise ValueError("directory_handle_id must be a canonical DirectoryHandle id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +191,7 @@ class OperationSnapshot:
     destinations: tuple[str, ...]
     bytes_out: int
     idempotency_key: str
+    directory_handle_id: str
     state: CommitState
     permit_id: str = ""
     permit_sequence: int = 0
@@ -191,6 +201,8 @@ class OperationSnapshot:
     attempt_count: int = 0
     export_pass_id: str = ""
     export_pass_claimed: bool = False
+    exact_approval_id: str = ""
+    exact_approval_claimed: bool = False
     remote_operation_id: str = ""
     receipt_id: str = ""
     safe_result_digest: str = ""
@@ -272,6 +284,7 @@ CREATE TABLE IF NOT EXISTS commit_operations (
     destinations_json TEXT NOT NULL,
     bytes_out INTEGER NOT NULL,
     idempotency_key TEXT NOT NULL,
+    directory_handle_id TEXT NOT NULL DEFAULT '',
     spec_fingerprint TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN (
         'PROPOSED', 'DENIED', 'PREFLIGHTED', 'APPROVAL_PENDING',
@@ -285,6 +298,8 @@ CREATE TABLE IF NOT EXISTS commit_operations (
     attempt_count INTEGER NOT NULL DEFAULT 0,
     export_pass_id TEXT NOT NULL DEFAULT '',
     export_pass_claimed INTEGER NOT NULL DEFAULT 0 CHECK (export_pass_claimed IN (0, 1)),
+    exact_approval_id TEXT NOT NULL DEFAULT '',
+    exact_approval_claimed INTEGER NOT NULL DEFAULT 0 CHECK (exact_approval_claimed IN (0, 1)),
     remote_operation_id TEXT NOT NULL DEFAULT '',
     receipt_id TEXT NOT NULL DEFAULT '',
     safe_result_json TEXT NOT NULL DEFAULT '{}',
@@ -532,9 +547,9 @@ class CommitMembrane:
                         operation_id, draft_id, task_id, owner_key_hash, session_id,
                         effect_type, executor_id, side_effect_class,
                         canonical_effect_hash, witness_id, intent_id, profile,
-                        destinations_json, bytes_out, idempotency_key,
+                        destinations_json, bytes_out, idempotency_key, directory_handle_id,
                         spec_fingerprint, state, created_at_ms, updated_at_ms
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         spec.operation_id,
@@ -552,6 +567,7 @@ class CommitMembrane:
                         _destinations_json(spec.destinations),
                         spec.bytes_out,
                         spec.idempotency_key,
+                        spec.directory_handle_id,
                         fingerprint,
                         CommitState.PROPOSED.value,
                         now_ms,
@@ -690,6 +706,8 @@ class CommitMembrane:
         max_bytes_out: int,
         export_pass_id: str | None,
         require_personal_pass: bool,
+        exact_approval_id: str | None = None,
+        require_personal_exact: bool = False,
         now_ms: int | None = None,
     ) -> OperationSnapshot:
         """Atomically validate authority, reserve budget, and mint one permit."""
@@ -701,6 +719,13 @@ class CommitMembrane:
             raise ValueError("now_ms must be a positive integer")
         if not isinstance(require_personal_pass, bool):
             raise ValueError("require_personal_pass must be a boolean")
+        if not isinstance(require_personal_exact, bool):
+            raise ValueError("require_personal_exact must be a boolean")
+        exact_id = exact_approval_id or ""
+        if exact_id:
+            _validate_identifier(exact_id, "exact_approval_id", prefix="exact:")
+        if require_personal_pass and require_personal_exact:
+            raise ValueError("one operation cannot require export and exact file authority")
 
         with self._transaction() as connection:
             row = self._row(connection, operation_id)
@@ -709,7 +734,6 @@ class CommitMembrane:
                 return _snapshot(row)
             if source not in {CommitState.PREFLIGHTED, CommitState.APPROVAL_PENDING}:
                 raise InvalidTransition(f"cannot prepare operation from {source}")
-
             bytes_out = int(row["bytes_out"])
             budget = connection.execute(
                 "SELECT invocations, bytes_out, sequence FROM effect_budget_usage"
@@ -725,6 +749,18 @@ class CommitMembrane:
             destinations = _destinations_from_json(str(row["destinations_json"]))
             must_have_pass = bool(destinations) or require_personal_pass
             pass_id = export_pass_id or ""
+            if str(row["effect_type"]) == "file.commit" and (
+                destinations or pass_id or require_personal_pass
+            ):
+                raise ExportPassUnavailable("file.commit must not bind an ExportPass")
+            if (
+                str(row["profile"]) == "personal"
+                and str(row["effect_type"]) == "file.commit"
+                and not require_personal_exact
+            ):
+                raise ExactApprovalUnavailable(
+                    "Personal file.commit requires an exact commit approval"
+                )
             pass_row: sqlite3.Row | None = None
             if must_have_pass:
                 if not pass_id:
@@ -747,6 +783,36 @@ class CommitMembrane:
             elif pass_id:
                 raise ExportPassUnavailable("non-egress operation must not bind an ExportPass")
 
+            exact_row: sqlite3.Row | None = None
+            if require_personal_exact:
+                if not exact_id:
+                    raise ExactApprovalUnavailable("an exact commit approval is required")
+                if (
+                    str(row["profile"]) != "personal"
+                    or str(row["effect_type"]) != "file.commit"
+                    or str(row["executor_id"]) != "cell.file"
+                    or destinations
+                    or pass_id
+                ):
+                    raise ExactApprovalUnavailable(
+                        "exact commit approval is limited to non-egress Personal cell.file"
+                    )
+                directory_handle_id = str(row["directory_handle_id"])
+                if not directory_handle_id.startswith("dirh:"):
+                    raise ExactApprovalUnavailable(
+                        "Personal file operation has no DirectoryHandle binding"
+                    )
+                exact_row = self._exact_commit_approval(
+                    connection,
+                    approval_id=exact_id,
+                    operation=row,
+                    now_ms=effective_now,
+                )
+            elif exact_id:
+                raise ExactApprovalUnavailable(
+                    "operation must not bind an exact commit approval"
+                )
+
             next_sequence = previous_sequence + 1
             connection.execute(
                 "INSERT INTO effect_budget_usage(task_id, invocations, bytes_out, sequence)"
@@ -768,12 +834,36 @@ class CommitMembrane:
                 if claimed.rowcount != 1:
                     raise ExportPassUnavailable("Personal ExportPass is no longer available")
 
+            if exact_row is not None:
+                claimed_exact = connection.execute(
+                    "UPDATE exact_commit_approvals SET claimed_at_ms = ?"
+                    " WHERE approval_id = ? AND task_id = ? AND draft_id = ?"
+                    " AND witness_id = ? AND canonical_effect_hash = ?"
+                    " AND directory_handle_id = ? AND claimed_at_ms = 0"
+                    " AND expires_at_ms > ?",
+                    (
+                        effective_now,
+                        exact_id,
+                        str(row["task_id"]),
+                        str(row["draft_id"]),
+                        str(row["witness_id"]),
+                        str(row["canonical_effect_hash"]),
+                        str(row["directory_handle_id"]),
+                        effective_now,
+                    ),
+                )
+                if claimed_exact.rowcount != 1:
+                    raise ExactApprovalUnavailable(
+                        "Personal exact commit approval is no longer available"
+                    )
+
             permit_id = f"permit:{uuid4().hex}"
             connection.execute(
                 "UPDATE commit_operations SET state = ?, permit_id = ?,"
                 " permit_sequence = ?, permit_not_before_ms = ?,"
                 " permit_expires_at_ms = ?, budget_sequence = ?, export_pass_id = ?,"
-                " export_pass_claimed = ?, reconciliation_status = '', updated_at_ms = ?"
+                " export_pass_claimed = ?, exact_approval_id = ?,"
+                " exact_approval_claimed = ?, reconciliation_status = '', updated_at_ms = ?"
                 " WHERE operation_id = ?",
                 (
                     CommitState.PREPARED.value,
@@ -784,6 +874,8 @@ class CommitMembrane:
                     next_sequence,
                     pass_id,
                     int(pass_row is not None and profile == "personal"),
+                    exact_id,
+                    int(exact_row is not None),
                     effective_now,
                     operation_id,
                 ),
@@ -798,6 +890,7 @@ class CommitMembrane:
         expected_intent_id: str,
         expected_witness_id: str,
         expected_export_pass_id: str | None,
+        expected_exact_approval_id: str | None = None,
         now_ms: int | None = None,
     ) -> OperationSnapshot:
         """CAS-rotate a PREPARED permit without reserving budget twice.
@@ -820,6 +913,13 @@ class CommitMembrane:
                 "expected_export_pass_id",
                 prefix="export:",
             )
+        expected_exact_id = expected_exact_approval_id or ""
+        if expected_exact_id:
+            _validate_identifier(
+                expected_exact_id,
+                "expected_exact_approval_id",
+                prefix="exact:",
+            )
         effective_now = self._now() if now_ms is None else now_ms
         if isinstance(effective_now, bool) or not isinstance(effective_now, int):
             raise ValueError("now_ms must be a positive integer")
@@ -836,12 +936,14 @@ class CommitMembrane:
                 expected_intent_id,
                 expected_witness_id,
                 expected_pass_id,
+                expected_exact_id,
             )
             stored_binding = (
                 str(row["permit_id"]),
                 str(row["intent_id"]),
                 str(row["witness_id"]),
                 str(row["export_pass_id"]),
+                str(row["exact_approval_id"]),
             )
             if expected_binding != stored_binding:
                 raise OperationConflict("prepared permit authority changed before rotation")
@@ -880,6 +982,20 @@ class CommitMembrane:
             source = CommitState(str(row["state"]))
             if source is not CommitState.PREPARED:
                 raise InvalidTransition(f"cannot begin commit from {source}")
+            requires_exact_recheck = bool(
+                str(row["profile"]) == "personal"
+                and str(row["effect_type"]) == "file.commit"
+                and str(row["exact_approval_id"])
+                and bool(row["exact_approval_claimed"])
+            )
+            if requires_exact_recheck and not _operation_has_current_witness(
+                connection,
+                row,
+                now_ms=now_ms,
+            ):
+                raise OperationConflict(
+                    "prepared witness is no longer current at the commit boundary"
+                )
             connection.execute(
                 "UPDATE commit_operations SET state = ?, attempt_count = attempt_count + 1,"
                 " reconciliation_status = '', updated_at_ms = ? WHERE operation_id = ?",
@@ -1036,6 +1152,52 @@ class CommitMembrane:
             raise ExportPassUnavailable("no live ExportPass matches task/hash/dest/witness")
         return cast("sqlite3.Row", row)
 
+    def _exact_commit_approval(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        approval_id: str,
+        operation: sqlite3.Row,
+        now_ms: int,
+    ) -> sqlite3.Row:
+        row = connection.execute(
+            "SELECT approval.approval_id, approval.task_id, approval.draft_id,"
+            " approval.witness_id, approval.canonical_effect_hash,"
+            " approval.directory_handle_id, approval.expires_at_ms,"
+            " approval.claimed_at_ms"
+            " FROM exact_commit_approvals AS approval"
+            " JOIN state_witnesses AS witness"
+            " ON witness.witness_id = approval.witness_id"
+            " AND witness.draft_id = approval.draft_id"
+            " AND witness.canonical_effect_hash = approval.canonical_effect_hash"
+            " JOIN effect_drafts AS draft ON draft.draft_id = approval.draft_id"
+            " AND draft.task_id = approval.task_id"
+            " AND draft.canonical_effect_hash = approval.canonical_effect_hash"
+            " WHERE approval.approval_id = ? AND approval.task_id = ?"
+            " AND approval.draft_id = ? AND approval.witness_id = ?"
+            " AND approval.canonical_effect_hash = ?"
+            " AND approval.directory_handle_id = ? AND approval.claimed_at_ms = 0"
+            " AND approval.expires_at_ms > ? AND witness.is_current = 1"
+            " AND witness.executor_id = 'cell.file' AND witness.expires_at_ms > ?"
+            " AND draft.executor_id = 'cell.file' AND draft.expires_at_ms > ?",
+            (
+                approval_id,
+                str(operation["task_id"]),
+                str(operation["draft_id"]),
+                str(operation["witness_id"]),
+                str(operation["canonical_effect_hash"]),
+                str(operation["directory_handle_id"]),
+                now_ms,
+                now_ms,
+                now_ms,
+            ),
+        ).fetchone()
+        if row is None:
+            raise ExactApprovalUnavailable(
+                "no live exact approval matches task/draft/witness/hash/directory"
+            )
+        return cast("sqlite3.Row", row)
+
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
         with self._lock:
@@ -1118,6 +1280,7 @@ def _snapshot(row: sqlite3.Row) -> OperationSnapshot:
         destinations=_destinations_from_json(str(row["destinations_json"])),
         bytes_out=int(row["bytes_out"]),
         idempotency_key=str(row["idempotency_key"]),
+        directory_handle_id=str(row["directory_handle_id"]),
         state=CommitState(str(row["state"])),
         permit_id=str(row["permit_id"]),
         permit_sequence=int(row["permit_sequence"]),
@@ -1127,6 +1290,8 @@ def _snapshot(row: sqlite3.Row) -> OperationSnapshot:
         attempt_count=int(row["attempt_count"]),
         export_pass_id=str(row["export_pass_id"]),
         export_pass_claimed=bool(row["export_pass_claimed"]),
+        exact_approval_id=str(row["exact_approval_id"]),
+        exact_approval_claimed=bool(row["exact_approval_claimed"]),
         remote_operation_id=str(row["remote_operation_id"]),
         receipt_id=str(row["receipt_id"]),
         safe_result_digest=str(row["safe_result_digest"]),
@@ -1141,17 +1306,169 @@ def _snapshot(row: sqlite3.Row) -> OperationSnapshot:
 def _ensure_operation_columns(connection: sqlite3.Connection) -> None:
     """Forward-only migration for databases created by an earlier WP10 build."""
 
-    columns = {
-        str(row[1]) for row in connection.execute("PRAGMA table_info(commit_operations)")
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(commit_operations)")
+        }
+        additions = {
+            "directory_handle_id": "TEXT NOT NULL DEFAULT ''",
+            "export_pass_claimed": "INTEGER NOT NULL DEFAULT 0",
+            "exact_approval_id": "TEXT NOT NULL DEFAULT ''",
+            "exact_approval_claimed": "INTEGER NOT NULL DEFAULT 0",
+            "safe_result_json": "TEXT NOT NULL DEFAULT '{}'",
+            "safe_result_digest": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, declaration in additions.items():
+            if name not in columns:
+                connection.execute(
+                    f"ALTER TABLE commit_operations ADD COLUMN {name} {declaration}"
+                )
+        _backfill_file_directory_handles(connection)
+    except BaseException:
+        connection.rollback()
+        raise
+    else:
+        connection.commit()
+
+
+def _backfill_file_directory_handles(connection: sqlite3.Connection) -> None:
+    """Recover a legacy File operation binding only from its immutable draft.
+
+    Rows whose old fingerprint, draft identity, or canonical effect hash cannot
+    be proven are deliberately left blank so later authorization fails closed.
+    """
+
+    from js.orin.draft import draft_from_dict
+    from js.orind.kernel import canonical_effect_hash_of
+
+    rows = connection.execute(
+        "SELECT * FROM commit_operations"
+        " WHERE effect_type = 'file.commit' AND directory_handle_id = ''"
+    ).fetchall()
+    expected_record_fields = {
+        "draft",
+        "draft_id",
+        "task_id",
+        "effect_type",
+        "executor_id",
+        "canonical_effect_hash",
+        "context_taint",
+        "arg_taint",
+        "clearance",
+        "created_at_ms",
+        "expires_at_ms",
     }
-    additions = {
-        "export_pass_claimed": "INTEGER NOT NULL DEFAULT 0",
-        "safe_result_json": "TEXT NOT NULL DEFAULT '{}'",
-        "safe_result_digest": "TEXT NOT NULL DEFAULT ''",
-    }
-    for name, declaration in additions.items():
-        if name not in columns:
-            connection.execute(f"ALTER TABLE commit_operations ADD COLUMN {name} {declaration}")
+    for row in rows:
+        try:
+            legacy_spec = _operation_spec_from_row(row, directory_handle_id="")
+            legacy_fingerprint = _spec_fingerprint(legacy_spec)
+            if legacy_fingerprint != str(row["spec_fingerprint"]):
+                continue
+            draft_row = connection.execute(
+                "SELECT payload_json FROM effect_drafts WHERE draft_id = ?",
+                (str(row["draft_id"]),),
+            ).fetchone()
+            if draft_row is None:
+                continue
+            record = json.loads(str(draft_row[0]))
+            if not isinstance(record, dict) or set(record) != expected_record_fields:
+                continue
+            raw_draft = record.get("draft")
+            if not isinstance(raw_draft, dict):
+                continue
+            draft = draft_from_dict(raw_draft)
+            if (
+                draft.draft_id != str(row["draft_id"])
+                or draft.task_id != str(row["task_id"])
+                or draft.effect_type != "file.commit"
+                or record.get("draft_id") != draft.draft_id
+                or record.get("task_id") != draft.task_id
+                or record.get("effect_type") != draft.effect_type
+                or record.get("executor_id") != "cell.file"
+                or str(row["executor_id"]) != "cell.file"
+                or record.get("canonical_effect_hash")
+                != str(row["canonical_effect_hash"])
+                or canonical_effect_hash_of(draft) != str(row["canonical_effect_hash"])
+                or set(draft.arguments) != {"directory_handle", "changes"}
+            ):
+                continue
+            directory_handle_id = draft.arguments.get("directory_handle")
+            if not _is_directory_handle_id(directory_handle_id):
+                continue
+            assert isinstance(directory_handle_id, str)
+            migrated_spec = _operation_spec_from_row(
+                row,
+                directory_handle_id=directory_handle_id,
+            )
+            migrated_fingerprint = _spec_fingerprint(migrated_spec)
+            connection.execute(
+                "UPDATE commit_operations SET directory_handle_id = ?,"
+                " spec_fingerprint = ? WHERE operation_id = ?"
+                " AND directory_handle_id = '' AND spec_fingerprint = ?",
+                (
+                    directory_handle_id,
+                    migrated_fingerprint,
+                    str(row["operation_id"]),
+                    legacy_fingerprint,
+                ),
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+
+
+def _operation_spec_from_row(
+    row: sqlite3.Row,
+    *,
+    directory_handle_id: str,
+) -> OperationSpec:
+    return OperationSpec(
+        operation_id=str(row["operation_id"]),
+        draft_id=str(row["draft_id"]),
+        task_id=str(row["task_id"]),
+        owner_key_hash=str(row["owner_key_hash"]),
+        session_id=str(row["session_id"]),
+        effect_type=str(row["effect_type"]),
+        executor_id=str(row["executor_id"]),
+        side_effect_class=str(row["side_effect_class"]),
+        canonical_effect_hash=str(row["canonical_effect_hash"]),
+        witness_id=str(row["witness_id"]),
+        intent_id=str(row["intent_id"]),
+        profile=str(row["profile"]),
+        destinations=_destinations_from_json(str(row["destinations_json"])),
+        bytes_out=int(row["bytes_out"]),
+        idempotency_key=str(row["idempotency_key"]),
+        directory_handle_id=directory_handle_id,
+    )
+
+
+def _operation_has_current_witness(
+    connection: sqlite3.Connection,
+    operation: sqlite3.Row,
+    *,
+    now_ms: int,
+) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM state_witnesses AS witness"
+        " JOIN effect_drafts AS draft ON draft.draft_id = witness.draft_id"
+        " AND draft.canonical_effect_hash = witness.canonical_effect_hash"
+        " WHERE witness.witness_id = ? AND witness.draft_id = ?"
+        " AND witness.executor_id = ? AND witness.canonical_effect_hash = ?"
+        " AND witness.is_current = 1 AND witness.expires_at_ms > ?"
+        " AND draft.task_id = ? AND draft.executor_id = ?"
+        " AND draft.expires_at_ms > ?",
+        (
+            str(operation["witness_id"]),
+            str(operation["draft_id"]),
+            str(operation["executor_id"]),
+            str(operation["canonical_effect_hash"]),
+            now_ms,
+            str(operation["task_id"]),
+            str(operation["executor_id"]),
+            now_ms,
+        ),
+    ).fetchone()
+    return row is not None
 
 
 def _normalize_safe_result(
@@ -1249,6 +1566,8 @@ def _spec_fingerprint(spec: OperationSpec) -> str:
         "bytes_out": spec.bytes_out,
         "idempotency_key": spec.idempotency_key,
     }
+    if spec.directory_handle_id:
+        payload["directory_handle_id"] = spec.directory_handle_id
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
@@ -1311,6 +1630,19 @@ def _validate_identifier(value: str, name: str, *, prefix: str) -> None:
         raise ValueError(f"{name} must start with {prefix!r}")
 
 
+def _is_directory_handle_id(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    prefix, separator, token = value.partition(":")
+    return bool(
+        prefix == "dirh"
+        and separator
+        and token
+        and len(token) <= 200
+        and all(character.isalnum() or character in "-_." for character in token)
+    )
+
+
 def _validate_budget_limits(max_invocations: int, max_bytes_out: int) -> None:
     values = (max_invocations, max_bytes_out)
     if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
@@ -1325,6 +1657,7 @@ __all__ = [
     "BudgetExhausted",
     "CommitMembrane",
     "CommitState",
+    "ExactApprovalUnavailable",
     "ExportPassUnavailable",
     "InvalidTransition",
     "MembraneDisabled",

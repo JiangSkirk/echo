@@ -1137,7 +1137,7 @@ class TestFileCellIntegration:
         ):
             assert secret not in visible
 
-    def test_personal_product_binding_preflights_then_consume_fails_closed(
+    def test_personal_product_binding_requires_owner_approval_then_commits(
         self,
         file_orind: Any,
         monkeypatch: pytest.MonkeyPatch,
@@ -1146,7 +1146,7 @@ class TestFileCellIntegration:
         owner_root = root / f"product-personal-{uuid4().hex}"
         owner_root.mkdir()
         target = owner_root / "private.txt"
-        change = {"path": "private.txt", "content": "must-not-commit\n"}
+        change = {"path": "private.txt", "content": "owner-approved\n"}
         adapter, binding = self._register_product_file_binding(
             orind,
             witness_key,
@@ -1164,13 +1164,12 @@ class TestFileCellIntegration:
         monkeypatch.setattr(intents, "claim_personal_export_pass", no_export_pass)
         tokens = self._enter_product_file_context(owner_root, binding, change)
         try:
-            with pytest.raises(LeaseDenied):
+            with pytest.raises(LeaseDenied) as pending_error:
                 adapter.run_file_change(change)
         finally:
             self._exit_product_file_context(tokens)
-            adapter.close()
 
-        assert calls == ["submit", "preflight", "consume"]
+        assert calls == ["submit", "preflight"]
         assert len(drafts) == 1
         assert drafts[0]["task_id"] == binding["task_id"]
         assert drafts[0]["arguments"] == {
@@ -1178,6 +1177,58 @@ class TestFileCellIntegration:
             "changes": [change],
         }
         assert not target.exists()
+
+        previews = adapter.pending_file_approvals(
+            appshell_owner=str(binding["principal_owner"]),
+            appshell_session=str(binding["principal_session"]),
+            appshell_epoch=int(binding["principal_epoch"]),
+            active_mode="personal",
+            product_id=str(binding["product_id"]),
+            workspace_root=owner_root,
+        )
+        assert len(previews) == 1
+        preview = previews[0]
+        assert set(preview) == {
+            "file_count",
+            "bytes",
+            "overwrites",
+            "diff_hash",
+            "witness_id",
+        }
+        assert preview["file_count"] == 1
+        assert preview["bytes"] == len(change["content"].encode("utf-8"))
+        assert preview["overwrites"] == []
+        assert "draft:" not in str(pending_error.value)
+        try:
+            committed = adapter.approve_pending_file_change(
+                witness_id=str(preview["witness_id"]),
+                diff_hash=str(preview["diff_hash"]),
+                ttl_ms=60_000,
+                private_key=witness_key,
+                appshell_owner=str(binding["principal_owner"]),
+                appshell_session=str(binding["principal_session"]),
+                appshell_epoch=int(binding["principal_epoch"]),
+                active_mode="personal",
+                product_id=str(binding["product_id"]),
+                workspace_root=owner_root,
+            )
+            assert committed["status"] == "COMMITTED"
+            assert target.read_text(encoding="utf-8") == "owner-approved\n"
+            with pytest.raises(LeaseDenied):
+                adapter.approve_pending_file_change(
+                    witness_id=str(preview["witness_id"]),
+                    diff_hash=str(preview["diff_hash"]),
+                    ttl_ms=60_000,
+                    private_key=witness_key,
+                    appshell_owner=str(binding["principal_owner"]),
+                    appshell_session=str(binding["principal_session"]),
+                    appshell_epoch=int(binding["principal_epoch"]),
+                    active_mode="personal",
+                    product_id=str(binding["product_id"]),
+                    workspace_root=owner_root,
+                )
+        finally:
+            adapter.close()
 
     def test_raw_cell_file_payload_is_rejected(self, file_orind: Any) -> None:
         orind, _witness_key, root = file_orind

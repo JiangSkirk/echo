@@ -101,6 +101,22 @@ class _FileBinding:
 _FileBindingKey = tuple[str, str, str, int]
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingFileApproval:
+    """Authority-private Personal file commit awaiting AppShell approval."""
+
+    task_id: str
+    draft_id: str
+    witness_id: str
+    canonical_effect_hash: str
+    directory_handle_id: str
+    file_count: int
+    bytes: int
+    overwrites: tuple[str, ...]
+    diff_hash: str
+    expires_at_ms: int
+
+
 class OrinUnavailable(LeaseDenied):
     """orind is unreachable or misbehaving; callers must fail closed."""
 
@@ -479,6 +495,7 @@ class OrinLeaseClientAdapter:
         self._start_lock = threading.Lock()
         self._file_binding_lock = threading.Lock()
         self._file_bindings: dict[_FileBindingKey, _FileBinding] = {}
+        self._pending_file_approvals: dict[_FileBindingKey, _PendingFileApproval] = {}
         self._local_lease_ids: set[str] = set()
         self._local_authority: Any = None
         self._context_signatures: dict[str, str] = {}
@@ -853,6 +870,63 @@ class OrinLeaseClientAdapter:
         if not self._stage_b:
             raise OrinUnavailable("stage B is disabled on this orin client")
 
+    def _trusted_file_binding(
+        self,
+        *,
+        appshell_owner: str,
+        appshell_session: str,
+        appshell_epoch: int,
+        active_mode: str,
+        product_id: str,
+        workspace_root: Path | str,
+    ) -> tuple[_FileBindingKey, _FileBinding]:
+        """Resolve one live binding from trusted AppShell/runtime identity only."""
+
+        from js.orin.handles import canonical_workspace_root
+
+        self._require_stage_b()
+        if (
+            type(appshell_owner) is not str
+            or not appshell_owner
+            or type(appshell_session) is not str
+            or not appshell_session
+            or type(appshell_epoch) is not int
+            or appshell_epoch < 0
+            or active_mode not in {"personal", "work"}
+            or type(product_id) is not str
+            or not product_id
+        ):
+            raise LeaseDenied("Orin AppShell file binding identity is invalid")
+        try:
+            root_nfc = canonical_workspace_root(workspace_root)
+        except ProtocolError as exc:
+            raise LeaseDenied("Orin AppShell file binding workspace is unavailable") from exc
+        key: _FileBindingKey = (
+            appshell_owner,
+            appshell_session,
+            active_mode,
+            appshell_epoch,
+        )
+        now = self._now()
+        with self._file_binding_lock:
+            binding = self._file_bindings.get(key)
+            if binding is not None and binding.expires_at_ms <= now:
+                self._file_bindings.pop(key, None)
+                self._pending_file_approvals.pop(key, None)
+                binding = None
+            if binding is None:
+                raise LeaseDenied("Orin AppShell file binding is missing or expired")
+            if (
+                binding.appshell_owner != appshell_owner
+                or binding.appshell_session != appshell_session
+                or binding.profile != active_mode
+                or binding.appshell_epoch != appshell_epoch
+                or binding.product_id != product_id
+                or binding.workspace_root != root_nfc
+            ):
+                raise LeaseDenied("Orin AppShell file binding identity mismatch")
+        return key, binding
+
     def register_file_binding(
         self,
         intent_data: dict[str, Any],
@@ -948,6 +1022,7 @@ class OrinLeaseClientAdapter:
             ):
                 raise OrinUnavailable("orind returned an invalid AppShell file binding ack")
             self._file_bindings[key] = binding
+            self._pending_file_approvals.pop(key, None)
         return {"ok": True, "directory_handle_id": expected_handle_id}
 
     def run_file_change(self, change: dict[str, Any]) -> dict[str, Any]:
@@ -955,9 +1030,10 @@ class OrinLeaseClientAdapter:
 
         from js.echo.turn_context import current_runtime_context, runtime_context_error
         from js.orin import taint as orin_taint
-        from js.orin.draft import EffectDraft
+        from js.orin.draft import EffectDraft, witness_from_dict
         from js.orin.handles import canonical_workspace_root
         from js.orin.protocol import canonical_json
+        from js.orind.kernel import canonical_effect_hash_of
         from js.tools.registry import current_tool_execution_context
 
         self._require_stage_b()
@@ -996,6 +1072,7 @@ class OrinLeaseClientAdapter:
             binding = self._file_bindings.get(key)
             if binding is not None and binding.expires_at_ms <= self._now():
                 self._file_bindings.pop(key, None)
+                self._pending_file_approvals.pop(key, None)
                 binding = None
         if binding is None:
             raise LeaseDenied("Orin AppShell file binding is missing or expired")
@@ -1049,6 +1126,20 @@ class OrinLeaseClientAdapter:
         if not _roots_cover_target(target, cast("tuple[Any, ...]", tool_context.fs_roots)):
             raise LeaseDenied("Orin tool filesystem roots deny the file target")
 
+        if binding.profile == "personal":
+            with self._file_binding_lock:
+                if self._file_bindings.get(key) != binding:
+                    raise LeaseDenied("Orin AppShell file binding changed")
+                now = self._now()
+                existing = self._pending_file_approvals.get(key)
+                if existing is not None and existing.expires_at_ms <= now:
+                    self._pending_file_approvals.pop(key, None)
+                    existing = None
+                if existing is not None:
+                    raise OrinApprovalRequired(
+                        "A Personal file change is already awaiting owner confirmation"
+                    )
+
         exact_change = {"path": normalized_path, "content": content}
         draft = EffectDraft(
             draft_id=f"draft:{secrets.token_hex(16)}",
@@ -1088,9 +1179,203 @@ class OrinLeaseClientAdapter:
         preflight = self.preflight_draft(draft.draft_id, "cell.file")
         if preflight.get("ok") is not True:
             raise LeaseDenied("Orin File Cell preflight failed")
+        if binding.profile == "personal":
+            raw_witness = preflight.get("witness")
+            try:
+                witness = witness_from_dict(
+                    raw_witness if isinstance(raw_witness, dict) else {}
+                )
+            except ProtocolError as exc:
+                raise OrinUnavailable("orind returned an invalid File Cell preflight") from exc
+            effect_hash = canonical_effect_hash_of(draft)
+            preview = witness.file_commit_preview
+            now = self._now()
+            proposed_hash = proposed.get("payload_hash")
+            if (
+                witness.draft_id != draft.draft_id
+                or witness.executor_id != "cell.file"
+                or witness.canonical_effect_hash != effect_hash
+                or proposed_hash != effect_hash
+                or not witness.created_at_ms <= now < witness.expires_at_ms
+                or preview is None
+            ):
+                raise LeaseDenied("Orin File Cell preflight binding is invalid")
+            overwrites = tuple(preview.overwrites)
+            if (
+                type(preview.file_count) is not int
+                or preview.file_count != 1
+                or preview.file_count != witness.impact.writes
+                or type(preview.bytes) is not int
+                or preview.bytes != len(content.encode("utf-8"))
+                or len(overwrites) != len(set(overwrites))
+                or any(path != normalized_path for path in overwrites)
+                or type(preview.diff_hash) is not str
+                or len(preview.diff_hash) != 71
+                or not preview.diff_hash.startswith("sha256:")
+                or any(char not in "0123456789abcdef" for char in preview.diff_hash[7:])
+            ):
+                raise LeaseDenied("Orin File Cell approval projection is invalid")
+            pending = _PendingFileApproval(
+                task_id=binding.task_id,
+                draft_id=draft.draft_id,
+                witness_id=witness.witness_id,
+                canonical_effect_hash=effect_hash,
+                directory_handle_id=binding.directory_handle_id,
+                file_count=preview.file_count,
+                bytes=preview.bytes,
+                overwrites=overwrites,
+                diff_hash=preview.diff_hash,
+                expires_at_ms=min(witness.expires_at_ms, binding.expires_at_ms),
+            )
+            with self._file_binding_lock:
+                if self._file_bindings.get(key) != binding:
+                    raise LeaseDenied("Orin AppShell file binding changed during preflight")
+                existing = self._pending_file_approvals.get(key)
+                if existing is not None and existing.expires_at_ms <= now:
+                    self._pending_file_approvals.pop(key, None)
+                    existing = None
+                if pending.expires_at_ms <= now:
+                    raise LeaseDenied("Orin File Cell approval projection has expired")
+                if existing is not None and existing != pending:
+                    raise OrinApprovalRequired(
+                        "A Personal file change is already awaiting owner confirmation"
+                    )
+                self._pending_file_approvals[key] = pending
+            raise OrinApprovalRequired("Orin Personal file change requires owner confirmation")
         result = self.consume_draft(draft.draft_id)
         if type(result) is not dict:
             raise OrinUnavailable("orind returned an invalid File Cell result")
+        return {key: result[key] for key in _FILE_RESULT_FIELDS if key in result}
+
+    def pending_file_approvals(
+        self,
+        *,
+        appshell_owner: str,
+        appshell_session: str,
+        appshell_epoch: int,
+        active_mode: str,
+        product_id: str,
+        workspace_root: Path | str,
+    ) -> list[dict[str, Any]]:
+        """Return only the safe preview for the current Personal binding."""
+
+        if active_mode != "personal":
+            raise LeaseDenied("Exact file approval is available only in Personal mode")
+        key, binding = self._trusted_file_binding(
+            appshell_owner=appshell_owner,
+            appshell_session=appshell_session,
+            appshell_epoch=appshell_epoch,
+            active_mode=active_mode,
+            product_id=product_id,
+            workspace_root=workspace_root,
+        )
+        with self._file_binding_lock:
+            if self._file_bindings.get(key) != binding:
+                raise LeaseDenied("Orin AppShell file binding changed")
+            now = self._now()
+            pending = self._pending_file_approvals.get(key)
+            if pending is not None and pending.expires_at_ms <= now:
+                self._pending_file_approvals.pop(key, None)
+                pending = None
+            if pending is None:
+                return []
+            if (
+                pending.task_id != binding.task_id
+                or pending.directory_handle_id != binding.directory_handle_id
+            ):
+                self._pending_file_approvals.pop(key, None)
+                raise LeaseDenied("Orin pending file approval binding is invalid")
+            return [
+                {
+                    "file_count": pending.file_count,
+                    "bytes": pending.bytes,
+                    "overwrites": list(pending.overwrites),
+                    "diff_hash": pending.diff_hash,
+                    "witness_id": pending.witness_id,
+                }
+            ]
+
+    def approve_pending_file_change(
+        self,
+        *,
+        witness_id: str,
+        diff_hash: str,
+        ttl_ms: int,
+        private_key: Any,
+        appshell_owner: str,
+        appshell_session: str,
+        appshell_epoch: int,
+        active_mode: str,
+        product_id: str,
+        workspace_root: Path | str,
+    ) -> dict[str, Any]:
+        """Sign, register, and consume the current exact Personal file draft."""
+
+        from js.orin.draft import ExactCommitApprovalV1
+
+        if active_mode != "personal":
+            raise LeaseDenied("Exact file approval is available only in Personal mode")
+        if (
+            type(witness_id) is not str
+            or not witness_id.startswith("state:")
+            or len(witness_id) > 256
+            or type(diff_hash) is not str
+            or len(diff_hash) != 71
+            or not diff_hash.startswith("sha256:")
+            or any(char not in "0123456789abcdef" for char in diff_hash[7:])
+            or type(ttl_ms) is not int
+            or not 1_000 <= ttl_ms <= 60_000
+        ):
+            raise LeaseDenied("Exact file approval request is invalid")
+        key, binding = self._trusted_file_binding(
+            appshell_owner=appshell_owner,
+            appshell_session=appshell_session,
+            appshell_epoch=appshell_epoch,
+            active_mode=active_mode,
+            product_id=product_id,
+            workspace_root=workspace_root,
+        )
+        with self._file_binding_lock:
+            if self._file_bindings.get(key) != binding:
+                raise LeaseDenied("Orin AppShell file binding changed")
+            now = self._now()
+            pending = self._pending_file_approvals.get(key)
+            if pending is None:
+                raise LeaseDenied("No Personal file change is awaiting approval")
+            if pending.expires_at_ms <= now:
+                self._pending_file_approvals.pop(key, None)
+                raise LeaseDenied("Personal file approval has expired")
+            if (
+                pending.task_id != binding.task_id
+                or pending.directory_handle_id != binding.directory_handle_id
+                or pending.witness_id != witness_id
+                or pending.diff_hash != diff_hash
+            ):
+                raise LeaseDenied("Personal file approval does not match the current preflight")
+            expires_at_ms = min(now + ttl_ms, pending.expires_at_ms)
+            if expires_at_ms <= now:
+                self._pending_file_approvals.pop(key, None)
+                raise LeaseDenied("Personal file approval has expired")
+            try:
+                approval = ExactCommitApprovalV1(
+                    approval_id=f"exact:{secrets.token_hex(16)}",
+                    task_id=pending.task_id,
+                    draft_id=pending.draft_id,
+                    witness_id=pending.witness_id,
+                    canonical_effect_hash=pending.canonical_effect_hash,
+                    directory_handle_id=pending.directory_handle_id,
+                    approved=True,
+                    created_at_ms=now,
+                    expires_at_ms=expires_at_ms,
+                ).sign_with(private_key)
+            except Exception as exc:  # noqa: BLE001 - signing must fail closed
+                raise LeaseDenied("AppShell owner approval could not be signed") from exc
+            self.grant_exact(approval.to_dict(), task_id=pending.task_id)
+            result = self.consume_draft(pending.draft_id)
+            if type(result) is not dict or result.get("status") != "COMMITTED":
+                raise LeaseDenied("Orin File Cell exact approval did not commit")
+            if self._pending_file_approvals.get(key) == pending:
+                self._pending_file_approvals.pop(key, None)
         return {key: result[key] for key in _FILE_RESULT_FIELDS if key in result}
 
     def register_intent(self, intent_data: dict[str, Any]) -> dict[str, Any]:
@@ -1257,6 +1542,19 @@ class OrinLeaseClientAdapter:
         self._require_stage_b()
         return self._call(
             lambda: self._request("intent", op="grant_export", grant=pass_data, task_id=task_id)
+        )
+
+    def grant_exact(self, approval_data: dict[str, Any], *, task_id: str) -> dict[str, Any]:
+        """Register one signed, single-use Personal exact commit approval."""
+
+        self._require_stage_b()
+        return self._call(
+            lambda: self._request(
+                "intent",
+                op="grant_exact",
+                grant=approval_data,
+                task_id=task_id,
+            )
         )
 
     # -- introspection --------------------------------------------------------------

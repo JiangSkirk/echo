@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import unicodedata
 from pathlib import Path
@@ -17,7 +18,13 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from js.appshell.principal import AppShellOperationLimitError, AppShellPrincipalV1
-from js.appshell.routers import IntentIssueRequest, issue_owner_intent
+from js.appshell.routers import (
+    FileCommitApproveRequest,
+    IntentIssueRequest,
+    approve_pending_file_commit,
+    get_pending_file_commits,
+    issue_owner_intent,
+)
 from js.appshell.routing import AppShellEpochClosedError
 from js.echo.capability import LeaseDenied
 from js.orin.intent import intent_from_dict
@@ -30,6 +37,8 @@ class _RecordingAdapter:
     def __init__(self) -> None:
         self.registered: list[dict[str, Any]] = []
         self.file_bindings: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        self.pending_calls: list[dict[str, Any]] = []
+        self.approval_calls: list[dict[str, Any]] = []
 
     def register_intent(self, intent: dict[str, Any]) -> dict[str, Any]:
         self.registered.append(intent)
@@ -43,15 +52,44 @@ class _RecordingAdapter:
         self.file_bindings.append((intent, binding))
         return {"ok": True}
 
+    def pending_file_approvals(self, **binding: Any) -> list[dict[str, Any]]:
+        self.pending_calls.append(binding)
+        return [
+            {
+                "file_count": 1,
+                "bytes": 12,
+                "overwrites": ["report.txt"],
+                "diff_hash": "sha256:" + "a" * 64,
+                "witness_id": "state:appshell-safe-preview",
+                "draft_id": "draft:must-be-filtered",
+                "workspace_root": "/must/not/escape",
+            }
+        ]
+
+    def approve_pending_file_change(self, **approval: Any) -> dict[str, Any]:
+        self.approval_calls.append(approval)
+        return {
+            "status": "COMMITTED",
+            "files": 1,
+            "draft_id": "draft:must-be-filtered",
+            "permit": "permit:must-be-filtered",
+        }
+
 
 class _ImmediateModeGate:
     def __init__(self, admit_error: BaseException | None = None) -> None:
         self.admit_error = admit_error
         self.admits = 0
         self.releases = 0
+        self.operation_kinds: list[str] = []
 
     async def admit(self, _principal: Any, *, operation_kind: str) -> object:
-        assert operation_kind == "appshell_orin_intent"
+        assert operation_kind in {
+            "appshell_orin_intent",
+            "appshell_orin_file_commit_pending",
+            "appshell_orin_file_commit_approve",
+        }
+        self.operation_kinds.append(operation_kind)
         self.admits += 1
         if self.admit_error is not None:
             raise self.admit_error
@@ -127,6 +165,8 @@ def _public_key(private_key: ed25519.Ed25519PrivateKey) -> str:
 
 def _assert_no_authority_material(value: Any) -> None:
     forbidden = {
+        "approval_id",
+        "draft_id",
         "workspace_root",
         "object_digest",
         "handle",
@@ -135,6 +175,7 @@ def _assert_no_authority_material(value: Any) -> None:
         "license",
         "token",
         "witness",
+        "signature",
     }
     if isinstance(value, dict):
         assert forbidden.isdisjoint(value)
@@ -195,6 +236,162 @@ async def test_intent_route_requires_live_mode_gate_before_touching_orind(
     assert caught.value.status_code == 503
     assert adapter.registered == []
     assert adapter.file_bindings == []
+
+
+def test_file_commit_approval_request_rejects_fake_booleans_and_authority_overrides() -> None:
+    valid = {
+        "approved": True,
+        "witness_id": "state:appshell-safe-preview",
+        "diff_hash": "sha256:" + "a" * 64,
+    }
+    assert FileCommitApproveRequest.model_validate(valid).approved is True
+    for invalid in (
+        {**valid, "approved": 1},
+        {**valid, "approved": "true"},
+        {**valid, "approved": False},
+        {**valid, "task_id": "task:model-selected"},
+        {**valid, "draft_id": "draft:model-selected"},
+        {**valid, "directory_handle_id": "dirh:model-selected"},
+        {**valid, "workspace_root": "/tmp/model-selected"},
+        {**valid, "canonical_effect_hash": "sha256:" + "b" * 64},
+    ):
+        with pytest.raises(ValidationError):
+            FileCommitApproveRequest.model_validate(invalid)
+
+
+@pytest.mark.asyncio
+async def test_personal_pending_and_approval_routes_project_only_safe_machine_facts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _RecordingAdapter()
+    request, principal, workspace = _route_context(tmp_path, adapter, mode="personal")
+    private_key, _public_key = _install_witness(monkeypatch)
+
+    pending_response = await get_pending_file_commits(request, principal)
+    assert pending_response.headers["cache-control"] == "no-store"
+    pending = json.loads(pending_response.body)
+    assert pending == {
+        "schema": "AppShellFileCommitPendingV1",
+        "pending": [
+            {
+                "file_count": 1,
+                "bytes": 12,
+                "overwrites": ["report.txt"],
+                "diff_hash": "sha256:" + "a" * 64,
+                "witness_id": "state:appshell-safe-preview",
+            }
+        ],
+    }
+    _assert_no_authority_material(pending)
+
+    approved_response = await approve_pending_file_commit(
+        request,
+        FileCommitApproveRequest(
+            approved=True,
+            witness_id="state:appshell-safe-preview",
+            diff_hash="sha256:" + "a" * 64,
+        ),
+        principal,
+    )
+    assert approved_response.headers["cache-control"] == "no-store"
+    approved = json.loads(approved_response.body)
+    assert approved == {
+        "schema": "AppShellFileCommitApprovalAckV1",
+        "ok": True,
+        "status": "COMMITTED",
+    }
+    _assert_no_authority_material(approved)
+    assert len(adapter.approval_calls) == 1
+    call = adapter.approval_calls[0]
+    assert call["private_key"] is private_key
+    assert call["workspace_root"] == workspace
+    assert call["appshell_owner"] == principal.owner
+    assert call["appshell_session"] == principal.session
+    assert call["appshell_epoch"] == principal.epoch
+    assert call["active_mode"] == "personal"
+    assert set(call) == {
+        "witness_id",
+        "diff_hash",
+        "ttl_ms",
+        "private_key",
+        "appshell_owner",
+        "appshell_session",
+        "appshell_epoch",
+        "active_mode",
+        "product_id",
+        "workspace_root",
+    }
+    gate = request.app.state.appshell_mode_gate
+    assert gate.operation_kinds[-2:] == [
+        "appshell_orin_file_commit_pending",
+        "appshell_orin_file_commit_approve",
+    ]
+    assert (gate.admits, gate.releases) == (2, 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overwrites",
+    (
+        ["../escape.txt"],
+        ["absolute\\path.txt"],
+        [".git/config"],
+        ["e\u0301.txt"],
+        ["A.txt", "a.txt"],
+    ),
+)
+async def test_pending_route_rejects_unsafe_file_preview_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overwrites: list[str],
+) -> None:
+    adapter = _RecordingAdapter()
+    request, principal, _workspace = _route_context(tmp_path, adapter, mode="personal")
+    _install_witness(monkeypatch)
+    adapter.pending_file_approvals = lambda **_binding: [  # type: ignore[method-assign]
+        {
+            "file_count": len(overwrites),
+            "bytes": 12,
+            "overwrites": overwrites,
+            "diff_hash": "sha256:" + "a" * 64,
+            "witness_id": "state:unsafe-preview",
+        }
+    ]
+
+    with pytest.raises(HTTPException) as caught:
+        await get_pending_file_commits(request, principal)
+
+    assert caught.value.status_code == 502
+    gate = request.app.state.appshell_mode_gate
+    assert (gate.admits, gate.releases) == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_work_cannot_enter_personal_exact_approval_routes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _RecordingAdapter()
+    request, principal, _workspace = _route_context(tmp_path, adapter, mode="work")
+    _install_witness(monkeypatch)
+
+    with pytest.raises(HTTPException) as pending_error:
+        await get_pending_file_commits(request, principal)
+    with pytest.raises(HTTPException) as approval_error:
+        await approve_pending_file_commit(
+            request,
+            FileCommitApproveRequest(
+                approved=True,
+                witness_id="state:appshell-safe-preview",
+                diff_hash="sha256:" + "a" * 64,
+            ),
+            principal,
+        )
+    assert pending_error.value.status_code == 403
+    assert approval_error.value.status_code == 403
+    assert adapter.pending_calls == []
+    assert adapter.approval_calls == []
 
 
 @pytest.mark.asyncio

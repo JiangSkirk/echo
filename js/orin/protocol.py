@@ -174,7 +174,7 @@ REVOKE_OPS: Final[frozenset[str]] = frozenset({"lease", "session", "active_sessi
 """Payload ops on the revoke message: two mutations, two queries."""
 
 INTENT_OPS: Final[frozenset[str]] = frozenset(
-    {"register", "active", "admin_unfreeze", "grant_export"}
+    {"register", "active", "admin_unfreeze", "grant_export", "grant_exact"}
 )
 HANDLE_OPS: Final[frozenset[str]] = frozenset({"issue", "resolve", "seed_list"})
 RECONCILE_STATES: Final[frozenset[str]] = frozenset({"committed", "absent", "unknown"})
@@ -577,13 +577,17 @@ def _validate_stageb_semantics(envelope: dict[str, Any]) -> None:
             raise ProtocolError(f"unknown intent op {op!r}")
         intent = envelope.get("intent")
         grant = envelope.get("grant")
-        if op == "grant_export":
+        if op in {"grant_export", "grant_exact"}:
             if not isinstance(grant, dict):
-                raise ProtocolError("grant_export requires a 'grant' object")
+                raise ProtocolError(f"{op} requires a 'grant' object")
             if envelope.get("task_id") is None:
-                raise ProtocolError("grant_export requires 'task_id'")
+                raise ProtocolError(f"{op} requires 'task_id'")
+            if op == "grant_exact" and not str(envelope["task_id"]).startswith("task:"):
+                raise ProtocolError("grant_exact requires a bounded 'task:' id")
             if intent is not None:
-                raise ProtocolError("grant_export carries fields, not an 'intent' object")
+                raise ProtocolError(f"{op} carries fields, not an 'intent' object")
+            if op == "grant_exact" and envelope.get("session_id") is not None:
+                raise ProtocolError("grant_exact must not carry 'session_id'")
         elif op in ("register", "admin_unfreeze"):
             if not isinstance(intent, dict):
                 raise ProtocolError(f"intent op {op!r} requires an 'intent' object")

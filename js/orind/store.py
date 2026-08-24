@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -70,6 +70,10 @@ CREATE TABLE IF NOT EXISTS intents (
     payload_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_intents_task ON intents(task_id, revoked);
+CREATE TABLE IF NOT EXISTS task_intent_signers (
+    task_id TEXT PRIMARY KEY,
+    public_key TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS handles (
     handle_id TEXT PRIMARY KEY,
     kind TEXT NOT NULL DEFAULT '',
@@ -94,6 +98,26 @@ CREATE TABLE IF NOT EXISTS export_passes (
     payload_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_export_task ON export_passes(task_id, revoked);
+CREATE TABLE IF NOT EXISTS exact_commit_approvals (
+    approval_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    draft_id TEXT NOT NULL,
+    witness_id TEXT NOT NULL,
+    canonical_effect_hash TEXT NOT NULL,
+    directory_handle_id TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    claimed_at_ms INTEGER NOT NULL DEFAULT 0,
+    public_key TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_exact_approval_task
+ON exact_commit_approvals(task_id, claimed_at_ms, expires_at_ms);
+CREATE INDEX IF NOT EXISTS idx_exact_approval_binding
+ON exact_commit_approvals(
+    task_id, draft_id, witness_id, canonical_effect_hash,
+    directory_handle_id, claimed_at_ms, expires_at_ms
+);
 CREATE TABLE IF NOT EXISTS effect_drafts (
     draft_id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL,
@@ -148,13 +172,14 @@ class OrinStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(_SCHEMA)
+        self._ensure_canary_columns()
+        self._ensure_export_pass_columns()
+        self._ensure_task_intent_signers()
         self._conn.execute(
             "INSERT INTO meta(key, value) VALUES ('schema_version', ?)"
             " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (str(SCHEMA_VERSION),),
         )
-        self._ensure_canary_columns()
-        self._ensure_export_pass_columns()
         self._conn.commit()
 
     def _ensure_canary_columns(self) -> None:
@@ -180,6 +205,27 @@ class OrinStore:
             "CREATE INDEX IF NOT EXISTS idx_export_exact ON export_passes"
             " (task_id, payload_hash, destinations_json, witness_id, revoked, expires_at_ms)"
         )
+
+    def _ensure_task_intent_signers(self) -> None:
+        """Backfill only unambiguous historical task signers.
+
+        A legacy task containing multiple or empty witness keys remains without
+        a signer row and therefore cannot accept another intent after upgrade.
+        """
+
+        rows = self._conn.execute(
+            "SELECT task_id, COUNT(DISTINCT public_key), MIN(public_key)"
+            " FROM intents GROUP BY task_id"
+        ).fetchall()
+        for task_id, count, public_key in rows:
+            key = str(public_key or "")
+            if int(count) != 1 or not key:
+                continue
+            self._conn.execute(
+                "INSERT OR IGNORE INTO task_intent_signers(task_id, public_key)"
+                " VALUES (?, ?)",
+                (str(task_id), key),
+            )
 
     def close(self) -> None:
         self._conn.close()
@@ -450,6 +496,135 @@ class OrinStore:
         self._conn.commit()
         return cursor.rowcount > 0
 
+    # -- stage B: Personal exact file-commit approvals -----------------------
+    def record_exact_commit_approval(
+        self,
+        *,
+        approval_id: str,
+        payload: dict[str, Any],
+        public_key: str,
+    ) -> str:
+        """Persist a verified approval without resurrecting a claimed row."""
+
+        from js.orin.draft import exact_commit_approval_from_dict
+
+        approval = exact_commit_approval_from_dict(payload)
+        if approval.approval_id != approval_id:
+            raise ValueError("exact approval id does not match payload")
+        payload_json = _stable_json(approval.to_dict())
+        cursor = self._conn.execute(
+            (
+                "INSERT OR IGNORE INTO exact_commit_approvals"
+                " (approval_id, task_id, draft_id, witness_id, canonical_effect_hash,"
+                "  directory_handle_id, created_at_ms, expires_at_ms, claimed_at_ms,"
+                "  public_key, payload_json)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)"
+            ),
+            (
+                approval.approval_id,
+                approval.task_id,
+                approval.draft_id,
+                approval.witness_id,
+                approval.canonical_effect_hash,
+                approval.directory_handle_id,
+                approval.created_at_ms,
+                approval.expires_at_ms,
+                public_key,
+                payload_json,
+            ),
+        )
+        self._conn.commit()
+        if cursor.rowcount > 0:
+            return "inserted"
+        row = self._conn.execute(
+            "SELECT payload_json, public_key FROM exact_commit_approvals"
+            " WHERE approval_id = ?",
+            (approval.approval_id,),
+        ).fetchone()
+        if row is not None and (str(row[0]), str(row[1])) == (payload_json, public_key):
+            return "idempotent"
+        return "conflict"
+
+    def exact_commit_approvals_for_task(self, task_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT payload_json FROM exact_commit_approvals"
+            " WHERE task_id = ? AND claimed_at_ms = 0 AND expires_at_ms > ?"
+            " ORDER BY approval_id",
+            (task_id, int(time.time() * 1000)),
+        ).fetchall()
+        import json
+
+        return [cast("dict[str, Any]", json.loads(str(row[0]))) for row in rows]
+
+    def active_exact_commit_approvals(
+        self,
+        *,
+        task_id: str,
+        draft_id: str,
+        witness_id: str,
+        canonical_effect_hash: str,
+        directory_handle_id: str,
+        now_ms: int,
+        approval_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT payload_json FROM exact_commit_approvals"
+            " WHERE task_id = ? AND draft_id = ? AND witness_id = ?"
+            " AND canonical_effect_hash = ? AND directory_handle_id = ?"
+            " AND claimed_at_ms = 0 AND expires_at_ms > ?"
+        )
+        params: tuple[Any, ...] = (
+            task_id,
+            draft_id,
+            witness_id,
+            canonical_effect_hash,
+            directory_handle_id,
+            now_ms,
+        )
+        if approval_id is not None:
+            sql += " AND approval_id = ?"
+            params += (approval_id,)
+        sql += " ORDER BY approval_id"
+        rows = self._conn.execute(sql, params).fetchall()
+        import json
+
+        return [cast("dict[str, Any]", json.loads(str(row[0]))) for row in rows]
+
+    def claim_personal_exact_commit_approval(
+        self,
+        *,
+        approval_id: str,
+        task_id: str,
+        draft_id: str,
+        witness_id: str,
+        canonical_effect_hash: str,
+        directory_handle_id: str,
+        now_ms: int,
+    ) -> bool:
+        """Atomically claim one still-live approval for its exact binding."""
+
+        with self._conn:
+            cursor = self._conn.execute(
+                (
+                    "UPDATE exact_commit_approvals SET claimed_at_ms = ?"
+                    " WHERE approval_id = ? AND task_id = ? AND draft_id = ?"
+                    " AND witness_id = ? AND canonical_effect_hash = ?"
+                    " AND directory_handle_id = ? AND claimed_at_ms = 0"
+                    " AND expires_at_ms > ?"
+                ),
+                (
+                    now_ms,
+                    approval_id,
+                    task_id,
+                    draft_id,
+                    witness_id,
+                    canonical_effect_hash,
+                    directory_handle_id,
+                    now_ms,
+                ),
+            )
+        return cursor.rowcount == 1
+
     # -- stage B: immutable drafts / current preflight witness ----------------
     def record_effect_draft(self, record: dict[str, Any]) -> str:
         """Insert one immutable draft record.
@@ -639,39 +814,122 @@ class OrinStore:
         intent_id: str,
         payload: dict[str, Any],
         public_key: str = "",
-    ) -> None:
-        self._conn.execute(
-            (
-                "INSERT OR REPLACE INTO intents"
-                " (intent_id, task_id, owner_key_hash, profile, approval_policy,"
-                "  issued_at_ms, expires_at_ms, revoked, public_key, payload_json)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)"
-            ),
-            (
-                intent_id,
-                str(payload.get("task_id", "")),
-                str(payload.get("subject", {}).get("owner_key_hash", "")),
-                str(payload.get("subject", {}).get("profile", "")),
-                str(payload.get("approval_policy", "")),
-                int(payload.get("issued_at_ms", 0)),
-                int(payload.get("expires_at_ms", 0)),
-                public_key,
-                _stable_json(payload),
-            ),
-        )
-        self._conn.commit()
+    ) -> str:
+        """Persist one immutable intent under the task's historical witness key.
+
+        A task id never changes signer, even after every intent has expired or
+        been revoked.  Intent ids are immutable too: replay never resurrects a
+        revoked row and conflicting bytes never replace the original record.
+        """
+
+        task_id = str(payload.get("task_id", ""))
+        payload_json = _stable_json(payload)
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = self._conn.execute(
+                "SELECT payload_json, public_key, revoked FROM intents WHERE intent_id = ?",
+                (intent_id,),
+            ).fetchone()
+            if existing is not None:
+                if (str(existing[0]), str(existing[1])) != (payload_json, public_key):
+                    self._conn.rollback()
+                    return "conflict"
+                status = "revoked" if bool(existing[2]) else "idempotent"
+                self._conn.commit()
+                return status
+
+            historical_keys = {
+                str(row[0])
+                for row in self._conn.execute(
+                    "SELECT DISTINCT public_key FROM intents WHERE task_id = ?",
+                    (task_id,),
+                ).fetchall()
+            }
+            if historical_keys and historical_keys != {public_key}:
+                self._conn.rollback()
+                return "task_key_conflict"
+
+            self._conn.execute(
+                "INSERT OR IGNORE INTO task_intent_signers(task_id, public_key)"
+                " VALUES (?, ?)",
+                (task_id, public_key),
+            )
+            signer = self._conn.execute(
+                "SELECT public_key FROM task_intent_signers WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if signer is None or str(signer[0]) != public_key:
+                self._conn.rollback()
+                return "task_key_conflict"
+
+            self._conn.execute(
+                (
+                    "INSERT INTO intents"
+                    " (intent_id, task_id, owner_key_hash, profile, approval_policy,"
+                    "  issued_at_ms, expires_at_ms, revoked, public_key, payload_json)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)"
+                ),
+                (
+                    intent_id,
+                    task_id,
+                    str(payload.get("subject", {}).get("owner_key_hash", "")),
+                    str(payload.get("subject", {}).get("profile", "")),
+                    str(payload.get("approval_policy", "")),
+                    int(payload.get("issued_at_ms", 0)),
+                    int(payload.get("expires_at_ms", 0)),
+                    public_key,
+                    payload_json,
+                ),
+            )
+        except BaseException:
+            self._conn.rollback()
+            raise
+        else:
+            self._conn.commit()
+            return "inserted"
 
     def active_intents_for_task(self, task_id: str) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             (
                 "SELECT payload_json FROM intents"
-                " WHERE task_id = ? AND revoked = 0 ORDER BY issued_at_ms DESC"
+                " WHERE task_id = ? AND revoked = 0"
+                " ORDER BY issued_at_ms DESC, intent_id DESC"
             ),
             (task_id,),
         ).fetchall()
         import json
 
         return [cast("dict[str, Any]", json.loads(str(row[0]))) for row in rows]
+
+    def intent_public_keys_for_task(self, task_id: str) -> tuple[str, ...]:
+        """Return the task's signer history, including expired/revoked intents."""
+
+        row = self._conn.execute(
+            "SELECT signer.public_key, COUNT(DISTINCT intent.public_key),"
+            " MIN(intent.public_key), MAX(intent.public_key)"
+            " FROM task_intent_signers AS signer"
+            " LEFT JOIN intents AS intent ON intent.task_id = signer.task_id"
+            " WHERE signer.task_id = ? GROUP BY signer.task_id, signer.public_key",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return ()
+        signer = str(row[0])
+        if int(row[1]) != 1 or str(row[2]) != signer or str(row[3]) != signer:
+            return ()
+        return (signer,)
+
+    def intent_public_key(self, intent_id: str) -> str | None:
+        """Return the exact witness key that verified one registered intent."""
+
+        row = self._conn.execute(
+            "SELECT public_key FROM intents WHERE intent_id = ? AND revoked = 0",
+            (intent_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        value = str(row[0])
+        return value or None
 
     def revoke_intent(self, intent_id: str) -> bool:
         cursor = self._conn.execute(
