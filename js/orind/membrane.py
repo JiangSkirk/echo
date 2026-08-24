@@ -23,6 +23,12 @@ from uuid import uuid4
 
 from js.orin.draft import CommitPermit
 from js.orin.protocol import RATE_LIMIT_BURST, RATE_LIMIT_PER_SECOND, SERVER_QUEUE_DEPTH
+from js.orind.private_paths import (
+    PrivatePathError,
+    PrivateSQLiteGuard,
+    install_sqlite_guard,
+    prepare_private_sqlite,
+)
 from js.orind.store import OrinStore
 
 _BUSY_TIMEOUT_MS: Final[int] = 5_000
@@ -327,6 +333,7 @@ class CommitMembrane:
         db_path: Path,
         *,
         enabled: bool = True,
+        strict_paths: bool = False,
         now_fn: Callable[[], int] | None = None,
         monotonic_fn: Callable[[], float] | None = None,
     ) -> None:
@@ -338,6 +345,7 @@ class CommitMembrane:
         self._monotonic_fn = monotonic_fn or time.monotonic
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
+        self._path_guard: PrivateSQLiteGuard | None = None
         self._admission_states: dict[_AdmissionScope, _AdmissionState] = {}
         self._admission_tickets: dict[str, _AdmissionScopes] = {}
         self._admission_outstanding = 0
@@ -347,13 +355,18 @@ class CommitMembrane:
         # Bootstrap the existing Orin tables on the exact same database.  The
         # temporary store connection is closed before the membrane opens its
         # FULL-synchronous authority connection.
-        store = OrinStore(self._db_path)
+        store = OrinStore(self._db_path, strict_paths=strict_paths)
         store.close()
+        if strict_paths:
+            self._path_guard = prepare_private_sqlite(self._db_path)
         connection = sqlite3.connect(
             str(self._db_path),
             check_same_thread=False,
             isolation_level=None,
         )
+        if self._path_guard is not None:
+            self._path_guard.verify()
+            install_sqlite_guard(connection, self._path_guard)
         connection.row_factory = sqlite3.Row
         connection.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         connection.execute("PRAGMA journal_mode=WAL")
@@ -392,6 +405,8 @@ class CommitMembrane:
             raise
         else:
             connection.commit()
+        if self._path_guard is not None:
+            self._path_guard.verify()
         self._conn = connection
 
     def close(self) -> None:
@@ -1225,6 +1240,12 @@ class CommitMembrane:
             if not self.enabled:
                 raise MembraneDisabled("commit membrane is disabled")
             raise MembraneError("commit membrane is closed")
+        if self._path_guard is not None:
+            try:
+                self._path_guard.raise_if_violated()
+                self._path_guard.verify()
+            except PrivatePathError as exc:
+                raise MembraneError("private membrane database path changed") from exc
         return self._conn
 
     def _require_enabled(self) -> None:

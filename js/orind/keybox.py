@@ -27,6 +27,14 @@ import stat
 import subprocess
 from pathlib import Path
 
+from js.orind.private_paths import (
+    PrivatePathError,
+    ensure_private_dir,
+    read_private_file,
+    verify_private_file,
+    write_private_file_exclusive,
+)
+
 KEYBOX_DIR_NAME = "orin"
 KEYBOX_FILE_NAME = "keybox.key"
 KEYBOX_FINGERPRINT_NAME = "keybox.fp"
@@ -40,12 +48,19 @@ class KeyBoxError(Exception):
     """KeyBox cannot be initialized; orind must refuse to start."""
 
 
-def _read_key_strict(path: Path) -> bytes:
+def _read_key_strict(path: Path, *, strict_paths: bool = False) -> bytes:
     """Read a 32-byte hex key file with full hardening.
 
     Mirrors ``js.agent.tool_executor._read_tool_lease_key_strict`` (kept as a
     local copy so orind never imports the heavy agent module).
     """
+
+    if strict_paths:
+        try:
+            encoded = read_private_file(path, max_bytes=128).decode("utf-8").strip()
+        except (OSError, UnicodeError, PrivatePathError) as exc:
+            raise KeyBoxError(f"invalid key file {path}: expected a private 32-byte key file") from exc
+        return _decode_key(path, encoded)
 
     try:
         metadata = path.lstat()
@@ -76,19 +91,30 @@ def _read_key_strict(path: Path) -> bytes:
     finally:
         if fd >= 0:
             os.close(fd)
+    if stat.S_IMODE(current.st_mode) != 0o600:
+        raise KeyBoxError(f"invalid key file {path}: expected mode 0600")
+    return _decode_key(path, encoded)
+
+
+def _decode_key(path: Path, encoded: str) -> bytes:
     try:
         key = bytes.fromhex(encoded)
     except ValueError as exc:
         raise KeyBoxError(f"invalid key file {path}: expected 32-byte hexadecimal data") from exc
     if len(encoded) != 64 or len(key) != KEY_BYTES:
         raise KeyBoxError(f"invalid key file {path}: expected 32-byte hexadecimal data")
-    if stat.S_IMODE(current.st_mode) != 0o600:
-        raise KeyBoxError(f"invalid key file {path}: expected mode 0600")
     return key
 
 
-def _write_key_atomic(path: Path, key: bytes) -> None:
+def _write_key_atomic(path: Path, key: bytes, *, strict_paths: bool = False) -> None:
     """Write a key file 0600 atomically (temp file + fsync + rename)."""
+
+    if strict_paths:
+        try:
+            write_private_file_exclusive(path, key.hex().encode("ascii"))
+        except PrivatePathError as exc:
+            raise KeyBoxError(f"cannot publish private key file {path}") from exc
+        return
 
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
@@ -120,7 +146,7 @@ def _fingerprint(key: bytes) -> str:
     return hashlib.sha256(b"orin-keybox-fingerprint-v1:" + key).hexdigest()
 
 
-def _keychain_read() -> bytes | None:
+def _keychain_read(*, security_binary: str = "security") -> bytes | None:
     """Read the lease key from the macOS Keychain via ``security``.
 
     Returns ``None`` when the item does not exist. Any other failure raises
@@ -129,7 +155,7 @@ def _keychain_read() -> bytes | None:
 
     completed = subprocess.run(
         [
-            "security",
+            security_binary,
             "find-generic-password",
             "-a",
             KEYCHAIN_ACCOUNT,
@@ -155,10 +181,10 @@ def _keychain_read() -> bytes | None:
     return key
 
 
-def _keychain_write(key: bytes) -> None:
+def _keychain_write(key: bytes, *, security_binary: str = "security") -> None:
     completed = subprocess.run(
         [
-            "security",
+            security_binary,
             "add-generic-password",
             "-a",
             KEYCHAIN_ACCOUNT,
@@ -179,11 +205,25 @@ def _keychain_write(key: bytes) -> None:
 class KeyBox:
     """Custodian of the lease HMAC key. Exactly one tier is active."""
 
-    def __init__(self, state_dir: Path, *, tier: str = "dev") -> None:
+    def __init__(
+        self,
+        state_dir: Path,
+        *,
+        tier: str = "dev",
+        strict_paths: bool = False,
+    ) -> None:
         self._state_dir = state_dir
         self._orin_dir = state_dir / KEYBOX_DIR_NAME
-        self._orin_dir.mkdir(parents=True, exist_ok=True)
-        os.chmod(self._orin_dir, 0o700)
+        self._strict_paths = bool(strict_paths)
+        if self._strict_paths:
+            try:
+                ensure_private_dir(self._state_dir)
+                ensure_private_dir(self._orin_dir)
+            except PrivatePathError as exc:
+                raise KeyBoxError(f"invalid private KeyBox directory: {self._orin_dir}") from exc
+        else:
+            self._orin_dir.mkdir(parents=True, exist_ok=True)
+            os.chmod(self._orin_dir, 0o700)
         self._tier = tier
         self._active_tier: str | None = None
         self.adopted_legacy = False
@@ -215,10 +255,10 @@ class KeyBox:
         legacy_path = self._state_dir / LEGACY_KEY_NAME
         legacy_key: bytes | None = None
         if legacy_path.exists() or legacy_path.is_symlink():
-            legacy_key = _read_key_strict(legacy_path)
+            legacy_key = _read_key_strict(legacy_path, strict_paths=self._strict_paths)
 
         if key_path.exists() or key_path.is_symlink():
-            key = _read_key_strict(key_path)
+            key = _read_key_strict(key_path, strict_paths=self._strict_paths)
             if legacy_key is not None and not secrets.compare_digest(key, legacy_key):
                 raise KeyBoxError(
                     "keybox key disagrees with legacy echo_tool_lease.key; refusing to start"
@@ -228,27 +268,28 @@ class KeyBox:
 
         if legacy_key is not None:
             self.adopted_legacy = True
-            _write_key_atomic(key_path, legacy_key)
+            _write_key_atomic(key_path, legacy_key, strict_paths=self._strict_paths)
             self._write_fingerprint(legacy_key)
             return legacy_key
 
         fresh = secrets.token_bytes(KEY_BYTES)
-        _write_key_atomic(key_path, fresh)
+        _write_key_atomic(key_path, fresh, strict_paths=self._strict_paths)
         self._write_fingerprint(fresh)
         # Mirror the fresh key to the legacy location so there is exactly
         # one key per state dir: an ``orin_enabled=false`` rollback must
         # read the same key or the shared JSONL ledger fails MAC replay
         # (fail-closed crash, but a broken rollback nonetheless).
-        _write_key_atomic(legacy_path, fresh)
+        _write_key_atomic(legacy_path, fresh, strict_paths=self._strict_paths)
         return fresh
 
     def _load_production(self) -> bytes:
         legacy_path = self._state_dir / LEGACY_KEY_NAME
         legacy_key: bytes | None = None
         if legacy_path.exists() or legacy_path.is_symlink():
-            legacy_key = _read_key_strict(legacy_path)
+            legacy_key = _read_key_strict(legacy_path, strict_paths=self._strict_paths)
 
-        keychain_key = _keychain_read()
+        security_binary = "/usr/bin/security" if self._strict_paths else "security"
+        keychain_key = _keychain_read(security_binary=security_binary)
         if keychain_key is not None:
             if legacy_key is not None and not secrets.compare_digest(keychain_key, legacy_key):
                 raise KeyBoxError(
@@ -257,15 +298,15 @@ class KeyBox:
             self._active_tier = "production"
             return keychain_key
         if legacy_key is not None:
-            _keychain_write(legacy_key)
+            _keychain_write(legacy_key, security_binary=security_binary)
             self.adopted_legacy = True
             self._active_tier = "production"
             return legacy_key
         fresh = secrets.token_bytes(KEY_BYTES)
-        _keychain_write(fresh)
+        _keychain_write(fresh, security_binary=security_binary)
         # Mirror to the legacy location for the same rollback guarantee as
         # the dev tier (see _load_dev).
-        _write_key_atomic(legacy_path, fresh)
+        _write_key_atomic(legacy_path, fresh, strict_paths=self._strict_paths)
         self._active_tier = "production"
         return fresh
 
@@ -273,15 +314,39 @@ class KeyBox:
         return self._orin_dir / KEYBOX_FINGERPRINT_NAME
 
     def _write_fingerprint(self, key: bytes) -> None:
-        self._fingerprint_path().write_text(_fingerprint(key) + "\n", encoding="utf-8")
-        os.chmod(self._fingerprint_path(), 0o600)
+        fp_path = self._fingerprint_path()
+        if self._strict_paths:
+            try:
+                write_private_file_exclusive(
+                    fp_path,
+                    (_fingerprint(key) + "\n").encode("ascii"),
+                )
+            except PrivatePathError as exc:
+                raise KeyBoxError("cannot publish keybox fingerprint") from exc
+            return
+        fp_path.write_text(_fingerprint(key) + "\n", encoding="utf-8")
+        os.chmod(fp_path, 0o600)
 
     def _verify_fingerprint(self, key: bytes) -> None:
         fp_path = self._fingerprint_path()
-        if not fp_path.exists():
+        missing = not fp_path.exists()
+        if self._strict_paths:
+            missing = missing and not fp_path.is_symlink()
+        if missing:
             self._write_fingerprint(key)
             return
-        recorded = fp_path.read_text(encoding="utf-8").strip()
+        if self._strict_paths:
+            try:
+                identity = verify_private_file(fp_path)
+                recorded = read_private_file(
+                    fp_path,
+                    expected=identity,
+                    max_bytes=128,
+                ).decode("ascii").strip()
+            except (PrivatePathError, UnicodeError) as exc:
+                raise KeyBoxError("invalid keybox fingerprint file") from exc
+        else:
+            recorded = fp_path.read_text(encoding="utf-8").strip()
         if recorded != _fingerprint(key):
             raise KeyBoxError("keybox fingerprint mismatch; refusing to start")
 

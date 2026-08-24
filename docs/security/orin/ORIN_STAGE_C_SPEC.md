@@ -1,6 +1,6 @@
 # Orin 阶段 C「强制模式」实施规格
 
-> 状态：已人工评审，仅授权 WP-C0；阶段 C 未实施
+> 状态：已人工评审；C0 已冻结，C1 仅落身份检查点；AppShell/Echo 进程分离未通过，禁止进入 C2；阶段 C 未实施
 > 日期：2026-08-24（Asia/Shanghai）
 > 施工基线：commit `652d035e0fda0e945da97e55b73a8f4116716410`，分支 `feature/orin-stage-b`
 > 终态北极星：`ORIN_EFFECT_KERNEL_V1.md`（**K**）；阶段 C 对应 K P5，上线验收只听 K§15.6
@@ -388,6 +388,12 @@ ambient handler 收口：
 C0 证据索引：[`ORIN_STAGE_C_C0_INVENTORY.md`](ORIN_STAGE_C_C0_INVENTORY.md)。该索引只记录只读盘点、书面冻结与基线回归，不代表 C1 或任何运行时施工获准。
 
 ### WP-C1：可信控制面、Cell 身份与环境收紧
+
+状态（2026-08-24）：
+
+- **已观察 / 身份检查点**：Build/File/Services 的严格 Orin 身份、逐 Cell 环境 allowlist 与 private-path 合同已在显式 `C1TestOrind` harness 验收；生产 orind 入口不传 `c1_test_harness`，`orin.enforce=true` 仍 fail-fast。
+- **blocked / 进程分离**：现有 `c1_harness` 只是 deny-default 下的固定 stdlib OS 子进程探针，不是真实 Echo runtime，也未接入 launcher/server/sidecar。真实 provider token、Keychain/Mach 与正式打包边界仍为 `untested` / `external-pending`。
+- 因第一块验收门槛未通过，WP-C1 **未完成**，不得进入 WP-C2；本检查点不构成阶段 C 已实施或 Echo RCE 已收口的证据。
 
 交付物：
 

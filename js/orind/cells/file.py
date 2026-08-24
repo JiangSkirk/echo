@@ -1092,7 +1092,15 @@ def main() -> None:  # pragma: no cover - subprocess entry
     from js.orind.keybox import KeyBox
 
     state_dir = Path(state_dir_env)
-    keybox = KeyBox(state_dir, tier=os.environ.get("ORIN_KEYBOX_TIER", "dev"))
+    strict_paths = os.environ.get("ORIN_CELL_IDENTITY_ENFORCE") == "1"
+    keybox_tier = os.environ.get("ORIN_KEYBOX_TIER")
+    if strict_paths and keybox_tier not in {"dev", "production"}:
+        raise SystemExit("ORIN_KEYBOX_TIER must be explicit in Cell identity enforce mode")
+    keybox = KeyBox(
+        state_dir,
+        tier=keybox_tier or "dev",
+        strict_paths=strict_paths,
+    )
     cell = FileCell(socket_path=Path(socket_path), state_dir=state_dir, mac_key=keybox.key)
     cell.start()
     try:

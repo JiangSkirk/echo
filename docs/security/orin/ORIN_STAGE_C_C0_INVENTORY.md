@@ -93,7 +93,8 @@
 - **已观察**：当前 AppShell 在一个 uvicorn/Python 进程内创建 Personal/Work child app 与 agent runtime（`js/appshell/launcher.py:46-102`；`js/appshell/server.py:27-75,96-113`；`js/web/server.py:716-763`）。
 - **已观察**：desktop host 自述为 single-process Python sidecar（`desktop/sidecar/host.py:1-6,278-303,388-405`）。
 - **已观察**：owner-witness 私钥从 state directory 加载为进程内 `Ed25519PrivateKey`，`/intent`、`ExactCommitApprovalV1`、ExportPass、unfreeze 路由在同一进程使用它（`js/orin/witness.py:1-9,67-90`；`js/appshell/routers.py:503-585,706-862`）。
-- **裁决**：书面边界已冻结，实施与打包验证仍 **blocked**。`0600` 不能隔离同进程 RCE，现有 loopback 端口或 watchdog 也不是该信任边界的证明。
+- **已观察（C1 身份检查点）**：存在测试专用 `c1_harness`，会在 deny-default 策略下启动固定 stdlib OS 子进程探针；它不是真实 Echo runtime，且未接入 launcher/server/sidecar 生产路径，不能作为生产进程分离证明。
+- **裁决**：书面边界已冻结，真实 AppShell/Echo 仍未离开同进程生产路径，实施与打包验证保持 **blocked**。`0600`、测试探针、现有 loopback 端口或 watchdog 都不是该信任边界的证明；真实 provider token、Keychain/Mach 与正式打包边界保持 `untested` / `external-pending`。
 
 ### 2.3 macOS 生产隔离载体
 

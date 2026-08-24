@@ -44,6 +44,8 @@ class TestOrind:
         cell_secret: bool = False,
         cell_file: bool = False,
         commit_membrane: bool = False,
+        cell_identity_enforce: bool = False,
+        c1_test_harness: bool = False,
         membrane_fault_hook: Any = None,
         witness_public_keys: tuple[str, ...] = (),
         now_fn: Any = None,
@@ -66,6 +68,8 @@ class TestOrind:
         self._cell_secret = cell_secret
         self._cell_file = cell_file
         self._commit_membrane = commit_membrane
+        self._cell_identity_enforce = cell_identity_enforce
+        self._c1_test_harness = c1_test_harness
         self._membrane_fault_hook = membrane_fault_hook
         self._witness_public_keys = witness_public_keys
         self._now_fn = now_fn
@@ -133,6 +137,10 @@ class TestOrind:
             kwargs["cell_file"] = True
         if self._commit_membrane:
             kwargs["commit_membrane"] = True
+        if self._cell_identity_enforce:
+            kwargs["cell_identity_enforce"] = True
+        if self._c1_test_harness:
+            kwargs["c1_test_harness"] = True
         if self._membrane_fault_hook is not None:
             kwargs["membrane_fault_hook"] = self._membrane_fault_hook
         if self._witness_public_keys:
@@ -165,4 +173,14 @@ class TestOrind:
         self.stop()
 
 
-__all__ = ["TestOrind"]
+class C1TestOrind(TestOrind):
+    """Explicit WP-C1 identity harness; never used by product launchers."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs["stage_b"] = True
+        kwargs["cell_identity_enforce"] = True
+        kwargs["c1_test_harness"] = True
+        super().__init__(**kwargs)
+
+
+__all__ = ["C1TestOrind", "TestOrind"]

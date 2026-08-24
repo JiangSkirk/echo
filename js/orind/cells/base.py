@@ -40,6 +40,14 @@ from js.orin.protocol import (
     parse_frame,
     verify_mac,
 )
+from js.orind.cell_identity import (
+    CELL_IDENTITY_ENV,
+    load_cell_launch_identity,
+    peer_credentials,
+    read_session_key_once,
+    require_same_socket,
+    verify_owned_socket,
+)
 
 _CONNECT_TIMEOUT_S = 5.0
 _RESULT_KEY_PARTS = re.compile(r"[a-z0-9]+")
@@ -95,9 +103,11 @@ class CellBase:
         self._preflight_handler = preflight_handler
         self._reconcile_handler = reconcile_handler
         self._strict_effect_protocol = strict_effect_protocol
+        self._identity_enforce = os.environ.get(CELL_IDENTITY_ENV) == "1"
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ready = threading.Event()
+        self._startup_error: BaseException | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._session_key: bytes | None = None
         self._session_nonce = ""
@@ -114,12 +124,17 @@ class CellBase:
         if self._thread is not None and self._thread.is_alive():
             return
         self._ready.clear()
+        self._startup_error = None
         self._thread = threading.Thread(
             target=self._run, name=f"orin-cell-{self._cap}", daemon=True
         )
         self._thread.start()
         if not self._ready.wait(timeout=_CONNECT_TIMEOUT_S + 5.0):
             raise RuntimeError(f"cell {self._cap} failed to start")
+        if self._identity_enforce and self._startup_error is not None:
+            raise RuntimeError(
+                f"cell {self._cap} strict identity handshake failed"
+            ) from self._startup_error
 
     def stop(self) -> None:
         self._stopped = True
@@ -134,19 +149,35 @@ class CellBase:
         asyncio.set_event_loop(self._loop)
         try:
             self._loop.run_until_complete(self._connect_and_serve())
-        except Exception:  # noqa: BLE001 - a dead cell fails closed at orind
-            pass
+        except Exception as exc:  # noqa: BLE001 - a dead cell fails closed at orind
+            self._startup_error = exc
         finally:
             self._ready.set()
             self._loop.close()
 
     async def _connect_and_serve(self) -> None:
+        socket_identity = None
+        daemon_pid = 0
+        launch_ticket = ""
+        if self._identity_enforce:
+            socket_identity = verify_owned_socket(self._socket_path)
+            daemon_pid, launch_ticket = load_cell_launch_identity(self._cap)
         reader, writer = await asyncio.wait_for(
             asyncio.open_unix_connection(path=str(self._socket_path)),
             timeout=_CONNECT_TIMEOUT_S,
         )
         self._writer = writer
-        client_nonce = secrets.token_hex(16)
+        if self._identity_enforce:
+            assert socket_identity is not None
+            require_same_socket(self._socket_path, socket_identity)
+            sock = writer.get_extra_info("socket")
+            credentials = peer_credentials(sock) if sock is not None else None
+            if credentials != (os.geteuid(), daemon_pid):
+                raise ProtocolError("Cell socket peer is not the launching orind")
+        # In the strict harness the one-shot launch ticket is also the
+        # existing hello nonce.  This preserves Stage-A's exact hello schema
+        # instead of adding a field that non-enforce peers would accept.
+        client_nonce = launch_ticket if self._identity_enforce else secrets.token_hex(16)
         hello = make_envelope(
             "hello",
             seq=1,
@@ -169,7 +200,38 @@ class CellBase:
         self._last_client_seq = 1
         key_file = self._state_dir / "orin" / f"session-{os.getpid()}.key"
         loop = asyncio.get_running_loop()
-        self._session_key = await loop.run_in_executor(None, _read_session_key_file, key_file)
+        key_reader = read_session_key_once if self._identity_enforce else _read_session_key_file
+        self._session_key = await loop.run_in_executor(None, key_reader, key_file)
+        if self._identity_enforce:
+            if (
+                int(ack["seq"]) != 1
+                or ack.get("caps") != [self._cap]
+                or ack.get("nonce") != self._session_nonce
+            ):
+                raise ProtocolError("Cell hello acknowledgement is not launch-bound")
+            proof = make_envelope(
+                "heartbeat",
+                seq=2,
+                nonce=self._session_nonce,
+                session_key=self._session_key,
+            )
+            writer.write(encode_frame(proof))
+            await writer.drain()
+            proof_header = await asyncio.wait_for(
+                reader.readexactly(4), timeout=_CONNECT_TIMEOUT_S
+            )
+            proof_payload = await reader.readexactly(int.from_bytes(proof_header, "big"))
+            proof_ack = parse_frame(proof_payload)
+            if (
+                proof_ack.get("type") != "heartbeat_ack"
+                or proof_ack.get("ok") is not True
+                or int(proof_ack.get("seq", 0)) != 2
+                or proof_ack.get("nonce") != self._session_nonce
+                or not verify_mac(self._session_key, proof_ack)
+            ):
+                raise ProtocolError("Cell proof-of-key acknowledgement is invalid")
+            self._last_client_seq = 2
+            self._last_server_seq = 2
         self._ready.set()
         while not self._stopped:
             header = await reader.readexactly(4)
@@ -177,6 +239,8 @@ class CellBase:
             envelope = parse_frame(body)
             if self._session_key is None or not verify_mac(self._session_key, envelope):
                 raise ProtocolError("cell command MAC verification failed")
+            if self._identity_enforce and envelope.get("nonce") != self._session_nonce:
+                raise ProtocolError("cell command session nonce mismatch")
             seq = int(envelope["seq"])
             if seq <= self._last_server_seq:
                 raise ProtocolError("seq regression")

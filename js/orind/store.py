@@ -24,6 +24,12 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
+from js.orind.private_paths import (
+    PrivateSQLiteGuard,
+    install_sqlite_guard,
+    prepare_private_sqlite,
+)
+
 SCHEMA_VERSION = 4
 
 _SCHEMA = """
@@ -166,9 +172,16 @@ CREATE TABLE IF NOT EXISTS seeds (
 class OrinStore:
     """SQLite WAL store for receipts and (WP3) canaries / responder state."""
 
-    def __init__(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, path: Path, *, strict_paths: bool = False) -> None:
+        self._path_guard: PrivateSQLiteGuard | None = None
+        if strict_paths:
+            self._path_guard = prepare_private_sqlite(path)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
+        if self._path_guard is not None:
+            self._path_guard.verify()
+            install_sqlite_guard(self._conn, self._path_guard)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(_SCHEMA)
@@ -181,6 +194,8 @@ class OrinStore:
             (str(SCHEMA_VERSION),),
         )
         self._conn.commit()
+        if self._path_guard is not None:
+            self._path_guard.verify()
 
     def _ensure_canary_columns(self) -> None:
         cols = {str(row[1]) for row in self._conn.execute("PRAGMA table_info(canaries)").fetchall()}

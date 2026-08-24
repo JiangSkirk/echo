@@ -41,6 +41,14 @@ from js.orin.handles import OriginHandle, handle_from_dict
 from js.orin.hooks import inspect_canary_text
 from js.orin.protocol import ProtocolError, canonical_json
 from js.orind.cells.base import CellBase
+from js.orind.private_paths import (
+    PathIdentity,
+    PrivatePathError,
+    ensure_private_dir,
+    open_private_file,
+    verify_private_file,
+    write_private_file_exclusive,
+)
 from js.security.net_guard import PinnedTransport, resolve_and_validate
 
 _MAX_BODY_CHARS = 48 * 1024
@@ -92,28 +100,66 @@ class SecretStore:
     treated as proof of controlled cross-process extraction.
     """
 
-    def __init__(self, state_dir: Path) -> None:
+    def __init__(self, state_dir: Path, *, strict_paths: bool = False) -> None:
         self._path = state_dir / "orin" / "secrets.jsonl"
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        if not self._path.exists():
-            fd = os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            os.close(fd)
+        self._strict_paths = bool(strict_paths)
+        self._identity: PathIdentity | None = None
+        if self._strict_paths:
+            ensure_private_dir(self._path.parent)
+            try:
+                self._identity = verify_private_file(self._path)
+            except PrivatePathError:
+                try:
+                    self._path.lstat()
+                except FileNotFoundError:
+                    self._identity = write_private_file_exclusive(self._path, b"")
+                else:
+                    raise
         else:
-            os.chmod(self._path, 0o600)
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            if not self._path.exists():
+                fd = os.open(self._path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.close(fd)
+            else:
+                os.chmod(self._path, 0o600)
+
+    def _open_strict(self, flags: int) -> int:
+        assert self._identity is not None
+        fd, identity = open_private_file(self._path, flags, expected=self._identity)
+        if identity != self._identity:
+            os.close(fd)
+            raise PrivatePathError("SecretStore file identity changed")
+        return fd
+
+    def _verify_strict(self) -> None:
+        assert self._identity is not None
+        verify_private_file(self._path, expected=self._identity)
 
     def put(self, handle_id: str, token: str) -> None:
-        with self._path.open("a", encoding="utf-8") as fh:
+        if self._strict_paths:
+            fd = self._open_strict(os.O_WRONLY | os.O_APPEND)
+            fh = os.fdopen(fd, "a", encoding="utf-8")
+        else:
+            fh = self._path.open("a", encoding="utf-8")
+        with fh:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
             fh.write(json.dumps({"handle_id": handle_id, "token": token}) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        if self._strict_paths:
+            self._verify_strict()
 
     def get(self, handle_id: str) -> str | None:
-        if not self._path.exists():
+        if not self._strict_paths and not self._path.exists():
             return None
         found: str | None = None
-        with self._path.open("r", encoding="utf-8") as fh:
+        if self._strict_paths:
+            fd = self._open_strict(os.O_RDONLY)
+            fh = os.fdopen(fd, "r", encoding="utf-8")
+        else:
+            fh = self._path.open("r", encoding="utf-8")
+        with fh:
             fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
             for line in fh:
                 try:
@@ -123,6 +169,8 @@ class SecretStore:
                 if str(row.get("handle_id")) == handle_id:
                     found = str(row.get("token") or "")
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        if self._strict_paths:
+            self._verify_strict()
         return found
 
 
@@ -1002,11 +1050,17 @@ def run_optional_l2_keychain_smoke(
 
 
 def provision_secret(
-    state_dir: Path, mac_key: bytes, *, name: str, token: str, audience: str = ""
+    state_dir: Path,
+    mac_key: bytes,
+    *,
+    name: str,
+    token: str,
+    audience: str = "",
+    strict_paths: bool = False,
 ) -> OriginHandle:
     """Admin path (AppShell): mint a SecretHandle + store the credential."""
 
-    store = SecretStore(state_dir)
+    store = SecretStore(state_dir, strict_paths=strict_paths)
     digest = "sha256:" + hashlib.sha256(token.encode()).hexdigest()
     ts = int(time.time() * 1000)
     base = OriginHandle(
@@ -1036,8 +1090,16 @@ def main() -> None:  # pragma: no cover - subprocess entry
         raise SystemExit("ORIN_CELLS_SOCKET and ORIN_STATE_DIR are required")
     from js.orind.keybox import KeyBox
 
-    keybox = KeyBox(Path(state_dir_env), tier=os.environ.get("ORIN_KEYBOX_TIER", "dev"))
-    secrets = SecretStore(Path(state_dir_env))
+    strict_paths = os.environ.get("ORIN_CELL_IDENTITY_ENFORCE") == "1"
+    keybox_tier = os.environ.get("ORIN_KEYBOX_TIER")
+    if strict_paths and keybox_tier not in {"dev", "production"}:
+        raise SystemExit("ORIN_KEYBOX_TIER must be explicit in Cell identity enforce mode")
+    keybox = KeyBox(
+        Path(state_dir_env),
+        tier=keybox_tier or "dev",
+        strict_paths=strict_paths,
+    )
+    secrets = SecretStore(Path(state_dir_env), strict_paths=strict_paths)
     cells: list[CellBase] = []
     wanted = [cap for cap in caps_env.split(",") if cap]
     unknown = set(wanted) - {"cell.net", "cell.secret", "cell.connector"}

@@ -122,9 +122,12 @@ def main() -> None:  # pragma: no cover - subprocess entry
         raise SystemExit("ORIN_CELLS_SOCKET and ORIN_STATE_DIR are required")
     cell = BuildCell(socket_path=Path(socket_path), state_dir=Path(state_dir))
     cell.start()
+    strict_identity = os.environ.get("ORIN_CELL_IDENTITY_ENFORCE") == "1"
     try:
         while True:
-            time.sleep(3600)
+            time.sleep(1 if strict_identity else 3600)
+            if strict_identity and not cell.healthy():
+                raise SystemExit("Build Cell identity session became unhealthy")
     except KeyboardInterrupt:
         pass
     finally:

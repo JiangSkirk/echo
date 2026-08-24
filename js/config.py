@@ -499,6 +499,30 @@ class OrinConfig(BaseModel):
             "reconciliation for workspace commits and connector sends."
         ),
     )
+    # -- stage C (ORIN_STAGE_C_SPEC.md WP-C1): parsed now, but deliberately
+    # unusable as a production master switch until C2-C7 are complete.  The
+    # identity sub-switch is lazy while the master switch is off; only the
+    # explicit C1 test harness may exercise it in this WP.
+    enforce: bool = Field(
+        default=False,
+        description=(
+            "Stage-C production enforce mode. Disabled and fail-fast until "
+            "the remaining C2-C7 construction gates are implemented."
+        ),
+    )
+    cell_identity_enforce: bool = Field(
+        default=False,
+        description=(
+            "Require the WP-C1 Cell OS/launch/protocol identity contract. "
+            "Lazy unless Stage-C enforce is active or an explicit C1 test harness is used."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def reject_unfinished_stage_c_enforce(self) -> OrinConfig:
+        if self.enforce:
+            raise ValueError("orin.enforce is unavailable until Stage C C2-C7 are complete")
+        return self
 
 
 class MemoryConfig(BaseModel):

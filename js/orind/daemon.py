@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import json
 import os
 import secrets
 import socket
@@ -76,6 +77,7 @@ from js.orin.protocol import (
 )
 from js.orin.taint import CLEARANCE_INTERNAL, CLEARANCE_SECRET
 from js.orind.broker import HandleBroker
+from js.orind.cell_identity import CELL_IDENTITY_ENV, LAUNCH_TICKETS_ENV, ORIND_PID_ENV
 from js.orind.gatekeeper import GateKeeper
 from js.orind.intent_store import IntentStore
 from js.orind.kernel import (
@@ -98,6 +100,16 @@ from js.orind.membrane import (
     OperationConflict,
     OperationSnapshot,
     OperationSpec,
+)
+from js.orind.private_paths import (
+    PathIdentity,
+    PrivatePathError,
+    ensure_private_dir,
+    safe_unlink_if_same,
+    safe_unlink_socket_if_same,
+    verify_private_file,
+    verify_private_socket,
+    write_private_file_exclusive,
 )
 from js.orind.store import OrinStore
 
@@ -243,21 +255,47 @@ class OrinDaemon:
         cell_secret: bool = False,
         cell_file: bool = False,
         commit_membrane: bool = False,
+        orin_enforce: bool = False,
+        cell_identity_enforce: bool = False,
+        c1_test_harness: bool = False,
         membrane_fault_hook: Callable[[str, str], None] | None = None,
         witness_public_keys: tuple[str, ...] = (),
         now_fn: Any = None,
     ) -> None:
 
+        # WP-C1 is not a production Stage-C release.  Refuse the master switch
+        # before creating directories, keys, sockets, or databases.  The
+        # identity path below is reachable only from the explicit test helper.
+        if orin_enforce:
+            raise OrinDaemonError(
+                "orin.enforce is unavailable until Stage C C2-C7 are complete"
+            )
+        self._cell_identity_enforce = bool(cell_identity_enforce and c1_test_harness)
+
         self._state_dir = state_dir
         self._socket_path = socket_path or (state_dir / "orin" / "orind.sock")
         self._orin_dir = orin_dir or self._socket_path.parent
-        self._orin_dir.mkdir(parents=True, exist_ok=True)
-        os.chmod(self._orin_dir, 0o700)
+        if self._cell_identity_enforce:
+            try:
+                ensure_private_dir(self._state_dir)
+                ensure_private_dir(self._orin_dir)
+            except PrivatePathError as exc:
+                raise OrinDaemonError("C1 private state directory contract failed") from exc
+        else:
+            self._orin_dir.mkdir(parents=True, exist_ok=True)
+            os.chmod(self._orin_dir, 0o700)
         try:
-            self._keybox = KeyBox(state_dir, tier=keybox_tier)
+            self._keybox = KeyBox(
+                state_dir,
+                tier=keybox_tier,
+                strict_paths=self._cell_identity_enforce,
+            )
         except KeyBoxError as exc:
             raise OrinDaemonError(str(exc)) from exc
-        self._store = OrinStore(self._orin_dir / "orind_state.db")
+        self._store = OrinStore(
+            self._orin_dir / "orind_state.db",
+            strict_paths=self._cell_identity_enforce,
+        )
         gate_kwargs: dict[str, Any] = {
             "mac_key": self._keybox.key,
             "ledger_path": state_dir / "echo_tool_lease.jsonl",
@@ -285,6 +323,11 @@ class OrinDaemon:
             desired_service_caps.add("cell.secret")
         self._desired_service_caps = frozenset(desired_service_caps)
         self._services_enabled = bool(self._desired_service_caps)
+        self._socket_identities: dict[Path, PathIdentity] = {}
+        self._cell_socket_pointer_path: Path | None = None
+        self._cell_socket_pointer_identity: PathIdentity | None = None
+        self._cell_socket_temp_root: Path | None = None
+        self._cell_socket_temp_identity: PathIdentity | None = None
         self._cell_socket_path = self._resolve_cell_socket(self._orin_dir / "cells.sock")
         self._cell_server: asyncio.AbstractServer | None = None
         self._cell_sessions: dict[asyncio.StreamWriter, _Session] = {}
@@ -292,6 +335,10 @@ class OrinDaemon:
         self._cell_tasks: set[asyncio.Task[None]] = set()
         self._cell_procs: set[subprocess.Popen[bytes]] = set()
         self._expected_cell_caps_by_pid: dict[int, frozenset[str]] = {}
+        self._expected_cell_launch_by_pid: dict[int, dict[str, str]] = {}
+        self._used_cell_launch_nonces: set[str] = set()
+        self._cell_runtime_roots: dict[int, Path] = {}
+        self._strict_session_key_identities: dict[Path, PathIdentity] = {}
         self._build_proc: subprocess.Popen[bytes] | None = None
         self._services_proc: subprocess.Popen[bytes] | None = None
         self._file_proc: subprocess.Popen[bytes] | None = None
@@ -328,6 +375,7 @@ class OrinDaemon:
                 self._membrane = CommitMembrane(
                     self._orin_dir / "orind_state.db",
                     enabled=True,
+                    strict_paths=self._cell_identity_enforce,
                     now_fn=self._now_ms,
                 )
         self._server: asyncio.AbstractServer | None = None
@@ -353,20 +401,104 @@ class OrinDaemon:
     def cell_socket_path(self) -> Path:
         return self._cell_socket_path
 
-    @staticmethod
-    def _resolve_cell_socket(requested: Path) -> Path:
+    def _resolve_cell_socket(self, requested: Path) -> Path:
         if len(str(requested)) <= CELL_SOCKET_MAX_PATH:
             return requested
         short_dir = Path(tempfile.mkdtemp(prefix="orind-cells-"))
+        if self._cell_identity_enforce:
+            try:
+                self._cell_socket_temp_identity = ensure_private_dir(short_dir)
+            except PrivatePathError as exc:
+                raise OrinDaemonError("C1 short Cell socket root is unsafe") from exc
+            self._cell_socket_temp_root = short_dir
         resolved = short_dir / "cells.sock"
+        pointer = requested.with_suffix(".sock.path")
+        if self._cell_identity_enforce:
+            try:
+                try:
+                    existing = verify_private_file(pointer)
+                except PrivatePathError:
+                    try:
+                        pointer.lstat()
+                    except FileNotFoundError:
+                        existing = None
+                    else:
+                        raise
+                if existing is not None:
+                    safe_unlink_if_same(pointer, existing)
+                self._cell_socket_pointer_identity = write_private_file_exclusive(
+                    pointer,
+                    os.fspath(resolved).encode("utf-8"),
+                )
+                self._cell_socket_pointer_path = pointer
+            except (OSError, PrivatePathError) as exc:
+                raise OrinDaemonError("C1 Cell socket pointer contract failed") from exc
+            return resolved
         try:
-            pointer = requested.with_suffix(".sock.path")
             pointer.parent.mkdir(parents=True, exist_ok=True)
             pointer.write_text(str(resolved), encoding="utf-8")
             pointer.chmod(0o600)
         except OSError:
             pass
         return resolved
+
+    @staticmethod
+    def _socket_identity(path: Path) -> PathIdentity:
+        try:
+            return verify_private_socket(path)
+        except PrivatePathError as exc:
+            raise OrinDaemonError(f"private socket path contract failed: {path}") from exc
+
+    def _prepare_strict_socket_path(self, path: Path) -> None:
+        try:
+            ensure_private_dir(path.parent)
+        except PrivatePathError as exc:
+            raise OrinDaemonError(f"private socket parent contract failed: {path}") from exc
+        try:
+            existing = self._socket_identity(path)
+        except OrinDaemonError:
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                return
+            raise
+
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.settimeout(0.1)
+            try:
+                probe.connect(os.fspath(path))
+            except (ConnectionRefusedError, FileNotFoundError):
+                pass
+            else:
+                raise OrinDaemonError(f"private socket is already serving: {path}")
+        finally:
+            probe.close()
+        if self._socket_identity(path) != existing:
+            raise OrinDaemonError(f"private socket changed before stale cleanup: {path}")
+        try:
+            safe_unlink_socket_if_same(path, existing)
+        except PrivatePathError as exc:
+            raise OrinDaemonError(f"private stale socket cannot be removed: {path}") from exc
+
+    def _pin_strict_socket(self, path: Path) -> None:
+        self._socket_identities[path] = self._socket_identity(path)
+
+    def _strict_socket_is_current(self, path: Path) -> bool:
+        expected = self._socket_identities.get(path)
+        if expected is None:
+            return False
+        try:
+            return self._socket_identity(path) == expected
+        except OrinDaemonError:
+            return False
+
+    def _unlink_strict_socket(self, path: Path) -> None:
+        expected = self._socket_identities.pop(path, None)
+        if expected is None:
+            return
+        with contextlib.suppress(PrivatePathError):
+            safe_unlink_socket_if_same(path, expected)
 
     @property
     def keybox_tier(self) -> str:
@@ -390,21 +522,31 @@ class OrinDaemon:
         if self._server is not None:
             return
         self._loop = asyncio.get_running_loop()
-        with contextlib.suppress(FileNotFoundError):
-            self._socket_path.unlink()
+        if self._cell_identity_enforce:
+            self._prepare_strict_socket_path(self._socket_path)
+        else:
+            with contextlib.suppress(FileNotFoundError):
+                self._socket_path.unlink()
         self._server = await asyncio.start_unix_server(
             self._handle_connection,
             path=str(self._socket_path),
         )
         os.chmod(self._socket_path, 0o600)
+        if self._cell_identity_enforce:
+            self._pin_strict_socket(self._socket_path)
         if self._stage_b:
-            with contextlib.suppress(FileNotFoundError):
-                self._cell_socket_path.unlink()
+            if self._cell_identity_enforce:
+                self._prepare_strict_socket_path(self._cell_socket_path)
+            else:
+                with contextlib.suppress(FileNotFoundError):
+                    self._cell_socket_path.unlink()
             self._cell_server = await asyncio.start_unix_server(
                 self._handle_cell_connection,
                 path=str(self._cell_socket_path),
             )
             os.chmod(self._cell_socket_path, 0o600)
+            if self._cell_identity_enforce:
+                self._pin_strict_socket(self._cell_socket_path)
             if self._spawn_build_cells and self._cell_build_enabled:
                 self._spawn_build_cell()
             if self._services_enabled:
@@ -459,15 +601,45 @@ class OrinDaemon:
                 proc.wait(timeout=3.0)
         self._cell_procs.clear()
         self._expected_cell_caps_by_pid.clear()
+        self._expected_cell_launch_by_pid.clear()
+        self._used_cell_launch_nonces.clear()
+        for key_file, identity in tuple(self._strict_session_key_identities.items()):
+            self._cleanup_strict_session_key(key_file, identity)
+        for runtime_root in tuple(self._cell_runtime_roots.values()):
+            self._discard_cell_runtime_root(runtime_root)
+        self._cell_runtime_roots.clear()
         self._build_proc = None
         self._services_proc = None
         self._file_proc = None
-        with contextlib.suppress(FileNotFoundError):
-            self._socket_path.unlink()
-        with contextlib.suppress(FileNotFoundError):
-            self._cell_socket_path.unlink()
-        with contextlib.suppress(FileNotFoundError):
-            (self._orin_dir / "cells.sock.path").unlink(missing_ok=True)
+        if self._cell_identity_enforce:
+            self._unlink_strict_socket(self._socket_path)
+            self._unlink_strict_socket(self._cell_socket_path)
+            if (
+                self._cell_socket_pointer_path is not None
+                and self._cell_socket_pointer_identity is not None
+            ):
+                with contextlib.suppress(PrivatePathError):
+                    safe_unlink_if_same(
+                        self._cell_socket_pointer_path,
+                        self._cell_socket_pointer_identity,
+                    )
+            if (
+                self._cell_socket_temp_root is not None
+                and self._cell_socket_temp_identity is not None
+            ):
+                try:
+                    current = ensure_private_dir(self._cell_socket_temp_root)
+                    if current == self._cell_socket_temp_identity:
+                        self._cell_socket_temp_root.rmdir()
+                except (OSError, PrivatePathError):
+                    pass
+        else:
+            with contextlib.suppress(FileNotFoundError):
+                self._socket_path.unlink()
+            with contextlib.suppress(FileNotFoundError):
+                self._cell_socket_path.unlink()
+            with contextlib.suppress(FileNotFoundError):
+                (self._orin_dir / "cells.sock.path").unlink(missing_ok=True)
         if self._membrane is not None:
             self._membrane.close()
         self._store.close()
@@ -491,6 +663,13 @@ class OrinDaemon:
         if task is not None:
             self._handler_tasks.add(task)
         try:
+            if (
+                self._cell_identity_enforce
+                and not self._strict_socket_is_current(self._socket_path)
+            ):
+                self._audit("peer_rejected", reason="orind socket path replaced")
+                writer.close()
+                return
             peer = self._check_peer(writer)
             if peer is None:
                 writer.close()
@@ -597,6 +776,160 @@ class OrinDaemon:
         except OSError:
             self._audit("session_key_publish_failed", path=str(key_file))
             return False
+
+    def _publish_strict_session_key(
+        self,
+        key_file: Path,
+        key: bytes,
+    ) -> PathIdentity | None:
+        """Publish a C1 one-shot key without deleting or repairing an object."""
+
+        try:
+            identity = write_private_file_exclusive(key_file, key)
+        except (OSError, PrivatePathError):
+            self._audit("session_key_publish_failed", reason="private-file contract")
+            return None
+        self._strict_session_key_identities[key_file] = identity
+        return identity
+
+    def _cleanup_strict_session_key(
+        self,
+        key_file: Path,
+        expected: PathIdentity,
+    ) -> None:
+        """Remove only the one-shot key inode published by this daemon."""
+
+        try:
+            safe_unlink_if_same(key_file, expected)
+        except PrivatePathError:
+            self._audit("session_key_cleanup_skipped", reason="path replaced")
+        finally:
+            self._strict_session_key_identities.pop(key_file, None)
+
+    async def _strict_cell_handshake(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        peer: tuple[int, int],
+    ) -> _Session | None:
+        """Authenticate one daemon-launched Cell before publishing authority."""
+
+        observed_euid, observed_pid = peer
+        if observed_pid <= 0:
+            self._audit("handshake_rejected", reason="cell peer pid unavailable")
+            return None
+        try:
+            envelope = await asyncio.wait_for(
+                self._read_frame(reader), timeout=5.0
+            )
+        except (ProtocolError, asyncio.IncompleteReadError, ConnectionError, TimeoutError):
+            return None
+        if envelope is None or envelope.get("type") != "hello" or envelope.get("seq") != 1:
+            self._audit("handshake_rejected", reason="invalid Cell hello")
+            return None
+        if envelope.get("pid") != observed_pid:
+            self._audit("handshake_rejected", reason="Cell declared pid mismatch")
+            return None
+        raw_caps = envelope.get("caps")
+        if (
+            not isinstance(raw_caps, list)
+            or len(raw_caps) != 1
+            or not isinstance(raw_caps[0], str)
+            or raw_caps[0] not in CELL_CONNECT_CAPS
+        ):
+            self._audit("handshake_rejected", reason="Cell hello cap mismatch")
+            return None
+        cap = raw_caps[0]
+        expected_caps = self._expected_cell_caps_by_pid.get(observed_pid)
+        launch_tickets = self._expected_cell_launch_by_pid.get(observed_pid)
+        presented_ticket = envelope.get("nonce")
+        expected_ticket = launch_tickets.get(cap) if launch_tickets is not None else None
+        if (
+            expected_caps is None
+            or cap not in expected_caps
+            or expected_ticket is None
+            or not isinstance(presented_ticket, str)
+            or not secrets.compare_digest(expected_ticket, presented_ticket)
+            or presented_ticket in self._used_cell_launch_nonces
+        ):
+            self._audit("handshake_rejected", reason="Cell launch binding mismatch")
+            return None
+        if any(
+            cap in session.caps and not other_writer.is_closing()
+            for other_writer, session in self._cell_sessions.items()
+        ):
+            self._audit("handshake_rejected", reason="duplicate cell cap")
+            return None
+
+        # Consume the per-cap launch authority before publishing a session
+        # key.  A failed proof cannot be retried with the same hello.
+        assert launch_tickets is not None
+        launch_tickets.pop(cap)
+        self._used_cell_launch_nonces.add(presented_ticket)
+        if not launch_tickets:
+            self._expected_cell_launch_by_pid.pop(observed_pid, None)
+
+        client_nonce = str(envelope["nonce"])
+        session_key = secrets.token_bytes(SESSION_KEY_BYTES)
+        key_file = self._orin_dir / f"session-{observed_pid}.key"
+        key_identity = self._publish_strict_session_key(key_file, session_key)
+        if key_identity is None:
+            return None
+        server_nonce = secrets.token_hex(16)
+        session = _Session(
+            session_key=session_key,
+            session_nonce=client_nonce + server_nonce,
+            peer=(observed_euid, observed_pid),
+            caps=frozenset({cap}),
+        )
+        hello_ack = make_envelope(
+            "hello_ack",
+            seq=session.next_server_seq(),
+            nonce=session.session_nonce,
+            session_key=None,
+            ok=True,
+            caps=[cap],
+            server_nonce=server_nonce,
+        )
+        try:
+            writer.write(encode_frame(hello_ack))
+            await writer.drain()
+            proof = await asyncio.wait_for(self._read_frame(reader), timeout=5.0)
+            if (
+                proof is None
+                or proof.get("type") != "heartbeat"
+                or proof.get("seq") != 2
+                or proof.get("nonce") != session.session_nonce
+                or not verify_mac(session.session_key, proof)
+                or key_file.exists()
+                or key_file.is_symlink()
+            ):
+                raise ProtocolError("Cell proof-of-key failed")
+            session.last_client_seq = 2
+            session.last_server_seq = 2
+            proof_ack = make_envelope(
+                "heartbeat_ack",
+                seq=2,
+                nonce=session.session_nonce,
+                session_key=session.session_key,
+                ok=True,
+                healthy=True,
+            )
+            writer.write(encode_frame(proof_ack))
+            await writer.drain()
+        except (
+            ProtocolError,
+            asyncio.IncompleteReadError,
+            ConnectionError,
+            RuntimeError,
+            TimeoutError,
+        ):
+            self._cleanup_strict_session_key(key_file, key_identity)
+            self._audit("handshake_rejected", reason="Cell proof-of-key failed")
+            return None
+        self._strict_session_key_identities.pop(key_file, None)
+        self._audit("handshake_ok", peer_pid=observed_pid, cell_cap=cap)
+        return session
 
     async def _serve(
         self,
@@ -2637,9 +2970,19 @@ class OrinDaemon:
     def _spawn_build_cell(self) -> None:
         """Launch the resident Build Cell subprocess (M§3.2-3 常驻池)."""
 
-        env = dict(os.environ)
-        env["ORIN_CELLS_SOCKET"] = str(self._cell_socket_path)
-        env["ORIN_STATE_DIR"] = str(self._state_dir)
+        caps = frozenset({"cell.build"})
+        tickets, runtime_root = self._new_cell_launch("build", caps)
+        if self._cell_identity_enforce:
+            env = self._cell_environment(
+                kind="build",
+                caps=caps,
+                tickets=tickets,
+                runtime_root=runtime_root,
+            )
+        else:
+            env = self._legacy_cell_environment()
+            env["ORIN_CELLS_SOCKET"] = str(self._cell_socket_path)
+            env["ORIN_STATE_DIR"] = str(self._state_dir)
         try:
             proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
                 [sys.executable, "-m", "js.orind.cells.build"],
@@ -2650,23 +2993,38 @@ class OrinDaemon:
                 start_new_session=True,
             )
         except OSError:
+            self._discard_cell_runtime_root(runtime_root)
             self._audit("build_cell_spawn_failed")
             return
         self._cell_procs.add(proc)
         self._build_proc = proc
-        self._expected_cell_caps_by_pid[proc.pid] = frozenset({"cell.build"})
+        self._expected_cell_caps_by_pid[proc.pid] = caps
+        if self._cell_identity_enforce:
+            assert runtime_root is not None
+            self._expected_cell_launch_by_pid[proc.pid] = tickets
+            self._cell_runtime_roots[proc.pid] = runtime_root
         self._audit("build_cell_spawned", pid=proc.pid)
 
     def _spawn_services_cell(self) -> None:
         """Launch the net/secret/connector services subprocess (WP8)."""
 
-        env = dict(os.environ)
-        env["ORIN_CELLS_SOCKET"] = str(self._cell_socket_path)
-        env["ORIN_STATE_DIR"] = str(self._state_dir)
         caps = sorted(self._desired_service_caps)
         if not caps:
             return
-        env["ORIN_CELLS_CAPS"] = ",".join(caps)
+        cap_set = frozenset(caps)
+        tickets, runtime_root = self._new_cell_launch("services", cap_set)
+        if self._cell_identity_enforce:
+            env = self._cell_environment(
+                kind="services",
+                caps=cap_set,
+                tickets=tickets,
+                runtime_root=runtime_root,
+            )
+        else:
+            env = self._legacy_cell_environment()
+            env["ORIN_CELLS_SOCKET"] = str(self._cell_socket_path)
+            env["ORIN_STATE_DIR"] = str(self._state_dir)
+            env["ORIN_CELLS_CAPS"] = ",".join(caps)
         try:
             proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
                 [sys.executable, "-m", "js.orind.cells.services"],
@@ -2677,20 +3035,35 @@ class OrinDaemon:
                 start_new_session=True,
             )
         except OSError:
+            self._discard_cell_runtime_root(runtime_root)
             self._audit("services_cell_spawn_failed")
             return
         self._cell_procs.add(proc)
         self._services_proc = proc
-        self._expected_cell_caps_by_pid[proc.pid] = frozenset(caps)
+        self._expected_cell_caps_by_pid[proc.pid] = cap_set
+        if self._cell_identity_enforce:
+            assert runtime_root is not None
+            self._expected_cell_launch_by_pid[proc.pid] = tickets
+            self._cell_runtime_roots[proc.pid] = runtime_root
         self._audit("services_cell_spawned", pid=proc.pid, caps=caps)
 
     def _spawn_file_cell(self) -> None:
         """Launch the independent strict File Cell subprocess (WP9)."""
 
-        env = dict(os.environ)
-        env["ORIN_CELLS_SOCKET"] = str(self._cell_socket_path)
-        env["ORIN_STATE_DIR"] = str(self._state_dir)
-        env["ORIN_KEYBOX_TIER"] = self._keybox.active_tier
+        caps = frozenset({"cell.file"})
+        tickets, runtime_root = self._new_cell_launch("file", caps)
+        if self._cell_identity_enforce:
+            env = self._cell_environment(
+                kind="file",
+                caps=caps,
+                tickets=tickets,
+                runtime_root=runtime_root,
+            )
+        else:
+            env = self._legacy_cell_environment()
+            env["ORIN_CELLS_SOCKET"] = str(self._cell_socket_path)
+            env["ORIN_STATE_DIR"] = str(self._state_dir)
+            env["ORIN_KEYBOX_TIER"] = self._keybox.active_tier
         try:
             proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
                 [sys.executable, "-m", "js.orind.cells.file"],
@@ -2701,12 +3074,115 @@ class OrinDaemon:
                 start_new_session=True,
             )
         except OSError:
+            self._discard_cell_runtime_root(runtime_root)
             self._audit("file_cell_spawn_failed")
             return
         self._cell_procs.add(proc)
         self._file_proc = proc
-        self._expected_cell_caps_by_pid[proc.pid] = frozenset({"cell.file"})
+        self._expected_cell_caps_by_pid[proc.pid] = caps
+        if self._cell_identity_enforce:
+            assert runtime_root is not None
+            self._expected_cell_launch_by_pid[proc.pid] = tickets
+            self._cell_runtime_roots[proc.pid] = runtime_root
         self._audit("file_cell_spawned", pid=proc.pid)
+
+    def _new_cell_launch(
+        self,
+        kind: str,
+        caps: frozenset[str],
+    ) -> tuple[dict[str, str], Path | None]:
+        """Create harness-only per-cap tickets and a private runtime root."""
+
+        if not self._cell_identity_enforce:
+            return {}, None
+        runtime_parent = self._orin_dir / "cell-runtime"
+        try:
+            ensure_private_dir(runtime_parent)
+            runtime_root = Path(tempfile.mkdtemp(prefix=f"{kind}-", dir=runtime_parent))
+            ensure_private_dir(runtime_root)
+        except (OSError, PrivatePathError) as exc:
+            raise OrinDaemonError("C1 Cell runtime root contract failed") from exc
+        tickets = {cap: secrets.token_hex(16) for cap in sorted(caps)}
+        return tickets, runtime_root
+
+    @staticmethod
+    def _legacy_cell_environment() -> dict[str, str]:
+        """Preserve the B environment except for C1's reserved harness keys."""
+
+        environment = dict(os.environ)
+        for key in (CELL_IDENTITY_ENV, LAUNCH_TICKETS_ENV, ORIND_PID_ENV):
+            environment.pop(key, None)
+        return environment
+
+    def _cell_environment(
+        self,
+        *,
+        kind: str,
+        caps: frozenset[str],
+        tickets: dict[str, str],
+        runtime_root: Path | None,
+    ) -> dict[str, str]:
+        """Build the exact C1 Cell environment from an empty mapping."""
+
+        if runtime_root is None:  # pragma: no cover - strict callers always allocate it
+            raise OrinDaemonError("C1 Cell runtime root is missing")
+        home = runtime_root / "home"
+        temp_dir = runtime_root / "tmp"
+        for directory in (home, temp_dir):
+            directory.mkdir(mode=0o700)
+            os.chmod(directory, 0o700)
+        trusted_path = os.pathsep.join(
+            dict.fromkeys(
+                (
+                    str(Path(sys.executable).resolve().parent),
+                    "/usr/bin",
+                    "/bin",
+                    "/usr/sbin",
+                    "/sbin",
+                )
+            )
+        )
+        env = {
+            "HOME": str(home),
+            "LC_ALL": "C",
+            "ORIN_CELLS_SOCKET": str(self._cell_socket_path),
+            "ORIN_CELL_IDENTITY_ENFORCE": "1",
+            "ORIN_CELL_LAUNCH_TICKETS": json.dumps(
+                tickets, sort_keys=True, separators=(",", ":")
+            ),
+            "ORIN_ORIND_PID": str(os.getpid()),
+            "ORIN_STATE_DIR": str(self._state_dir),
+            "PATH": trusted_path,
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUTF8": "1",
+            "TMPDIR": str(temp_dir),
+        }
+        if kind == "build":
+            build_workspace = runtime_root / "build-workspace"
+            build_workspace.mkdir(mode=0o700)
+            os.chmod(build_workspace, 0o700)
+            env["ORIN_BUILD_WORKSPACE"] = str(build_workspace)
+        elif kind == "services":
+            env["ORIN_CELLS_CAPS"] = ",".join(sorted(caps))
+            env["ORIN_KEYBOX_TIER"] = self._keybox.active_tier
+        elif kind == "file":
+            env["ORIN_KEYBOX_TIER"] = self._keybox.active_tier
+        else:  # pragma: no cover - all callers use a closed internal enum
+            raise OrinDaemonError("unknown C1 Cell kind")
+        return env
+
+    @staticmethod
+    def _discard_cell_runtime_root(runtime_root: Path | None) -> None:
+        if runtime_root is None:
+            return
+        # Spawn failure happens before the Cell can create arbitrary content;
+        # remove only the exact private directories this function created.
+        for child in (runtime_root / "build-workspace", runtime_root / "tmp", runtime_root / "home"):
+            with contextlib.suppress(OSError):
+                child.rmdir()
+        with contextlib.suppress(OSError):
+            runtime_root.rmdir()
 
     def _respawn_watchdog(self) -> None:
         if self._shutting_down or not self._stage_b:
@@ -2714,6 +3190,9 @@ class OrinDaemon:
         dead = {proc for proc in self._cell_procs if proc.poll() is not None}
         for proc in dead:
             self._expected_cell_caps_by_pid.pop(proc.pid, None)
+            self._expected_cell_launch_by_pid.pop(proc.pid, None)
+            runtime_root = self._cell_runtime_roots.pop(proc.pid, None)
+            self._discard_cell_runtime_root(runtime_root)
         self._cell_procs.difference_update(dead)
         if self._build_proc is not None and self._build_proc.poll() is not None:
             self._build_proc = None
@@ -2753,6 +3232,13 @@ class OrinDaemon:
         if task is not None:
             self._cell_tasks.add(task)
         try:
+            if (
+                self._cell_identity_enforce
+                and not self._strict_socket_is_current(self._cell_socket_path)
+            ):
+                self._audit("peer_rejected", reason="Cell socket path replaced")
+                writer.close()
+                return
             peer = self._check_peer(writer)
             if peer is None:
                 writer.close()
@@ -2764,7 +3250,10 @@ class OrinDaemon:
                 )
                 writer.close()
                 return
-            session = await self._handshake(reader, writer, peer)
+            if self._cell_identity_enforce:
+                session = await self._strict_cell_handshake(reader, writer, peer)
+            else:
+                session = await self._handshake(reader, writer, peer)
             if session is None:
                 writer.close()
                 return
@@ -2828,6 +3317,12 @@ class OrinDaemon:
                 continue
             if not verify_mac(session.session_key, envelope):
                 self._audit("protocol_violation", reason="bad mac from cell")
+                return
+            if (
+                self._cell_identity_enforce
+                and envelope.get("nonce") != session.session_nonce
+            ):
+                self._audit("protocol_violation", reason="cell session nonce mismatch")
                 return
             if envelope["seq"] <= session.last_client_seq:
                 self._audit("protocol_violation", reason="cell seq regression")
