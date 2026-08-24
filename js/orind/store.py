@@ -8,15 +8,23 @@ truth. This store only holds what the ledger cannot:
 - ``receipts`` — signed decision receipts (durable audit trail);
 - ``canaries`` — honeytoken registry (populated by WP3);
 - ``responder_state`` — escalation-ladder state per session (populated by WP3).
+
+Stage B adds (ORIN_STAGE_B_SPEC.md §3; lease truth still lives ONLY in the
+JSONL ledger):
+
+- ``intents`` — verified IntentEnvelopes (owner witness registry);
+- ``handles`` — sealed OriginHandles minted by the broker;
+- ``seeds`` — pre-registered handle candidates (contacts / history / cron).
 """
 
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -49,6 +57,85 @@ CREATE TABLE IF NOT EXISTS responder_state (
     since INTEGER NOT NULL DEFAULT 0,
     evidence TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS intents (
+    intent_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL DEFAULT '',
+    owner_key_hash TEXT NOT NULL DEFAULT '',
+    profile TEXT NOT NULL DEFAULT '',
+    approval_policy TEXT NOT NULL DEFAULT '',
+    issued_at_ms INTEGER NOT NULL DEFAULT 0,
+    expires_at_ms INTEGER NOT NULL DEFAULT 0,
+    revoked INTEGER NOT NULL DEFAULT 0,
+    public_key TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_intents_task ON intents(task_id, revoked);
+CREATE TABLE IF NOT EXISTS handles (
+    handle_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT '',
+    owner_key_hash TEXT NOT NULL DEFAULT '',
+    expires_at_ms INTEGER NOT NULL DEFAULT 0,
+    created_at_ms INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_handles_owner ON handles(owner_key_hash, kind);
+CREATE TABLE IF NOT EXISTS export_passes (
+    pass_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL DEFAULT '',
+    payload_hash TEXT NOT NULL DEFAULT '',
+    destinations_json TEXT NOT NULL DEFAULT '[]',
+    witness_id TEXT NOT NULL DEFAULT '',
+    expires_at_ms INTEGER NOT NULL DEFAULT 0,
+    revoked INTEGER NOT NULL DEFAULT 0,
+    profile TEXT NOT NULL DEFAULT 'personal',
+    standing INTEGER NOT NULL DEFAULT 0,
+    claimed_at_ms INTEGER NOT NULL DEFAULT 0,
+    public_key TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_export_task ON export_passes(task_id, revoked);
+CREATE TABLE IF NOT EXISTS effect_drafts (
+    draft_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    executor_id TEXT NOT NULL,
+    canonical_effect_hash TEXT NOT NULL,
+    context_taint INTEGER NOT NULL DEFAULT 0,
+    clearance INTEGER NOT NULL DEFAULT 1,
+    created_at_ms INTEGER NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_effect_drafts_task ON effect_drafts(task_id, expires_at_ms);
+CREATE TABLE IF NOT EXISTS state_witnesses (
+    witness_id TEXT PRIMARY KEY,
+    draft_id TEXT NOT NULL,
+    executor_id TEXT NOT NULL,
+    canonical_effect_hash TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    is_current INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL,
+    FOREIGN KEY(draft_id) REFERENCES effect_drafts(draft_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_state_witness_current
+ON state_witnesses(draft_id) WHERE is_current = 1;
+CREATE INDEX IF NOT EXISTS idx_state_witness_draft
+ON state_witnesses(draft_id, expires_at_ms);
+CREATE TABLE IF NOT EXISTS effect_budget_usage (
+    task_id TEXT PRIMARY KEY,
+    invocations INTEGER NOT NULL DEFAULT 0,
+    bytes_out INTEGER NOT NULL DEFAULT 0,
+    sequence INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS seeds (
+    seed_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL DEFAULT '',
+    token TEXT NOT NULL DEFAULT '',
+    label TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    added_at_ms INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(kind, token)
+);
 """
 
 
@@ -62,10 +149,12 @@ class OrinStore:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(_SCHEMA)
         self._conn.execute(
-            "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
+            "INSERT INTO meta(key, value) VALUES ('schema_version', ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (str(SCHEMA_VERSION),),
         )
         self._ensure_canary_columns()
+        self._ensure_export_pass_columns()
         self._conn.commit()
 
     def _ensure_canary_columns(self) -> None:
@@ -74,6 +163,23 @@ class OrinStore:
             self._conn.execute("ALTER TABLE canaries ADD COLUMN token TEXT NOT NULL DEFAULT ''")
         if "read_at" not in cols:
             self._conn.execute("ALTER TABLE canaries ADD COLUMN read_at INTEGER NOT NULL DEFAULT 0")
+
+    def _ensure_export_pass_columns(self) -> None:
+        cols = {
+            str(row[1]) for row in self._conn.execute("PRAGMA table_info(export_passes)").fetchall()
+        }
+        additions = {
+            "profile": "TEXT NOT NULL DEFAULT 'personal'",
+            "standing": "INTEGER NOT NULL DEFAULT 0",
+            "claimed_at_ms": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for name, declaration in additions.items():
+            if name not in cols:
+                self._conn.execute(f"ALTER TABLE export_passes ADD COLUMN {name} {declaration}")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_export_exact ON export_passes"
+            " (task_id, payload_hash, destinations_json, witness_id, revoked, expires_at_ms)"
+        )
 
     def close(self) -> None:
         self._conn.close()
@@ -144,6 +250,19 @@ class OrinStore:
         ).fetchall()
         return [(str(row[0]), str(row[1]), int(row[2]), int(row[3])) for row in rows]
 
+    def all_canaries(self) -> list[tuple[str, str, str, int, int]]:
+        """Return canary material only to the in-process authority scanner.
+
+        Callers must never project the plaintext token into an ack or audit
+        record; the store deliberately has no serialization helper for this
+        privileged view.
+        """
+
+        rows = self._conn.execute(
+            "SELECT session_id, token, token_hash, kind, read_at FROM canaries"
+        ).fetchall()
+        return [(str(row[0]), str(row[1]), str(row[2]), int(row[3]), int(row[4])) for row in rows]
+
     def mark_canary_read(self, *, token_hash: str, read_at: int) -> None:
         self._conn.execute(
             "UPDATE canaries SET read_at = ? WHERE token_hash = ? AND read_at = 0",
@@ -178,11 +297,575 @@ class OrinStore:
         )
         self._conn.commit()
 
+    def record_export_pass(
+        self,
+        *,
+        pass_id: str,
+        payload: dict[str, Any],
+        profile: str = "",
+        standing: bool | None = None,
+        public_key: str = "",
+    ) -> str:
+        """Persist a verified pass without allowing replay resurrection.
+
+        The verification key is a registry column, never part of the signed
+        payload.  ``INSERT OR IGNORE`` preserves a claimed/revoked row when
+        the same pass is submitted again.
+        """
+
+        from js.orin.draft import export_pass_from_dict
+
+        clean = dict(payload)
+        legacy_key = str(clean.pop("_witness_public_key", ""))
+        parsed = export_pass_from_dict(clean)
+        if parsed.pass_id != pass_id:
+            raise ValueError("export pass id does not match payload")
+        destinations = _canonical_destinations(parsed.destination_handles)
+        effective_profile = profile or ("work" if standing else "personal")
+        if effective_profile not in {"personal", "work"}:
+            raise ValueError("export pass profile must be personal or work")
+        effective_standing = effective_profile == "work" if standing is None else standing
+        if effective_standing != (effective_profile == "work"):
+            raise ValueError("only Work export passes may be standing")
+        payload_json = _stable_json(clean)
+        key = public_key or legacy_key
+        cursor = self._conn.execute(
+            (
+                "INSERT OR IGNORE INTO export_passes"
+                " (pass_id, task_id, payload_hash, destinations_json, witness_id,"
+                "  expires_at_ms, revoked, profile, standing, claimed_at_ms,"
+                "  public_key, payload_json)"
+                " VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?)"
+            ),
+            (
+                pass_id,
+                parsed.task_id,
+                parsed.payload_hash,
+                _stable_json(destinations),
+                parsed.witness_id,
+                parsed.expires_at_ms,
+                effective_profile,
+                int(effective_standing),
+                key,
+                payload_json,
+            ),
+        )
+        self._conn.commit()
+        if cursor.rowcount > 0:
+            return "inserted"
+        row = self._conn.execute(
+            "SELECT payload_json, profile, standing, public_key FROM export_passes"
+            " WHERE pass_id = ?",
+            (pass_id,),
+        ).fetchone()
+        if row is not None and (str(row[0]), str(row[1]), int(row[2]), str(row[3])) == (
+            payload_json,
+            effective_profile,
+            int(effective_standing),
+            key,
+        ):
+            return "idempotent"
+        return "conflict"
+
+    def active_export_passes(self, task_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            (
+                "SELECT payload_json FROM export_passes"
+                " WHERE task_id = ? AND revoked = 0 AND expires_at_ms > ?"
+            ),
+            (task_id, int(time.time() * 1000)),
+        ).fetchall()
+        import json as _json
+
+        return [_json.loads(str(row[0])) for row in rows]
+
+    def active_exact_export_passes(
+        self,
+        task_id: str,
+        payload_hash: str,
+        destinations: tuple[str, ...] | list[str],
+        witness_id: str,
+        *,
+        now_ms: int,
+    ) -> list[dict[str, Any]]:
+        canonical_destinations = _canonical_destinations(destinations)
+        rows = self._conn.execute(
+            (
+                "SELECT payload_json FROM export_passes"
+                " WHERE task_id = ? AND payload_hash = ? AND destinations_json = ?"
+                " AND witness_id = ? AND revoked = 0 AND expires_at_ms > ?"
+                " ORDER BY standing DESC, pass_id"
+            ),
+            (
+                task_id,
+                payload_hash,
+                _stable_json(canonical_destinations),
+                witness_id,
+                now_ms,
+            ),
+        ).fetchall()
+        import json
+
+        return [cast("dict[str, Any]", json.loads(str(row[0]))) for row in rows]
+
+    def claim_personal_export_pass(
+        self,
+        pass_id: str,
+        task_id: str,
+        payload_hash: str,
+        destinations: tuple[str, ...] | list[str],
+        witness_id: str,
+        *,
+        now_ms: int,
+    ) -> bool:
+        """Atomically claim one Personal pass for its exact binding."""
+
+        canonical_destinations = _canonical_destinations(destinations)
+        with self._conn:
+            cursor = self._conn.execute(
+                (
+                    "UPDATE export_passes SET revoked = 1, claimed_at_ms = ?"
+                    " WHERE pass_id = ? AND task_id = ? AND payload_hash = ?"
+                    " AND destinations_json = ? AND witness_id = ?"
+                    " AND profile = 'personal' AND standing = 0 AND revoked = 0"
+                    " AND expires_at_ms > ?"
+                ),
+                (
+                    now_ms,
+                    pass_id,
+                    task_id,
+                    payload_hash,
+                    _stable_json(canonical_destinations),
+                    witness_id,
+                    now_ms,
+                ),
+            )
+        return cursor.rowcount == 1
+
+    def revoke_export_pass(self, pass_id: str) -> bool:
+        cursor = self._conn.execute(
+            "UPDATE export_passes SET revoked = 1 WHERE pass_id = ? AND revoked = 0",
+            (pass_id,),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    # -- stage B: immutable drafts / current preflight witness ----------------
+    def record_effect_draft(self, record: dict[str, Any]) -> str:
+        """Insert one immutable draft record.
+
+        Returns ``inserted`` for the first write, ``idempotent`` for an exact
+        replay, and ``conflict`` when the id is reused with different bytes.
+        The latter never overwrites the original authority record.
+        """
+
+        normalized = _normalize_effect_draft_record(record)
+        payload_json = _stable_json(normalized)
+        cursor = self._conn.execute(
+            (
+                "INSERT OR IGNORE INTO effect_drafts"
+                " (draft_id, task_id, executor_id, canonical_effect_hash, context_taint,"
+                "  clearance, created_at_ms, expires_at_ms, payload_json)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ),
+            (
+                normalized["draft_id"],
+                normalized["task_id"],
+                normalized["executor_id"],
+                normalized["canonical_effect_hash"],
+                normalized["context_taint"],
+                normalized["clearance"],
+                normalized["created_at_ms"],
+                normalized["expires_at_ms"],
+                payload_json,
+            ),
+        )
+        self._conn.commit()
+        if cursor.rowcount > 0:
+            return "inserted"
+        row = self._conn.execute(
+            "SELECT payload_json FROM effect_drafts WHERE draft_id = ?",
+            (normalized["draft_id"],),
+        ).fetchone()
+        if row is None:
+            return "conflict"
+        import json
+
+        existing = cast("dict[str, Any]", json.loads(str(row[0])))
+        if _draft_security_identity(existing) == _draft_security_identity(normalized):
+            return "idempotent"
+        return "conflict"
+
+    def get_effect_draft(
+        self, draft_id: str, *, now_ms: int | None = None
+    ) -> dict[str, Any] | None:
+        sql = "SELECT payload_json FROM effect_drafts WHERE draft_id = ?"
+        params: tuple[Any, ...] = (draft_id,)
+        if now_ms is not None:
+            sql += " AND expires_at_ms > ?"
+            params = (draft_id, now_ms)
+        row = self._conn.execute(sql, params).fetchone()
+        if row is None:
+            return None
+        import json
+
+        return cast("dict[str, Any]", json.loads(str(row[0])))
+
+    def record_state_witness(self, witness: Any) -> str:
+        """Store one strictly parsed witness and make a new one current.
+
+        Witness ids are immutable.  Replaying an older id never moves the
+        current pointer backwards.
+        """
+
+        from js.orin.draft import StateWitness, witness_from_dict
+
+        parsed = witness if isinstance(witness, StateWitness) else witness_from_dict(witness)
+        if parsed.expires_at_ms <= parsed.created_at_ms:
+            raise ValueError("state witness expiry must follow creation")
+        payload_json = _stable_json(parsed.to_dict())
+        with self._conn:
+            existing = self._conn.execute(
+                "SELECT payload_json, is_current FROM state_witnesses WHERE witness_id = ?",
+                (parsed.witness_id,),
+            ).fetchone()
+            if existing is not None:
+                if str(existing[0]) != payload_json:
+                    return "conflict"
+                return "idempotent" if int(existing[1]) == 1 else "stale"
+            draft_row = self._conn.execute(
+                "SELECT executor_id, canonical_effect_hash FROM effect_drafts WHERE draft_id = ?",
+                (parsed.draft_id,),
+            ).fetchone()
+            if draft_row is None:
+                return "conflict"
+            if (
+                str(draft_row[0]) != parsed.executor_id
+                or str(draft_row[1]) != parsed.canonical_effect_hash
+            ):
+                return "conflict"
+            current = self._conn.execute(
+                "SELECT created_at_ms FROM state_witnesses WHERE draft_id = ? AND is_current = 1",
+                (parsed.draft_id,),
+            ).fetchone()
+            if current is not None and parsed.created_at_ms <= int(current[0]):
+                return "stale"
+            self._conn.execute(
+                "UPDATE state_witnesses SET is_current = 0 WHERE draft_id = ? AND is_current = 1",
+                (parsed.draft_id,),
+            )
+            self._conn.execute(
+                (
+                    "INSERT INTO state_witnesses"
+                    " (witness_id, draft_id, executor_id, canonical_effect_hash,"
+                    "  created_at_ms, expires_at_ms, is_current, payload_json)"
+                    " VALUES (?, ?, ?, ?, ?, ?, 1, ?)"
+                ),
+                (
+                    parsed.witness_id,
+                    parsed.draft_id,
+                    parsed.executor_id,
+                    parsed.canonical_effect_hash,
+                    parsed.created_at_ms,
+                    parsed.expires_at_ms,
+                    payload_json,
+                ),
+            )
+        return "inserted"
+
+    def current_state_witness(
+        self, draft_id: str, *, now_ms: int | None = None
+    ) -> dict[str, Any] | None:
+        sql = "SELECT payload_json FROM state_witnesses WHERE draft_id = ? AND is_current = 1"
+        params: tuple[Any, ...] = (draft_id,)
+        if now_ms is not None:
+            sql += " AND expires_at_ms > ?"
+            params = (draft_id, now_ms)
+        row = self._conn.execute(sql, params).fetchone()
+        return _json_object_or_none(row)
+
+    def state_witness_by_id(
+        self, witness_id: str, *, now_ms: int | None = None
+    ) -> dict[str, Any] | None:
+        sql = "SELECT payload_json FROM state_witnesses WHERE witness_id = ?"
+        params: tuple[Any, ...] = (witness_id,)
+        if now_ms is not None:
+            sql += " AND expires_at_ms > ?"
+            params = (witness_id, now_ms)
+        row = self._conn.execute(sql, params).fetchone()
+        return _json_object_or_none(row)
+
+    def reserve_effect_budget(
+        self,
+        task_id: str,
+        *,
+        max_invocations: int,
+        max_bytes_out: int,
+        bytes_out: int,
+    ) -> int | None:
+        """Atomically reserve one WP8 invocation and return its sequence."""
+
+        values = (max_invocations, max_bytes_out, bytes_out)
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
+            raise ValueError("budget values must be integers")
+        if not task_id or any(value < 0 for value in values):
+            raise ValueError("budget values and task_id must be non-negative")
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO effect_budget_usage(task_id) VALUES (?)",
+                (task_id,),
+            )
+            row = self._conn.execute(
+                "SELECT invocations, bytes_out, sequence FROM effect_budget_usage"
+                " WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            assert row is not None
+            invocations, used_bytes, sequence = (int(row[0]), int(row[1]), int(row[2]))
+            if invocations + 1 > max_invocations or used_bytes + bytes_out > max_bytes_out:
+                return None
+            next_sequence = sequence + 1
+            self._conn.execute(
+                "UPDATE effect_budget_usage SET invocations = ?, bytes_out = ?, sequence = ?"
+                " WHERE task_id = ?",
+                (invocations + 1, used_bytes + bytes_out, next_sequence, task_id),
+            )
+        return next_sequence
+
+    # -- stage B: intents / handles / seeds -----------------------------------
+    def record_intent(
+        self,
+        *,
+        intent_id: str,
+        payload: dict[str, Any],
+        public_key: str = "",
+    ) -> None:
+        self._conn.execute(
+            (
+                "INSERT OR REPLACE INTO intents"
+                " (intent_id, task_id, owner_key_hash, profile, approval_policy,"
+                "  issued_at_ms, expires_at_ms, revoked, public_key, payload_json)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)"
+            ),
+            (
+                intent_id,
+                str(payload.get("task_id", "")),
+                str(payload.get("subject", {}).get("owner_key_hash", "")),
+                str(payload.get("subject", {}).get("profile", "")),
+                str(payload.get("approval_policy", "")),
+                int(payload.get("issued_at_ms", 0)),
+                int(payload.get("expires_at_ms", 0)),
+                public_key,
+                _stable_json(payload),
+            ),
+        )
+        self._conn.commit()
+
+    def active_intents_for_task(self, task_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            (
+                "SELECT payload_json FROM intents"
+                " WHERE task_id = ? AND revoked = 0 ORDER BY issued_at_ms DESC"
+            ),
+            (task_id,),
+        ).fetchall()
+        import json
+
+        return [cast("dict[str, Any]", json.loads(str(row[0]))) for row in rows]
+
+    def revoke_intent(self, intent_id: str) -> bool:
+        cursor = self._conn.execute(
+            "UPDATE intents SET revoked = 1 WHERE intent_id = ?", (intent_id,)
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def frozen_sessions(self) -> tuple[str, ...]:
+        """Sessions currently at L3+ (candidates for admin unfreeze)."""
+
+        rows = self._conn.execute(
+            "SELECT session_id FROM responder_state WHERE level >= ?",
+            (3,),
+        ).fetchall()
+        return tuple(str(row[0]) for row in rows)
+
+    def witness_public_keys(self) -> tuple[str, ...]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT public_key FROM intents WHERE public_key != ''"
+        ).fetchall()
+        return tuple(str(row[0]) for row in rows)
+
+    def record_handle(self, *, handle_id: str, kind: str, payload: dict[str, Any]) -> None:
+        self._conn.execute(
+            (
+                "INSERT OR REPLACE INTO handles"
+                " (handle_id, kind, owner_key_hash, expires_at_ms, created_at_ms, payload_json)"
+                " VALUES (?, ?, ?, ?, ?, ?)"
+            ),
+            (
+                handle_id,
+                kind,
+                str(payload.get("owner_key_hash", "")),
+                int(payload.get("expires_at_ms", 0)),
+                int(payload.get("created_at_ms", 0)),
+                _stable_json(payload),
+            ),
+        )
+        self._conn.commit()
+
+    def get_handle(self, handle_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT payload_json FROM handles WHERE handle_id = ?",
+            (handle_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        import json
+
+        return cast("dict[str, Any]", json.loads(str(row[0])))
+
+    def add_seed(self, *, kind: str, token: str, label: str, source: str, added_at_ms: int) -> bool:
+        """Insert a seed candidate; returns False when it already existed."""
+
+        cursor = self._conn.execute(
+            (
+                "INSERT OR IGNORE INTO seeds"
+                " (kind, token, label, source, added_at_ms) VALUES (?, ?, ?, ?, ?)"
+            ),
+            (kind, token, label, source, added_at_ms),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def seed_candidates(self, kind: str | None = None) -> list[dict[str, Any]]:
+        if kind is None:
+            rows = self._conn.execute(
+                "SELECT kind, token, label, source FROM seeds ORDER BY added_at_ms DESC LIMIT 256"
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT kind, token, label, source FROM seeds WHERE kind = ?"
+                " ORDER BY added_at_ms DESC LIMIT 256",
+                (kind,),
+            ).fetchall()
+        return [
+            {"kind": str(r[0]), "token": str(r[1]), "label": str(r[2]), "source": str(r[3])}
+            for r in rows
+        ]
+
 
 def _stable_json(value: Any) -> str:
     import json
 
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _canonical_destinations(values: Any) -> tuple[str, ...]:
+    if not isinstance(values, (tuple, list)) or not 1 <= len(values) <= 32:
+        raise ValueError("destination handles must contain 1..32 items")
+    items = tuple(values)
+    if any(not isinstance(item, str) or not item or len(item) > 512 for item in items):
+        raise ValueError("destination handles must be bounded strings")
+    if len(set(items)) != len(items):
+        raise ValueError("duplicate destination handles are forbidden")
+    return tuple(sorted(items))
+
+
+def _normalize_effect_draft_record(record: dict[str, Any]) -> dict[str, Any]:
+    from js.orin.draft import draft_from_dict
+
+    if not isinstance(record, dict):
+        raise ValueError("effect draft record must be an object")
+    allowed = {
+        "draft",
+        "draft_id",
+        "task_id",
+        "effect_type",
+        "executor_id",
+        "canonical_effect_hash",
+        "context_taint",
+        "taint",
+        "arg_taint",
+        "clearance",
+        "created_at_ms",
+        "expires_at_ms",
+    }
+    unknown = set(record) - allowed
+    if unknown:
+        raise ValueError(f"unknown effect draft record fields {sorted(unknown)!r}")
+    raw_draft = record.get("draft")
+    if not isinstance(raw_draft, dict):
+        raise ValueError("effect draft record requires a draft object")
+    draft = draft_from_dict(raw_draft)
+    draft_id = str(record.get("draft_id") or draft.draft_id)
+    task_id = str(record.get("task_id") or draft.task_id)
+    if draft_id != draft.draft_id or task_id != draft.task_id:
+        raise ValueError("effect draft record identity mismatch")
+    effect_type = str(record.get("effect_type") or draft.effect_type)
+    if effect_type != draft.effect_type:
+        raise ValueError("effect draft type mismatch")
+    executor_id = record.get("executor_id")
+    if not isinstance(executor_id, str) or not executor_id or len(executor_id) > 256:
+        raise ValueError("effect draft executor_id must be a bounded string")
+    digest = record.get("canonical_effect_hash")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 71
+        or not digest.startswith("sha256:")
+        or any(char not in "0123456789abcdef" for char in digest[7:])
+    ):
+        raise ValueError("effect draft canonical hash must be sha256:<64 hex>")
+    context_taint = record.get("context_taint", record.get("taint", 0))
+    arg_taint = record.get("arg_taint", 0)
+    clearance = record.get("clearance", 1)
+    created_at_ms = record.get("created_at_ms")
+    expires_at_ms = record.get("expires_at_ms")
+    for name, value in {
+        "context_taint": context_taint,
+        "arg_taint": arg_taint,
+        "clearance": clearance,
+        "created_at_ms": created_at_ms,
+        "expires_at_ms": expires_at_ms,
+    }.items():
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ValueError(f"effect draft {name} must be a non-negative integer")
+    assert isinstance(context_taint, int)
+    assert isinstance(arg_taint, int)
+    assert isinstance(clearance, int)
+    assert isinstance(created_at_ms, int)
+    assert isinstance(expires_at_ms, int)
+    if int(clearance) > 2:
+        raise ValueError("effect draft clearance exceeds SECRET")
+    if int(created_at_ms) <= 0 or int(expires_at_ms) <= int(created_at_ms):
+        raise ValueError("effect draft expiry must follow positive creation time")
+    return {
+        "draft": draft.to_dict(),
+        "draft_id": draft_id,
+        "task_id": task_id,
+        "effect_type": effect_type,
+        "executor_id": executor_id,
+        "canonical_effect_hash": digest,
+        "context_taint": int(context_taint),
+        "arg_taint": int(arg_taint),
+        "clearance": int(clearance),
+        "created_at_ms": int(created_at_ms),
+        "expires_at_ms": int(expires_at_ms),
+    }
+
+
+def _json_object_or_none(row: Any) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    import json
+
+    return cast("dict[str, Any]", json.loads(str(row[0])))
+
+
+def _draft_security_identity(record: dict[str, Any]) -> str:
+    content = dict(record)
+    content.pop("created_at_ms", None)
+    content.pop("expires_at_ms", None)
+    return _stable_json(content)
 
 
 __all__ = ["OrinStore", "SCHEMA_VERSION"]

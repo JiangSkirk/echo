@@ -46,6 +46,7 @@ from js.orin.protocol import (
     CLIENT_CAPS,
     HEARTBEAT_INTERVAL_S,
     MAX_FRAME_BYTES,
+    STAGE_B_CLIENT_CAPS,
     EchoContextPayload,
     ProtocolError,
     encode_frame,
@@ -83,6 +84,14 @@ class OrinExportGateRequired(LeaseDenied):
     """SECRET-context egress needs the export gate (Stage B mechanism)."""
 
 
+class OrinUnknownIntent(LeaseDenied):
+    """No trusted active IntentEnvelope covers the task (Stage B)."""
+
+
+class OrinUnknownHandle(LeaseDenied):
+    """Referenced OriginHandle is unknown, unsealed, or expired (Stage B)."""
+
+
 CODE_TO_EXC: dict[str, type[LeaseDenied]] = {
     "mac_invalid": LeaseMacInvalid,
     "expired": LeaseDenied,
@@ -99,6 +108,9 @@ CODE_TO_EXC: dict[str, type[LeaseDenied]] = {
     "readonly_mode": LeaseDenied,
     "frozen": LeaseDenied,
     "unsupported": LeaseDenied,
+    "unknown_intent": OrinUnknownIntent,
+    "unknown_handle": OrinUnknownHandle,
+    "stale_state": LeaseDenied,
 }
 
 
@@ -151,10 +163,12 @@ class _OrinConnection:
         socket_path: Path,
         state_dir: Path,
         on_freeze: Callable[[dict[str, Any]], None] | None = None,
+        stage_b: bool = False,
     ) -> None:
         self._socket_path = socket_path
         self._state_dir = state_dir
         self._on_freeze = on_freeze
+        self._stage_b = stage_b
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._session_key: bytes | None = None
@@ -175,12 +189,13 @@ class _OrinConnection:
         except (TimeoutError, OSError) as exc:
             raise OrinUnavailable(f"cannot connect to orind at {self._socket_path}") from exc
         client_nonce = secrets.token_hex(16)
+        caps = list(CLIENT_CAPS) + (list(STAGE_B_CLIENT_CAPS) if self._stage_b else [])
         hello = make_envelope(
             "hello",
             seq=1,
             nonce=client_nonce,
             session_key=None,
-            caps=list(CLIENT_CAPS),
+            caps=caps,
             pid=os.getpid(),
         )
         assert self._writer is not None
@@ -358,12 +373,14 @@ class OrinLeaseClientAdapter:
         fail_mode: str = "closed",
         readonly_tool_classifier: Callable[[str], bool] | None = None,
         on_freeze: Callable[[dict[str, Any]], None] | None = None,
+        stage_b: bool = False,
     ) -> None:
         self._socket_path = socket_path
         self._state_dir = state_dir
         self._fail_mode = fail_mode
         self._readonly_tool_classifier = readonly_tool_classifier
         self._on_freeze = on_freeze
+        self._stage_b = stage_b
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ready = threading.Event()
@@ -427,6 +444,7 @@ class OrinLeaseClientAdapter:
             socket_path=self._socket_path,
             state_dir=self._state_dir,
             on_freeze=self._on_freeze,
+            stage_b=self._stage_b,
         )
         await conn.connect()
         self._conn = conn
@@ -498,10 +516,11 @@ class OrinLeaseClientAdapter:
         if profile is not None and signature:
             self._context_signatures[lease.lease_id] = signature
         if any(kwargs.get(key) is not None for key in ("context_taint", "arg_taint", "clearance")):
+            raw_clearance = kwargs.get("clearance")
             self._lease_taints[lease.lease_id] = (
                 int(kwargs.get("context_taint") or 0),
                 int(kwargs.get("arg_taint") or 0),
-                int(kwargs.get("clearance") or 1),
+                1 if raw_clearance is None else int(raw_clearance),
             )
         return lease
 
@@ -736,6 +755,177 @@ class OrinLeaseClientAdapter:
             return self._ensure_local_authority().is_revoked(lease_id)
         response = self._call(lambda: self._request("revoke", op="is_revoked", lease_id=lease_id))
         return bool(response.get("is_revoked", False))
+
+    # -- stage B surface (WP5): owner intents and drafts ---------------------------
+    def _require_stage_b(self) -> None:
+        if not self._stage_b:
+            raise OrinUnavailable("stage B is disabled on this orin client")
+
+    def register_intent(self, intent_data: dict[str, Any]) -> dict[str, Any]:
+        """Submit a signed IntentEnvelope for verification + registration."""
+
+        self._require_stage_b()
+        return self._call(lambda: self._request("intent", op="register", intent=intent_data))
+
+    def active_intent(self, task_id: str) -> dict[str, Any] | None:
+        """Return the currently trusted intent for a task, or ``None``."""
+
+        self._require_stage_b()
+        try:
+            return self._call(lambda: self._request("intent", op="active", task_id=task_id))
+        except OrinUnknownIntent:
+            return None
+
+    def admin_unfreeze(self, intent_data: dict[str, Any], *, session_id: str) -> dict[str, Any]:
+        """R3 de-escalation backed by a dual-control admin intent."""
+
+        self._require_stage_b()
+        return self._call(
+            lambda: self._request(
+                "intent", op="admin_unfreeze", intent=intent_data, session_id=session_id
+            )
+        )
+
+    def submit_draft(
+        self,
+        draft_data: dict[str, Any],
+        *,
+        context_taint: int = 0,
+        arg_taint: int = 0,
+        clearance: int = 1,
+    ) -> dict[str, Any]:
+        """Ask the Gate Kernel to assess an EffectDraft; returns verdict class."""
+
+        self._require_stage_b()
+        return self._call(
+            lambda: self._request(
+                "draft",
+                draft=draft_data,
+                context_taint=context_taint,
+                arg_taint=arg_taint,
+                clearance=clearance,
+            )
+        )
+
+    def preflight_draft(
+        self,
+        draft_id: str,
+        executor_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Request a read-only Cell preflight for a registered draft.
+
+        ``executor_id`` is advisory compatibility data only.  The daemon
+        always derives the authoritative Cell from its sealed manifest and
+        never accepts a client-supplied package.
+        """
+
+        self._require_stage_b()
+        if not draft_id.startswith("draft:") or len(draft_id) > 256:
+            raise ValueError("draft_id must be a bounded 'draft:' id")
+        fields: dict[str, Any] = {"draft_id": draft_id}
+        if executor_id is not None:
+            fields["executor_id"] = executor_id
+        return self._call(lambda: self._request("preflight", **fields))
+
+    def consume_draft(self, draft_id: str) -> dict[str, Any]:
+        """Commit a registered draft through its unique ``draft_id`` path.
+
+        No effect bytes, handles, clearance, or capability can be supplied
+        here; the daemon reloads every authoritative field it recorded when
+        the draft was submitted.
+        """
+
+        self._require_stage_b()
+        if not draft_id.startswith("draft:") or len(draft_id) > 256:
+            raise ValueError("draft_id must be a bounded 'draft:' id")
+        response = self._call(
+            lambda: self._request(
+                "consume",
+                mode="cell",
+                payload={"draft_id": draft_id},
+            )
+        )
+        return dict(response.get("cell") or {})
+
+    def seed_handles(self, kind: str | None = None) -> list[dict[str, Any]]:
+        """List pre-registered candidate objects Echo may select (M§3.2-2)."""
+
+        self._require_stage_b()
+        response = self._call(lambda: self._request("handle", op="seed_list", kind=kind))
+        return list(response.get("candidates") or [])
+
+    def run_in_build_cell(
+        self,
+        payload: dict[str, Any],
+        *,
+        context_taint: int | None = None,
+        arg_taint: int = 0,
+        clearance: int = 1,
+    ) -> dict[str, Any]:
+        """Authorize + proxy one build effect into the resident Build Cell.
+
+        The policy table runs orind-side; no license or permit ever lands in
+        this process — only the finished (untrusted) tool result comes back.
+        Taint defaults to the current thread's snapshot; callers outside a
+        turn-loop thread pass it explicitly. Raises :class:`LeaseDenied`
+        subclasses when the effect class is denied or the cell is
+        unavailable (fail closed per class).
+        """
+
+        return self.run_in_cell(
+            "cell.build",
+            payload,
+            context_taint=context_taint,
+            arg_taint=arg_taint,
+            clearance=clearance,
+        )
+
+    def run_in_cell(
+        self,
+        cap: str,
+        payload: dict[str, Any],
+        *,
+        context_taint: int | None = None,
+        arg_taint: int = 0,
+        clearance: int = 1,
+    ) -> dict[str, Any]:
+        """Authorize + proxy one effect into a scheduled cell (WP7/WP8).
+
+        The policy table runs orind-side; no license or permit ever lands in
+        this process — only the finished (untrusted) tool result comes back.
+        Taint defaults to the current thread's snapshot; callers outside a
+        turn-loop thread pass it explicitly. Raises :class:`LeaseDenied`
+        subclasses when the effect class is denied or the cell is
+        unavailable (fail closed per class).
+        """
+
+        self._require_stage_b()
+        if context_taint is None:
+            snapshot = self._taint_fields(None)
+            resolved_context = int(snapshot.get("context_taint", 0))
+            arg_taint = int(snapshot.get("arg_taint", 0))
+        else:
+            resolved_context = int(context_taint)
+        wire_payload = {"cell": cap, **payload}
+        response = self._call(
+            lambda: self._request(
+                "consume",
+                mode="cell",
+                payload=wire_payload,
+                context_taint=resolved_context,
+                arg_taint=int(arg_taint),
+                clearance=int(clearance),
+            )
+        )
+        return dict(response.get("cell") or {})
+
+    def grant_export(self, pass_data: dict[str, Any], *, task_id: str) -> dict[str, Any]:
+        """Submit a signed ExportPass for registration (two-phase egress)."""
+
+        self._require_stage_b()
+        return self._call(
+            lambda: self._request("intent", op="grant_export", grant=pass_data, task_id=task_id)
+        )
 
     # -- introspection --------------------------------------------------------------
     def healthy(self) -> bool:

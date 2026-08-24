@@ -278,6 +278,41 @@ class GateKeeper:
         return str(getattr(signed, "signature", ""))
 
     # -- consume ---------------------------------------------------------------
+    def authorize_cell(
+        self,
+        payload: dict[str, Any],
+        *,
+        context_taint: int = 0,
+        arg_taint: int = 0,
+        clearance: int = 1,
+    ) -> dict[str, Any]:
+        """Deterministic policy gate for a cell-dispatched effect (WP7).
+
+        No lease consumption happens here: the execution-context verifier
+        already spent the lease before the tool handler ran. This is the
+        policy table plus a signed decision receipt — nothing else.
+        """
+
+        tool_name = str(payload.get("tool", "") or payload.get("effect_type") or "")
+        decision = self._evaluate_policy(
+            tool_name=tool_name,
+            context_taint=context_taint,
+            arg_taint_bits=arg_taint,
+            args_overlap_dirty=bool(arg_taint),
+            clearance=clearance,
+        )
+        policy_error = self._policy_error(decision)
+        if policy_error is not None:
+            self._sign_receipt(kind="cell", verdict=decision.verdict, lease_id="")
+            return policy_error
+        receipt = self._sign_receipt(kind="cell", verdict="allow", lease_id="")
+        return {
+            "ok": True,
+            "verdict": "allow",
+            "receipt_id": receipt.receipt_id,
+            "policy_version": self.policy_version,
+        }
+
     def handle_consume(
         self,
         mode: str,
@@ -545,6 +580,34 @@ class GateKeeper:
             "code": "policy_deny",
             "reason": REFUSAL_TEXT,
             "verdict": "deny",
+        }
+
+    def authorize_egress_text(self, text: str, *, surface: str = "connector") -> dict[str, Any]:
+        """Final authoritative honeytoken check before an external side effect.
+
+        EffectDraft intentionally carries no caller-controlled session id.
+        The vault therefore matches across its protected registry and uses the
+        owning session from the matched row for responder escalation.
+        """
+
+        hit = self.canaries.record_egress_any(text=text, surface=surface)
+        if hit is None:
+            return {"ok": True, "verdict": "allow"}
+        now = self._now()
+        level = LEVEL_FREEZE if hit.dual_evidence else LEVEL_NARROW
+        self.responder.escalate(
+            session_id=hit.session_id,
+            level=level,
+            now_ms=now,
+            evidence="dual" if hit.dual_evidence else "single",
+        )
+        if self.responder.lock_l0:
+            return {"ok": True, "verdict": "allow"}
+        return {
+            "ok": False,
+            "code": "frozen" if hit.dual_evidence else "policy_deny",
+            "reason": FREEZE_TEXT if hit.dual_evidence else REFUSAL_TEXT,
+            "verdict": "freeze" if hit.dual_evidence else "deny",
         }
 
     def freeze_all_for_session(self, session_id: str) -> tuple[str, ...]:

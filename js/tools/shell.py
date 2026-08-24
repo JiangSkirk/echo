@@ -467,13 +467,25 @@ class ShellTool:
         if path_decision.decision == SecurityDecisionType.BLOCK:
             return ToolResult(success=False, error=path_decision.reason)
 
+        effective_timeout = min(
+            timeout or self.limits.shell_timeout, self.limits.shell_timeout
+        )
+        cell_backend = getattr(self, "cell_backend", None)
+        if cell_backend is not None:
+            return await self._execute_via_build_cell(
+                command=command,
+                cwd=str(resolved_cwd),
+                timeout_s=int(effective_timeout),
+                backend=cell_backend,
+            )
+
         result = await self.executor.execute(
             command,
             cwd=str(resolved_cwd),
             # Callers may shorten the timeout but never extend it past the
             # configured limit (an unbounded timeout lets a few long-lived
             # processes exhaust the concurrency slots — red team finding 8).
-            timeout=min(timeout or self.limits.shell_timeout, self.limits.shell_timeout),
+            timeout=effective_timeout,
             network_allowed=False,
             fs_restricted=True,
         )
@@ -493,6 +505,57 @@ class ShellTool:
                 "returncode": result.returncode,
                 "duration_ms": result.duration_ms,
                 "killed": result.killed,
+            },
+        )
+
+    async def _execute_via_build_cell(
+        self,
+        *,
+        command: str,
+        cwd: str,
+        timeout_s: int,
+        backend: Any,
+    ) -> ToolResult:
+        """WP7: run inside the orind-scheduled Build Cell subprocess.
+
+        The local guard/allowlist/canary checks above already passed; only
+        the process boundary moves. Failure here pauses exactly this effect
+        class — other tools are untouched (no bypass, no white screen).
+        """
+
+        from js.echo.capability import LeaseDenied
+
+        try:
+            raw = await backend(
+                {
+                    "kind": "shell",
+                    "command": command,
+                    "cwd": cwd,
+                    "timeout_ms": int(timeout_s * 1000),
+                    "tool": "shell",
+                }
+            )
+        except LeaseDenied as exc:
+            return ToolResult(
+                success=False,
+                error=(
+                    "Safety degradation: Build Cell unavailable — "
+                    f"build effects are paused ({type(exc).__name__}). "
+                    "Other tools are unaffected."
+                ),
+            )
+        success = raw.get("status") == "COMMITTED"
+        output = str(raw.get("output") or "")
+        returncode = int(raw.get("returncode", -1))
+        return ToolResult(
+            success=success,
+            output=output,
+            error="" if success else output[-2000:],
+            metadata={
+                "returncode": returncode,
+                "duration_ms": raw.get("duration_ms"),
+                "killed": bool(raw.get("killed")),
+                "cell": "build",
             },
         )
 

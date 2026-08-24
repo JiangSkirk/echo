@@ -216,7 +216,11 @@ class PinnedIPBackend(httpcore.AsyncNetworkBackend):
         backend: httpcore.AsyncNetworkBackend | None = None,
     ) -> None:
         self.pinned_ip = pinned_ip
-        self._backend = backend or httpcore.AsyncNetworkBackend()
+        # AsyncNetworkBackend is the abstract interface and raises
+        # NotImplementedError on real connects.  AnyIOBackend is httpcore's
+        # concrete asyncio/trio implementation; wrapping it preserves the
+        # validated-IP substitution below while keeping TLS SNI/Host intact.
+        self._backend = backend or httpcore.AnyIOBackend()
 
     async def connect_tcp(
         self,

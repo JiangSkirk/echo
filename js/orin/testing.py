@@ -38,6 +38,14 @@ class TestOrind:
         canary_enabled: bool = True,
         responder_lock_l0: bool = False,
         patrol_record_only: bool = False,
+        stage_b: bool = False,
+        cell_build: bool = False,
+        cell_net: bool = False,
+        cell_secret: bool = False,
+        cell_file: bool = False,
+        commit_membrane: bool = False,
+        membrane_fault_hook: Any = None,
+        witness_public_keys: tuple[str, ...] = (),
         now_fn: Any = None,
     ) -> None:
         self._state_dir = state_dir
@@ -52,6 +60,14 @@ class TestOrind:
         self._canary_enabled = canary_enabled
         self._responder_lock_l0 = responder_lock_l0
         self._patrol_record_only = patrol_record_only
+        self._stage_b = stage_b
+        self._cell_build = cell_build
+        self._cell_net = cell_net
+        self._cell_secret = cell_secret
+        self._cell_file = cell_file
+        self._commit_membrane = commit_membrane
+        self._membrane_fault_hook = membrane_fault_hook
+        self._witness_public_keys = witness_public_keys
         self._now_fn = now_fn
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -107,6 +123,20 @@ class TestOrind:
             kwargs["policy_profile"] = self._policy_profile
         if self._now_fn is not None:
             kwargs["now_fn"] = self._now_fn
+        kwargs["stage_b"] = self._stage_b
+        kwargs["cell_build"] = self._cell_build
+        if self._cell_net:
+            kwargs["cell_net"] = True
+        if self._cell_secret:
+            kwargs["cell_secret"] = True
+        if self._cell_file:
+            kwargs["cell_file"] = True
+        if self._commit_membrane:
+            kwargs["commit_membrane"] = True
+        if self._membrane_fault_hook is not None:
+            kwargs["membrane_fault_hook"] = self._membrane_fault_hook
+        if self._witness_public_keys:
+            kwargs["witness_public_keys"] = self._witness_public_keys
         self._daemon = OrinDaemon(**kwargs)
         await self._daemon.start()
         self._ready.set()

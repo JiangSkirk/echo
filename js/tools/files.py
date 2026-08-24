@@ -8,7 +8,7 @@ import os
 import secrets
 import stat
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -103,11 +103,19 @@ def _regex_search_job(
 class FileTools:
     """Collection of safe file system tools."""
 
-    def __init__(self, workspace: Path, limits: ToolLimits, guard: BehaviorGuard) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        limits: ToolLimits,
+        guard: BehaviorGuard,
+        *,
+        cell_backend: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    ) -> None:
         self.workspace = workspace.resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.limits = limits
         self.guard = guard
+        self.cell_backend = cell_backend
 
     def _relative_path(self, path: str) -> Path:
         if not isinstance(path, str) or not path or "\x00" in path:
@@ -323,6 +331,47 @@ class FileTools:
         """Read text and report actual bytes plus whether the size stayed stable."""
         payload, logical, total, stable = self._secure_read_bytes(path, max_bytes=max_bytes)
         return payload.decode("utf-8", errors="replace"), logical, total, stable
+
+    async def _commit_file_cell_change(self, path: str, content: str) -> ToolResult:
+        """Send one complete file replacement through the File Cell boundary."""
+        try:
+            relative = self._relative_path(path)
+            if relative == Path(".") or not relative.name:
+                raise ValueError("A file name is required")
+            self._reject_git_metadata_write(path)
+            self._reject_runtime_tcb_write(path)
+            backend = self.cell_backend
+            if backend is None:
+                raise RuntimeError("File Cell backend is unavailable")
+            result = await asyncio.to_thread(
+                backend,
+                {
+                    "path": relative.as_posix(),
+                    "content": content,
+                },
+            )
+        except Exception:  # noqa: BLE001 - Cell failures must never fall back locally
+            return ToolResult(success=False, error="File Cell safety boundary unavailable")
+
+        if not isinstance(result, dict) or result.get("status") != "COMMITTED":
+            return ToolResult(success=False, error="File Cell denied request")
+
+        logical = self.workspace / relative
+        if logical.suffix in (".sh", ".py", ".js", ".ts", ".bash", ".zsh"):
+            self.guard.register_script_artifact(str(logical))
+
+        output = result.get("output")
+        if not isinstance(output, str):
+            output = f"Committed {len(content)} chars through File Cell"
+        return ToolResult(
+            success=True,
+            output=output,
+            metadata={
+                "path": relative.as_posix(),
+                "bytes": len(content.encode("utf-8")),
+                "cell": "file",
+            },
+        )
 
     @contextmanager
     def _open_secure_directory(self, path: str) -> Iterator[tuple[int, Path]]:
@@ -605,6 +654,32 @@ class FileTools:
                 error=f"Content too large: {len(content)} > {self.limits.file_write_max_chars}",
             )
 
+        if self.cell_backend is not None:
+            final_content = content
+            if append:
+                try:
+                    existing, _target = self._secure_read_text(
+                        path,
+                        max_bytes=max(
+                            self.limits.file_write_max_chars * 4,
+                            self.limits.file_read_max_chars,
+                        ),
+                    )
+                except FileNotFoundError:
+                    existing = ""
+                except Exception as exc:
+                    return ToolResult(success=False, error=f"File Cell input rejected: {exc}")
+                final_content = existing + content
+                if len(final_content) > self.limits.file_write_max_chars:
+                    return ToolResult(
+                        success=False,
+                        error=(
+                            f"Content too large: {len(final_content)} > "
+                            f"{self.limits.file_write_max_chars}"
+                        ),
+                    )
+            return await self._commit_file_cell_change(path, final_content)
+
         try:
             payload = content.encode("utf-8")
             target = self._secure_write(path, payload, append=append)
@@ -683,6 +758,11 @@ class FileTools:
             decision = self.guard.check_path_operation(str(logical), "delete")
             if decision.decision == SecurityDecisionType.BLOCK:
                 return ToolResult(success=False, error=decision.reason)
+            if self.cell_backend is not None:
+                return ToolResult(
+                    success=False,
+                    error="File Cell delete is not supported; local delete is disabled",
+                )
             self._reject_git_metadata_write(path)
             self._reject_runtime_tcb_write(path)
             with self._open_secure_parent(path, create_parents=False) as (
@@ -757,6 +837,8 @@ class FileTools:
                         f"{self.limits.file_write_max_chars}"
                     ),
                 )
+            if self.cell_backend is not None:
+                return await self._commit_file_cell_change(path, new_content)
             target = self._secure_write(
                 path,
                 new_content.encode("utf-8"),

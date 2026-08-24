@@ -454,6 +454,51 @@ class OrinConfig(BaseModel):
         default=False,
         description="WP3 patrol rollback: record signals, never emit tighten advice.",
     )
+    # -- stage B (ORIN_STAGE_B_SPEC.md §3/§4): every switch defaults off and
+    # rolls back independently. With stage_b=False the main path is exactly
+    # Stage A: in-process LeaseAuthority + orind lease online-ization only.
+    stage_b: bool = Field(
+        default=False,
+        description=(
+            "Master switch for Effect Kernel stage B (intents/handles/drafts/"
+            "cells). Disabled by default; must keep pre-stage-B behavior."
+        ),
+    )
+    cell_build: bool = Field(
+        default=False,
+        description=(
+            "WP7 Build Cell: route shell/code execution through the orind-"
+            "scheduled sandboxed cell instead of in-process subprocesses."
+        ),
+    )
+    cell_secret: bool = Field(
+        default=False,
+        description=(
+            "WP8 Secret Cell: SecretHandle-bound credential use without "
+            "plaintext passthrough to Echo."
+        ),
+    )
+    cell_net: bool = Field(
+        default=False,
+        description=(
+            "WP8 Network/Connector Cell: signed Endpoint Manifest enforcement "
+            "and egress export passes outside the Echo process."
+        ),
+    )
+    cell_file: bool = Field(
+        default=False,
+        description=(
+            "WP9 File Cell: handle-scoped staging writes with atomic "
+            "rename/CAS commit outside the Echo process."
+        ),
+    )
+    commit_membrane: bool = Field(
+        default=False,
+        description=(
+            "WP10 commit membrane: durable prepare / UNKNOWN_COMMIT "
+            "reconciliation for workspace commits and connector sends."
+        ),
+    )
 
 
 class MemoryConfig(BaseModel):

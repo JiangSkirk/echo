@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -137,6 +138,44 @@ class TestBuildMockResponses:
         responses = build_mock_responses_for_task(task)
         assert len(responses) == 1
         assert responses[0].tool_calls == []
+
+    @pytest.mark.parametrize(
+        ("tool", "setup_files", "expected"),
+        [
+            (
+                "file_delete",
+                [{"path": "temp.log", "content": "temporary"}],
+                {"path": "temp.log"},
+            ),
+            (
+                "file_search",
+                [
+                    {"path": "alpha.txt", "content": "alpha"},
+                    {"path": "gamma.py", "content": "gamma"},
+                ],
+                {"pattern": "*.txt", "path": "."},
+            ),
+        ],
+    )
+    def test_file_mock_calls_have_executable_arguments(
+        self,
+        tool: str,
+        setup_files: list[dict[str, str]],
+        expected: dict[str, str],
+    ) -> None:
+        task = BenchmarkTask(
+            id="t",
+            name="t",
+            input="i",
+            expected_tool_calls=[tool],
+            setup_files=setup_files,
+        )
+
+        responses = build_mock_responses_for_task(task)
+
+        assert responses[0].tool_calls is not None
+        function = responses[0].tool_calls[0]["function"]
+        assert json.loads(function["arguments"]) == expected
 
 
 class TestRunTask:

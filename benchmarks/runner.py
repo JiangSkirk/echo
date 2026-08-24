@@ -17,9 +17,10 @@ import argparse
 import json
 import sys
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -90,7 +91,7 @@ class MockBenchmarkProvider(ModelProvider):
         )
 
     def chat_stream(self, *args: Any, **kwargs: Any) -> Any:
-        async def _gen():
+        async def _gen() -> AsyncIterator[str]:
             yield "Done."
         return _gen()
 
@@ -181,6 +182,24 @@ def build_mock_responses_for_task(task: BenchmarkTask) -> list[ChatResponse]:
             arguments = json.dumps({"command": "echo ok"})
         elif tool == "file_list":
             arguments = json.dumps({"path": "."})
+        elif tool == "file_delete":
+            target = "temp.log"
+            if task.setup_files:
+                candidate = task.setup_files[0].get("path")
+                if isinstance(candidate, str) and candidate:
+                    target = candidate
+            arguments = json.dumps({"path": target})
+        elif tool == "file_search":
+            pattern = "*"
+            for setup_file in task.setup_files:
+                candidate = setup_file.get("path")
+                if not isinstance(candidate, str) or not candidate:
+                    continue
+                suffix = Path(candidate).suffix
+                if suffix:
+                    pattern = f"*{suffix}"
+                    break
+            arguments = json.dumps({"pattern": pattern, "path": "."})
         else:
             arguments = json.dumps({})
         tool_calls.append({
@@ -283,7 +302,7 @@ async def run_task(
 def load_baseline(baseline_path: Path) -> dict[str, Any]:
     if baseline_path.exists():
         with open(baseline_path, encoding="utf-8") as f:
-            return json.load(f)
+            return cast("dict[str, Any]", json.load(f))
     return {}
 
 

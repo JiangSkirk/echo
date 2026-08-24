@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -30,6 +33,7 @@ from js.appshell.routing import (
     AppShellEpochDrainTimeoutError,
     AppShellModeGate,
 )
+from js.echo.capability import LeaseDenied
 from js.echo.ledger.service import EchoSafetyService
 from js.echo.mode_contract import AppMode
 from js.web.auth import (
@@ -369,6 +373,235 @@ async def appshell_capabilities(
         },
         "session": principal.session,
         "expires_at": principal.expires_at,
+    }
+
+
+class IntentIssueRequest(BaseModel):
+    """Owner-witness intent issuance (WP5): user confirms a task boundary."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    raw_request: str = Field(min_length=1, max_length=20_000)
+    template: Literal["personal", "work", "factory"] = "personal"
+    task_id: str | None = Field(default=None, max_length=256)
+    ttl_ms: int | None = Field(default=None, ge=1_000, le=24 * 60 * 60 * 1000)
+    sink_handles: list[str] = Field(default_factory=list, max_length=32)
+    resource_handles: list[str] = Field(default_factory=list, max_length=32)
+
+
+class ExportPassRequest(BaseModel):
+    """Approve one exact egress: payload hash + destinations (K§7.9)."""
+
+    task_id: str = Field(min_length=1, max_length=256)
+    payload_hash: str = Field(min_length=71, max_length=71)
+    destination_handles: list[str] = Field(min_length=1, max_length=32)
+    witness_id: str = Field(default="", max_length=256)
+    ttl_ms: int = Field(default=600_000, ge=1_000, le=3_600_000)
+
+
+class AdminUnfreezeRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+    raw_request: str = Field(default="admin unfreeze", max_length=2_000)
+
+
+def _mode_runtime(request: Request, principal: AppShellPrincipalV1) -> Any:
+    app = (
+        request.app.state.work_app
+        if principal.active_mode == "work"
+        else (request.app.state.personal_app)
+    )
+    return getattr(app.state, "web_runtime", None)
+
+
+def _stage_b_adapter(runtime: Any) -> tuple[Any | None, str | None]:
+    """Fetch the agent-owned Orin adapter when stage B is actually enabled.
+
+    Reusing the agent's single connection matters: orind publishes one
+    ``session-<pid>.key`` per peer pid, so a second concurrent connection
+    from this process would race the key file exchange.
+    """
+
+    agent = getattr(runtime, "agent", None)
+    getter = getattr(agent, "_get_echo_tool_lease_authority", None)
+    if not callable(getter):
+        return None, "no_lease_authority"
+    try:
+        authority = getter()
+    except Exception:  # noqa: BLE001 - surfaced as 503, never crash the route
+        return None, "lease_authority_unavailable"
+    if not bool(getattr(authority, "_stage_b", False)):
+        return None, "orin_stage_b_disabled"
+    return authority, None
+
+
+def _installation_owner_hash(settings: Any) -> str:
+    import hashlib
+
+    material = f"js-agent:{getattr(settings, 'state_dir', '.')}"
+    return "sha256:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+@router.post("/intent")
+async def issue_owner_intent(
+    request: Request,
+    body: IntentIssueRequest,
+    principal: AppShellPrincipalV1 = Depends(_trusted_principal),
+) -> dict[str, Any]:
+    """Sign an IntentEnvelope as the owner witness and register it with Orin."""
+    check_origin(request)
+    runtime = _mode_runtime(request, principal)
+    if runtime is None:
+        raise HTTPException(503, {"code": "runtime_unavailable"})
+    adapter, reason = _stage_b_adapter(runtime)
+    if adapter is None:
+        raise HTTPException(503, {"code": reason})
+    from js.orin.witness import build_intent_from_template, ensure_witness_keypair
+
+    settings = runtime.settings
+    state_dir = Path(settings.state_dir)
+    private_key, _pub = ensure_witness_keypair(state_dir)
+    task_id = body.task_id or f"task:{uuid4().hex}"
+    envelope = build_intent_from_template(
+        template=body.template,
+        task_id=task_id,
+        raw_request=body.raw_request,
+        owner_key_hash=_installation_owner_hash(settings),
+        ttl_ms=body.ttl_ms or 60 * 60 * 1000,
+        sink_handles=tuple(body.sink_handles),
+        resource_handles=tuple(body.resource_handles),
+    )
+    signed = envelope.sign_with(private_key)
+    try:
+        ack = adapter.register_intent(signed.to_dict())
+    except LeaseDenied as exc:
+        raise HTTPException(502, {"code": "orind_rejected", "reason": str(exc)}) from exc
+    return {
+        "schema": "AppShellIntentAckV1",
+        "ok": bool(ack.get("ok")),
+        "task_id": task_id,
+        "intent_id": envelope.intent_id,
+        "expires_at_ms": envelope.expires_at_ms,
+        "approval_policy": envelope.approval_policy,
+        "allowed_effect_classes": list(envelope.allowed_effect_classes),
+    }
+
+
+@router.get("/intent/active")
+async def get_active_intent(
+    request: Request,
+    task_id: str,
+    principal: AppShellPrincipalV1 = Depends(_trusted_principal),
+) -> dict[str, Any]:
+    check_origin(request)
+    runtime = _mode_runtime(request, principal)
+    if runtime is None:
+        raise HTTPException(503, {"code": "runtime_unavailable"})
+    adapter, reason = _stage_b_adapter(runtime)
+    if adapter is None:
+        raise HTTPException(503, {"code": reason})
+    active = adapter.active_intent(task_id)
+    return {"schema": "AppShellActiveIntentV1", "task_id": task_id, "intent": active}
+
+
+@router.post("/export-pass")
+async def grant_export_pass(
+    request: Request,
+    body: ExportPassRequest,
+    principal: AppShellPrincipalV1 = Depends(_trusted_principal),
+) -> dict[str, Any]:
+    """Owner approves exact bytes (by hash) to named destination handles.
+
+    The pass is signed by the owner witness — Echo cannot mint one — and
+    the Connector Cell re-verifies the payload hash at send time.
+    """
+    check_origin(request)
+    runtime = _mode_runtime(request, principal)
+    if runtime is None:
+        raise HTTPException(503, {"code": "runtime_unavailable"})
+    adapter, reason = _stage_b_adapter(runtime)
+    if adapter is None:
+        raise HTTPException(503, {"code": reason})
+    from uuid import uuid4
+
+    from js.orin.draft import ExportPass
+    from js.orin.witness import ensure_witness_keypair
+
+    settings = runtime.settings
+    private_key, _pub = ensure_witness_keypair(Path(settings.state_dir))
+    ts = int(time.time() * 1000)
+    export_pass = ExportPass(
+        pass_id=f"export:{uuid4().hex}",
+        task_id=body.task_id,
+        payload_hash=body.payload_hash,
+        destination_handles=tuple(body.destination_handles),
+        witness_id=body.witness_id,
+        created_at_ms=ts - 1000,
+        expires_at_ms=ts + body.ttl_ms,
+    ).sign_with(private_key)
+    try:
+        ack = adapter.grant_export(export_pass.to_dict(), task_id=body.task_id)
+    except LeaseDenied as exc:
+        raise HTTPException(502, {"code": "orind_rejected", "reason": str(exc)}) from exc
+    return {
+        "schema": "AppShellExportPassAckV1",
+        "ok": bool(ack.get("ok")),
+        "pass_id": export_pass.pass_id,
+        "expires_at_ms": export_pass.expires_at_ms,
+    }
+
+
+@router.post("/admin/unfreeze")
+async def admin_unfreeze_session(
+    request: Request,
+    body: AdminUnfreezeRequest,
+    auth: dict[str, Any] = Depends(require_auth_dep),
+) -> dict[str, Any]:
+    """R3 de-escalation: requires the admin API key plus a dual-control
+    admin.unfreeze IntentEnvelope signed by the owner witness. Echo has no
+    path here — the ladder can only be unwound by the human operator."""
+    check_origin(request)
+    runtime = request.app.state.web_runtime
+    if runtime is None:
+        raise HTTPException(503, {"code": "runtime_unavailable"})
+    adapter, reason = _stage_b_adapter(runtime)
+    if adapter is None:
+        raise HTTPException(503, {"code": reason})
+    from js.orin.intent import APPROVAL_POLICIES, EFFECT_CLASSES
+    from js.orin.witness import ensure_witness_keypair
+
+    _ = EFFECT_CLASSES, APPROVAL_POLICIES
+    settings = runtime.settings
+    state_dir = Path(settings.state_dir)
+    private_key, _pub = ensure_witness_keypair(state_dir)
+    ts = int(time.time() * 1000)
+    from js.orin.intent import Budgets, IntentEnvelope, request_hash_of
+
+    admin_intent = IntentEnvelope(
+        intent_id=f"intent:{ts:x}-admin",
+        owner_key_hash=_installation_owner_hash(settings),
+        product_id="js-agent",
+        profile="admin",
+        task_id=f"task:admin-{ts}",
+        raw_request_hash=request_hash_of(body.raw_request),
+        allowed_effect_classes=("admin.unfreeze",),
+        allowed_resource_handles=(),
+        allowed_sink_handles=(),
+        budgets=Budgets(),
+        approval_policy="dual_control",
+        issued_by="appshell:admin-witness",
+        issued_at_ms=ts - 1000,
+        expires_at_ms=ts + 60_000,
+    )
+    admin_intent = admin_intent.sign_with(private_key)
+    try:
+        ack = adapter.admin_unfreeze(admin_intent.to_dict(), session_id=body.session_id)
+    except LeaseDenied as exc:
+        raise HTTPException(502, {"code": "orind_rejected", "reason": str(exc)}) from exc
+    return {
+        "schema": "AppShellAdminUnfreezeAckV1",
+        "ok": bool(ack.get("ok")),
+        "unfrozen": list(ack.get("unfrozen") or []),
+        "operator": str(auth.get("sub") or auth.get("key_id") or "admin"),
     }
 
 

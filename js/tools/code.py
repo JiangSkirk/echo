@@ -383,6 +383,16 @@ class CodeTool:
             )
 
         try:
+            effective_timeout = min(
+                timeout or self.limits.shell_timeout, self.limits.shell_timeout
+            )
+            cell_backend = getattr(self, "cell_backend", None)
+            if cell_backend is not None:
+                return await self._execute_via_build_cell(
+                    argv=[sys.executable, str(script_path)],
+                    timeout_s=int(effective_timeout),
+                    backend=cell_backend,
+                )
             result = await self.executor.execute(
                 [sys.executable, str(script_path)],
                 cwd=str(self.workspace),
@@ -391,7 +401,7 @@ class CodeTool:
                 env={"PYTHONDONTWRITEBYTECODE": "1"},
                 # Caller-supplied timeout may only shorten the configured
                 # ceiling, never extend it.
-                timeout=min(timeout or self.limits.shell_timeout, self.limits.shell_timeout),
+                timeout=effective_timeout,
                 network_allowed=False,
                 fs_restricted=True,
             )
@@ -413,6 +423,50 @@ class CodeTool:
                 pass
             finally:
                 os.close(temp_dir_fd)
+
+    async def _execute_via_build_cell(
+        self,
+        *,
+        argv: list[str],
+        timeout_s: int,
+        backend: Any,
+    ) -> ToolResult:
+        """WP7: run the already-scanned script inside the Build Cell."""
+
+        from js.echo.capability import LeaseDenied
+
+        try:
+            raw = await backend(
+                {
+                    "kind": "shell",
+                    "command": list(argv),
+                    "cwd": str(self.workspace),
+                    "timeout_ms": int(timeout_s * 1000),
+                    "tool": "code",
+                }
+            )
+        except LeaseDenied as exc:
+            return ToolResult(
+                success=False,
+                error=(
+                    "Safety degradation: Build Cell unavailable — "
+                    f"build effects are paused ({type(exc).__name__}). "
+                    "Other tools are unaffected."
+                ),
+            )
+        success = raw.get("status") == "COMMITTED"
+        output = str(raw.get("output") or "")
+        return ToolResult(
+            success=success,
+            output=output,
+            error="" if success else output[-2000:],
+            metadata={
+                "returncode": int(raw.get("returncode", -1)),
+                "duration_ms": raw.get("duration_ms"),
+                "killed": bool(raw.get("killed")),
+                "cell": "build",
+            },
+        )
 
     def _create_private_script(self, code: str) -> tuple[Path, int, str]:
         """Create an execution script without following workspace symlinks."""

@@ -92,6 +92,11 @@ _TOOL_SINKS: Final[dict[str, int]] = {
     "python": SINK_SPAWN | SINK_FS_WRITE,
     "browser_fetch": SINK_NETWORK_EGRESS,
     "web_search": SINK_NETWORK_EGRESS,
+    # -- stage B effect types (WP8): connector/egress family ----------------
+    "email.send_exact": SINK_NETWORK_EGRESS | SINK_CONNECTOR,
+    "net.send": SINK_NETWORK_EGRESS | SINK_CONNECTOR,
+    "net.fetch": SINK_FS_READ,
+    "file.commit": SINK_FS_WRITE | SINK_FS_OUTSIDE,
     "webbridge_navigate": SINK_NETWORK_EGRESS,
     "webbridge_screenshot": SINK_NETWORK_EGRESS,
     "webbridge_read": SINK_NETWORK_EGRESS,

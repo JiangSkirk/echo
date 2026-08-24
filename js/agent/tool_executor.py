@@ -1313,7 +1313,12 @@ class ToolExecutorMixin(AgentBase):
         from js.tools.office import OfficeTools
         from js.tools.shell import ShellTool
 
-        file_tools = FileTools(self.settings.workspace, self.settings.tools, self.guard)
+        file_tools = FileTools(
+            self.settings.workspace,
+            self.settings.tools,
+            self.guard,
+            cell_backend=self._file_cell_backend(),
+        )
         file_tools.register_all(self.registry)
 
         shell_tool = ShellTool(self.settings.workspace, self.settings.tools, self.guard)
@@ -1322,7 +1327,16 @@ class ToolExecutorMixin(AgentBase):
         code_tool = CodeTool(self.settings.workspace, self.settings.tools, self.guard)
         code_tool.register(self.registry)
 
-        self._browser_tool = BrowserTool(self.settings.tools, self.guard)
+        cell_backend = self._build_cell_backend()
+        if cell_backend is not None:
+            shell_tool.cell_backend = cell_backend  # type: ignore[attr-defined]
+            code_tool.cell_backend = cell_backend  # type: ignore[attr-defined]
+
+        self._browser_tool = BrowserTool(
+            self.settings.tools,
+            self.guard,
+            cell_backend=self._network_cell_backend(),
+        )
         self._browser_tool.register_all(self.registry)
 
         # Kimi WebBridge — real browser control (navigate, click, screenshot, etc.)
@@ -4984,6 +4998,7 @@ class ToolExecutorMixin(AgentBase):
                 state_dir=Path(self.settings.state_dir),
                 fail_mode=str(getattr(orin_config, "fail_mode", "closed")),
                 readonly_tool_classifier=self._orin_readonly_tool_classifier(),
+                stage_b=bool(getattr(orin_config, "stage_b", False)),
             )
         else:
             key = _load_or_create_tool_lease_key(
@@ -5009,6 +5024,108 @@ class ToolExecutorMixin(AgentBase):
             return bool(spec is not None and spec.read_only)
 
         return classify
+
+    def _build_cell_backend(self) -> Any:
+        """Return the Build Cell dispatch callable, or ``None`` when disabled.
+
+        Enabled only when orin.enabled ∧ stage_b ∧ cell_build. The returned
+        callable sends ``consume(mode="cell")`` through the SAME adapter
+        connection; orind re-runs its policy table and proxies into the
+        sandboxed cell subprocess. No license ever comes back here.
+        """
+
+        orin_config = getattr(self.settings, "orin", None)
+        if not (
+            getattr(orin_config, "enabled", False)
+            and getattr(orin_config, "stage_b", False)
+            and getattr(orin_config, "cell_build", False)
+        ):
+            return None
+
+        def backend(payload: dict[str, Any]) -> dict[str, Any]:
+            authority = self._get_echo_tool_lease_authority()
+            runner = getattr(authority, "run_in_build_cell", None)
+            if runner is None:
+                from js.orin.client import OrinUnavailable
+
+                raise OrinUnavailable("stage B is disabled on this authority")
+            result: dict[str, Any] = runner(payload)
+            return result
+
+        return backend
+
+    def _network_cell_backend(self) -> Any:
+        """Return the narrow R0 Network Cell fetch adapter when enabled.
+
+        Browser arguments stay data-only.  Orind reconstructs the signed
+        EndpointHandle, strict CellPackage, StateWitness, and CommitPermit;
+        this process receives only the bounded fetch result.  Cell failure is
+        allowed to propagate so :class:`BrowserTool` can fail closed without
+        falling back to in-process HTTP.
+        """
+
+        orin_config = getattr(self.settings, "orin", None)
+        if not (
+            getattr(orin_config, "enabled", False)
+            and getattr(orin_config, "stage_b", False)
+            and getattr(orin_config, "cell_net", False)
+        ):
+            return None
+
+        def backend(payload: dict[str, Any]) -> dict[str, Any]:
+            if set(payload) != {"tool", "url", "max_chars"}:
+                raise ValueError("Network Cell fetch payload shape is invalid")
+            if payload.get("tool") != "net.fetch":
+                raise ValueError("Network Cell adapter accepts net.fetch only")
+            authority = self._get_echo_tool_lease_authority()
+            runner = getattr(authority, "run_in_cell", None)
+            if runner is None:
+                from js.orin.client import OrinUnavailable
+
+                raise OrinUnavailable("WP8 Network Cell is disabled on this authority")
+            result: dict[str, Any] = runner(
+                "cell.net",
+                payload,
+            )
+            return result
+
+        return backend
+
+    def _file_cell_backend(self) -> Any:
+        """Return the strict File Cell adapter when all WP9 gates are enabled.
+
+        The model-facing file tool contributes only one normalized relative
+        path and the exact final text.  Task and DirectoryHandle selection
+        remain inside the Orin authority; a missing binding or Cell failure
+        propagates to :class:`FileTools`, which fails closed without a local
+        filesystem fallback.
+        """
+
+        orin_config = getattr(self.settings, "orin", None)
+        if not (
+            getattr(orin_config, "enabled", False)
+            and getattr(orin_config, "stage_b", False)
+            and getattr(orin_config, "cell_file", False)
+        ):
+            return None
+
+        def backend(change: dict[str, Any]) -> dict[str, Any]:
+            if set(change) != {"path", "content"}:
+                raise ValueError("File Cell change payload shape is invalid")
+            if not isinstance(change.get("path"), str) or not isinstance(
+                change.get("content"), str
+            ):
+                raise ValueError("File Cell path and content must be strings")
+            authority = self._get_echo_tool_lease_authority()
+            runner = getattr(authority, "run_file_change", None)
+            if runner is None:
+                from js.orin.client import OrinUnavailable
+
+                raise OrinUnavailable("WP9 File Cell task binding is unavailable")
+            result: dict[str, Any] = runner(change)
+            return result
+
+        return backend
 
     def _install_echo_tool_context_verifier(self, authority: Any) -> None:
         existing = getattr(self, "_echo_tool_verifier_installed", None)

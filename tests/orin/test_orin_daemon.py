@@ -402,3 +402,52 @@ class TestAttackSurface:
         # the key file was unlinked by the client read (one-shot property)
         key_file = state_dir / "orin" / f"session-{os.getpid()}.key"
         assert not key_file.exists()
+
+    async def test_cell_socket_rejects_declared_pid_when_kernel_pid_is_zero(
+        self,
+        state_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        declared_pid = os.getpid()
+        with TestOrind(state_dir=state_dir, stage_b=True) as orind:
+            daemon = orind.daemon
+            daemon._expected_cell_caps_by_pid[declared_pid] = frozenset(  # noqa: SLF001
+                {"cell.file"}
+            )
+            monkeypatch.setattr(
+                daemon,
+                "_check_peer",
+                lambda _writer: (os.geteuid(), 0),
+            )
+            reader, writer = await asyncio.open_unix_connection(
+                path=str(daemon.cell_socket_path)
+            )
+            hello = make_envelope(
+                "hello",
+                seq=1,
+                nonce=secrets.token_hex(16),
+                session_key=None,
+                caps=["cell.file"],
+                pid=declared_pid,
+            )
+            writer.write(encode_frame(hello))
+            try:
+                await writer.drain()
+            except ConnectionError:
+                pass
+            try:
+                with pytest.raises((asyncio.IncompleteReadError, TimeoutError)):
+                    await asyncio.wait_for(reader.readexactly(4), timeout=1.0)
+            finally:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except ConnectionError:
+                    pass
+            assert daemon._cell_by_cap("cell.file") is None  # noqa: SLF001
+            assert not (state_dir / "orin" / f"session-{declared_pid}.key").exists()
+            assert any(
+                event.get("event") == "handshake_rejected"
+                and event.get("reason") == "cell peer pid unavailable"
+                for event in daemon.audit_events()
+            )

@@ -38,7 +38,49 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="dev",
         help="Key custody tier (production = macOS Keychain)",
     )
-    return parser.parse_args(argv)
+    stage_b = parser.add_argument_group("Stage B (opt-in)")
+    stage_b.add_argument(
+        "--stage-b",
+        action="store_true",
+        help="Enable Stage-B protocol surfaces; Cell features remain opt-in",
+    )
+    stage_b.add_argument(
+        "--cell-build",
+        action="store_true",
+        help="Enable the legacy-compatible Build Cell",
+    )
+    stage_b.add_argument(
+        "--cell-secret",
+        action="store_true",
+        help="Enable the Secret Cell service capability",
+    )
+    stage_b.add_argument(
+        "--cell-net",
+        action="store_true",
+        help="Enable Network and Connector Cell service capabilities",
+    )
+    stage_b.add_argument(
+        "--cell-file",
+        action="store_true",
+        help="Enable the File Cell",
+    )
+    stage_b.add_argument(
+        "--commit-membrane",
+        action="store_true",
+        help="Enable the Stage-B durable Commit Membrane",
+    )
+    args = parser.parse_args(argv)
+    if not args.stage_b and any(
+        (
+            args.cell_build,
+            args.cell_secret,
+            args.cell_net,
+            args.cell_file,
+            args.commit_membrane,
+        )
+    ):
+        parser.error("Stage-B Cell and membrane switches require --stage-b")
+    return args
 
 
 @contextmanager
@@ -64,6 +106,12 @@ async def _main_async(args: argparse.Namespace) -> int:
         state_dir=args.state_dir,
         socket_path=args.socket_path,
         keybox_tier=args.keybox_tier,
+        stage_b=args.stage_b,
+        cell_build=args.cell_build,
+        cell_secret=args.cell_secret,
+        cell_net=args.cell_net,
+        cell_file=args.cell_file,
+        commit_membrane=args.commit_membrane,
     )
     await daemon.start()
     print(

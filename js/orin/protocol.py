@@ -8,7 +8,10 @@ plus a session nonce; regression or replay disconnects the peer.
 
 Stage A message set is frozen at six types: ``hello``, ``issue``,
 ``consume``, ``revoke``, ``heartbeat``, ``freeze``. Extra capabilities ride
-in payload fields (e.g. ``consume.mode``) — a seventh type is not allowed.
+in payload fields (e.g. ``consume.mode``). Stage B (ORIN_STAGE_B_SPEC.md §2)
+extends the vocabulary behind hello ``caps`` negotiation: peers that never
+advertise a stage-B cap cannot send or receive its message type — a stage-B
+type from a peer without the cap drops the connection.
 
 Parsing is strict per K§8.1: unknown fields are rejected, JSON depth is
 capped at 16, string fields have length caps, and numeric fields have range
@@ -61,15 +64,49 @@ MESSAGE_TYPES: Final[frozenset[str]] = frozenset(
         "heartbeat_ack",
         "freeze",
         "freeze_ack",
+        # -- stage B (B spec §2.3; each requires its negotiated cap) ----------
+        "intent",
+        "intent_ack",
+        "handle",
+        "handle_ack",
+        "draft",
+        "draft_ack",
+        "preflight",
+        "preflight_ack",
+        "commit",
+        "commit_ack",
+        "receipt",
+        "receipt_ack",
+        "reconcile",
+        "reconcile_ack",
     }
 )
-"""Full request/ack vocabulary of the six frozen Stage A message types."""
+"""Full request/ack vocabulary: six frozen Stage A types plus Stage B."""
 
 CLIENT_CAPS: Final[tuple[str, ...]] = ("lease.v2",)
 """Capabilities the Stage A client advertises at hello."""
 
 SERVER_CAPS: Final[tuple[str, ...]] = ("lease.v2",)
 """Capabilities the Stage A orind advertises at hello_ack."""
+
+STAGE_B_CLIENT_CAPS: Final[tuple[str, ...]] = (
+    "lease.v2",
+    "intent.v1",
+    "handle.v1",
+    "draft.v1",
+    "commit.v1",
+)
+"""Extra caps an Echo/AppShell client advertises when stage_b is enabled."""
+
+STAGE_B_SERVER_CAPS: Final[tuple[str, ...]] = STAGE_B_CLIENT_CAPS
+CELL_CONNECT_CAPS: Final[tuple[str, ...]] = (
+    "cell.build",
+    "cell.file",
+    "cell.net",
+    "cell.secret",
+    "cell.connector",
+)
+"""Identity caps a Cell declares when connecting back to orind."""
 
 # -- token bucket / queue guards (A §3.1) ------------------------------------
 RATE_LIMIT_PER_SECOND: Final[int] = 100
@@ -79,10 +116,30 @@ SERVER_QUEUE_DEPTH: Final[int] = 1024
 VERDICTS: Final[frozenset[str]] = frozenset({"allow", "approval_required", "deny", "freeze"})
 """consume_ack verdict vocabulary (WP2 fills approval/deny paths)."""
 
-CONSUME_MODES: Final[frozenset[str]] = frozenset(
-    {"verify", "preflight", "consume", "context", "scan"}
+GATE_VERDICTS: Final[frozenset[str]] = frozenset(
+    {
+        "allow_read",
+        "allow_stage",
+        "require_approval",
+        "require_dual_control",
+        "deny_policy",
+        "deny_missing_witness",
+        "deny_stale_state",
+        "defer_reconciliation",
+    }
 )
-"""consume request sub-modes covering the LeaseAuthority method surface."""
+"""Gate Kernel result classes (K§7.7); models only ever see these labels."""
+
+CONSUME_MODES: Final[frozenset[str]] = frozenset(
+    {"verify", "preflight", "consume", "context", "scan", "cell"}
+)
+"""consume request sub-modes covering the LeaseAuthority method surface.
+
+``cell`` (stage B, WP7): authorize-then-proxy an effect into a scheduled
+Effect Cell. It carries no lease consumption of its own — the execution
+context verifier already spent the lease at the registry boundary — only
+the deterministic policy table decides, then orind proxies the payload.
+"""
 
 ERROR_CODES: Final[frozenset[str]] = frozenset(
     {
@@ -105,12 +162,40 @@ ERROR_CODES: Final[frozenset[str]] = frozenset(
         "rate_limited",
         "unsupported",
         "internal",
+        "unknown_intent",
+        "unknown_handle",
+        "stale_state",
+        "backpressure",
     }
 )
 """Error-code vocabulary carried by failed acks (``ok=false``)."""
 
 REVOKE_OPS: Final[frozenset[str]] = frozenset({"lease", "session", "active_sessions", "is_revoked"})
 """Payload ops on the revoke message: two mutations, two queries."""
+
+INTENT_OPS: Final[frozenset[str]] = frozenset(
+    {"register", "active", "admin_unfreeze", "grant_export"}
+)
+HANDLE_OPS: Final[frozenset[str]] = frozenset({"issue", "resolve", "seed_list"})
+RECONCILE_STATES: Final[frozenset[str]] = frozenset({"committed", "absent", "unknown"})
+
+REQUIRED_CAP: Final[dict[str, str]] = {
+    "intent": "intent.v1",
+    "intent_ack": "intent.v1",
+    "handle": "handle.v1",
+    "handle_ack": "handle.v1",
+    "draft": "draft.v1",
+    "draft_ack": "draft.v1",
+    "preflight": "commit.v1",
+    "preflight_ack": "commit.v1",
+    "commit": "commit.v1",
+    "commit_ack": "commit.v1",
+    "receipt": "commit.v1",
+    "receipt_ack": "commit.v1",
+    "reconcile": "commit.v1",
+    "reconcile_ack": "commit.v1",
+}
+"""Stage-B message type → hello cap that must have been negotiated."""
 
 HEARTBEAT_INTERVAL_S: Final[float] = 1.0
 """Heartbeat cadence; the connection is the real liveness signal."""
@@ -229,6 +314,7 @@ _SCHEMA: Final[dict[str, tuple[FieldSpec, ...]]] = {
         FieldSpec("scan_text", kinds=_S, optional=True),
         FieldSpec("scan_surface", kinds=_S, optional=True, max_len=16),
         FieldSpec("session_id", kinds=_S, optional=True, max_len=128),
+        FieldSpec("payload", kinds=(dict,), optional=True),
     ),
     "consume_ack": (
         FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
@@ -237,10 +323,11 @@ _SCHEMA: Final[dict[str, tuple[FieldSpec, ...]]] = {
         FieldSpec("code", kinds=_S, optional=True, max_len=32),
         FieldSpec("reason", kinds=_S, optional=True),
         FieldSpec("verdict", kinds=_S, optional=True, max_len=32),
-        FieldSpec("reason", kinds=_S, optional=True),
         FieldSpec("receipt", kinds=(dict,), optional=True),
         FieldSpec("receipt_id", kinds=_S, optional=True, max_len=128),
         FieldSpec("policy_version", kinds=_I, optional=True),
+        # WP7 cell mode: the finished (untrusted) tool-result envelope.
+        FieldSpec("cell", kinds=(dict,), optional=True),
     ),
     # -- revocation -----------------------------------------------------------
     "revoke": (
@@ -287,6 +374,132 @@ _SCHEMA: Final[dict[str, tuple[FieldSpec, ...]]] = {
         FieldSpec("ok", kinds=(bool,), optional=True),
         FieldSpec("code", kinds=_S, optional=True, max_len=32),
         FieldSpec("reason", kinds=_S, optional=True),
+    ),
+    # -- stage B: owner intent (intent.v1) -----------------------------------
+    "intent": (
+        FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
+        FieldSpec("type", kinds=_S, max_len=16),
+        FieldSpec("op", kinds=_S, max_len=32),
+        FieldSpec("intent", kinds=(dict,), optional=True),
+        FieldSpec("grant", kinds=(dict,), optional=True),
+        FieldSpec("task_id", kinds=_S, optional=True, max_len=256),
+        FieldSpec("session_id", kinds=_S, optional=True, max_len=128),
+    ),
+    "intent_ack": (
+        FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
+        FieldSpec("type", kinds=_S, max_len=16),
+        FieldSpec("ok", kinds=(bool,), optional=True),
+        FieldSpec("code", kinds=_S, optional=True, max_len=32),
+        FieldSpec("reason", kinds=_S, optional=True),
+        FieldSpec("intent", kinds=(dict,), optional=True),
+        FieldSpec("unfrozen", kinds=(list,), optional=True),
+    ),
+    # -- stage B: handles (handle.v1) ------------------------------------------
+    "handle": (
+        FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
+        FieldSpec("type", kinds=_S, max_len=16),
+        FieldSpec("op", kinds=_S, max_len=16),
+        FieldSpec("kind", kinds=_S, optional=True, max_len=32),
+        FieldSpec("spec", kinds=(dict,), optional=True),
+        FieldSpec("handle", kinds=(dict,), optional=True),
+    ),
+    "handle_ack": (
+        FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
+        FieldSpec("type", kinds=_S, max_len=16),
+        FieldSpec("ok", kinds=(bool,), optional=True),
+        FieldSpec("code", kinds=_S, optional=True, max_len=32),
+        FieldSpec("reason", kinds=_S, optional=True),
+        FieldSpec("handle", kinds=(dict,), optional=True),
+        FieldSpec("candidates", kinds=(list,), optional=True),
+    ),
+    # -- stage B: drafts (draft.v1) --------------------------------------------
+    "draft": (
+        FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
+        FieldSpec("type", kinds=_S, max_len=16),
+        FieldSpec("draft", kinds=(dict,)),
+        FieldSpec("context_taint", kinds=_I, optional=True),
+        FieldSpec("arg_taint", kinds=_I, optional=True),
+        FieldSpec("clearance", kinds=_I, optional=True, lo=0, hi=2),
+    ),
+    "draft_ack": (
+        FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
+        FieldSpec("type", kinds=_S, max_len=16),
+        FieldSpec("ok", kinds=(bool,), optional=True),
+        FieldSpec("code", kinds=_S, optional=True, max_len=32),
+        FieldSpec("reason", kinds=_S, optional=True),
+        FieldSpec("verdict", kinds=_S, optional=True, max_len=32),
+        FieldSpec("missing", kinds=(list,), optional=True),
+        FieldSpec("witness", kinds=(dict,), optional=True),
+        # Orin-recomputed canonical effect hash (export-pass binding).
+        FieldSpec("payload_hash", kinds=_S, optional=True, max_len=71),
+    ),
+    # -- stage B: preflight / commit / receipt / reconcile (commit.v1) --------
+    "preflight": (
+        FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
+        FieldSpec("type", kinds=_S, max_len=16),
+        FieldSpec("draft_id", kinds=_S, max_len=256),
+        # Client -> orind may include an advisory executor_id for backwards
+        # compatibility, but orind derives the authoritative executor from
+        # the sealed manifest.  Orind -> Cell carries both this id and the
+        # independently parsed package.  Role-specific requirements are
+        # enforced at the two socket boundaries, not by this common parser.
+        FieldSpec("executor_id", kinds=_S, optional=True, max_len=128),
+        FieldSpec("package", kinds=(dict,), optional=True),
+    ),
+    "preflight_ack": (
+        FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
+        FieldSpec("type", kinds=_S, max_len=16),
+        FieldSpec("ok", kinds=(bool,), optional=True),
+        FieldSpec("code", kinds=_S, optional=True, max_len=32),
+        FieldSpec("reason", kinds=_S, optional=True),
+        FieldSpec("witness", kinds=(dict,), optional=True),
+    ),
+    "commit": (
+        FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
+        FieldSpec("type", kinds=_S, max_len=16),
+        FieldSpec("permit", kinds=(dict,)),
+        # Stage-B non-Build Cells require this peer field.  It deliberately
+        # remains optional in the shared schema so the frozen WP7 Build frame
+        # (commit(permit=<legacy payload>)) is byte-for-byte compatible.
+        FieldSpec("package", kinds=(dict,), optional=True),
+    ),
+    "commit_ack": (
+        FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
+        FieldSpec("type", kinds=_S, max_len=16),
+        FieldSpec("ok", kinds=(bool,), optional=True),
+        FieldSpec("code", kinds=_S, optional=True, max_len=32),
+        FieldSpec("reason", kinds=_S, optional=True),
+        FieldSpec("receipt_id", kinds=_S, optional=True, max_len=128),
+        # WP7: bounded untrusted tool output rides here for build results;
+        # it is TOOL_RESULT-tainted downstream and never secret material.
+        FieldSpec("output", kinds=_S, optional=True, max_len=64 * 1024),
+        FieldSpec("result", kinds=(dict,), optional=True),
+    ),
+    "receipt": (
+        FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
+        FieldSpec("type", kinds=_S, max_len=16),
+        FieldSpec("receipt", kinds=(dict,)),
+    ),
+    "receipt_ack": (
+        FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
+        FieldSpec("type", kinds=_S, max_len=16),
+        FieldSpec("ok", kinds=(bool,), optional=True),
+        FieldSpec("code", kinds=_S, optional=True, max_len=32),
+        FieldSpec("reason", kinds=_S, optional=True),
+    ),
+    "reconcile": (
+        FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
+        FieldSpec("type", kinds=_S, max_len=16),
+        FieldSpec("effect_id", kinds=_S, max_len=256),
+        FieldSpec("probe", kinds=(dict,), optional=True),
+    ),
+    "reconcile_ack": (
+        FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
+        FieldSpec("type", kinds=_S, max_len=16),
+        FieldSpec("ok", kinds=(bool,), optional=True),
+        FieldSpec("code", kinds=_S, optional=True, max_len=32),
+        FieldSpec("reason", kinds=_S, optional=True),
+        FieldSpec("state", kinds=_S, optional=True, max_len=16),
     ),
 }
 
@@ -351,6 +564,54 @@ def _validate_revoke_semantics(envelope: dict[str, Any]) -> None:
             has_result = any(key in envelope for key in ("revoked", "sessions", "is_revoked"))
             if not has_result:
                 raise ProtocolError("successful revoke_ack requires a result field")
+
+
+def _validate_stageb_semantics(envelope: dict[str, Any]) -> None:
+    """Op/field consistency for Stage B messages (deep sub-schemas live in
+    ``js.orin.intent`` / ``js.orin.handles`` / ``js.orin.draft``)."""
+
+    message_type = envelope["type"]
+    if message_type == "intent":
+        op = envelope.get("op")
+        if op not in INTENT_OPS:
+            raise ProtocolError(f"unknown intent op {op!r}")
+        intent = envelope.get("intent")
+        if op == "grant_export":
+            if not isinstance(envelope.get("grant"), dict):
+                raise ProtocolError("grant_export requires a 'grant' object")
+            if envelope.get("task_id") is None:
+                raise ProtocolError("grant_export requires 'task_id'")
+            if intent is not None:
+                raise ProtocolError("grant_export carries fields, not an 'intent' object")
+        elif op in ("register", "admin_unfreeze"):
+            if not isinstance(intent, dict):
+                raise ProtocolError(f"intent op {op!r} requires an 'intent' object")
+        elif intent is not None:
+            raise ProtocolError(f"intent op {op!r} must not carry an 'intent' object")
+    elif message_type == "handle":
+        op = envelope.get("op")
+        if op not in HANDLE_OPS:
+            raise ProtocolError(f"unknown handle op {op!r}")
+        if op == "issue" and not isinstance(envelope.get("spec"), dict):
+            raise ProtocolError("handle op 'issue' requires a 'spec' object")
+        if op == "resolve" and not envelope.get("handle") and not envelope.get("kind"):
+            raise ProtocolError("handle op 'resolve' requires 'handle' or 'kind'")
+    elif message_type == "handle_ack":
+        if envelope.get("ok", True):
+            has_result = any(key in envelope for key in ("handle", "candidates"))
+            if not has_result:
+                raise ProtocolError("successful handle_ack requires 'handle' or 'candidates'")
+    elif message_type == "draft_ack":
+        if envelope.get("ok", True):
+            verdict = envelope.get("verdict")
+            if verdict not in GATE_VERDICTS:
+                raise ProtocolError("draft_ack verdict must be a Gate Kernel class")
+            missing = envelope.get("missing", [])
+            if not isinstance(missing, list) or any(not isinstance(m, str) for m in missing):
+                raise ProtocolError("draft_ack 'missing' must be a list of strings")
+    elif message_type == "reconcile_ack":
+        if envelope.get("ok", True) and envelope.get("state") not in RECONCILE_STATES:
+            raise ProtocolError("successful reconcile_ack requires a known 'state'")
 
 
 def _infer_revoke_op(envelope: dict[str, Any]) -> str:
@@ -452,6 +713,7 @@ def parse_frame(data: bytes) -> dict[str, Any]:
     _validate_fields(envelope, _SCHEMA[message_type], reject_unknown=True)
     _validate_ack_semantics(envelope)
     _validate_revoke_semantics(envelope)
+    _validate_stageb_semantics(envelope)
     if message_type == "consume":
         validate_consume_request(envelope)
     elif message_type == "issue":
@@ -624,6 +886,27 @@ def validate_consume_request(envelope: dict[str, Any]) -> None:
         if "context" not in envelope:
             raise ProtocolError("consume mode 'context' requires 'context'")
         return
+    if mode == "cell":
+        payload = envelope.get("payload")
+        if not isinstance(payload, dict):
+            raise ProtocolError("consume mode 'cell' requires a 'payload' object")
+        if set(payload) == {"draft_id"}:
+            draft_id = payload.get("draft_id")
+            if (
+                not isinstance(draft_id, str)
+                or not draft_id.startswith("draft:")
+                or len(draft_id) > 256
+            ):
+                raise ProtocolError("draft consumption requires a bounded 'draft:' id")
+            return
+        if "draft_id" in payload:
+            raise ProtocolError("draft consumption payload must contain only 'draft_id'")
+        cell = payload.get("cell")
+        if not isinstance(cell, str) or not cell.startswith("cell."):
+            raise ProtocolError(
+                "cell payload must name a 'cell.*' capability or contain only 'draft_id'"
+            )
+        return
     if "lease" not in envelope:
         raise ProtocolError(f"consume mode {mode!r} requires 'lease'")
     validate_lease_dict(envelope["lease"])
@@ -673,11 +956,15 @@ def _validate_bound_expected(expected: dict[str, Any]) -> None:
 
 
 __all__ = [
+    "CELL_CONNECT_CAPS",
     "CLIENT_CAPS",
     "CONSUME_MODES",
     "EchoContextPayload",
     "ERROR_CODES",
+    "GATE_VERDICTS",
+    "HANDLE_OPS",
     "HEARTBEAT_INTERVAL_S",
+    "INTENT_OPS",
     "MAC_PREFIX",
     "MAX_FRAME_BYTES",
     "MAX_JSON_DEPTH",
@@ -689,10 +976,14 @@ __all__ = [
     "ProtocolError",
     "RATE_LIMIT_BURST",
     "RATE_LIMIT_PER_SECOND",
+    "RECONCILE_STATES",
+    "REQUIRED_CAP",
     "REVOKE_OPS",
     "SERVER_CAPS",
     "SERVER_QUEUE_DEPTH",
     "SESSION_KEY_BYTES",
+    "STAGE_B_CLIENT_CAPS",
+    "STAGE_B_SERVER_CAPS",
     "VERDICTS",
     "canonical_json",
     "compute_mac",

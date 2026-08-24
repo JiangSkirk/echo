@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -20,9 +22,16 @@ MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB
 class BrowserTool:
     """Fetch and extract web content."""
 
-    def __init__(self, limits: ToolLimits, guard: BehaviorGuard) -> None:
+    def __init__(
+        self,
+        limits: ToolLimits,
+        guard: BehaviorGuard,
+        *,
+        cell_backend: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    ) -> None:
         self.limits = limits
         self.guard = guard
+        self.cell_backend = cell_backend
         self._client: httpx.AsyncClient | None = None
 
     def get_specs(self) -> list[ToolSpec]:
@@ -40,6 +49,41 @@ class BrowserTool:
 
     async def fetch(self, url: str, max_chars: int | None = None) -> ToolResult:
         max_chars = max_chars if max_chars is not None else self.limits.file_read_max_chars
+
+        # With WP8 enabled, Network Cell is the sole network executor.  The
+        # backend is synchronous because it speaks the authenticated Orin
+        # socket; keep it off the event loop and fail closed on every error.
+        if self.cell_backend is not None:
+            try:
+                result = await asyncio.to_thread(
+                    self.cell_backend,
+                    {
+                        "tool": "net.fetch",
+                        "url": url,
+                        "max_chars": max_chars,
+                    },
+                )
+            except Exception:  # noqa: BLE001 - Cell failures must not trigger local fallback
+                return ToolResult(success=False, error="Network Cell safety boundary unavailable")
+            if result.get("status") != "COMMITTED" or not isinstance(
+                result.get("output"), str
+            ):
+                return ToolResult(success=False, error="Network Cell denied request")
+            metadata: dict[str, Any] = {"cell": "net"}
+            content_hash = result.get("content_hash")
+            final_url = result.get("final_url")
+            status_code = result.get("status_code")
+            if isinstance(content_hash, str):
+                metadata["content_hash"] = content_hash
+            if isinstance(final_url, str):
+                metadata["url"] = final_url
+            if isinstance(status_code, int):
+                metadata["status_code"] = status_code
+            return ToolResult(
+                success=True,
+                output=str(result["output"]),
+                metadata=metadata,
+            )
 
         # Resolve the host and reject any internal/metadata destination.
         # This catches numeric-host (127.1, 2130706433), wildcard-DNS

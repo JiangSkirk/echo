@@ -70,10 +70,26 @@ class Responder:
         )
         if target >= LEVEL_FREEZE and self._freeze_fn is not None:
             self._freeze_fn(session_id)
-        # TODO(stage-B): admin master credential required to unfreeze / drop
-        # below L3 (K§16.3). Stage A records L4/L5 but does not kill the
-        # process or roll policy packages.
         return target
+
+    def unfreeze(self, session_id: str, *, now_ms: int, evidence: str) -> int:
+        """R3 de-escalation (K§16.3): requires a verified admin intent.
+
+        Callers MUST have verified an admin IntentEnvelope before invoking —
+        the daemon's ``intent op=admin_unfreeze`` path is the only sanctioned
+        entry point and Echo cannot mint that signature. Unfreezing clears
+        the ladder level; leases already revoked by the freeze stay revoked.
+        """
+
+        current, _since, _old_evidence = self._store.responder_level(session_id)
+        self._store.set_responder_level(
+            session_id=session_id,
+            level=LEVEL_OBSERVE,
+            since=now_ms,
+            evidence=f"admin_unfreeze:{evidence}",
+        )
+        _ = current
+        return LEVEL_OBSERVE
 
 
 __all__ = [

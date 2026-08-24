@@ -16,7 +16,7 @@ from typing import Any
 from js.orin.protocol import canonical_json
 from js.security.signer import generate_signing_key, sign_content, verify_signature
 
-RECEIPT_KINDS = frozenset({"issue", "consume", "revoke", "freeze"})
+RECEIPT_KINDS = frozenset({"issue", "consume", "revoke", "freeze", "cell"})
 
 
 @dataclass(frozen=True, slots=True)

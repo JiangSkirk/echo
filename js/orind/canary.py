@@ -143,6 +143,25 @@ class CanaryVault:
             dual_evidence=read_at > 0,
         )
 
+    def record_egress_any(self, *, text: str, surface: str) -> CanaryHit | None:
+        """Authority-only scan when an effect draft has no model-set session id.
+
+        Plaintext tokens stay inside orind.  The returned object contains only
+        the owning session and a digest, so callers cannot leak the trigger.
+        """
+
+        if not self.enabled or not text:
+            return None
+        for session_id, token, token_hash, _kind, read_at in self._store.all_canaries():
+            if token and token in text:
+                return CanaryHit(
+                    session_id=session_id,
+                    token_hash=token_hash,
+                    surface=surface,
+                    dual_evidence=read_at > 0,
+                )
+        return None
+
 
 __all__ = [
     "CREDENTIAL_COUNT",
