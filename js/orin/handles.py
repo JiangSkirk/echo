@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
+import unicodedata
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final, cast
 
 from js.orin.protocol import MAX_SEQ, ProtocolError, canonical_json
@@ -61,6 +64,160 @@ CONFIDENTIALITY_LEVELS: Final[frozenset[str]] = frozenset({"PUBLIC", "CONFIDENTI
 CAPABILITIES: Final[frozenset[str]] = frozenset({"read", "stage", "write", "send", "use"})
 
 _SEAL_PREFIX: Final[str] = "orin-hmac-sha256:"
+_APPSHELL_DIRECTORY_BINDING_SCHEMA: Final[str] = "AppShellDirectoryBindingV1"
+_APPSHELL_DIRECTORY_COMMITMENT_DOMAIN: Final[str] = "orin:appshell-dirh:v1"
+
+
+def _bounded_string(value: Any, name: str, *, max_len: int = 512) -> str:
+    if not isinstance(value, str) or not value or len(value) > max_len:
+        raise ProtocolError(f"{name} must be a bounded non-empty string")
+    if any(unicodedata.category(char).startswith("C") for char in value):
+        raise ProtocolError(f"{name} must not contain control characters")
+    return value
+
+
+def canonical_workspace_root(root: Path | str) -> str:
+    """Return the strict NFC absolute directory root used by File Cell.
+
+    Symlinks are resolved before the path is serialized. Existence is checked
+    against the resolved filesystem object while the returned spelling is NFC,
+    so macOS' decomposed on-disk Unicode cannot perturb the wire commitment.
+    """
+
+    if not isinstance(root, (Path, str)) or isinstance(root, bool):
+        raise ProtocolError("workspace root must be a path or string")
+    if isinstance(root, str) and not root:
+        raise ProtocolError("workspace root must be non-empty")
+    try:
+        resolved = Path(root).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ProtocolError("workspace root must resolve to an existing directory") from exc
+    if not resolved.is_absolute() or not resolved.is_dir():
+        raise ProtocolError("workspace root must resolve to an existing directory")
+    normalized = unicodedata.normalize("NFC", os.fspath(resolved))
+    # ``OriginHandle.object_digest`` is capped at 512 characters, so reject
+    # an unusable owner root before any signed intent or handle is recorded.
+    _bounded_string(normalized, "workspace root", max_len=512)
+    if not Path(normalized).is_absolute():
+        raise ProtocolError("workspace root must be absolute")
+    return normalized
+
+
+@dataclass(frozen=True, slots=True)
+class AppShellDirectoryBindingV1:
+    """AppShell-only grant material carried by ``intent(register)``.
+
+    The parent AppShell session deliberately remains a top-level protocol
+    field. Keeping this object to five exact wire fields prevents a caller
+    from smuggling a second identity or authority-bearing root into it.
+    """
+
+    principal_owner: str
+    principal_epoch: int
+    product_id: str
+    workspace_root: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": _APPSHELL_DIRECTORY_BINDING_SCHEMA,
+            "principal_owner": self.principal_owner,
+            "principal_epoch": self.principal_epoch,
+            "product_id": self.product_id,
+            "workspace_root": self.workspace_root,
+        }
+
+
+def appshell_directory_binding_from_dict(data: Any) -> AppShellDirectoryBindingV1:
+    """Strictly parse the five-field AppShell directory-binding grant."""
+
+    if not isinstance(data, dict):
+        raise ProtocolError("AppShell directory binding must be an object")
+    fields = {
+        "schema",
+        "principal_owner",
+        "principal_epoch",
+        "product_id",
+        "workspace_root",
+    }
+    if set(data) != fields:
+        missing = fields - set(data)
+        unknown = set(data) - fields
+        if missing:
+            raise ProtocolError(f"missing AppShell directory binding fields {sorted(missing)!r}")
+        raise ProtocolError(f"unknown AppShell directory binding fields {sorted(unknown)!r}")
+    if data["schema"] != _APPSHELL_DIRECTORY_BINDING_SCHEMA:
+        raise ProtocolError("unknown AppShell directory binding schema")
+    principal_owner = _bounded_string(data["principal_owner"], "principal_owner")
+    product_id = _bounded_string(data["product_id"], "product_id", max_len=256)
+    principal_epoch = data["principal_epoch"]
+    if (
+        not isinstance(principal_epoch, int)
+        or isinstance(principal_epoch, bool)
+        or not 0 <= principal_epoch <= MAX_SEQ
+    ):
+        raise ProtocolError("principal_epoch must be a u64 integer")
+    workspace_root = data["workspace_root"]
+    canonical_root = canonical_workspace_root(workspace_root)
+    if workspace_root != canonical_root:
+        raise ProtocolError("workspace_root must be its canonical NFC absolute path")
+    return AppShellDirectoryBindingV1(
+        principal_owner=principal_owner,
+        principal_epoch=principal_epoch,
+        product_id=product_id,
+        workspace_root=canonical_root,
+    )
+
+
+def derive_appshell_directory_handle_id(
+    *,
+    installation_owner_hash: str,
+    product_id: str,
+    task_id: str,
+    profile: str,
+    principal_owner: str,
+    principal_session: str,
+    principal_epoch: int,
+    workspace_root: str,
+) -> str:
+    """Derive the frozen DirectoryHandle id for one confirmed AppShell task."""
+
+    installation_owner_hash = _bounded_string(
+        installation_owner_hash, "installation_owner_hash"
+    )
+    product_id = _bounded_string(product_id, "product_id", max_len=256)
+    task_id = _bounded_string(task_id, "task_id", max_len=256)
+    if not task_id.startswith("task:"):
+        raise ProtocolError("task_id must start with 'task:'")
+    profile = _bounded_string(profile, "profile", max_len=32)
+    if profile not in {"personal", "work"}:
+        raise ProtocolError("AppShell directory binding profile must be personal or work")
+    principal_owner = _bounded_string(principal_owner, "principal_owner")
+    principal_session = _bounded_string(principal_session, "principal_session", max_len=128)
+    if (
+        not isinstance(principal_epoch, int)
+        or isinstance(principal_epoch, bool)
+        or not 0 <= principal_epoch <= MAX_SEQ
+    ):
+        raise ProtocolError("principal_epoch must be a u64 integer")
+    workspace_root = _bounded_string(workspace_root, "workspace_root", max_len=512)
+    if not Path(workspace_root).is_absolute():
+        raise ProtocolError("workspace_root must be absolute")
+    if unicodedata.normalize("NFC", workspace_root) != workspace_root:
+        raise ProtocolError("workspace_root must be NFC-normalized")
+
+    commitment: list[str | int] = [
+        _APPSHELL_DIRECTORY_COMMITMENT_DOMAIN,
+        installation_owner_hash,
+        product_id,
+        task_id,
+        profile,
+        principal_owner,
+        principal_session,
+        principal_epoch,
+        workspace_root,
+    ]
+    digest = hashlib.sha256(canonical_json(commitment).encode("utf-8")).hexdigest()
+    return make_handle_id("DirectoryHandle", f"appshell-{digest}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +389,7 @@ class SeedCandidate:
 
 
 __all__ = [
+    "AppShellDirectoryBindingV1",
     "CAPABILITIES",
     "CONFIDENTIALITY_LEVELS",
     "HANDLE_KINDS",
@@ -240,6 +398,9 @@ __all__ = [
     "OriginHandle",
     "SeedCandidate",
     "SOURCE_CLASSES",
+    "appshell_directory_binding_from_dict",
+    "canonical_workspace_root",
+    "derive_appshell_directory_handle_id",
     "handle_from_dict",
     "kind_of_handle_id",
     "make_handle_id",

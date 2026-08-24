@@ -576,8 +576,9 @@ def _validate_stageb_semantics(envelope: dict[str, Any]) -> None:
         if op not in INTENT_OPS:
             raise ProtocolError(f"unknown intent op {op!r}")
         intent = envelope.get("intent")
+        grant = envelope.get("grant")
         if op == "grant_export":
-            if not isinstance(envelope.get("grant"), dict):
+            if not isinstance(grant, dict):
                 raise ProtocolError("grant_export requires a 'grant' object")
             if envelope.get("task_id") is None:
                 raise ProtocolError("grant_export requires 'task_id'")
@@ -586,8 +587,18 @@ def _validate_stageb_semantics(envelope: dict[str, Any]) -> None:
         elif op in ("register", "admin_unfreeze"):
             if not isinstance(intent, dict):
                 raise ProtocolError(f"intent op {op!r} requires an 'intent' object")
+            if op == "register" and grant is not None:
+                if not isinstance(grant, dict):
+                    raise ProtocolError("intent register 'grant' must be an object")
+                session_id = envelope.get("session_id")
+                if not isinstance(session_id, str) or not session_id:
+                    raise ProtocolError("intent register with 'grant' requires 'session_id'")
+            elif grant is not None:
+                raise ProtocolError(f"intent op {op!r} must not carry a 'grant' object")
         elif intent is not None:
             raise ProtocolError(f"intent op {op!r} must not carry an 'intent' object")
+        elif grant is not None:
+            raise ProtocolError(f"intent op {op!r} must not carry a 'grant' object")
     elif message_type == "handle":
         op = envelope.get("op")
         if op not in HANDLE_OPS:

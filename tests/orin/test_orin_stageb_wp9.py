@@ -14,6 +14,7 @@ import json
 import os
 import sqlite3
 import time
+import unicodedata
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -23,14 +24,24 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
+from js.appshell.principal import AppShellEpochBindingV1
+from js.echo import stable_payload_hash
 from js.echo.capability import LeaseDenied
+from js.echo.turn_context import (
+    RuntimeContext,
+    reset_runtime_context,
+    set_runtime_context,
+)
 from js.orin.client import OrinLeaseClientAdapter
 from js.orin.draft import CellPackage, CommitPermit, EffectDraft, StateWitness
-from js.orin.handles import OriginHandle
+from js.orin.handles import OriginHandle, make_handle_id
 from js.orin.intent import Budgets, IntentEnvelope
-from js.orin.protocol import ProtocolError
+from js.orin.protocol import ProtocolError, canonical_json
 from js.orin.testing import TestOrind
+from js.orin.witness import build_intent_from_template
 from js.orind.kernel import canonical_effect_hash_of
+from js.tools import registry as registry_module
+from js.tools.registry import ToolExecutionContext
 
 
 def _now_ms() -> int:
@@ -190,6 +201,35 @@ def _staged_file_with_bytes(root: Path, payload: bytes) -> Path:
             continue
     assert len(matches) == 1, "preflight must stage the exact proposed bytes once"
     return matches[0]
+
+
+def _appshell_directory_handle_id(
+    *,
+    installation_owner_hash: str,
+    product_id: str,
+    task_id: str,
+    profile: str,
+    principal_owner: str,
+    principal_session: str,
+    principal_epoch: int,
+    workspace_root: Path,
+) -> str:
+    """Independent product-side oracle for ``orin:appshell-dirh:v1``."""
+
+    root_nfc = unicodedata.normalize("NFC", os.fspath(workspace_root.resolve()))
+    material = [
+        "orin:appshell-dirh:v1",
+        installation_owner_hash,
+        product_id,
+        task_id,
+        profile,
+        principal_owner,
+        principal_session,
+        principal_epoch,
+        root_nfc,
+    ]
+    digest = hashlib.sha256(canonical_json(material).encode("utf-8")).hexdigest()
+    return make_handle_id("DirectoryHandle", f"appshell-{digest}")
 
 
 class TestFileCellUnit:
@@ -811,6 +851,153 @@ class TestFileCellIntegration:
         return adapter, task_id, handle_id
 
     @staticmethod
+    def _register_product_file_binding(
+        orind: TestOrind,
+        witness_key: ed25519.Ed25519PrivateKey,
+        owner_root: Path,
+        *,
+        profile: str,
+    ) -> tuple[OrinLeaseClientAdapter, dict[str, Any]]:
+        installation_owner = "sha256:" + hashlib.sha256(
+            f"installation:{uuid4().hex}".encode()
+        ).hexdigest()
+        principal_owner = "sha256:" + hashlib.sha256(
+            f"appshell:{uuid4().hex}".encode()
+        ).hexdigest()
+        principal_session = f"appshell:wp9-product-{uuid4().hex}"
+        principal_epoch = 37
+        product_id = "js-work" if profile == "work" else "js-agent"
+        task_id = f"task:{uuid4().hex}"
+        handle_id = _appshell_directory_handle_id(
+            installation_owner_hash=installation_owner,
+            product_id=product_id,
+            task_id=task_id,
+            profile=profile,
+            principal_owner=principal_owner,
+            principal_session=principal_session,
+            principal_epoch=principal_epoch,
+            workspace_root=owner_root,
+        )
+        intent = build_intent_from_template(
+            template=profile,
+            task_id=task_id,
+            raw_request="commit this exact workspace change",
+            owner_key_hash=installation_owner,
+            product_id=product_id,
+            resource_handles=(handle_id,),
+        ).sign_with(witness_key)
+        adapter = _adapter(orind)
+        ack = adapter.register_file_binding(
+            intent.to_dict(),
+            appshell_owner=principal_owner,
+            appshell_session=principal_session,
+            appshell_epoch=principal_epoch,
+            workspace_root=owner_root,
+        )
+        assert ack["ok"] is True
+        assert ack["directory_handle_id"] == handle_id
+        return adapter, {
+            "installation_owner": installation_owner,
+            "principal_owner": principal_owner,
+            "principal_session": principal_session,
+            "principal_epoch": principal_epoch,
+            "product_id": product_id,
+            "profile": profile,
+            "task_id": task_id,
+            "handle_id": handle_id,
+        }
+
+    @staticmethod
+    def _enter_product_file_context(
+        owner_root: Path,
+        binding: dict[str, Any],
+        change: dict[str, str],
+    ) -> tuple[Any, Any]:
+        runtime_state = owner_root.parent / f"runtime-state-{uuid4().hex}"
+        runtime_state.mkdir()
+        echo_session = f"echo-child:{uuid4().hex}"
+        run_id = f"run:{uuid4().hex}"
+        runtime = RuntimeContext(
+            product_id=str(binding["product_id"]),
+            channel="web",
+            owner_key_hash=str(binding["principal_owner"]),
+            session_id=echo_session,
+            run_id=run_id,
+            role="user",
+            # This is deliberately not the Orin personal/work profile.  The
+            # trusted mode comes from the parent AppShell epoch binding.
+            profile="runtime-tool-profile",
+            capabilities=("file_write",),
+            workspace=owner_root.resolve(),
+            state_dir=runtime_state.resolve(),
+            fs_roots=(owner_root.resolve(),),
+            appshell_epoch_binding=AppShellEpochBindingV1(
+                owner=str(binding["principal_owner"]),
+                session=str(binding["principal_session"]),
+                active_mode=str(binding["profile"]),  # type: ignore[arg-type]
+                # The epoch workspace is an opaque product selection, never
+                # a filesystem root.  RuntimeContext.workspace is authoritative.
+                workspace="workspace:opaque-selection-not-a-path",
+                epoch=int(binding["principal_epoch"]),
+            ),
+        )
+        tool = ToolExecutionContext(
+            owner_key_hash=str(binding["principal_owner"]),
+            run_id=run_id,
+            tool_name="file_write",
+            args_hash=stable_payload_hash(change),
+            fs_roots=(os.fspath(owner_root.resolve()),),
+            network_policy="deny",
+            max_bytes=1 << 20,
+            max_duration_ms=10_000,
+            product_id=str(binding["product_id"]),
+            session_id=echo_session,
+            profile="runtime-tool-profile",
+        )
+        runtime_token = set_runtime_context(runtime)
+        tool_token = registry_module._CURRENT_TOOL_EXECUTION_CONTEXT.set(  # noqa: SLF001
+            tool
+        )
+        return runtime_token, tool_token
+
+    @staticmethod
+    def _exit_product_file_context(tokens: tuple[Any, Any]) -> None:
+        runtime_token, tool_token = tokens
+        registry_module._CURRENT_TOOL_EXECUTION_CONTEXT.reset(tool_token)  # noqa: SLF001
+        reset_runtime_context(runtime_token)
+
+    @staticmethod
+    def _record_product_file_chain(
+        adapter: OrinLeaseClientAdapter,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        calls: list[str] = []
+        drafts: list[dict[str, Any]] = []
+        original_submit = adapter.submit_draft
+        original_preflight = adapter.preflight_draft
+        original_consume = adapter.consume_draft
+
+        def submit(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            calls.append("submit")
+            raw = args[0] if args else kwargs.get("draft_data")
+            assert isinstance(raw, dict)
+            drafts.append(raw)
+            return original_submit(*args, **kwargs)
+
+        def preflight(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            calls.append("preflight")
+            return original_preflight(*args, **kwargs)
+
+        def consume(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            calls.append("consume")
+            return original_consume(*args, **kwargs)
+
+        monkeypatch.setattr(adapter, "submit_draft", submit)
+        monkeypatch.setattr(adapter, "preflight_draft", preflight)
+        monkeypatch.setattr(adapter, "consume_draft", consume)
+        return calls, drafts
+
+    @staticmethod
     def _assert_authority_rejected_before_cell(
         orind: TestOrind,
         adapter: OrinLeaseClientAdapter,
@@ -890,6 +1077,107 @@ class TestFileCellIntegration:
         assert set(commit_fields) >= {"permit", "package"}
         assert "package" not in commit_fields["permit"]
         assert commit_fields["package"]["draft"]["draft_id"] == draft.draft_id
+
+    def test_work_product_binding_runs_strict_file_chain_and_returns_safe_projection(
+        self,
+        file_orind: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        orind, witness_key, root = file_orind
+        owner_root = root / f"product-workspace-{uuid4().hex}"
+        owner_root.mkdir()
+        target = owner_root / "nested" / "product.txt"
+        change = {"path": "nested/product.txt", "content": "product-binding\n"}
+        adapter, binding = self._register_product_file_binding(
+            orind,
+            witness_key,
+            owner_root,
+            profile="work",
+        )
+        assert binding["installation_owner"] != binding["principal_owner"]
+        calls, drafts = self._record_product_file_chain(adapter, monkeypatch)
+        intents = orind.daemon._intents  # noqa: SLF001
+        assert intents is not None
+
+        def no_export_pass(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("file.commit must not inspect or consume ExportPass")
+
+        monkeypatch.setattr(intents, "active_exact_export_passes", no_export_pass)
+        monkeypatch.setattr(intents, "claim_personal_export_pass", no_export_pass)
+        tokens = self._enter_product_file_context(owner_root, binding, change)
+        try:
+            result = adapter.run_file_change(change)
+        finally:
+            self._exit_product_file_context(tokens)
+            adapter.close()
+
+        assert calls == ["submit", "preflight", "consume"]
+        assert len(drafts) == 1
+        assert drafts[0]["task_id"] == binding["task_id"]
+        assert drafts[0]["effect_type"] == "file.commit"
+        assert drafts[0]["arguments"] == {
+            "directory_handle": binding["handle_id"],
+            "changes": [change],
+        }
+        assert result["status"] == "COMMITTED"
+        assert target.read_text(encoding="utf-8") == "product-binding\n"
+
+        visible = json.dumps(result, ensure_ascii=False, sort_keys=True)
+        for secret in (
+            "permit",
+            "package",
+            "license",
+            "token",
+            "directory_handle",
+            "workspace_root",
+            "object_digest",
+            "content",
+            os.fspath(owner_root.resolve()),
+            "product-binding",
+        ):
+            assert secret not in visible
+
+    def test_personal_product_binding_preflights_then_consume_fails_closed(
+        self,
+        file_orind: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        orind, witness_key, root = file_orind
+        owner_root = root / f"product-personal-{uuid4().hex}"
+        owner_root.mkdir()
+        target = owner_root / "private.txt"
+        change = {"path": "private.txt", "content": "must-not-commit\n"}
+        adapter, binding = self._register_product_file_binding(
+            orind,
+            witness_key,
+            owner_root,
+            profile="personal",
+        )
+        calls, drafts = self._record_product_file_chain(adapter, monkeypatch)
+        intents = orind.daemon._intents  # noqa: SLF001
+        assert intents is not None
+
+        def no_export_pass(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("personal file.commit must not touch ExportPass")
+
+        monkeypatch.setattr(intents, "active_exact_export_passes", no_export_pass)
+        monkeypatch.setattr(intents, "claim_personal_export_pass", no_export_pass)
+        tokens = self._enter_product_file_context(owner_root, binding, change)
+        try:
+            with pytest.raises(LeaseDenied):
+                adapter.run_file_change(change)
+        finally:
+            self._exit_product_file_context(tokens)
+            adapter.close()
+
+        assert calls == ["submit", "preflight", "consume"]
+        assert len(drafts) == 1
+        assert drafts[0]["task_id"] == binding["task_id"]
+        assert drafts[0]["arguments"] == {
+            "directory_handle": binding["handle_id"],
+            "changes": [change],
+        }
+        assert not target.exists()
 
     def test_raw_cell_file_payload_is_rejected(self, file_orind: Any) -> None:
         orind, _witness_key, root = file_orind

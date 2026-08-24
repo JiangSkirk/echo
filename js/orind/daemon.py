@@ -46,7 +46,14 @@ from js.orin.draft import (
     export_pass_from_dict,
     witness_from_dict,
 )
-from js.orin.handles import OriginHandle, handle_from_dict
+from js.orin.handles import (
+    OriginHandle,
+    appshell_directory_binding_from_dict,
+    canonical_workspace_root,
+    derive_appshell_directory_handle_id,
+    handle_from_dict,
+)
+from js.orin.intent import intent_from_dict
 from js.orin.protocol import (
     CELL_CONNECT_CAPS,
     HEARTBEAT_INTERVAL_S,
@@ -706,7 +713,94 @@ class OrinDaemon:
             data = envelope.get("intent")
             if not isinstance(data, dict):
                 return {"ok": False, "code": "bad_message", "reason": "register requires intent"}
-            return intents.register(data, now_ms=self._now_ms())
+            raw_grant = envelope.get("grant")
+            if raw_grant is None:
+                # Generic signed intent registration remains a valid, non-issuing
+                # operation.  Only the AppShell binding grant below may mint a
+                # DirectoryHandle.
+                return intents.register(data, now_ms=self._now_ms())
+            if not isinstance(raw_grant, dict):
+                return {
+                    "ok": False,
+                    "code": "bad_message",
+                    "reason": "register grant must be an object",
+                }
+            session_id = str(envelope.get("session_id") or "")
+            if not session_id:
+                return {
+                    "ok": False,
+                    "code": "bad_message",
+                    "reason": "AppShell directory binding requires parent session",
+                }
+            try:
+                binding = appshell_directory_binding_from_dict(raw_grant)
+                intent = intent_from_dict(data)
+                root = canonical_workspace_root(binding.workspace_root)
+            except Exception as exc:
+                return {"ok": False, "code": "bad_message", "reason": str(exc)}
+            if root != binding.workspace_root:
+                return {
+                    "ok": False,
+                    "code": "denied",
+                    "reason": "workspace root is not canonical NFC",
+                }
+            if (
+                intent.issued_by != "appshell:owner-witness"
+                or intent.profile not in {"personal", "work"}
+                or "file.commit" not in intent.allowed_effect_classes
+                or binding.product_id != intent.product_id
+            ):
+                return {
+                    "ok": False,
+                    "code": "denied",
+                    "reason": "intent is not an AppShell file binding",
+                }
+            try:
+                expected_handle_id = derive_appshell_directory_handle_id(
+                    installation_owner_hash=intent.owner_key_hash,
+                    product_id=intent.product_id,
+                    task_id=intent.task_id,
+                    profile=intent.profile,
+                    principal_owner=binding.principal_owner,
+                    principal_session=session_id,
+                    principal_epoch=binding.principal_epoch,
+                    workspace_root=root,
+                )
+            except Exception as exc:
+                return {"ok": False, "code": "bad_message", "reason": str(exc)}
+            directory_handles = tuple(
+                handle_id
+                for handle_id in intent.allowed_resource_handles
+                if handle_id.startswith("dirh:")
+            )
+            if directory_handles != (expected_handle_id,):
+                return {
+                    "ok": False,
+                    "code": "denied",
+                    "reason": "signed DirectoryHandle commitment mismatch",
+                }
+            registered = intents.register(data, now_ms=self._now_ms())
+            if not registered.get("ok"):
+                return registered
+            broker = self._broker
+            if broker is None:  # pragma: no cover - stage_b initializes it
+                return {"ok": False, "code": "unsupported", "reason": "handle broker unavailable"}
+            issued = broker.issue(
+                kind="DirectoryHandle",
+                token=expected_handle_id.partition(":")[2],
+                owner_key_hash=intent.owner_key_hash,
+                tenant=intent.profile,
+                object_digest=root,
+                capabilities=("read", "stage", "write"),
+                expires_at_ms=intent.expires_at_ms,
+                approved=True,
+                now_ms=self._now_ms(),
+            )
+            if not issued.get("ok"):
+                return issued
+            # Never return the sealed handle or its root over the Echo-facing
+            # connection.  The AppShell adapter already knows the committed id.
+            return {"ok": True}
         if op == "active":
             task_id = str(envelope.get("task_id") or "")
             if not task_id:

@@ -449,41 +449,128 @@ async def issue_owner_intent(
 ) -> dict[str, Any]:
     """Sign an IntentEnvelope as the owner witness and register it with Orin."""
     check_origin(request)
-    runtime = _mode_runtime(request, principal)
-    if runtime is None:
-        raise HTTPException(503, {"code": "runtime_unavailable"})
-    adapter, reason = _stage_b_adapter(runtime)
-    if adapter is None:
-        raise HTTPException(503, {"code": reason})
-    from js.orin.witness import build_intent_from_template, ensure_witness_keypair
-
-    settings = runtime.settings
-    state_dir = Path(settings.state_dir)
-    private_key, _pub = ensure_witness_keypair(state_dir)
-    task_id = body.task_id or f"task:{uuid4().hex}"
-    envelope = build_intent_from_template(
-        template=body.template,
-        task_id=task_id,
-        raw_request=body.raw_request,
-        owner_key_hash=_installation_owner_hash(settings),
-        ttl_ms=body.ttl_ms or 60 * 60 * 1000,
-        sink_handles=tuple(body.sink_handles),
-        resource_handles=tuple(body.resource_handles),
+    gate: AppShellModeGate | None = getattr(
+        request.app.state,
+        "appshell_mode_gate",
+        None,
     )
-    signed = envelope.sign_with(private_key)
+    if gate is None:
+        raise HTTPException(503, {"code": "appshell_mode_gate_unavailable"})
     try:
-        ack = adapter.register_intent(signed.to_dict())
-    except LeaseDenied as exc:
-        raise HTTPException(502, {"code": "orind_rejected", "reason": str(exc)}) from exc
-    return {
-        "schema": "AppShellIntentAckV1",
-        "ok": bool(ack.get("ok")),
-        "task_id": task_id,
-        "intent_id": envelope.intent_id,
-        "expires_at_ms": envelope.expires_at_ms,
-        "approval_policy": envelope.approval_policy,
-        "allowed_effect_classes": list(envelope.allowed_effect_classes),
-    }
+        admission = await gate.admit(
+            principal,
+            operation_kind="appshell_orin_intent",
+        )
+    except AppShellEpochClosedError as exc:
+        raise HTTPException(409, {"code": "appshell_epoch_closed"}) from exc
+    except AppShellOperationLimitError as exc:
+        raise HTTPException(429, {"code": "appshell_operation_limit"}) from exc
+
+    try:
+        state = request.app.state
+        if principal.active_mode == "work":
+            if principal.workspace != getattr(state, "work_workspace_handle", None):
+                raise HTTPException(409, {"code": "appshell_workspace_binding_mismatch"})
+        elif principal.workspace is not None:
+            raise HTTPException(409, {"code": "appshell_workspace_binding_mismatch"})
+
+        runtime = _mode_runtime(request, principal)
+        if runtime is None:
+            raise HTTPException(503, {"code": "runtime_unavailable"})
+        adapter, reason = _stage_b_adapter(runtime)
+        if adapter is None:
+            raise HTTPException(503, {"code": reason})
+        from js.orin.handles import (
+            canonical_workspace_root,
+            derive_appshell_directory_handle_id,
+        )
+        from js.orin.witness import build_intent_from_template, ensure_witness_keypair
+
+        if any(handle.startswith("dirh:") for handle in body.resource_handles):
+            raise HTTPException(400, {"code": "directory_handle_is_server_derived"})
+
+        settings = runtime.settings
+        state_dir = Path(settings.state_dir)
+        private_key, _pub = ensure_witness_keypair(state_dir)
+        installation_owner = _installation_owner_hash(settings)
+        directory_handle_id: str | None = None
+
+        if body.template in {"personal", "work"}:
+            if body.template != principal.active_mode:
+                raise HTTPException(403, {"code": "intent_profile_not_active"})
+            if body.task_id is not None:
+                raise HTTPException(400, {"code": "orin_task_id_is_server_derived"})
+            task_id = f"task:{uuid4().hex}"
+            product_id = str(getattr(settings, "product_id", "js-agent"))
+            workspace_root = canonical_workspace_root(settings.workspace)
+            directory_handle_id = derive_appshell_directory_handle_id(
+                installation_owner_hash=installation_owner,
+                product_id=product_id,
+                task_id=task_id,
+                profile=body.template,
+                principal_owner=principal.owner,
+                principal_session=principal.session,
+                principal_epoch=principal.epoch,
+                workspace_root=workspace_root,
+            )
+            envelope = build_intent_from_template(
+                template=body.template,
+                task_id=task_id,
+                raw_request=body.raw_request,
+                owner_key_hash=installation_owner,
+                product_id=product_id,
+                ttl_ms=body.ttl_ms or 60 * 60 * 1000,
+                sink_handles=tuple(body.sink_handles),
+                resource_handles=(*body.resource_handles, directory_handle_id),
+            )
+            signed = envelope.sign_with(private_key)
+            try:
+                ack = adapter.register_file_binding(
+                    signed.to_dict(),
+                    appshell_owner=principal.owner,
+                    appshell_session=principal.session,
+                    appshell_epoch=principal.epoch,
+                    workspace_root=workspace_root,
+                )
+            except LeaseDenied as exc:
+                raise HTTPException(
+                    502,
+                    {"code": "orind_rejected", "reason": str(exc)},
+                ) from exc
+        else:
+            task_id = body.task_id or f"task:{uuid4().hex}"
+            envelope = build_intent_from_template(
+                template=body.template,
+                task_id=task_id,
+                raw_request=body.raw_request,
+                owner_key_hash=installation_owner,
+                ttl_ms=body.ttl_ms or 60 * 60 * 1000,
+                sink_handles=tuple(body.sink_handles),
+                resource_handles=tuple(body.resource_handles),
+            )
+            signed = envelope.sign_with(private_key)
+            try:
+                ack = adapter.register_intent(signed.to_dict())
+            except LeaseDenied as exc:
+                raise HTTPException(
+                    502,
+                    {"code": "orind_rejected", "reason": str(exc)},
+                ) from exc
+
+        response: dict[str, Any] = {
+            "schema": "AppShellIntentAckV1",
+            "ok": bool(ack.get("ok")),
+            "task_id": task_id,
+            "intent_id": envelope.intent_id,
+            "expires_at_ms": envelope.expires_at_ms,
+            "approval_policy": envelope.approval_policy,
+            "allowed_effect_classes": list(envelope.allowed_effect_classes),
+        }
+        if directory_handle_id is not None:
+            response["directory_handle_id"] = directory_handle_id
+        return response
+    finally:
+        await gate.release(admission)
 
 
 @router.get("/intent/active")
