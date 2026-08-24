@@ -97,7 +97,7 @@
 | `docs/security/orin/ORIN_EFFECT_KERNEL_V1.md` | 效果内核路线（终态基线） | 已冻结；勘误：`registry.py` 引用行号 655/78 互换（论断成立） |
 | `docs/security/orin/ORIN_MERGE_REVIEW.md` | 合并评审：33 项机制判定 + 17 条决策（已拍板） | 引用已核验；实施以阶段 A 规格为准 |
 | `docs/security/orin/ORIN_STAGE_A_SPEC.md` | 阶段 A 实施规格 | 机器生成，未经人工评审不得施工 |
-| `docs/security/orin/ORIN_STAGE_C_SPEC.md` | 阶段 C「强制模式」实施规格 | 机器生成，未经人工评审不得施工；阶段 C 未实施 |
+| `docs/security/orin/ORIN_STAGE_C_SPEC.md` | 阶段 C「强制模式」实施规格 | 已人工评审，仅授权 C0；阶段 C 未实施 |
 | WP0 基线数字 | `benchmarks/orin/WP0_BASELINE.md` | 已实测；蜜罐不用 pyahocorasick，巡逻基数用标准库近似 |
 | WP1 orind 骨架 + 工牌在线化 | `js/orin/` + `js/orind/` + 测试 `tests/orin/` | 已落地：UDS 协议六类消息、KeyBox 收养不轮换、同一本 JSONL 账本、回退不丢牌、攻击面全拒。心跳在适配器内（1s 兜底）而非 turn_runtime——懒连接 + 失败语义等价，为 Stage A 有意简化 |
 | WP2 污点 + 策略表 | `js/orin/taint.py` + `js/orind/policy.py` + 11 处打标 | 已落地；conservative 默认审批；compat=旧行为+记录；mock 11 任务 1.000；红队仅阻断断言 |

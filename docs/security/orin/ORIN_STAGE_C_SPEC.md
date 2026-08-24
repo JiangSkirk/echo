@@ -1,6 +1,6 @@
 # Orin 阶段 C「强制模式」实施规格
 
-> 状态：拟议实施规格，机器生成（OpenAI Codex），未经人工评审不得施工；阶段 C 尚未实施
+> 状态：已人工评审，仅授权 WP-C0；阶段 C 未实施
 > 日期：2026-08-24（Asia/Shanghai）
 > 施工基线：commit `652d035e0fda0e945da97e55b73a8f4116716410`，分支 `feature/orin-stage-b`
 > 终态北极星：`ORIN_EFFECT_KERNEL_V1.md`（**K**）；阶段 C 对应 K P5，上线验收只听 K§15.6
@@ -385,6 +385,8 @@ ambient handler 收口：
 
 回退开关：所有 C 开关保持 `false`；无运行时变化。
 
+C0 证据索引：[`ORIN_STAGE_C_C0_INVENTORY.md`](ORIN_STAGE_C_C0_INVENTORY.md)。该索引只记录只读盘点、书面冻结与基线回归，不代表 C1 或任何运行时施工获准。
+
 ### WP-C1：可信控制面、Cell 身份与环境收紧
 
 交付物：
@@ -628,7 +630,7 @@ RCE 验证使用“已获得任意控制流”的无害测试入口与哨兵资�
 
 只有以下全部满足，才允许把阶段 C 从“规格”改为“已实施候选”：
 
-- [ ] 本规格已人工评审并有明确施工授权；
+- [x] 本规格已人工评审并仅授权 WP-C0；
 - [ ] C0–C7 严格顺序完成；
 - [ ] Desktop 与 Memory 已整迁；
 - [ ] AppShell 可信确认面已离开 Echo 失陷域；
