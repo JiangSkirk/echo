@@ -986,6 +986,48 @@ class OrinStore:
         )
         self._conn.commit()
 
+    def record_handle_immutable(
+        self,
+        *,
+        handle_id: str,
+        kind: str,
+        payload: dict[str, Any],
+    ) -> str:
+        """Record a Cell-derived handle without ever overwriting its identity.
+
+        Identical replay is idempotent; reusing an id for different sealed
+        content is a hard conflict.  This is deliberately separate from the
+        Stage-B approval path, whose historical ``record_handle`` semantics
+        remain unchanged.
+        """
+
+        payload_json = _stable_json(payload)
+        with self._conn:
+            cursor = self._conn.execute(
+                (
+                    "INSERT OR IGNORE INTO handles"
+                    " (handle_id, kind, owner_key_hash, expires_at_ms, created_at_ms, payload_json)"
+                    " VALUES (?, ?, ?, ?, ?, ?)"
+                ),
+                (
+                    handle_id,
+                    kind,
+                    str(payload.get("owner_key_hash", "")),
+                    int(payload.get("expires_at_ms", 0)),
+                    int(payload.get("created_at_ms", 0)),
+                    payload_json,
+                ),
+            )
+            if cursor.rowcount == 1:
+                return "stored"
+            row = self._conn.execute(
+                "SELECT kind, payload_json FROM handles WHERE handle_id = ?",
+                (handle_id,),
+            ).fetchone()
+        if row is not None and (str(row[0]), str(row[1])) == (kind, payload_json):
+            return "idempotent"
+        return "conflict"
+
     def get_handle(self, handle_id: str) -> dict[str, Any] | None:
         row = self._conn.execute(
             "SELECT payload_json FROM handles WHERE handle_id = ?",

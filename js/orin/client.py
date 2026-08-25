@@ -80,6 +80,46 @@ _FILE_RESULT_FIELDS = frozenset(
         "commit_guarantee",
     }
 )
+_DESKTOP_OBSERVE_FIELDS = frozenset(
+    {
+        "status",
+        "desktop_target_handle_id",
+        "target_kind",
+        "target_label",
+        "display_id",
+        "window_number",
+        "owner_pid",
+        "width",
+        "height",
+        "scale",
+        "pixel_hash",
+        "image_base64",
+        "image_mime_type",
+        "observed_at_ms",
+        "available",
+        "platform",
+        "accessibility",
+        "screen_recording",
+        "dependencies",
+        "mode",
+        "mouse",
+        "apps",
+        "windows",
+        "operation_count",
+    }
+)
+_DESKTOP_ACTION_FIELDS = frozenset(
+    {
+        "status",
+        "error",
+        "duplicate",
+        "receipt_id",
+        "action",
+        "before_digest",
+        "after_digest",
+        "commit_guarantee",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1464,6 +1504,172 @@ class OrinLeaseClientAdapter:
         )
         return dict(response.get("cell") or {})
 
+    def observe_desktop(
+        self,
+        task_id: str,
+        target: dict[str, Any],
+        *,
+        request: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Obtain a fresh Desktop Cell witness and Cell-issued target id."""
+
+        from js.orin.desktop import (
+            normalize_desktop_observe_arguments,
+            normalize_desktop_safe_projection,
+        )
+        from js.orin.draft import EffectDraft, witness_from_dict
+
+        self._require_stage_b()
+        if type(task_id) is not str or not task_id.startswith("task:") or len(task_id) > 256:
+            raise ValueError("task_id must be a bounded 'task:' id")
+        exact = normalize_desktop_observe_arguments(
+            {
+                "target": target,
+                "request": {
+                    "tool": "desktop_screenshot",
+                    "arguments": {
+                        "x": 0,
+                        "y": 0,
+                        "width": 0,
+                        "height": 0,
+                        "show_cursor": False,
+                    },
+                }
+                if request is None
+                else request,
+            }
+        )
+        draft = EffectDraft(
+            draft_id=f"draft:{secrets.token_hex(16)}",
+            task_id=task_id,
+            effect_type="desktop.observe",
+            arguments=exact,
+            declared_expectation={
+                "external_visibility": "private",
+                "reversibility": "reversible_until_stage",
+            },
+        )
+        taint = self._taint_fields(None)
+        proposed = self.submit_draft(
+            draft.to_dict(),
+            context_taint=int(taint.get("context_taint", 0)),
+            arg_taint=int(taint.get("arg_taint", 0)),
+            clearance=int(taint.get("clearance", 1)),
+        )
+        if proposed.get("ok") is not True or proposed.get("verdict") != "allow_read":
+            raise LeaseDenied("Orin Desktop Cell observation was not authorized")
+        preflight = self.preflight_draft(draft.draft_id, "cell.desktop")
+        if preflight.get("ok") is not True:
+            raise LeaseDenied("Orin Desktop Cell observation failed")
+        try:
+            witness = witness_from_dict(dict(preflight.get("witness") or {}))
+        except Exception as exc:
+            raise OrinUnavailable("orind returned an invalid Desktop Cell witness") from exc
+        raw_result = preflight.get("result")
+        if not isinstance(raw_result, dict):
+            raise OrinUnavailable("orind returned an invalid Desktop Cell projection")
+        try:
+            raw_result = normalize_desktop_safe_projection(
+                raw_result,
+                effect_type="desktop.observe",
+            )
+        except ProtocolError as exc:
+            raise OrinUnavailable(
+                "orind returned an invalid Desktop Cell projection"
+            ) from exc
+        handle_id = raw_result.get("desktop_target_handle_id")
+        if (
+            witness.draft_id != draft.draft_id
+            or witness.executor_id != "cell.desktop"
+            or witness.target_version != handle_id
+            or not isinstance(handle_id, str)
+            or not handle_id.startswith("desktop:")
+        ):
+            raise OrinUnavailable("Desktop Cell target binding is invalid")
+        result = {
+            key: raw_result[key]
+            for key in _DESKTOP_OBSERVE_FIELDS
+            if key in raw_result
+        }
+        result["status"] = "OBSERVED"
+        result["witness_id"] = witness.witness_id
+        result["target_version"] = witness.target_version
+        return result
+
+    def run_desktop_action(
+        self,
+        task_id: str,
+        desktop_target_handle_id: str,
+        action: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Commit one exact Desktop Cell action through draft/preflight/consume."""
+
+        from js.orin.desktop import (
+            normalize_desktop_action,
+            normalize_desktop_safe_projection,
+        )
+        from js.orin.draft import EffectDraft
+
+        self._require_stage_b()
+        if type(task_id) is not str or not task_id.startswith("task:") or len(task_id) > 256:
+            raise ValueError("task_id must be a bounded 'task:' id")
+        if (
+            type(desktop_target_handle_id) is not str
+            or not desktop_target_handle_id.startswith("desktop:")
+            or len(desktop_target_handle_id) > 256
+        ):
+            raise ValueError("desktop_target_handle_id must be a bounded 'desktop:' id")
+        exact_action = normalize_desktop_action(action)
+        draft = EffectDraft(
+            draft_id=f"draft:{secrets.token_hex(16)}",
+            task_id=task_id,
+            effect_type="desktop.action",
+            arguments={
+                "desktop_target_handle": desktop_target_handle_id,
+                "action": exact_action,
+            },
+            declared_expectation={
+                "external_visibility": "private",
+                "reversibility": "irreversible_after_provider_accept",
+            },
+        )
+        taint = self._taint_fields(None)
+        proposed = self.submit_draft(
+            draft.to_dict(),
+            context_taint=int(taint.get("context_taint", 0)),
+            arg_taint=int(taint.get("arg_taint", 0)),
+            clearance=int(taint.get("clearance", 1)),
+        )
+        if (
+            proposed.get("ok") is not True
+            or proposed.get("verdict") != "deny_missing_witness"
+            or proposed.get("missing") != ["state_witness"]
+        ):
+            raise LeaseDenied("Orin Desktop Cell action was not accepted for preflight")
+        preflight = self.preflight_draft(draft.draft_id, "cell.desktop")
+        if preflight.get("ok") is not True:
+            raise LeaseDenied("Orin Desktop Cell action preflight failed")
+        result = self.consume_draft(draft.draft_id)
+        if type(result) is not dict or result.get("status") != "COMMITTED":
+            raise LeaseDenied("Orin Desktop Cell action was not committed")
+        try:
+            result = normalize_desktop_safe_projection(
+                result,
+                effect_type="desktop.action",
+            )
+        except ProtocolError as exc:
+            raise OrinUnavailable("orind returned an invalid Desktop Cell result") from exc
+        return {
+            key: result[key]
+            for key in _DESKTOP_ACTION_FIELDS
+            if key in result
+        }
+
+    def desktop_cell_backend(self, task_id: str) -> OrinDesktopCellBackend:
+        """Build an explicit harness-only DesktopTools backend."""
+
+        return OrinDesktopCellBackend(self, task_id=task_id)
+
     def seed_handles(self, kind: str | None = None) -> list[dict[str, Any]]:
         """List pre-registered candidate objects Echo may select (M§3.2-2)."""
 
@@ -1595,9 +1801,210 @@ class OrinLeaseClientAdapter:
             await self._conn.close()
 
 
+class OrinDesktopCellBackend:
+    """Callable adapter used only when a C2 harness explicitly injects it."""
+
+    _OBSERVE_TOOLS = frozenset(
+        {
+            "desktop_get_permissions",
+            "desktop_get_state",
+            "desktop_screenshot",
+            "desktop_list",
+            "desktop_operation_log",
+        }
+    )
+
+    def __init__(self, authority: OrinLeaseClientAdapter, *, task_id: str) -> None:
+        if type(task_id) is not str or not task_id.startswith("task:"):
+            raise ValueError("Desktop Cell backend requires a task id")
+        self._authority = authority
+        self._task_id = task_id
+
+    def __call__(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict) or set(payload) != {"tool", "arguments"}:
+            raise LeaseDenied("Desktop Cell request shape is invalid")
+        tool = payload.get("tool")
+        arguments = payload.get("arguments")
+        if type(tool) is not str or not isinstance(arguments, dict):
+            raise LeaseDenied("Desktop Cell request shape is invalid")
+        exact_arguments = {
+            "desktop_app": {"action", "app_name"},
+            "desktop_clear_stop": set(),
+            "desktop_click": {"button", "clicks", "x", "y"},
+            "desktop_drag": {
+                "button",
+                "end_x",
+                "end_y",
+                "start_x",
+                "start_y",
+            },
+            "desktop_emergency_stop": {"reason"},
+            "desktop_get_permissions": set(),
+            "desktop_get_state": set(),
+            "desktop_key": {"key", "modifiers"},
+            "desktop_list": {"app_name", "target"},
+            "desktop_move": {"x", "y"},
+            "desktop_operation_log": {"limit"},
+            "desktop_screenshot": {"height", "show_cursor", "width", "x", "y"},
+            "desktop_scroll": {"amount", "direction"},
+            "desktop_set_mode": {"mode"},
+            "desktop_type": {"text"},
+            "desktop_window": {
+                "action",
+                "app_name",
+                "height",
+                "width",
+                "window_title",
+                "x",
+                "y",
+            },
+        }.get(tool)
+        if exact_arguments is None or set(arguments) != exact_arguments:
+            raise LeaseDenied("Desktop Cell tool arguments are invalid")
+        observe = tool in self._OBSERVE_TOOLS or (
+            tool in {"desktop_app", "desktop_window"}
+            and arguments.get("action") == "list"
+        )
+        if observe:
+            if tool == "desktop_app":
+                request = {
+                    "tool": "desktop_list",
+                    "arguments": {"target": "apps", "app_name": None},
+                }
+            elif tool == "desktop_window":
+                request = {
+                    "tool": "desktop_list",
+                    "arguments": {
+                        "target": "windows",
+                        "app_name": arguments.get("app_name"),
+                    },
+                }
+            else:
+                request = {"tool": tool, "arguments": dict(arguments)}
+            result = self._authority.observe_desktop(
+                self._task_id,
+                {"kind": "screen"},
+                request=request,
+            )
+            projection = {
+                key: value
+                for key, value in result.items()
+                if key in _DESKTOP_OBSERVE_FIELDS and key != "status"
+            }
+            return {
+                "status": "OBSERVED",
+                "output": "Desktop observation completed through Desktop Cell",
+                "projection": projection,
+            }
+
+        action = self._action_from_tool(tool, arguments)
+        observation = self._authority.observe_desktop(
+            self._task_id,
+            {"kind": "screen"},
+            request={
+                "tool": "desktop_screenshot",
+                "arguments": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 0,
+                    "height": 0,
+                    "show_cursor": False,
+                },
+            },
+        )
+        handle_id = observation.get("desktop_target_handle_id")
+        if not isinstance(handle_id, str):
+            raise OrinUnavailable("Desktop Cell observation omitted its target handle")
+        committed = self._authority.run_desktop_action(
+            self._task_id,
+            handle_id,
+            action,
+        )
+        projection = {
+            key: value
+            for key, value in committed.items()
+            if key in _DESKTOP_ACTION_FIELDS
+            and key not in {"status", "commit_guarantee"}
+        }
+        return {
+            "status": "COMMITTED",
+            "output": "Desktop action committed through Desktop Cell",
+            "projection": projection,
+        }
+
+    @staticmethod
+    def _action_from_tool(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if tool == "desktop_click":
+            return {
+                "kind": "click",
+                "x": arguments.get("x"),
+                "y": arguments.get("y"),
+                "button": arguments.get("button", "left"),
+                "clicks": arguments.get("clicks", 1),
+            }
+        if tool == "desktop_move":
+            return {"kind": "move", "x": arguments.get("x"), "y": arguments.get("y")}
+        if tool == "desktop_scroll":
+            return {
+                "kind": "scroll",
+                "direction": arguments.get("direction", "down"),
+                "amount": arguments.get("amount", 3),
+            }
+        if tool == "desktop_drag":
+            return {
+                "kind": "drag",
+                "start_x": arguments.get("start_x"),
+                "start_y": arguments.get("start_y"),
+                "end_x": arguments.get("end_x"),
+                "end_y": arguments.get("end_y"),
+                "button": arguments.get("button", "left"),
+            }
+        if tool == "desktop_type":
+            return {"kind": "type", "text": arguments.get("text")}
+        if tool == "desktop_key":
+            modifiers = arguments.get("modifiers")
+            return {
+                "kind": "key",
+                "key": arguments.get("key"),
+                "modifiers": [] if modifiers is None else modifiers,
+            }
+        if tool == "desktop_app":
+            return {
+                "kind": "app",
+                "action": arguments.get("action"),
+                "app_name": arguments.get("app_name"),
+            }
+        if tool == "desktop_window":
+            action = arguments.get("action")
+            base = {
+                "kind": "window",
+                "action": action,
+                "app_name": arguments.get("app_name"),
+                "window_title": arguments.get("window_title"),
+            }
+            if action == "move":
+                base.update({"x": arguments.get("x"), "y": arguments.get("y")})
+            elif action == "resize":
+                base.update(
+                    {
+                        "width": arguments.get("width"),
+                        "height": arguments.get("height"),
+                    }
+                )
+            return base
+        if tool == "desktop_set_mode":
+            return {"kind": "set_mode", "mode": arguments.get("mode")}
+        if tool == "desktop_emergency_stop":
+            return {"kind": "emergency_stop", "reason": arguments.get("reason")}
+        if tool == "desktop_clear_stop":
+            return {"kind": "clear_stop"}
+        raise LeaseDenied("Desktop Cell tool is not part of the C2 harness vocabulary")
+
+
 __all__ = [
     "CODE_TO_EXC",
     "EchoContextPayload",
+    "OrinDesktopCellBackend",
     "OrinLeaseClientAdapter",
     "OrinRateLimited",
     "OrinUnavailable",

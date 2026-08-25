@@ -101,6 +101,7 @@ STAGE_B_CLIENT_CAPS: Final[tuple[str, ...]] = (
 STAGE_B_SERVER_CAPS: Final[tuple[str, ...]] = STAGE_B_CLIENT_CAPS
 CELL_CONNECT_CAPS: Final[tuple[str, ...]] = (
     "cell.build",
+    "cell.desktop",
     "cell.file",
     "cell.net",
     "cell.secret",
@@ -453,6 +454,9 @@ _SCHEMA: Final[dict[str, tuple[FieldSpec, ...]]] = {
         FieldSpec("code", kinds=_S, optional=True, max_len=32),
         FieldSpec("reason", kinds=_S, optional=True),
         FieldSpec("witness", kinds=(dict,), optional=True),
+        # A Cell may return a bounded, authority-free observation projection.
+        # Desktop target sealing itself still uses the existing handle frame.
+        FieldSpec("result", kinds=(dict,), optional=True),
     ),
     "commit": (
         FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),

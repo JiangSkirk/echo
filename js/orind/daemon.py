@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from js.orin.desktop import DesktopTargetBindingV1, normalize_desktop_safe_projection
 from js.orin.draft import (
     CellPackage,
     CommitPermit,
@@ -254,10 +255,12 @@ class OrinDaemon:
         cell_net: bool = False,
         cell_secret: bool = False,
         cell_file: bool = False,
+        cell_desktop: bool = False,
         commit_membrane: bool = False,
         orin_enforce: bool = False,
         cell_identity_enforce: bool = False,
         c1_test_harness: bool = False,
+        desktop_script_path: Path | None = None,
         membrane_fault_hook: Callable[[str, str], None] | None = None,
         witness_public_keys: tuple[str, ...] = (),
         now_fn: Any = None,
@@ -316,6 +319,11 @@ class OrinDaemon:
         self._cell_net_enabled = bool(cell_net) and stage_b
         self._cell_secret_enabled = bool(cell_secret) and stage_b
         self._cell_file_enabled = bool(cell_file) and stage_b
+        # WP-C2 remains a construction harness.  A product caller setting the
+        # leaf flag without the C1 identity harness gets no new process or
+        # route at all.
+        self._cell_desktop_enabled = bool(cell_desktop) and stage_b and self._cell_identity_enforce
+        self._desktop_script_path = desktop_script_path
         desired_service_caps: set[str] = set()
         if self._cell_net_enabled:
             desired_service_caps.update(("cell.net", "cell.connector"))
@@ -342,6 +350,7 @@ class OrinDaemon:
         self._build_proc: subprocess.Popen[bytes] | None = None
         self._services_proc: subprocess.Popen[bytes] | None = None
         self._file_proc: subprocess.Popen[bytes] | None = None
+        self._desktop_proc: subprocess.Popen[bytes] | None = None
         self._cell_reconcile_tasks: set[asyncio.Task[None]] = set()
         self._spawn_build_cells = bool(cell_build)
         self._shutting_down = False
@@ -361,7 +370,10 @@ class OrinDaemon:
             from js.orind.manifest import builtin_manifest
 
             self._secret_bit = SECRET
-            self._manifest = builtin_manifest(self._keybox.key)
+            self._manifest = builtin_manifest(
+                self._keybox.key,
+                include_desktop=self._cell_desktop_enabled,
+            )
             self._kernel = GateKernel(
                 secret_taint_bit=SECRET,
                 manifest=self._manifest,
@@ -553,6 +565,8 @@ class OrinDaemon:
                 self._spawn_services_cell()
             if self._cell_file_enabled:
                 self._spawn_file_cell()
+            if self._cell_desktop_enabled:
+                self._spawn_desktop_cell()
 
     async def stop(self) -> None:
         if self._server is not None:
@@ -611,6 +625,7 @@ class OrinDaemon:
         self._build_proc = None
         self._services_proc = None
         self._file_proc = None
+        self._desktop_proc = None
         if self._cell_identity_enforce:
             self._unlink_strict_socket(self._socket_path)
             self._unlink_strict_socket(self._cell_socket_path)
@@ -1368,6 +1383,15 @@ class OrinDaemon:
                 handle_id = ref
             if not handle_id:
                 return {"ok": False, "code": "bad_message", "reason": "resolve requires a handle"}
+            if handle_id.startswith("desktop:"):
+                # Echo receives only the opaque id from the observation
+                # projection.  The complete sealed target remains on the
+                # internal broker -> Cell package path.
+                return {
+                    "ok": False,
+                    "code": "unsupported",
+                    "reason": "DesktopTargetHandle is Cell-private",
+                }
             return broker.resolve(handle_id, now_ms=self._now_ms())
         kind = envelope.get("kind")
         candidates = broker.seed_list(kind if isinstance(kind, str) else None)
@@ -1503,6 +1527,7 @@ class OrinDaemon:
                 "RecipientHandle": "send",
                 "EndpointHandle": "read",
                 "SecretHandle": "use",
+                "DesktopTargetHandle": "use",
             }.get(handle.kind)
             if required_cap is not None and required_cap not in handle.capabilities:
                 return ({}, f"handle capability mismatch for {ref}")
@@ -1521,6 +1546,12 @@ class OrinDaemon:
                     }.get(draft.effect_type, frozenset({"read"}))
                     if not required_resource_caps.issubset(handle.capabilities):
                         return ({}, f"resource handle capability mismatch for {ref}")
+            if handle.kind == "DesktopTargetHandle":
+                if intent is None:
+                    if require_all:
+                        return ({}, "desktop target requires an active owner intent")
+                elif handle.tenant != intent.profile:
+                    return ({}, f"desktop target tenant mismatch for {ref}")
             resolved[ref] = handle
         if require_all and set(resolved) != handle_refs(draft.arguments):
             return ({}, "package handle set is incomplete")
@@ -1579,6 +1610,39 @@ class OrinDaemon:
                     continue
             inputs.export_passes = tuple(parsed)
         return inputs, error
+
+    def _desktop_preflight_inputs(
+        self,
+        draft: EffectDraft,
+        record: dict[str, Any],
+    ) -> tuple[GateInputs | None, str | None]:
+        """Re-authorize a harness Desktop preflight without invoking the Cell."""
+
+        kernel = self._kernel
+        if kernel is None:  # pragma: no cover - Desktop requires Stage B
+            return None, "stage B disabled"
+        now = self._now_ms()
+        if int(record.get("expires_at_ms", 0)) <= now:
+            return None, "draft expired"
+        inputs, handle_error = self._gate_inputs_for_record(draft, record)
+        if handle_error is not None:
+            return None, handle_error
+        decision = kernel.assess(draft, inputs)
+        if inputs.intent is None:
+            return None, "Desktop Cell preflight has no active owner intent"
+        if draft.effect_type == "desktop.observe":
+            accepted = decision.verdict == "allow_read"
+        elif draft.effect_type == "desktop.action":
+            accepted = (
+                decision.verdict == "deny_missing_witness"
+                and decision.reason_code == "no_state_witness"
+                and decision.missing == ("state_witness",)
+            ) or decision.verdict == "require_approval"
+        else:
+            accepted = False
+        if not accepted:
+            return None, "Desktop Cell preflight is not authorized"
+        return inputs, None
 
     def _on_draft(self, envelope: dict[str, Any]) -> dict[str, Any]:
         kernel = self._kernel
@@ -1664,13 +1728,21 @@ class OrinDaemon:
         advisory = str(envelope.get("executor_id") or "")
         if not executor_id or (advisory and advisory != executor_id):
             return {"ok": False, "code": "denied", "reason": "executor mismatch"}
-        active = self._authority_for_draft(draft, now_ms=now)
-        handles, handle_error = self._resolve_draft_handles(
-            draft,
-            intent=active,
-            clearance=int(record.get("clearance", CLEARANCE_INTERNAL)),
-            require_all=True,
-        )
+        if executor_id == "cell.desktop":
+            gate_inputs, gate_error = self._desktop_preflight_inputs(draft, record)
+            if gate_inputs is None:
+                return {"ok": False, "code": "denied", "reason": str(gate_error)}
+            active = gate_inputs.intent
+            handles = gate_inputs.handles_by_id
+            handle_error = None
+        else:
+            active = self._authority_for_draft(draft, now_ms=now)
+            handles, handle_error = self._resolve_draft_handles(
+                draft,
+                intent=active,
+                clearance=int(record.get("clearance", CLEARANCE_INTERNAL)),
+                require_all=True,
+            )
         if handle_error is not None:
             return {"ok": False, "code": "unknown_handle", "reason": handle_error}
         package = CellPackage(
@@ -1684,6 +1756,11 @@ class OrinDaemon:
             package.validate_binding()
         except Exception as exc:
             return {"ok": False, "code": "bad_message", "reason": str(exc)}
+        desktop_session = (
+            self._cell_session_by_cap("cell.desktop")
+            if executor_id == "cell.desktop"
+            else None
+        )
         response = await self._request_cell(
             executor_id,
             "preflight",
@@ -1699,6 +1776,16 @@ class OrinDaemon:
                 "code": str(response.get("code") or "internal"),
                 "reason": str(response.get("reason") or "preflight failed"),
             }
+        if executor_id == "cell.desktop":
+            # The Cell call can cross both the intent and handle expiry
+            # boundary.  Re-run the same closed-world gate before recording a
+            # witness or turning an observation into a broker handle.
+            gate_inputs, gate_error = self._desktop_preflight_inputs(draft, record)
+            if gate_inputs is None:
+                return {"ok": False, "code": "denied", "reason": str(gate_error)}
+            active = gate_inputs.intent
+            handles = gate_inputs.handles_by_id
+            now = self._now_ms()
         raw_witness = response.get("witness")
         try:
             witness = witness_from_dict(raw_witness if isinstance(raw_witness, dict) else {})
@@ -1712,10 +1799,144 @@ class OrinDaemon:
             or witness.expires_at_ms > now + 65_000
         ):
             return {"ok": False, "code": "stale_state", "reason": "witness binding invalid"}
+        desktop_projection: dict[str, Any] | None = None
+        if executor_id == "cell.desktop":
+            raw_projection = response.get("result")
+            try:
+                desktop_projection = self._safe_cell_projection(
+                    draft.effect_type,
+                    dict(raw_projection) if isinstance(raw_projection, dict) else {},
+                )
+            except ProtocolError:
+                return {
+                    "ok": False,
+                    "code": "bad_message",
+                    "reason": "Desktop Cell projection is invalid",
+                }
+            required_projection = (
+                {
+                    "desktop_target_handle_id",
+                    "display_id",
+                    "height",
+                    "owner_pid",
+                    "pixel_hash",
+                    "scale",
+                    "target_kind",
+                    "width",
+                    "window_number",
+                }
+                if draft.effect_type == "desktop.observe"
+                else {"action", "before_digest"}
+            )
+            if not required_projection.issubset(desktop_projection):
+                return {
+                    "ok": False,
+                    "code": "bad_message",
+                    "reason": "Desktop Cell projection is incomplete",
+                }
+            if (
+                draft.effect_type == "desktop.observe"
+                and desktop_projection["desktop_target_handle_id"]
+                != witness.target_version
+            ):
+                return {
+                    "ok": False,
+                    "code": "bad_message",
+                    "reason": "Desktop Cell target projection does not match witness",
+                }
         stored = self._store.record_state_witness(witness.to_dict())
         if stored in {"conflict", "stale"}:
             return {"ok": False, "code": "stale_state", "reason": "witness rejected"}
-        return {"ok": True, "witness": witness.to_dict()}
+        if executor_id != "cell.desktop":
+            return {"ok": True, "witness": witness.to_dict()}
+        if draft.effect_type != "desktop.observe":
+            result: dict[str, Any] = {"ok": True, "witness": witness.to_dict()}
+            if desktop_projection:
+                result["result"] = desktop_projection
+            return result
+        if (
+            desktop_session is None
+            or self._cell_session_by_cap("cell.desktop") is not desktop_session
+            or active is None
+            or self._broker is None
+            or not witness.target_version.startswith("desktop:")
+        ):
+            return {
+                "ok": False,
+                "code": "unknown_handle",
+                "reason": "Desktop Cell observation session changed",
+            }
+        expires_at_ms = min(witness.expires_at_ms, active.expires_at_ms, now + 60_000)
+        binding = DesktopTargetBindingV1(
+            task_id=draft.task_id,
+            draft_id=draft.draft_id,
+            witness_id=witness.witness_id,
+            canonical_effect_hash=package.canonical_effect_hash,
+            owner_key_hash=active.owner_key_hash,
+            tenant=active.profile,
+            expires_at_ms=expires_at_ms,
+        )
+        handle_response = await self._request_cell(
+            "cell.desktop",
+            "handle",
+            op="resolve",
+            handle={"handle_id": witness.target_version},
+            spec=binding.to_dict(),
+        )
+        if (
+            handle_response is None
+            or not handle_response.get("ok")
+            or self._cell_session_by_cap("cell.desktop") is not desktop_session
+        ):
+            return {
+                "ok": False,
+                "code": "unknown_handle",
+                "reason": "Desktop Cell target sealing failed",
+            }
+        fresh_inputs, gate_error = self._desktop_preflight_inputs(draft, record)
+        fresh_active = fresh_inputs.intent if fresh_inputs is not None else None
+        fresh_now = self._now_ms()
+        if (
+            fresh_active is None
+            or active is None
+            or fresh_active.intent_id != active.intent_id
+            or fresh_active.owner_key_hash != binding.owner_key_hash
+            or fresh_active.profile != binding.tenant
+            or expires_at_ms <= fresh_now
+            or witness.expired(fresh_now)
+        ):
+            return {
+                "ok": False,
+                "code": "denied",
+                "reason": str(gate_error or "Desktop owner authority changed"),
+            }
+        active = fresh_active
+        now = fresh_now
+        raw_handle = handle_response.get("handle")
+        if not isinstance(raw_handle, dict):
+            return {"ok": False, "code": "unknown_handle", "reason": "target missing"}
+        registered = self._broker.register_desktop_cell_handle(
+            raw_handle,
+            cell_session_key=desktop_session.session_key,
+            expected_handle_id=witness.target_version,
+            owner_key_hash=active.owner_key_hash,
+            tenant=active.profile,
+            expires_at_ms=expires_at_ms,
+            now_ms=now,
+        )
+        if not registered.get("ok"):
+            return {
+                "ok": False,
+                "code": "unknown_handle",
+                "reason": "Desktop Cell target handle rejected",
+            }
+        projection = dict(desktop_projection or {})
+        projection["desktop_target_handle_id"] = witness.target_version
+        return {
+            "ok": True,
+            "witness": witness.to_dict(),
+            "result": projection,
+        }
 
     # -- stage B cell scheduling (WP7) -----------------------------------------
     async def _dispatch_cell(
@@ -1942,7 +2163,45 @@ class OrinDaemon:
             allowed.update({"output", "content_hash", "final_url", "status_code"})
         elif effect_type == "file.commit":
             allowed.update({"files", "bytes_written", "diff_hash", "overwrites"})
-        return {key: result[key] for key in allowed if key in result}
+        elif effect_type == "desktop.observe":
+            allowed.update(
+                {
+                    "accessibility",
+                    "apps",
+                    "available",
+                    "dependencies",
+                    "desktop_target_handle_id",
+                    "display_id",
+                    "height",
+                    "image_base64",
+                    "image_mime_type",
+                    "mode",
+                    "mouse",
+                    "observed_at_ms",
+                    "operation_count",
+                    "owner_pid",
+                    "pixel_hash",
+                    "platform",
+                    "scale",
+                    "screen_recording",
+                    "target_kind",
+                    "target_label",
+                    "width",
+                    "window_number",
+                    "windows",
+                }
+            )
+        elif effect_type == "desktop.action":
+            allowed.update(
+                {"action", "after_digest", "before_digest", "receipt_id"}
+            )
+        projection = {key: result[key] for key in allowed if key in result}
+        if effect_type in {"desktop.observe", "desktop.action"}:
+            return normalize_desktop_safe_projection(
+                projection,
+                effect_type=effect_type,
+            )
+        return projection
 
     @staticmethod
     def _operation_spec_from_snapshot(
@@ -2830,7 +3089,7 @@ class OrinDaemon:
         safe = self._safe_cell_projection(
             draft.effect_type, dict(raw_result) if isinstance(raw_result, dict) else {}
         )
-        if executor_id in {"cell.connector", "cell.file"}:
+        if executor_id in {"cell.connector", "cell.desktop", "cell.file"}:
             safe["commit_guarantee"] = "best_effort"
             self._audit(
                 "best_effort_commit",
@@ -2859,6 +3118,10 @@ class OrinDaemon:
         """Return only a Cell that has finished its startup reconciliation."""
 
         return self._cell_writer_by_cap(cap, allow_unready=False)
+
+    def _cell_session_by_cap(self, cap: str) -> _Session | None:
+        writer = self._cell_by_cap(cap)
+        return self._cell_sessions.get(writer) if writer is not None else None
 
     async def _proxy_cell(
         self,
@@ -3086,6 +3349,40 @@ class OrinDaemon:
             self._cell_runtime_roots[proc.pid] = runtime_root
         self._audit("file_cell_spawned", pid=proc.pid)
 
+    def _spawn_desktop_cell(self) -> None:
+        """Launch the WP-C2 Desktop Cell only for the explicit strict harness."""
+
+        if not self._cell_desktop_enabled or not self._cell_identity_enforce:
+            return
+        caps = frozenset({"cell.desktop"})
+        tickets, runtime_root = self._new_cell_launch("desktop", caps)
+        env = self._cell_environment(
+            kind="desktop",
+            caps=caps,
+            tickets=tickets,
+            runtime_root=runtime_root,
+        )
+        try:
+            proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+                [sys.executable, "-m", "js.orind.cells.desktop"],
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError:
+            self._discard_cell_runtime_root(runtime_root)
+            self._audit("desktop_cell_spawn_failed")
+            return
+        self._cell_procs.add(proc)
+        self._desktop_proc = proc
+        self._expected_cell_caps_by_pid[proc.pid] = caps
+        assert runtime_root is not None
+        self._expected_cell_launch_by_pid[proc.pid] = tickets
+        self._cell_runtime_roots[proc.pid] = runtime_root
+        self._audit("desktop_cell_spawned", pid=proc.pid)
+
     def _new_cell_launch(
         self,
         kind: str,
@@ -3168,6 +3465,10 @@ class OrinDaemon:
             env["ORIN_KEYBOX_TIER"] = self._keybox.active_tier
         elif kind == "file":
             env["ORIN_KEYBOX_TIER"] = self._keybox.active_tier
+        elif kind == "desktop":
+            env["ORIN_KEYBOX_TIER"] = self._keybox.active_tier
+            if self._desktop_script_path is not None:
+                env["ORIN_DESKTOP_SCRIPT_PATH"] = str(self._desktop_script_path)
         else:  # pragma: no cover - all callers use a closed internal enum
             raise OrinDaemonError("unknown C1 Cell kind")
         return env
@@ -3200,6 +3501,8 @@ class OrinDaemon:
             self._services_proc = None
         if self._file_proc is not None and self._file_proc.poll() is not None:
             self._file_proc = None
+        if self._desktop_proc is not None and self._desktop_proc.poll() is not None:
+            self._desktop_proc = None
         connected_caps = {
             cap for writer in self._cell_sessions for cap in self._cell_sessions[writer].caps
         }
@@ -3222,6 +3525,12 @@ class OrinDaemon:
             and self._file_proc is None
         ):
             self._spawn_file_cell()
+        if (
+            self._cell_desktop_enabled
+            and "cell.desktop" not in connected_caps
+            and self._desktop_proc is None
+        ):
+            self._spawn_desktop_cell()
 
     async def _handle_cell_connection(
         self,

@@ -103,6 +103,80 @@ class HandleBroker:
         )
         return {"ok": True, "handle": sealed.to_dict()}
 
+    def register_desktop_cell_handle(
+        self,
+        raw_handle: dict[str, Any],
+        *,
+        cell_session_key: bytes,
+        expected_handle_id: str,
+        owner_key_hash: str,
+        tenant: str,
+        expires_at_ms: int,
+        now_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Accept one target sealed by the authenticated Desktop Cell.
+
+        This is an internal cells.sock path, not a general issuance API.  The
+        Cell proves that the target came from its private observation report;
+        orind then re-seals the exact payload with the broker key so ordinary
+        package resolution can keep using the existing OriginHandle contract.
+        """
+
+        now = time.time_ns() // 1_000_000 if now_ms is None else now_ms
+        try:
+            proposed = handle_from_dict(raw_handle, require_signature=True)
+        except Exception as exc:
+            return {"ok": False, "code": "unknown_handle", "reason": str(exc)}
+        if (
+            proposed.kind != "DesktopTargetHandle"
+            or proposed.handle_id != expected_handle_id
+            or proposed.issuer != "cell:desktop"
+            or proposed.owner_key_hash != owner_key_hash
+            or proposed.tenant != tenant
+            or proposed.source_class != "TRUSTED_LOCAL"
+            or proposed.integrity != "trusted_local_object"
+            or proposed.confidentiality != "CONFIDENTIAL"
+            or proposed.capabilities != ("read", "use")
+            or proposed.expires_at_ms != expires_at_ms
+            or proposed.created_at_ms > now + 5_000
+            or proposed.created_at_ms < now - 65_000
+            or proposed.expires_at_ms <= now
+            or not proposed.object_digest.startswith("sha256:")
+            or len(proposed.object_digest) != 71
+            or not proposed.verify_seal(cell_session_key)
+        ):
+            return {
+                "ok": False,
+                "code": "unknown_handle",
+                "reason": "Desktop Cell handle binding is invalid",
+            }
+        final = OriginHandle(
+            handle_id=proposed.handle_id,
+            kind=proposed.kind,
+            owner_key_hash=proposed.owner_key_hash,
+            tenant=proposed.tenant,
+            source_class=proposed.source_class,
+            integrity=proposed.integrity,
+            confidentiality=proposed.confidentiality,
+            object_digest=proposed.object_digest,
+            capabilities=proposed.capabilities,
+            issuer=proposed.issuer,
+            created_at_ms=proposed.created_at_ms,
+            expires_at_ms=proposed.expires_at_ms,
+        ).sealed_by(self._mac_key, "cell:desktop", proposed.created_at_ms)
+        status = self._store.record_handle_immutable(
+            handle_id=final.handle_id,
+            kind=final.kind,
+            payload=final.to_dict(),
+        )
+        if status == "conflict":
+            return {
+                "ok": False,
+                "code": "unknown_handle",
+                "reason": "Desktop Cell handle id conflicts with existing content",
+            }
+        return {"ok": True, "handle": final.to_dict(), "status": status}
+
     # -- resolution ----------------------------------------------------------------
     def resolve(self, handle_id: str, *, now_ms: int | None = None) -> dict[str, Any]:
         raw = self._store.get_handle(handle_id)

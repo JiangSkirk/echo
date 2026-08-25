@@ -43,9 +43,11 @@ class TestOrind:
         cell_net: bool = False,
         cell_secret: bool = False,
         cell_file: bool = False,
+        cell_desktop: bool = False,
         commit_membrane: bool = False,
         cell_identity_enforce: bool = False,
         c1_test_harness: bool = False,
+        desktop_script_path: Path | None = None,
         membrane_fault_hook: Any = None,
         witness_public_keys: tuple[str, ...] = (),
         now_fn: Any = None,
@@ -67,9 +69,11 @@ class TestOrind:
         self._cell_net = cell_net
         self._cell_secret = cell_secret
         self._cell_file = cell_file
+        self._cell_desktop = cell_desktop
         self._commit_membrane = commit_membrane
         self._cell_identity_enforce = cell_identity_enforce
         self._c1_test_harness = c1_test_harness
+        self._desktop_script_path = desktop_script_path
         self._membrane_fault_hook = membrane_fault_hook
         self._witness_public_keys = witness_public_keys
         self._now_fn = now_fn
@@ -135,12 +139,16 @@ class TestOrind:
             kwargs["cell_secret"] = True
         if self._cell_file:
             kwargs["cell_file"] = True
+        if self._cell_desktop:
+            kwargs["cell_desktop"] = True
         if self._commit_membrane:
             kwargs["commit_membrane"] = True
         if self._cell_identity_enforce:
             kwargs["cell_identity_enforce"] = True
         if self._c1_test_harness:
             kwargs["c1_test_harness"] = True
+        if self._desktop_script_path is not None:
+            kwargs["desktop_script_path"] = self._desktop_script_path
         if self._membrane_fault_hook is not None:
             kwargs["membrane_fault_hook"] = self._membrane_fault_hook
         if self._witness_public_keys:
@@ -183,4 +191,12 @@ class C1TestOrind(TestOrind):
         super().__init__(**kwargs)
 
 
-__all__ = ["C1TestOrind", "TestOrind"]
+class C2TestOrind(C1TestOrind):
+    """Explicit WP-C2 Desktop Cell harness; never used by product launchers."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs["cell_desktop"] = True
+        super().__init__(**kwargs)
+
+
+__all__ = ["C1TestOrind", "C2TestOrind", "TestOrind"]

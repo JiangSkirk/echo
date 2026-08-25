@@ -29,6 +29,8 @@ EFFECT_CLASSES: Final[frozenset[str]] = frozenset(
         "artifact.read",
         "artifact.stage",
         "artifact.write",
+        "desktop.action",
+        "desktop.observe",
         "file.commit",
         "shell.exec",
         "net.fetch",

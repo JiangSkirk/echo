@@ -339,7 +339,8 @@ def validate_handle_dict(data: Any, *, require_signature: bool = False) -> None:
     digest = data.get("object_digest")
     if not isinstance(digest, str) or len(digest) > 512:
         raise ProtocolError("handle field 'object_digest' must be a bounded string")
-    kind_of_handle_id(data["handle_id"])
+    if kind_of_handle_id(data["handle_id"]) != kind:
+        raise ProtocolError("handle id prefix does not match handle kind")
     for key in ("source_class", "integrity", "confidentiality"):
         value = data.get(key)
         if not isinstance(value, str) or not value or len(value) > 64:

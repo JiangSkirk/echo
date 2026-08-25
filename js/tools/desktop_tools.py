@@ -6,10 +6,14 @@ All write operations go through DesktopGuard with safety modes.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
+from js.orin.desktop import normalize_desktop_safe_projection
+from js.orin.protocol import ProtocolError
 from js.tools.desktop import (
     AppAction,
     DesktopGuard,
@@ -26,6 +30,91 @@ from js.tools.registry import ToolParam, ToolResult, ToolSpec
 
 logger = logging.getLogger("js.tools.desktop_tools")
 
+_CELL_OBSERVE_TOOLS = frozenset(
+    {
+        "desktop_get_permissions",
+        "desktop_get_state",
+        "desktop_screenshot",
+        "desktop_list",
+        "desktop_operation_log",
+    }
+)
+_CELL_PROJECTION_KEYS = frozenset(
+    {
+        "accessibility",
+        "action",
+        "after_digest",
+        "apps",
+        "available",
+        "before_digest",
+        "dependencies",
+        "desktop_target_handle_id",
+        "display_id",
+        "height",
+        "image_base64",
+        "image_mime_type",
+        "mode",
+        "mouse",
+        "observed_at_ms",
+        "operation_count",
+        "owner_pid",
+        "pixel_hash",
+        "platform",
+        "receipt_id",
+        "scale",
+        "screen_recording",
+        "target_kind",
+        "target_label",
+        "width",
+        "window_number",
+        "windows",
+    }
+)
+_CELL_SENSITIVE_KEY_PARTS = frozenset(
+    {
+        "canonical_effect_hash",
+        "credential",
+        "draft_id",
+        "mac",
+        "nonce",
+        "package",
+        "permit",
+        "root",
+        "seal",
+        "secret",
+        "session_key",
+        "stage_path",
+        "task_id",
+        "token",
+        "witness",
+    }
+)
+
+
+def _cell_projection_is_safe(value: Any, *, depth: int = 0) -> bool:
+    """Accept a small JSON-only projection, never an authority-bearing object."""
+    if depth > 4:
+        return False
+    if value is None or type(value) in {bool, int, float, str}:
+        return not isinstance(value, str) or len(value) <= 48 * 1024
+    if isinstance(value, list):
+        return len(value) <= 256 and all(
+            _cell_projection_is_safe(item, depth=depth + 1) for item in value
+        )
+    if isinstance(value, dict):
+        if len(value) > 64:
+            return False
+        for key, item in value.items():
+            if type(key) is not str or not key or len(key) > 64:
+                return False
+            lowered = key.casefold()
+            if any(part in lowered for part in _CELL_SENSITIVE_KEY_PARTS):
+                return False
+            if not _cell_projection_is_safe(item, depth=depth + 1):
+                return False
+        return True
+    return False
+
 
 class DesktopTools:
     """Register desktop control tools with the agent registry.
@@ -41,12 +130,23 @@ class DesktopTools:
         self,
         approval_queue: Any | None = None,
         mode: DesktopMode = DesktopMode.OBSERVE,
+        *,
+        cell_backend: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self._guard: DesktopGuard | None = None
         self._approval_queue = approval_queue
         self._mode = mode
+        self._cell_backend = cell_backend
         self._available = False
         self._init_error: str = ""
+
+        # The explicit C2 harness backend is the only desktop authority in this
+        # branch.  Do not even probe host permissions or construct a raw
+        # controller: a Cell failure must remain a hard failure with no local
+        # fallback.
+        if cell_backend is not None:
+            self._available = True
+            return
 
         if not PermissionChecker.is_macos():
             self._init_error = "Desktop tools require macOS"
@@ -92,6 +192,11 @@ class DesktopTools:
         return self._init_error
 
     def set_mode(self, mode: DesktopMode) -> ToolResult:
+        if self._cell_backend is not None:
+            return ToolResult(
+                success=False,
+                error="Desktop Cell mode changes require authenticated tool dispatch",
+            )
         if self._guard is None:
             return ToolResult(
                 success=False,
@@ -115,13 +220,18 @@ class DesktopTools:
 
     def get_read_only_specs(self) -> list[ToolSpec]:
         """Read-only and diagnostic tools — safe to register on first enable."""
+        # ToolRegistry caches every ``read_only`` result.  A Cell observation
+        # creates a fresh StateWitness/target binding, so the explicit C2 path
+        # must execute every observation while the default local path keeps its
+        # existing retry/cache classification.
+        cacheable_observation = self._cell_backend is None
         return [
             ToolSpec(name="desktop_get_permissions",
                      description="Check macOS desktop control readiness: platform, permissions, dependency status. Use this FIRST.",
-                     parameters=[], read_only=True),
+                     parameters=[], read_only=cacheable_observation),
             ToolSpec(name="desktop_get_state",
                      description="Get desktop state: availability, init errors, mouse position.",
-                     parameters=[], read_only=True),
+                     parameters=[], read_only=cacheable_observation),
             ToolSpec(name="desktop_screenshot",
                      description="Capture a screenshot of the macOS desktop or a region. Requires Screen Recording permission.",
                      parameters=[
@@ -130,17 +240,17 @@ class DesktopTools:
                          ToolParam("width", "integer", "Region width", required=False),
                          ToolParam("height", "integer", "Region height", required=False),
                          ToolParam("show_cursor", "boolean", "Include cursor", required=False),
-                     ], read_only=True),
+                     ], read_only=cacheable_observation),
             ToolSpec(name="desktop_list",
                      description="List running applications or windows on macOS.",
                      parameters=[
                          ToolParam("target", "string", "'apps' or 'windows'", enum=["apps", "windows"]),
                          ToolParam("app_name", "string", "Filter windows by app name", required=False),
-                     ], read_only=True),
+                     ], read_only=cacheable_observation),
             ToolSpec(name="desktop_operation_log",
                      description="Get the audit log of recent desktop operations.",
                      parameters=[ToolParam("limit", "integer", "Max entries", required=False)],
-                     read_only=True),
+                     read_only=cacheable_observation),
             ToolSpec(name="desktop_emergency_stop",
                      description="Trigger emergency stop to immediately halt ALL desktop operations.",
                      parameters=[ToolParam("reason", "string", "Reason for stop", required=False)],
@@ -218,6 +328,99 @@ class DesktopTools:
 
     # ── Handlers ──
 
+    async def _call_cell_backend(
+        self,
+        tool: str,
+        arguments: dict[str, Any],
+        *,
+        observed: bool | None = None,
+    ) -> ToolResult:
+        """Dispatch one existing desktop tool through the authenticated Cell path."""
+        backend = self._cell_backend
+        if backend is None:
+            return ToolResult(success=False, error="Desktop Cell safety boundary unavailable")
+        try:
+            result = await asyncio.to_thread(
+                backend,
+                {"tool": tool, "arguments": arguments},
+            )
+        except Exception:  # noqa: BLE001 - Cell failure must never fall back locally
+            return ToolResult(success=False, error="Desktop Cell safety boundary unavailable")
+
+        if not isinstance(result, dict) or not set(result).issubset(
+            {"status", "output", "projection"}
+        ):
+            return ToolResult(success=False, error="Desktop Cell denied request")
+        expected_observation = tool in _CELL_OBSERVE_TOOLS if observed is None else observed
+        expected_status = "OBSERVED" if expected_observation else "COMMITTED"
+        if result.get("status") != expected_status:
+            return ToolResult(success=False, error="Desktop Cell denied request")
+        output = result.get("output", "")
+        projection = result.get("projection", {})
+        if type(output) is not str or len(output.encode("utf-8")) > 64 * 1024:
+            return ToolResult(success=False, error="Desktop Cell denied request")
+        if not isinstance(projection, dict) or not set(projection).issubset(
+            _CELL_PROJECTION_KEYS
+        ):
+            return ToolResult(success=False, error="Desktop Cell denied request")
+        try:
+            projection = normalize_desktop_safe_projection(
+                projection,
+                effect_type=(
+                    "desktop.observe" if expected_observation else "desktop.action"
+                ),
+            )
+        except ProtocolError:
+            return ToolResult(success=False, error="Desktop Cell denied request")
+        observe_base = {
+            "desktop_target_handle_id",
+            "display_id",
+            "height",
+            "observed_at_ms",
+            "owner_pid",
+            "pixel_hash",
+            "scale",
+            "target_kind",
+            "target_label",
+            "width",
+            "window_number",
+        }
+        observe_extras = {
+            "desktop_app": {"apps"},
+            "desktop_get_permissions": {
+                "accessibility",
+                "dependencies",
+                "platform",
+                "screen_recording",
+            },
+            "desktop_get_state": {"available", "mode", "mouse", "operation_count"},
+            "desktop_list": {"apps", "windows"},
+            "desktop_operation_log": {"operation_count"},
+            "desktop_screenshot": {"image_base64", "image_mime_type"},
+            "desktop_window": {"windows"},
+        }
+        permitted_projection = (
+            observe_base | observe_extras.get(tool, set())
+            if expected_observation
+            else {"action", "after_digest", "before_digest", "receipt_id"}
+        )
+        if not set(projection).issubset(permitted_projection):
+            return ToolResult(success=False, error="Desktop Cell denied request")
+        if not _cell_projection_is_safe(projection):
+            return ToolResult(success=False, error="Desktop Cell denied request")
+
+        if not output:
+            output = (
+                "Desktop observation completed through Desktop Cell"
+                if expected_observation
+                else "Desktop action committed through Desktop Cell"
+            )
+        return ToolResult(
+            success=True,
+            output=output,
+            metadata={"cell": "desktop", **projection},
+        )
+
     async def _screenshot(
         self,
         x: int = 0,
@@ -226,6 +429,17 @@ class DesktopTools:
         height: int = 0,
         show_cursor: bool = False,
     ) -> ToolResult:
+        if self._cell_backend is not None:
+            return await self._call_cell_backend(
+                "desktop_screenshot",
+                {
+                    "x": x,
+                    "y": y,
+                    "width": width,
+                    "height": height,
+                    "show_cursor": show_cursor,
+                },
+            )
         if self._guard is None:
             return ToolResult(success=False, error=f"Desktop write ops unavailable: {self._init_error}")
         try:
@@ -252,6 +466,11 @@ class DesktopTools:
         target: str = "apps",
         app_name: str | None = None,
     ) -> ToolResult:
+        if self._cell_backend is not None:
+            return await self._call_cell_backend(
+                "desktop_list",
+                {"target": target, "app_name": app_name},
+            )
         if self._guard is None:
             return ToolResult(success=False, error=f"Desktop write ops unavailable: {self._init_error}")
         try:
@@ -279,6 +498,8 @@ class DesktopTools:
             return ToolResult(success=False, error=f"List failed: {e}")
 
     async def _get_state(self) -> ToolResult:
+        if self._cell_backend is not None:
+            return await self._call_cell_backend("desktop_get_state", {})
         try:
             perms = PermissionChecker.get_status()
             pos_info = ""
@@ -304,6 +525,8 @@ class DesktopTools:
             return ToolResult(success=False, error=f"Get state failed: {e}")
 
     async def _get_permissions(self) -> ToolResult:
+        if self._cell_backend is not None:
+            return await self._call_cell_backend("desktop_get_permissions", {})
         try:
             perms = PermissionChecker.get_status()
             deps = []
@@ -330,6 +553,11 @@ class DesktopTools:
         button: str = "left",
         clicks: int = 1,
     ) -> ToolResult:
+        if self._cell_backend is not None:
+            return await self._call_cell_backend(
+                "desktop_click",
+                {"x": x, "y": y, "button": button, "clicks": clicks},
+            )
         if self._guard is None:
             return ToolResult(success=False, error=f"Desktop write ops unavailable: {self._init_error}")
         try:
@@ -348,6 +576,11 @@ class DesktopTools:
             return ToolResult(success=False, error=f"Click failed: {e}")
 
     async def _move(self, x: int, y: int) -> ToolResult:
+        if self._cell_backend is not None:
+            return await self._call_cell_backend(
+                "desktop_move",
+                {"x": x, "y": y},
+            )
         if self._guard is None:
             return ToolResult(success=False, error=f"Desktop write ops unavailable: {self._init_error}")
         try:
@@ -365,6 +598,11 @@ class DesktopTools:
         direction: str = "down",
         amount: int = 3,
     ) -> ToolResult:
+        if self._cell_backend is not None:
+            return await self._call_cell_backend(
+                "desktop_scroll",
+                {"direction": direction, "amount": amount},
+            )
         if self._guard is None:
             return ToolResult(success=False, error=f"Desktop write ops unavailable: {self._init_error}")
         try:
@@ -388,6 +626,17 @@ class DesktopTools:
         end_y: int,
         button: str = "left",
     ) -> ToolResult:
+        if self._cell_backend is not None:
+            return await self._call_cell_backend(
+                "desktop_drag",
+                {
+                    "start_x": start_x,
+                    "start_y": start_y,
+                    "end_x": end_x,
+                    "end_y": end_y,
+                    "button": button,
+                },
+            )
         if self._guard is None:
             return ToolResult(success=False, error=f"Desktop write ops unavailable: {self._init_error}")
         try:
@@ -405,6 +654,8 @@ class DesktopTools:
             return ToolResult(success=False, error=f"Drag failed: {e}")
 
     async def _type(self, text: str) -> ToolResult:
+        if self._cell_backend is not None:
+            return await self._call_cell_backend("desktop_type", {"text": text})
         if self._guard is None:
             return ToolResult(success=False, error=f"Desktop write ops unavailable: {self._init_error}")
         try:
@@ -422,6 +673,11 @@ class DesktopTools:
         key: str,
         modifiers: list[str] | None = None,
     ) -> ToolResult:
+        if self._cell_backend is not None:
+            return await self._call_cell_backend(
+                "desktop_key",
+                {"key": key, "modifiers": modifiers},
+            )
         if self._guard is None:
             return ToolResult(success=False, error=f"Desktop write ops unavailable: {self._init_error}")
         try:
@@ -440,6 +696,12 @@ class DesktopTools:
         action: str = "list",
         app_name: str | None = None,
     ) -> ToolResult:
+        if self._cell_backend is not None:
+            return await self._call_cell_backend(
+                "desktop_app",
+                {"action": action, "app_name": app_name},
+                observed=action == "list",
+            )
         if self._guard is None:
             return ToolResult(success=False, error=f"Desktop write ops unavailable: {self._init_error}")
         try:
@@ -472,6 +734,20 @@ class DesktopTools:
         width: int = 0,
         height: int = 0,
     ) -> ToolResult:
+        if self._cell_backend is not None:
+            return await self._call_cell_backend(
+                "desktop_window",
+                {
+                    "action": action,
+                    "app_name": app_name,
+                    "window_title": window_title,
+                    "x": x,
+                    "y": y,
+                    "width": width,
+                    "height": height,
+                },
+                observed=action == "list",
+            )
         if self._guard is None:
             return ToolResult(success=False, error=f"Desktop write ops unavailable: {self._init_error}")
         try:
@@ -502,21 +778,35 @@ class DesktopTools:
             return ToolResult(success=False, error=f"Window action failed: {e}")
 
     async def _set_mode(self, mode: str) -> ToolResult:
+        if self._cell_backend is not None:
+            return await self._call_cell_backend("desktop_set_mode", {"mode": mode})
         return self.set_mode(DesktopMode(mode))
 
     async def _emergency_stop(self, reason: str = "User triggered") -> ToolResult:
+        if self._cell_backend is not None:
+            return await self._call_cell_backend(
+                "desktop_emergency_stop",
+                {"reason": reason},
+            )
         if self._guard is None:
             return ToolResult(success=False, error=f"Desktop write ops unavailable: {self._init_error}")
         result = self._guard.trigger_emergency_stop(reason=reason)
         return ToolResult(success=True, output=f"Emergency stop triggered: {result['reason']}")
 
     async def _clear_stop(self) -> ToolResult:
+        if self._cell_backend is not None:
+            return await self._call_cell_backend("desktop_clear_stop", {})
         if self._guard is None:
             return ToolResult(success=False, error=f"Desktop write ops unavailable: {self._init_error}")
         self._guard.clear_emergency_stop()
         return ToolResult(success=True, output="Emergency stop cleared. Desktop operations can resume.")
 
     async def _operation_log(self, limit: int = 100) -> ToolResult:
+        if self._cell_backend is not None:
+            return await self._call_cell_backend(
+                "desktop_operation_log",
+                {"limit": limit},
+            )
         if self._guard is None:
             return ToolResult(success=False, error=f"Desktop write ops unavailable: {self._init_error}")
         try:

@@ -32,6 +32,7 @@ from js.orin.draft import (
     permit_from_dict,
     witness_from_dict,
 )
+from js.orin.handles import OriginHandle, handle_from_dict
 from js.orin.protocol import (
     HEARTBEAT_INTERVAL_S,
     ProtocolError,
@@ -93,6 +94,7 @@ class CellBase:
         state_dir: Path,
         handler: Callable[..., Any],
         preflight_handler: Callable[[CellPackage], Any] | None = None,
+        handle_handler: Callable[[str, dict[str, Any]], Any] | None = None,
         reconcile_handler: Callable[[str, dict[str, Any]], Any] | None = None,
         strict_effect_protocol: bool = False,
     ) -> None:
@@ -101,6 +103,7 @@ class CellBase:
         self._state_dir = state_dir
         self._handler = handler
         self._preflight_handler = preflight_handler
+        self._handle_handler = handle_handler
         self._reconcile_handler = reconcile_handler
         self._strict_effect_protocol = strict_effect_protocol
         self._identity_enforce = os.environ.get(CELL_IDENTITY_ENV) == "1"
@@ -251,6 +254,11 @@ class CellBase:
                     raise ProtocolError("legacy cell does not accept preflight")
                 await self._on_preflight(envelope)
                 continue
+            if message_type == "handle":
+                if not self._strict_effect_protocol:
+                    raise ProtocolError("legacy cell does not accept handle resolution")
+                await self._on_handle(envelope)
+                continue
             if message_type == "commit":
                 await self._on_commit(envelope)
                 continue
@@ -297,17 +305,30 @@ class CellBase:
                 raise ProtocolError("preflight executor does not match package")
             if self._preflight_handler is None:
                 raise ProtocolError("cell has no preflight handler")
-            raw_witness = self._preflight_handler(package)
-            if asyncio.iscoroutine(raw_witness):
-                raw_witness = await raw_witness
+            raw_result = self._preflight_handler(package)
+            if asyncio.iscoroutine(raw_result):
+                raw_result = await raw_result
+            projection: dict[str, Any] | None = None
+            raw_witness = raw_result
+            if hasattr(raw_result, "witness") and hasattr(raw_result, "projection"):
+                raw_witness = raw_result.witness
+                raw_projection = raw_result.projection
+                if not isinstance(raw_projection, dict):
+                    raise ProtocolError("preflight projection must be an object")
+                projection = self._bounded_strict_result(raw_projection)
             witness = self._parse_preflight_witness(raw_witness, package)
+            fields: dict[str, Any] = {
+                "ok": True,
+                "witness": witness.to_dict(),
+            }
+            if projection is not None:
+                fields["result"] = projection
             reply = make_envelope(
                 "preflight_ack",
                 seq=request_seq,
                 nonce=self._session_nonce,
                 session_key=self._session_key,
-                ok=True,
-                witness=witness.to_dict(),
+                **fields,
             )
         except ProtocolError as exc:
             reply = make_envelope(
@@ -328,6 +349,65 @@ class CellBase:
                 ok=False,
                 code="internal",
                 reason="cell preflight failed",
+            )
+        self._writer.write(encode_frame(reply))
+        await self._writer.drain()
+
+    async def _on_handle(self, envelope: dict[str, Any]) -> None:
+        """Resolve a Cell-private observed target on the existing handle wire."""
+
+        assert self._writer is not None
+        request_seq = int(envelope["seq"])
+        self._last_client_seq = max(self._last_client_seq, request_seq)
+        try:
+            if envelope.get("op") != "resolve" or self._handle_handler is None:
+                raise ProtocolError("cell accepts only internal handle resolution")
+            raw_ref = envelope.get("handle")
+            spec = envelope.get("spec")
+            if not isinstance(raw_ref, dict) or set(raw_ref) != {"handle_id"}:
+                raise ProtocolError("cell handle resolution requires one handle id")
+            handle_id = raw_ref.get("handle_id")
+            if not isinstance(handle_id, str) or not handle_id.startswith("desktop:"):
+                raise ProtocolError("cell handle id is invalid")
+            if not isinstance(spec, dict):
+                raise ProtocolError("cell handle resolution requires a binding spec")
+            raw_handle = self._handle_handler(handle_id, spec)
+            if asyncio.iscoroutine(raw_handle):
+                raw_handle = await raw_handle
+            handle = (
+                raw_handle
+                if isinstance(raw_handle, OriginHandle)
+                else handle_from_dict(raw_handle, require_signature=True)
+            )
+            if handle.handle_id != handle_id or handle.kind != "DesktopTargetHandle":
+                raise ProtocolError("cell resolved the wrong DesktopTargetHandle")
+            reply = make_envelope(
+                "handle_ack",
+                seq=request_seq,
+                nonce=self._session_nonce,
+                session_key=self._session_key,
+                ok=True,
+                handle=handle.to_dict(),
+            )
+        except ProtocolError as exc:
+            reply = make_envelope(
+                "handle_ack",
+                seq=request_seq,
+                nonce=self._session_nonce,
+                session_key=self._session_key,
+                ok=False,
+                code="bad_message",
+                reason=str(exc)[:512],
+            )
+        except Exception:  # noqa: BLE001 - no private observation in errors
+            reply = make_envelope(
+                "handle_ack",
+                seq=request_seq,
+                nonce=self._session_nonce,
+                session_key=self._session_key,
+                ok=False,
+                code="internal",
+                reason="cell handle resolution failed",
             )
         self._writer.write(encode_frame(reply))
         await self._writer.drain()

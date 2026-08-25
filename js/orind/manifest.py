@@ -205,10 +205,42 @@ class EffectManifest:
         return out
 
 
-def builtin_manifest(mac_key: bytes) -> EffectManifest:
+def builtin_manifest(mac_key: bytes, *, include_desktop: bool = False) -> EffectManifest:
     """Stage-B built-ins for first-party effect types (all sealed)."""
 
     manifest = EffectManifest(mac_key)
+    if include_desktop:
+        manifest.register(
+            EffectManifestEntry(
+                effect_type="desktop.observe",
+                executor_id="cell.desktop",
+                side_effect_class="R0",
+                idempotent=True,
+                drafts_supported=True,
+                etag_support=True,
+                reconcile_query=False,
+                content_args=("target", "request"),
+                description_hash=description_hash_of(
+                    "observe a desktop target inside the authenticated Desktop Cell"
+                ),
+            )
+        )
+        manifest.register(
+            EffectManifestEntry(
+                effect_type="desktop.action",
+                executor_id="cell.desktop",
+                side_effect_class="R2",
+                idempotent=False,
+                drafts_supported=True,
+                etag_support=True,
+                reconcile_query=False,
+                permission_args={"desktop_target_handle": "desktop"},
+                content_args=("action",),
+                description_hash=description_hash_of(
+                    "perform one exact action against an observed desktop target"
+                ),
+            )
+        )
     manifest.register(
         EffectManifestEntry(
             effect_type="artifact.read",

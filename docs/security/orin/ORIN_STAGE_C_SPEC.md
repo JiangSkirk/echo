@@ -1,6 +1,6 @@
 # Orin 阶段 C「强制模式」实施规格
 
-> 状态：已人工评审；C0 已冻结；C1 第一块与身份/env/path 仅在显式 harness 已测，默认生产路径仍单进程；本轮未授权 C2；阶段 C 未实施
+> 状态：已人工评审；C0 已冻结；C1 与 C2 仅显式 harness 检查点已测，C2 未完成；默认生产仍单进程；禁止进入 C3；阶段 C 未实施
 > 日期：2026-08-24（Asia/Shanghai）
 > 施工基线：commit `652d035e0fda0e945da97e55b73a8f4116716410`，分支 `feature/orin-stage-b`
 > 终态北极星：`ORIN_EFFECT_KERNEL_V1.md`（**K**）；阶段 C 对应 K P5，上线验收只听 K§15.6
@@ -393,7 +393,7 @@ C0 证据索引：[`ORIN_STAGE_C_C0_INVENTORY.md`](ORIN_STAGE_C_C0_INVENTORY.md)
 
 - **已观察 / 身份检查点**：Build/File/Services 的严格 Orin 身份、逐 Cell 环境 allowlist 与 private-path 合同已在显式 `C1TestOrind` harness 验收；生产 orind 入口不传 `c1_test_harness`，`orin.enforce=true` 仍 fail-fast。
 - **已观察 / macOS 显式 harness 进程分离**：测试宿主先持有 owner-witness 私钥并按既有 B schema 签名，再以全新 OS 进程执行 `JSAgent → run_echo_turn → EchoTurnLoop`。worker 只读宿主生成的裁剪 runtime image、只写私有 scratch state，并只接收 task/handle ID、模型上下文与安全投影；宿主从 `create_subprocess_exec` 记录 Darwin `sandbox-exec` payload PID，固定攻击进程在同一 OS 策略下不能读主人私钥/宿主 state/仓库签发源码、不能发现 AppShell 签发模块或连接宿主 UDS。worker 能用临时自有 key 构造 `approved=True` DTO，但该签名不能通过宿主公钥验证，因而不能成为受信权威事件。旧 stdlib 探针仅保留为负对照。
-- **边界未扩张**：上述证据只通过显式 `c1_harness` 取得；默认 `launcher/server/sidecar` 仍是 `652d035` 的单进程产品路径，真实 provider token、Keychain/Mach 与正式打包边界仍为 `untested` / `external-pending`。本轮不授权或进入 WP-C2，也不构成阶段 C 已实施或 Echo RCE 已收口的证据。
+- **边界未扩张**：上述证据只通过显式 `c1_harness` 取得；默认 `launcher/server/sidecar` 仍是 `652d035` 的单进程产品路径，真实 provider token、Keychain/Mach 与正式打包边界仍为 `untested` / `external-pending`。该 C1 检查点当时不授权或进入 WP-C2；后续 C2 仍只获独立显式 harness 授权，二者都不构成阶段 C 已实施或 Echo RCE 已收口的证据。
 
 交付物：
 
@@ -413,6 +413,13 @@ C0 证据索引：[`ORIN_STAGE_C_C0_INVENTORY.md`](ORIN_STAGE_C_C0_INVENTORY.md)
 回退开关：`orin.enforce=false` 冷重启；`cell_identity_enforce` 在总闸关闭时惰性。强制实例不回退身份校验。
 
 ### WP-C2：Desktop Cell 产品迁移
+
+状态（2026-08-25）：
+
+- **已观察 / 显式 harness 检查点**：`C2TestOrind` 复用 C1 launch ticket、Cell 身份、private path 与逐 Cell 环境 allowlist，只在显式 harness 启动 `cell.desktop`。真实 macOS 只读观察已取得像素、坐标 scale 与哈希证据；脚本后端已验证严格 draft/preflight/package/permit、DesktopTargetHandle 的 Cell 会话封印 + orind 验签重封、状态漂移/重放拒绝、preflight 零动作和协议级 `observe → act → observe`。普通 `handle.op=issue` 与 Echo 读取完整 DesktopTargetHandle 继续硬拒。
+- **已观察 / fail-closed 裁决**：Desktop preflight 在调用 Cell 前、Cell 返回后及 handle sealing 返回后均重新执行主人证/effect/handle/time Gate。K4 能力表不完整仍按阶段 B 规则升级双控；fresh witness 与 post-observe 不顶替幂等/对账证据。因此 Work 预授权不能让 Desktop action consume，Personal 也不能借 ExportPass 放行。
+- **blocked / 不算 C2 完成**：现有 native controller 缺少精确 AX window/control identity、topmost hit-test、单一无 fallback 动作 sink 与歧义提交对账；除 Cell 内部 emergency stop 外，原生 OS mutation 在 harness 中全部硬拒。真实模型尚不能消费真实像素完成桌面闭环，K§15.6 第 8 条保持 `blocked`；未实现 K§8.5 完整签名 EffectReceipt。本检查点不得进入 WP-C3。
+- **兼容边界**：默认 launcher/server/router/sidecar 与生产 DesktopTools 未接入本 harness，`orin.enforce=false` 时仍执行 `26da9be` / `652d035` 的单进程 ambient Desktop 路径；`cell_desktop` 默认 `false` 且单独置真仍惰性。本状态不证明图像注入免疫、阶段 C 已实施或 Echo RCE 已收口。
 
 交付物：
 
@@ -551,7 +558,7 @@ C0 证据索引：[`ORIN_STAGE_C_C0_INVENTORY.md`](ORIN_STAGE_C_C0_INVENTORY.md)
 | 5 | 崩溃与超时中不可逆重复次数为 0 | **本阶段必须测** | B 已测本地膜逐状态 crash/restart；真 provider、响应丢失和真实不可逆效果仍不足 | WP-C6 对每个发布 Connector 给出 provider 级幂等/对账证据 |
 | 6 | 性能、内存、CPU、启动、背压达 K§10.4 或书面调整 | **untested** | K§10.4 全部是目标值；不得沿用 D 的微秒/qps 口号 | WP-C7 实测报告或逐项书面调整 |
 | 7 | 正常效用与审批量达产品标准 | **untested** | B mock 11/11、overall 1.000 是已有局部证据；enforce 效用与日均审批未测 | mock ≥95%、批准的真实任务基线、日均审批 ≤5 |
-| 8 | 真实 `observe → act → observe` 桌面闭环 | **blocked** | Desktop 尚在主进程，真实闭环未验收 | WP-C2 实迁与真实模型 E2E；未通过即禁止上线声明 |
+| 8 | 真实 `observe → act → observe` 桌面闭环 | **blocked** | C2 显式 harness 已取得真实像素只读 observe，脚本后端仅证明协议绑定；默认 Desktop 仍在主进程，原生精确动作与真实模型闭环未验收 | WP-C2 实迁与真实模型 E2E；未通过即禁止上线声明 |
 | 9 | 独立红队未发现完整仲裁绕过 | **blocked** | 独立复核资源与结果均为 external-pending | WP-C7 独立复核完成；外部资源未到位也不得上线 |
 | 10 | 未完成项明确标 blocked/untested/external-pending | **本阶段必须测** | B 债务已有标签，但 C 尚无实施证据账本 | 每 WP 更新证据索引，最终人工审计；“计划完成”不算 |
 
@@ -636,7 +643,7 @@ RCE 验证使用“已获得任意控制流”的无害测试入口与哨兵资�
 
 只有以下全部满足，才允许把阶段 C 从“规格”改为“已实施候选”：
 
-- [x] 本规格已人工评审；C0 已冻结，C1 仅获显式 construction harness 授权；
+- [x] 本规格已人工评审；C0 已冻结，C1/C2 仅获显式 construction harness 检查点授权；
 - [ ] C0–C7 严格顺序完成；
 - [ ] Desktop 与 Memory 已整迁；
 - [ ] AppShell 可信确认面已离开 Echo 失陷域；

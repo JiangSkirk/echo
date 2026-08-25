@@ -17,6 +17,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from js.orin.desktop import (
+    normalize_desktop_action,
+    normalize_desktop_observe_arguments,
+)
 from js.orin.draft import (
     DRAFT_ID_PREFIX,
     EffectDraft,
@@ -56,7 +60,7 @@ def canonical_effect_hash_of(draft: EffectDraft) -> str:
     return "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
-READ_EFFECTS: frozenset[str] = frozenset({"artifact.read"})
+READ_EFFECTS: frozenset[str] = frozenset({"artifact.read", "desktop.observe"})
 STAGE_EFFECTS: frozenset[str] = frozenset({"artifact.stage", "net.fetch"})
 AUTO_EFFECTS: frozenset[str] = READ_EFFECTS | STAGE_EFFECTS
 DUAL_CONTROL_EFFECTS: frozenset[str] = frozenset({"policy.change", "admin.unfreeze"})
@@ -208,6 +212,38 @@ class GateKernel:
                         verdict="deny_policy",
                         reason_code="invalid_file_commit_changes",
                     )
+            elif draft.effect_type == "desktop.observe":
+                try:
+                    normalize_desktop_observe_arguments(draft.arguments)
+                except Exception:
+                    return GateDecision(
+                        verdict="deny_policy",
+                        reason_code="invalid_desktop_observe",
+                    )
+            elif draft.effect_type == "desktop.action":
+                target_handle = draft.arguments.get("desktop_target_handle")
+                if (
+                    not isinstance(target_handle, str)
+                    or not target_handle.startswith("desktop:")
+                ):
+                    return GateDecision(
+                        verdict="deny_policy",
+                        reason_code="desktop_action_requires_target_handle",
+                    )
+                try:
+                    desktop_action = normalize_desktop_action(
+                        draft.arguments.get("action")
+                    )
+                except Exception:
+                    return GateDecision(
+                        verdict="deny_policy",
+                        reason_code="invalid_desktop_action",
+                    )
+                if desktop_action["kind"] in {"clear_stop", "set_mode"}:
+                    return GateDecision(
+                        verdict="deny_policy",
+                        reason_code="desktop_owner_control_required",
+                    )
 
         # 2) Hard denials short-circuit.  They deliberately carry no
         # ``missing`` entries: no approval or later witness can repair them.
@@ -268,6 +304,15 @@ class GateKernel:
                         verdict="deny_policy",
                         reason_code="resource_handle_capability_mismatch",
                     )
+            if (
+                intent is not None
+                and handle.kind == "DesktopTargetHandle"
+                and (handle.tenant != intent.profile or "use" not in handle.capabilities)
+            ):
+                return GateDecision(
+                    verdict="deny_policy",
+                    reason_code="desktop_target_handle_scope_mismatch",
+                )
 
         # 5) Fresh state witness bound to this draft for anything irreversible.
         witness_missing = False

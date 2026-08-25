@@ -517,6 +517,13 @@ class OrinConfig(BaseModel):
             "Lazy unless Stage-C enforce is active or an explicit C1 test harness is used."
         ),
     )
+    cell_desktop: bool = Field(
+        default=False,
+        description=(
+            "WP-C2 Desktop Cell construction switch. It is inert on product "
+            "routes and may be exercised only by the explicit C2 test harness."
+        ),
+    )
 
     @model_validator(mode="after")
     def reject_unfinished_stage_c_enforce(self) -> OrinConfig:
