@@ -1393,55 +1393,16 @@ class TestOwnerPropagation:
         kwargs = web_server._agent.memory.get_audit_log.call_args.kwargs
         assert kwargs["owner_key_hash"] is not None
 
-    def test_task_state_methods_enter_owner_bound_echo_effects(
+    def test_task_mutate_stays_read_only(
         self,
         client: TestClient,
     ) -> None:
         agent = web_server._agent
-        agent.task_manager.pause = MagicMock(side_effect=AssertionError("raw task bypass"))
-        agent.task_manager.resume = MagicMock(side_effect=AssertionError("raw task bypass"))
-        agent.task_manager.delete = MagicMock(side_effect=AssertionError("raw task bypass"))
-        runtime_context = MagicMock(capabilities=("control_task_mutate",))
-        agent.echo_runtime.build_context.return_value = runtime_context
-
-        async def execute_task(effect, _context):
-            action = json.loads(effect.arguments_json)["action"]
-            status = {"pause": "paused", "resume": "running", "delete": "deleted"}[action]
-            return (
-                ChatMessage(role="tool", content=status, name=effect.tool_name),
-                ToolResult(
-                    success=True,
-                    output=status,
-                    metadata={"task_id": "task-1", "status": status},
-                ),
-            )
-
-        agent.echo_runtime.execute_tool_effect = AsyncMock(side_effect=execute_task)
-
-        resp = client.post("/api/tasks/task-1/pause")
-        assert resp.status_code == 200
-
-        resp = client.post("/api/tasks/task-1/resume")
-        assert resp.status_code == 200
-
-        resp = client.delete("/api/tasks/task-1")
-        assert resp.status_code == 200
-        agent.task_manager.pause.assert_not_called()
-        agent.task_manager.resume.assert_not_called()
-        agent.task_manager.delete.assert_not_called()
-        assert agent.echo_runtime.execute_tool_effect.await_count == 3
-        effects = [call.args[0] for call in agent.echo_runtime.execute_tool_effect.await_args_list]
-        assert [effect.tool_name for effect in effects] == [
-            "control_task_mutate",
-            "control_task_mutate",
-            "control_task_mutate",
-        ]
-        assert [json.loads(effect.arguments_json)["action"] for effect in effects] == [
-            "pause",
-            "resume",
-            "delete",
-        ]
-        assert all(effect.allowed_tools == ("control_task_mutate",) for effect in effects)
+        agent.echo_runtime.execute_tool_effect = AsyncMock()
+        assert client.post("/api/tasks/task-1/pause").status_code == 503
+        assert client.post("/api/tasks/task-1/resume").status_code == 503
+        assert client.delete("/api/tasks/task-1").status_code == 503
+        agent.echo_runtime.execute_tool_effect.assert_not_called()
 
 
 class TestDiagEndpoint:

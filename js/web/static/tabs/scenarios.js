@@ -81,15 +81,9 @@ export async function startScenario(scenarioId) {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     if (data.success) {
-      showToast(`场景「${data.scenario_name}」已启动`);
-      // Switch to fleet mode if available
-      if (typeof toggleFleetMode === 'function') {
-        toggleFleetMode();
-      }
-      // Set fleet mode
-      const modeSelect = document.getElementById('fleet-mode-select');
-      if (modeSelect && data.default_mode) {
-        modeSelect.value = data.default_mode;
+      showToast(`场景「${data.scenario_name}」已启动为 Goal`);
+      if (typeof window.enterBotsSurface === 'function') {
+        window.enterBotsSurface();
       }
     }
   } catch (e) {

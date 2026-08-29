@@ -1,14 +1,14 @@
 # Current review stamps. One row per inventory unit.
 # Authoritative with quality/rubric.yaml only. Do not invent criteria here.
 
-rubric_version: "2026.09.8"
+rubric_version: "2026.09.9"
 
 labels:
   - unit: echo.ledger
     paths:
       - js/echo/ledger/
     label: PEAK
-    rubric_version: "2026.09.8"
+    rubric_version: "2026.09.9"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -30,7 +30,7 @@ labels:
       - js/echo/spi.py
       - js/echo/context_store.py
     label: PEAK
-    rubric_version: "2026.09.8"
+    rubric_version: "2026.09.9"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -52,7 +52,7 @@ labels:
       - js/orin/
       - js/orind/
     label: PEAK
-    rubric_version: "2026.09.8"
+    rubric_version: "2026.09.9"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -78,7 +78,7 @@ labels:
       - js/web/
       - js/appshell/
     label: PEAK
-    rubric_version: "2026.09.8"
+    rubric_version: "2026.09.9"
     stamped_at: "2026-08-27"
     reviewer: "agent:switch-memory-ui"
     evidence:
@@ -92,6 +92,8 @@ labels:
         status: pass
       - criterion_id: tasks.empty_shell
         status: pass
+      - criterion_id: scenarios.goal_templates
+        status: pass
       - criterion_id: m2.structure
         status: pass
       - criterion_id: appshell.process_split
@@ -103,7 +105,7 @@ labels:
     paths:
       - js/memory/
     label: PEAK
-    rubric_version: "2026.09.8"
+    rubric_version: "2026.09.9"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -121,7 +123,7 @@ labels:
       - js/agent/
       - js/tools/
     label: PEAK
-    rubric_version: "2026.09.8"
+    rubric_version: "2026.09.9"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -138,7 +140,7 @@ labels:
     paths:
       - js/security/
     label: PEAK
-    rubric_version: "2026.09.8"
+    rubric_version: "2026.09.9"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -159,7 +161,7 @@ labels:
     paths:
       - js/runtime/
     label: PEAK
-    rubric_version: "2026.09.8"
+    rubric_version: "2026.09.9"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -174,12 +176,11 @@ labels:
     notes: "Lease JSONL compact is scheduled from governor hot-state; not a WAL allowlist path"
   - unit: reserved
     paths:
-      - js/scenarios/
       - js/pipeline/
       - js/friends/
       - js/mobile/
     label: PEAK
-    rubric_version: "2026.09.8"
+    rubric_version: "2026.09.9"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -196,7 +197,7 @@ labels:
     paths:
       - js/evolution/
     label: PEAK
-    rubric_version: "2026.09.8"
+    rubric_version: "2026.09.9"
     stamped_at: "2026-08-29"
     reviewer: "agent:gap-closure-wp5"
     evidence:
@@ -213,7 +214,7 @@ labels:
     paths:
       - js_work/
     label: PEAK
-    rubric_version: "2026.09.8"
+    rubric_version: "2026.09.9"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -228,7 +229,7 @@ labels:
     paths:
       - js/bots/
     label: PEAK
-    rubric_version: "2026.09.8"
+    rubric_version: "2026.09.9"
     stamped_at: "2026-08-28"
     reviewer: "agent:bots-surface"
     evidence:
@@ -246,7 +247,7 @@ labels:
       - SECURITY.md
       - SECURITY_en.md
     label: PEAK
-    rubric_version: "2026.09.8"
+    rubric_version: "2026.09.9"
     stamped_at: "2026-08-29"
     reviewer: "agent:gap-closure-wp1"
     evidence:
@@ -265,7 +266,7 @@ labels:
     paths:
       - js/gateway/
     label: PEAK
-    rubric_version: "2026.09.8"
+    rubric_version: "2026.09.9"
     stamped_at: "2026-08-29"
     reviewer: "agent:gap-closure-wp4a"
     evidence:

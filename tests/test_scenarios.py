@@ -72,6 +72,23 @@ class TestScenarioRegistry:
         assert len(all_scenarios) >= 3
 
 
+class TestScenarioGoalTemplate:
+    def test_instantiate_creates_owner_scoped_goal(self, tmp_path: Path) -> None:
+        from js.bots.store import BotStore
+        from js.scenarios.instantiate import instantiate_scenario
+
+        scenario = load_builtin_scenarios()[0]
+        created = instantiate_scenario(
+            scenario,
+            owner_key_hash="owner-a",
+            state_dir=tmp_path,
+        )
+        store = BotStore(tmp_path)
+        goals = store.list_goal_runs(owner_key_hash="owner-a")
+        assert [item.id for item in goals] == [created["goal_id"]]
+        assert store.list_goal_runs(owner_key_hash="owner-b") == []
+
+
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
     from js.web import server as web_server
@@ -135,3 +152,7 @@ class TestScenarioAPI:
         assert data["scenario_id"] == "code-review"
         assert "fleet_config" in data
         assert "example_prompts" in data
+        assert data["goal_id"]
+        assert data["room_id"]
+        assert data["bot_ids"]
+        assert data["goal"]["phase"] == "clarify"

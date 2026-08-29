@@ -737,6 +737,27 @@ class BotStore:
             raise BotsIsolationError("goal write lost the owner row")
         return updated
 
+    def list_goal_runs(
+        self,
+        *,
+        owner_key_hash: str,
+        product_id: str = BOTS_PRODUCT_ID,
+        limit: int = 100,
+    ) -> list[GoalRun]:
+        owner, product = _require_scope(owner_key_hash, product_id)
+        bound = min(max(int(limit), 1), 200)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM goal_runs
+                WHERE {_SCOPE_SQL}
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (owner, product, bound),
+            ).fetchall()
+        return [self._goal_from_row(row) for row in rows]
+
     @staticmethod
     def _bot_from_row(row: sqlite3.Row) -> BotRecord:
         return BotRecord(

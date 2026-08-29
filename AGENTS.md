@@ -13,7 +13,7 @@ durable recovery behind one fail-closed execution boundary.
 - **Orin 三层**：配置默认 `orin.enabled=false`；AppShell 启动打开 **Stage A**（lease/policy）；**Stage C / cells / `orin.enforce` 默认关**。完成声明见 `docs/security/orin/ORIN_STAGE_C_CLOSEOUT.md`（`not_implemented`）。
 - **`pulse()` 只观察背压**（ADR 0005），不 Exec，不是第二套运行时。
 - **Gateway** 是渠道表面不是运行时（ADR 0008，`gateway.enabled=false`）。未配对发件人丢弃；回合仍走 Echo。
-- **预留模块**（`pipeline` / `friends` / `mobile` / `scenarios` / 空壳 `/api/tasks`）默认不进 Host 冷启动。
+- **预留模块**（`pipeline` / `friends` / `mobile`）默认不进 Host 冷启动。`scenarios` 是 bots goal 模板；`/api/tasks` 是 bots goals 只读视图。
 
 ## Project Structure
 

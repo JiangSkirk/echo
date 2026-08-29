@@ -1,7 +1,7 @@
 # Canonical quality criteria. New bars require a rubric_version bump + changelog.
 # Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
 
-rubric_version: "2026.09.8"
+rubric_version: "2026.09.9"
 
 label_enum:
   - OPEN
@@ -58,6 +58,7 @@ inventory_units:
       - repo.default
       - web.auth_contracts
       - tasks.empty_shell
+      - scenarios.goal_templates
       - m2.structure
       - appshell.process_split
       - security.onboarding_admin
@@ -90,7 +91,6 @@ inventory_units:
       - runtime.wal_allowlist
   reserved:
     paths:
-      - js/scenarios/
       - js/pipeline/
       - js/friends/
       - js/mobile/
@@ -182,9 +182,15 @@ scopes:
   tasks.empty_shell:
     criteria:
       - id: tasks.empty_shell
-        description: /api/tasks empty list + mutate 503
+        description: /api/tasks is a read-only bots goals view; mutate stays 503
         evidence_kind: pytest_node
         nodeid: tests/test_tasks_empty_shell.py
+  scenarios.goal_templates:
+    criteria:
+      - id: scenarios.goal_templates
+        description: Scenario start creates owner-scoped bots room + goal
+        evidence_kind: pytest_node
+        nodeid: tests/test_scenarios.py::TestScenarioAPI::test_start_scenario
   m1.structure:
     criteria:
       - id: m1.structure
@@ -313,6 +319,10 @@ scopes:
         nodeid: tests/gateway/test_discord_e2e.py
 
 changelog:
+  - version: "2026.09.9"
+    date: "2026-08-29"
+    changes:
+      - "Scenarios instantiate bots goals; /api/tasks is a read-only goals view"
   - version: "2026.09.8"
     date: "2026-08-29"
     changes:

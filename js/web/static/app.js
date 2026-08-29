@@ -16,7 +16,7 @@ import { loadFiles } from './tabs/files.js';
 import { loadStatus, refreshSessionCapsule, clearSessionCapsule } from './tabs/status.js';
 import { loadAudit } from './tabs/audit.js';
 import { loadApprovals, startApprovalsPolling, stopApprovalsPolling } from './tabs/approvals.js';
-import { loadTasks, pauseTask, resumeTask, deleteTask, startTasksPolling } from './tabs/tasks.js';
+import { loadTasks, startTasksPolling } from './tabs/tasks.js';
 import { loadScenarios, startScenario, fillScenarioPrompt } from './tabs/scenarios.js';
 import { loadAgents } from './tabs/agents.js';
 import {
@@ -3153,7 +3153,7 @@ const _windowFuncs = {
   refreshFleetHistory, loadFleetSessionToChat, loadFleetSessionDetail, deleteFleetSession,
   loadCloudPresets, loadAudit, loadStatus, loadModels,
   loadApprovals, startApprovalsPolling, stopApprovalsPolling,
-  loadTasks, pauseTask, resumeTask, deleteTask,
+  loadTasks,
   loadScenarios, startScenario, fillScenarioPrompt,
   saveApiKey,
   openCommandPalette: openPalette,

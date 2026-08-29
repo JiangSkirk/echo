@@ -1,4 +1,4 @@
-import { bindDataClicks, escapeHtml, sanitizeRuntimeId, showToast } from '../utils/dom.js';
+import { escapeHtml } from '../utils/dom.js';
 
 let tasksPollInterval = null;
 
@@ -20,16 +20,16 @@ export async function loadTasks() {
 
 function renderTasks(tasks, container) {
   if (tasks.length === 0) {
-    container.innerHTML = '<div class="text-gray-400 text-sm text-center py-8">暂无任务</div>';
+    container.innerHTML = '<div class="text-gray-400 text-sm text-center py-8">暂无 Goal。从场景模板启动，或在 Bots 房间里提出任务。</div>';
     return;
   }
 
   const statusConfig = {
-    running: { color: 'text-blue-400', bg: 'bg-blue-900/30', icon: 'fa-spinner fa-spin', label: '运行中' },
+    running: { color: 'text-blue-400', bg: 'bg-blue-900/30', icon: 'fa-spinner fa-spin', label: '执行中' },
     paused: { color: 'text-yellow-400', bg: 'bg-yellow-900/30', icon: 'fa-pause', label: '已暂停' },
     completed: { color: 'text-green-400', bg: 'bg-green-900/30', icon: 'fa-check', label: '已完成' },
     failed: { color: 'text-red-400', bg: 'bg-red-900/30', icon: 'fa-times', label: '失败' },
-    pending: { color: 'text-gray-400', bg: 'bg-gray-800', icon: 'fa-clock', label: '等待中' },
+    pending: { color: 'text-gray-400', bg: 'bg-gray-800', icon: 'fa-clock', label: '澄清中' },
   };
 
   container.innerHTML = tasks.map(t => {
@@ -39,7 +39,6 @@ function renderTasks(tasks, container) {
       ? Math.min(100, Math.max(0, Math.round(progressRaw * 100)))
       : 0;
     const timeStr = t.updated_at ? new Date(t.updated_at * 1000).toLocaleString() : '--';
-    const taskId = escapeHtml(String(t.id ?? ''));
     return `
       <div class="bg-gray-800 rounded-lg p-3 border border-gray-700">
         <div class="flex items-center justify-between mb-2">
@@ -48,12 +47,8 @@ function renderTasks(tasks, container) {
               <i class="fas ${cfg.icon} mr-1"></i>${cfg.label}
             </span>
             <span class="text-sm font-medium text-gray-200">${escapeHtml(t.name)}</span>
-            <span class="text-[10px] text-gray-500">${escapeHtml(t.type)}</span>
-          </div>
-          <div class="flex items-center gap-1">
-            ${t.status === 'running' ? `<button type="button" data-task-action="pause" data-task-id="${taskId}" class="text-[10px] bg-yellow-900/30 hover:bg-yellow-900/50 text-yellow-400 px-2 py-1 rounded transition" title="暂停"><i class="fas fa-pause"></i></button>` : ''}
-            ${t.status === 'paused' ? `<button type="button" data-task-action="resume" data-task-id="${taskId}" class="text-[10px] bg-blue-900/30 hover:bg-blue-900/50 text-blue-400 px-2 py-1 rounded transition" title="恢复"><i class="fas fa-play"></i></button>` : ''}
-            ${t.status === 'completed' || t.status === 'failed' ? `<button type="button" data-task-action="delete" data-task-id="${taskId}" class="text-[10px] bg-red-900/30 hover:bg-red-900/50 text-red-400 px-2 py-1 rounded transition" title="删除"><i class="fas fa-trash"></i></button>` : ''}
+            <span class="text-[10px] text-gray-500">${escapeHtml(t.type || 'bots_goal')}</span>
+            ${t.phase ? `<span class="text-[10px] text-gray-500">${escapeHtml(t.phase)}</span>` : ''}
           </div>
         </div>
         <div class="w-full bg-gray-700 rounded-full h-1.5 mb-2">
@@ -68,48 +63,6 @@ function renderTasks(tasks, container) {
       </div>
     `;
   }).join('');
-  bindDataClicks(container, 'taskId', (rawId, event) => {
-    const taskId = sanitizeRuntimeId(rawId);
-    if (!taskId) return;
-    const action = event.currentTarget.dataset.taskAction;
-    if (action === 'pause') pauseTask(taskId);
-    else if (action === 'resume') resumeTask(taskId);
-    else if (action === 'delete') deleteTask(taskId);
-  });
-}
-
-export async function pauseTask(taskId) {
-  try {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/pause`, { method: 'POST' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    loadTasks();
-    showToast('任务已暂停');
-  } catch (e) {
-    showToast('暂停失败: ' + e.message, 'error');
-  }
-}
-
-export async function resumeTask(taskId) {
-  try {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/resume`, { method: 'POST' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    loadTasks();
-    showToast('任务已恢复');
-  } catch (e) {
-    showToast('恢复失败: ' + e.message, 'error');
-  }
-}
-
-export async function deleteTask(taskId) {
-  if (!confirm('确定删除此任务？')) return;
-  try {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    loadTasks();
-    showToast('任务已删除');
-  } catch (e) {
-    showToast('删除失败: ' + e.message, 'error');
-  }
 }
 
 export function startTasksPolling() {

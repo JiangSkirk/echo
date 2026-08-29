@@ -127,8 +127,8 @@ class TestStaticAssets:
         skills_js = client.get("/static/tabs/skills.js").text
         memory_js = client.get("/static/tabs/memory.js").text
         status_js = client.get("/static/tabs/status.js").text
-        assert "data-task-action" in tasks_js
-        assert "bindDataClicks" in tasks_js
+        assert "data-task-action" not in tasks_js
+        assert "pauseTask" not in tasks_js
         assert "data-skill-id" in skills_js
         assert "data-mem-action" in memory_js
         assert "data-wizard-action" in status_js
