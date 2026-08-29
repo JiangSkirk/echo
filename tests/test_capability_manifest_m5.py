@@ -23,7 +23,31 @@ def test_personal_manifest_enables_skills_and_evolution(tmp_path: Path) -> None:
     assert manifest["tabs"]["skills"]["enabled"] is True
     assert manifest["tabs"]["evolution"]["enabled"] is True
     assert "skills" in manifest["enabled_tabs"]
+    assert "friends" not in manifest["enabled_tabs"]
     assert manifest["api"]["skills_mutations"] is True
+    assert manifest["api"]["friends_actions"] is False
+
+
+def test_friends_tab_is_gated_by_friends_enabled(tmp_path: Path) -> None:
+    from js.config import JSSettings
+    from js.web.capability_manifest import build_capability_manifest
+
+    off = JSSettings(
+        workspace=tmp_path / "off" / "workspace",
+        state_dir=tmp_path / "off" / "state",
+        providers=[],
+    )
+    on = JSSettings(
+        workspace=tmp_path / "on" / "workspace",
+        state_dir=tmp_path / "on" / "state",
+        providers=[],
+        friends_enabled=True,
+    )
+    assert "friends" not in build_capability_manifest(off)["enabled_tabs"]
+    enabled = build_capability_manifest(on)
+    assert enabled["tabs"]["friends"]["enabled"] is True
+    assert "friends" in enabled["enabled_tabs"]
+    assert enabled["api"]["friends_actions"] is True
 
 
 def test_work_manifest_hides_skills_evolution_and_personal_extras(tmp_path: Path) -> None:
@@ -44,6 +68,7 @@ def test_work_manifest_hides_skills_evolution_and_personal_extras(tmp_path: Path
     assert manifest["tabs"]["evolution"]["enabled"] is False
     assert manifest["tabs"]["agents"]["enabled"] is False
     assert manifest["tabs"]["bots"]["enabled"] is False
+    assert manifest["tabs"]["friends"]["enabled"] is False
     assert "skills" not in manifest["enabled_tabs"]
     assert manifest["api"]["skills_mutations"] is False
     assert manifest["api"]["evolution_actions"] is False

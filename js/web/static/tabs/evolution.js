@@ -1,4 +1,4 @@
-import { escapeHtml, showToast } from '../utils/dom.js';
+import { bindDataClicks, escapeHtml, sanitizeRuntimeId, showToast } from '../utils/dom.js';
 
 export async function runEvolutionNow() {
   const btn = document.querySelector('#tab-evolution button[onclick="runEvolutionNow()"]');
@@ -75,13 +75,18 @@ export async function loadEvolution() {
   container.innerHTML = '<div class="text-gray-400"><i class="fas fa-spinner fa-spin mr-2"></i>加载进化数据...</div>';
 
   try {
-    const [reportsRes, insightsRes] = await Promise.all([
+    const [reportsRes, insightsRes, proposalsRes] = await Promise.all([
       fetch('/api/evolution/reports?limit=5'),
       fetch('/api/evolution/insights?limit=10'),
+      fetch('/api/evolution/proposals?limit=20'),
     ]);
     if (!reportsRes.ok || !insightsRes.ok) throw new Error('API error');
     const reportsData = await reportsRes.json();
     const insightsData = await insightsRes.json();
+    const proposalsData = proposalsRes.ok ? await proposalsRes.json() : { cycle_proposals: [] };
+    const cycleProposals = Array.isArray(proposalsData.cycle_proposals)
+      ? proposalsData.cycle_proposals
+      : [];
 
     const reports = reportsData.reports || [];
     const learning = insightsData.learning || {};
@@ -192,6 +197,12 @@ export async function loadEvolution() {
         </div>
       </div>
 
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-4" id="evolution-cycle-desk">
+        <h3 class="font-bold mb-3"><i class="fas fa-gavel text-purple-400 mr-2"></i>进化提案审批 (${cycleProposals.length})</h3>
+        <p class="text-xs text-gray-500 mb-3">生成只写提案。批准走 Echo control_evolution_action，回归则自动回滚。无人值守自改不存在。</p>
+        <div class="space-y-2" id="evolution-cycle-list">${renderCycleProposals(cycleProposals)}</div>
+      </div>
+
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <!-- Proposals -->
         <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
@@ -243,7 +254,71 @@ export async function loadEvolution() {
         ` : '<div class="text-gray-500 text-sm">暂无历史报告</div>'}
       </div>
     `;
+    bindCycleProposalActions(container);
   } catch (e) {
     container.innerHTML = `<div class="text-red-400 p-4">加载失败: ${escapeHtml(e.message)} <button onclick="loadEvolution()" class="ml-2 text-blue-400 hover:text-blue-300 underline">重试</button></div>`;
+  }
+}
+
+function renderCycleProposals(rows) {
+  if (!rows.length) {
+    return '<div class="text-gray-500 text-sm">暂无待审批提案。定时 skill_evolve 只会生成提案，不会自动应用。</div>';
+  }
+  return rows.map((item) => {
+    const id = sanitizeRuntimeId(item.proposal_id || '');
+    const status = escapeHtml(item.status || '');
+    const title = escapeHtml(item.title || item.kind || id || 'proposal');
+    const open = String(item.status || '') === 'proposed';
+    const actions = open && id
+      ? `<button class="text-xs bg-green-900/40 hover:bg-green-900/60 text-green-300 px-2 py-1 rounded" data-proposal-id="${escapeHtml(id)}" data-evolution-action="approve">批准并应用</button>
+         <button class="text-xs bg-red-900/40 hover:bg-red-900/60 text-red-300 px-2 py-1 rounded" data-proposal-id="${escapeHtml(id)}" data-evolution-action="reject">驳回</button>`
+      : `<span class="text-xs text-gray-500">${status}</span>`;
+    return `<div class="bg-gray-800 rounded-lg px-3 py-2 text-sm flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <div class="text-gray-200">${title}</div>
+        <div class="text-xs text-gray-500">${escapeHtml(item.kind || '')} · ${status}</div>
+      </div>
+      <div class="flex gap-2">${actions}</div>
+    </div>`;
+  }).join('');
+}
+
+function bindCycleProposalActions(root) {
+  bindDataClicks(root, 'evolutionAction', (action, event) => {
+    const node = event.currentTarget;
+    const proposalId = node instanceof HTMLElement
+      ? sanitizeRuntimeId(node.dataset.proposalId || '')
+      : '';
+    if (!proposalId) return;
+    if (action === 'approve') decideEvolutionProposal(proposalId, 'approve');
+    if (action === 'reject') decideEvolutionProposal(proposalId, 'reject');
+  });
+}
+
+export async function decideEvolutionProposal(proposalId, action) {
+  const id = sanitizeRuntimeId(proposalId);
+  if (!id || (action !== 'approve' && action !== 'reject')) return;
+  try {
+    const res = await fetch(`/api/evolution/proposals/${encodeURIComponent(id)}/${action}`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      let detail = '';
+      try {
+        const err = await res.json();
+        detail = err.detail || '';
+      } catch (_) {}
+      throw new Error(detail || ('HTTP ' + res.status));
+    }
+    const data = await res.json();
+    showToast(
+      action === 'approve'
+        ? `提案 ${data.status || '已处理'}`
+        : '提案已驳回',
+      data.status === 'regressed' ? 'warning' : 'success',
+    );
+    loadEvolution();
+  } catch (error) {
+    showToast('审批失败: ' + error.message, 'error');
   }
 }

@@ -208,7 +208,7 @@ labels:
         status: pass
       - criterion_id: friends.v1
         status: pass
-    notes: "v1 store + real E2E + HMAC transport; friends_enabled default false"
+    notes: "v1 store + real E2E + HMAC transport + opt-in UI; friends_enabled default false"
   - unit: evolution
     paths:
       - js/evolution/

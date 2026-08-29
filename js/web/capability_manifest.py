@@ -24,6 +24,7 @@ NAV_TAB_IDS: tuple[str, ...] = (
     "search",
     "dashboard",
     "tasks",
+    "friends",
     "audit",
     "approvals",
     "stats",
@@ -35,6 +36,7 @@ NAV_TAB_IDS: tuple[str, ...] = (
 _FEATURE_GATED_TABS: dict[str, str] = {
     "skills": "skills_enabled",
     "evolution": "evolution_enabled",
+    "friends": "friends_enabled",
 }
 
 
@@ -58,6 +60,7 @@ def build_capability_manifest(settings: JSSettings) -> dict[str, Any]:
         "pipeline_enabled": bool(features.pipeline_enabled),
         "daemon_enabled": bool(features.daemon_enabled),
         "desktop_control_enabled": bool(getattr(settings, "desktop_control_enabled", False)),
+        "friends_enabled": bool(getattr(settings, "friends_enabled", False)),
     }
     tabs: dict[str, dict[str, Any]] = {}
     for tab_id in NAV_TAB_IDS:
@@ -72,6 +75,7 @@ def build_capability_manifest(settings: JSSettings) -> dict[str, Any]:
             "search",
             "cron",
             "tasks",
+            "friends",
         }:
             enabled = False
         tabs[tab_id] = {
@@ -91,6 +95,7 @@ def build_capability_manifest(settings: JSSettings) -> dict[str, Any]:
             "evolution_actions": feature_map["evolution_enabled"],
             "desktop_control": feature_map["desktop_control_enabled"],
             "hermes_skills": feature_map["hermes_skills_enabled"],
+            "friends_actions": feature_map["friends_enabled"],
         },
     }
 

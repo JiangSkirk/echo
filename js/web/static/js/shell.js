@@ -16,6 +16,7 @@ export const TAB_REGISTRY = [
   { id: 'memory', label: '记忆', icon: 'brain' },
   { id: 'files', label: '文件', icon: 'folder' },
   { id: 'tasks', label: '任务', icon: 'list-checks' },
+  { id: 'friends', label: 'Friends', icon: 'users' },
   { id: 'models', label: '模型', icon: 'cpu' },
   { id: 'agents', label: '多Agent', icon: 'users' },
   { id: 'scenarios', label: '场景模板', icon: 'layout-template' },

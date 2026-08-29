@@ -4,7 +4,7 @@ import { renderMarkdown } from './utils/markdown.js';
 import { loadStats } from './tabs/stats.js';
 import { loadSearch, doSearch } from './tabs/search.js';
 import { loadDashboard } from './tabs/dashboard.js';
-import { loadEvolution, runEvolutionNow } from './tabs/evolution.js';
+import { loadEvolution, runEvolutionNow, decideEvolutionProposal } from './tabs/evolution.js';
 import { loadSkills, showSkillDetail, closeSkillModal, updateTrust, uninstallSkill } from './tabs/skills.js';
 import {
   setCurrentModel, toggleAddProvider, discoverModels, loadCloudPresets,
@@ -18,7 +18,16 @@ import { loadAudit } from './tabs/audit.js';
 import { loadApprovals, startApprovalsPolling, stopApprovalsPolling } from './tabs/approvals.js';
 import { loadTasks, startTasksPolling } from './tabs/tasks.js';
 import { loadScenarios, startScenario, fillScenarioPrompt } from './tabs/scenarios.js';
-import { loadFriends } from './js/friends.js';
+import {
+  loadFriends,
+  createFriendInvite,
+  acceptFriendInvite,
+  completeFriendInvite,
+  blockFriend,
+  revokeFriend,
+  sendFriendMessage,
+  sendFriendTask,
+} from './js/friends.js';
 import { loadAgents } from './tabs/agents.js';
 import {
   loadMemory, renderSemanticMemoryItem, editSemanticMemory, saveSemanticMemory,
@@ -3157,6 +3166,9 @@ const _windowFuncs = {
   loadApprovals, startApprovalsPolling, stopApprovalsPolling,
   loadTasks,
   loadScenarios, startScenario, fillScenarioPrompt,
+  loadFriends, createFriendInvite, acceptFriendInvite, completeFriendInvite, blockFriend, revokeFriend,
+  sendFriendMessage, sendFriendTask,
+  decideEvolutionProposal,
   saveApiKey,
   openCommandPalette: openPalette,
   updateProviderKey, hideProviderKeyModal, submitProviderKeyUpdate,

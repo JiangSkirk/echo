@@ -144,6 +144,86 @@ def test_friends_channel_is_untrusted() -> None:
         reset_entry_source(token)
 
 
+def test_friends_ui_exposes_invite_block_timeline_and_grants() -> None:
+    from pathlib import Path
+
+    text = (
+        Path(__file__).resolve().parents[2] / "js" / "web" / "static" / "js" / "friends.js"
+    ).read_text(encoding="utf-8")
+    for marker in (
+        "/api/friends/invites",
+        "/api/friends/invites/accept",
+        "/api/friends/invites/complete",
+        "完成互认",
+        "/block",
+        "/revoke",
+        "/messages",
+        "allowed_tools 恒为空",
+        "生成邀请卡",
+        "消息时间线",
+        "协作授权",
+    ):
+        assert marker in text
+
+
+def test_enabled_host_mounts_friends_invite_and_capability_tab(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    from js.config import JSSettings
+    from js.web.auth import AuthManager
+    from js.web.server import create_app
+
+    settings = JSSettings(
+        workspace=tmp_path / "w",
+        state_dir=tmp_path / "s",
+        first_run_completed=True,
+        providers=[],
+        models=[],
+        friends_enabled=True,
+    )
+    key = AuthManager(settings.state_dir).create_key("u", role="admin")
+    with TestClient(
+        create_app(runtime_settings=settings),
+        headers={"Host": "localhost", "Origin": "http://localhost", "X-API-Key": key},
+    ) as client:
+        status = client.get("/api/friends/status")
+        assert status.status_code == 200
+        assert status.json()["enabled"] is True
+        caps = client.get("/api/capabilities")
+        assert caps.status_code == 200
+        assert "friends" in caps.json()["enabled_tabs"]
+        invite = client.post("/api/friends/invites")
+        assert invite.status_code == 200
+        assert invite.json()["invite_card"]
+        listed = client.get("/api/friends")
+        assert listed.status_code == 200
+        assert listed.json()["friends"] == []
+        peer = JSSettings(
+            workspace=tmp_path / "w2",
+            state_dir=tmp_path / "s2",
+            first_run_completed=True,
+            providers=[],
+            models=[],
+            friends_enabled=True,
+        )
+        peer_key = AuthManager(peer.state_dir).create_key("peer", role="admin")
+        with TestClient(
+            create_app(runtime_settings=peer),
+            headers={"Host": "localhost", "Origin": "http://localhost", "X-API-Key": peer_key},
+        ) as peer_client:
+            accepted = peer_client.post(
+                "/api/friends/invites/accept",
+                json={"invite_card": invite.json()["invite_card"], "display_name": "Host"},
+            )
+            assert accepted.status_code == 200
+            receipt = accepted.json()["accept"]
+        completed = client.post("/api/friends/invites/complete", json={"accept": receipt})
+        assert completed.status_code == 200
+        assert completed.json()["status"] == "confirmed"
+        friends = client.get("/api/friends").json()["friends"]
+        assert friends and friends[0]["status"] == "confirmed"
+
+
 def test_disabled_host_does_not_mount_friends(tmp_path: Path) -> None:
     from fastapi.testclient import TestClient
 

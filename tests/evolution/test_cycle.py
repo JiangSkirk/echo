@@ -181,6 +181,18 @@ async def test_daemon_skill_evolve_without_owner_is_noop(tmp_path: Path) -> None
     assert not (tmp_path / "evolution_proposals.db").exists()
 
 
+def test_evolution_tab_exposes_cycle_approval_actions() -> None:
+    from pathlib import Path
+
+    text = (
+        Path(__file__).resolve().parents[2] / "js" / "web" / "static" / "tabs" / "evolution.js"
+    ).read_text(encoding="utf-8")
+    assert "/api/evolution/proposals" in text
+    assert "decideEvolutionProposal" in text
+    assert "data-evolution-action" in text
+    assert "control_evolution_action" in text
+
+
 def test_unscheduled_daemon_does_not_run_evolution(tmp_path: Path) -> None:
     settings = JSSettings(state_dir=tmp_path, providers=[])
     daemon = build_default_daemon(settings, agent=MagicMock())

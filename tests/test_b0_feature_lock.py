@@ -1,4 +1,4 @@
-"""B0: deferred Mobile and Friends features remain outside the product surface."""
+"""B0: deferred Mobile stays outside the product surface; Friends is opt-in."""
 
 from __future__ import annotations
 
@@ -61,8 +61,7 @@ def test_deferred_feature_gates_reject_coercible_non_boolean_values(
         )
 
 
-def test_deferred_devices_and_friends_return_explicit_feature_not_enabled_404(
-) -> None:
+def test_deferred_devices_and_friends_return_explicit_feature_not_enabled_404() -> None:
     """Replacing the lock response with success or a generic 404 is a regression."""
     client = _appshell_router_client()
     try:
@@ -82,16 +81,22 @@ def test_deferred_devices_and_friends_return_explicit_feature_not_enabled_404(
 def test_product_capability_manifest_and_navigation_omit_deferred_r5_r7_surfaces(
     tmp_path: Path,
 ) -> None:
-    """A deferred feature must not be advertised as a usable product capability."""
+    """Empty-shell surfaces stay off nav. Friends is opt-in v1, default hidden."""
     from js.config import JSSettings
     from js.web.capability_manifest import NAV_TAB_IDS, build_capability_manifest
 
     settings = JSSettings(workspace=tmp_path / "workspace", state_dir=tmp_path / "state")
     manifest = build_capability_manifest(settings)
-    deferred_surface_ids = {"devices", "friends", "mobile", "remote_collaboration"}
+    deferred_surface_ids = {"devices", "mobile", "remote_collaboration"}
 
+    assert settings.friends_enabled is False
     assert deferred_surface_ids.isdisjoint(NAV_TAB_IDS)
     assert deferred_surface_ids.isdisjoint(manifest["tabs"])
     assert deferred_surface_ids.isdisjoint(manifest["enabled_tabs"])
     assert deferred_surface_ids.isdisjoint(manifest["api"])
     assert deferred_surface_ids.isdisjoint(manifest["features"])
+    assert "friends" in NAV_TAB_IDS
+    assert manifest["tabs"]["friends"]["enabled"] is False
+    assert "friends" not in manifest["enabled_tabs"]
+    assert manifest["features"]["friends_enabled"] is False
+    assert manifest["api"]["friends_actions"] is False
