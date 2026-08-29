@@ -38,6 +38,19 @@ def test_host_startup_sources_do_not_import_reserved_packages() -> None:
         assert not offenders, f"{path}: {offenders}"
 
 
+def test_mobile_closeout_declares_not_implemented() -> None:
+    text = (ROOT / "docs" / "mobile" / "MOBILE_CLOSEOUT.md").read_text(encoding="utf-8")
+    assert "not_implemented" in text
+    assert "376" in text
+    assert "mobile_enabled" in text
+    assert "js.mobile" in text
+    assert "Bonjour" in text
+    assert "ACP" in text
+    assert "tests/test_r5_mobile.py" in text
+    assert "Mobile is implemented" in text
+    assert "do not import" in text.lower() or "Must not import" in text
+
+
 def test_evolution_mutate_routes_require_admin_in_source() -> None:
     source = (ROOT / "js" / "web" / "server.py").read_text(encoding="utf-8")
     assert "Depends(require_admin)" in source

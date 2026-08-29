@@ -13,7 +13,7 @@ durable recovery behind one fail-closed execution boundary.
 - **Orin 三层**：配置默认 `orin.enabled=false`；AppShell 启动打开 **Stage A**（lease/policy）；**Stage C / cells / `orin.enforce` 默认关**。完成声明见 `docs/security/orin/ORIN_STAGE_C_CLOSEOUT.md`（`not_implemented`）。
 - **`pulse()` 只观察背压**（ADR 0005），不 Exec，不是第二套运行时。
 - **Gateway** 是渠道表面不是运行时（ADR 0008，`gateway.enabled=false`）。未配对发件人丢弃；回合仍走 Echo。
-- **预留模块**（`pipeline` / `mobile`）默认不进 Host 冷启动。`friends_enabled` 默认 false，未启用不 import `js.friends`。`scenarios` 是 bots goal 模板；`/api/tasks` 是 bots goals 只读视图。
+- **预留模块**（`pipeline` / `mobile`）默认不进 Host 冷启动。mobile 正式声明见 [`docs/mobile/MOBILE_CLOSEOUT.md`](docs/mobile/MOBILE_CLOSEOUT.md)（`not_implemented`）。`friends_enabled` 默认 false，未启用不 import `js.friends`。`scenarios` 是 bots goal 模板；`/api/tasks` 是 bots goals 只读视图。
 - **测试密度**：M1 硬验收 `tests/`（`.py`+`.jsonl`+`.yaml`）/ (`js/`+`js_work/` `.py`) ≥ 1.2，棘轮脚本 `scripts/test_density_report.py`。覆盖率 M1 棘轮 `js/security` ≥86%、`js/echo` ≥85%、全库 branch ≥65%；90/85/75 为 M2 方向。
 
 ## Project Structure

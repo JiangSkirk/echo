@@ -35,7 +35,7 @@ Facts that must not be contradicted in a report:
 | Friends v1 | off | HMAC inbound | L2 tasks `allowed_tools=[]` |
 | Cron / daemon | opt-in | scheduled Echo | owner on the job row |
 | Evolution cycle | admin | approve endpoint | mock benchmark rollback |
-| Pipeline / mobile | reserved | not on Host cold start | do not treat as product |
+| Pipeline / mobile | reserved | not on Host cold start | mobile closeout: [`docs/mobile/MOBILE_CLOSEOUT.md`](../mobile/MOBILE_CLOSEOUT.md) (`not_implemented`) |
 
 ## 3. Known-unfixed list
 

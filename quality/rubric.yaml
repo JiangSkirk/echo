@@ -1,7 +1,7 @@
 # Canonical quality criteria. New bars require a rubric_version bump + changelog.
 # Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
 
-rubric_version: "2026.09.13"
+rubric_version: "2026.09.14"
 
 label_enum:
   - OPEN
@@ -93,9 +93,11 @@ inventory_units:
     paths:
       - js/pipeline/
       - js/mobile/
+      - docs/mobile/MOBILE_CLOSEOUT.md
     scopes:
       - repo.default
       - reserved.isolation
+      - reserved.closeout
   js_work:
     paths:
       - js_work/
@@ -195,6 +197,12 @@ scopes:
         description: Host startup does not import pipeline/friends/mobile
         evidence_kind: pytest_node
         nodeid: tests/test_reserved_runtime_isolation.py
+  reserved.closeout:
+    criteria:
+      - id: reserved.closeout
+        description: Mobile reserved layer has a not_implemented closeout
+        evidence_kind: pytest_node
+        nodeid: tests/test_reserved_runtime_isolation.py::test_mobile_closeout_declares_not_implemented
   web.auth_contracts:
     criteria:
       - id: web.auth_contracts
@@ -377,6 +385,10 @@ scopes:
         nodeid: tests/test_audit_pack.py
 
 changelog:
+  - version: "2026.09.14"
+    date: "2026-08-29"
+    changes:
+      - "Mobile reserved layer closeout: 376-line contract, not_implemented"
   - version: "2026.09.13"
     date: "2026-08-29"
     changes:

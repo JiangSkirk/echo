@@ -64,7 +64,7 @@
 ### 预留模块（不是死代码，也不是默认运行时）
 - `js/scenarios/`：实装为 bots goal 模板（启动即建 bot/房间/goal）；不进入默认 Echo turn
 - `js/gateway/`：骨架已落地（ADR 0008），`gateway.enabled` 默认 false，Host 冷启动不 import
-- `js/pipeline/`、`js/mobile/`：默认不在 AppShell / Host 启动 import 图里；`mobile_enabled` 默认 false
+- `js/pipeline/`、`js/mobile/`：默认不在 AppShell / Host 启动 import 图里；`mobile_enabled` 默认 false。mobile 376 行合同层的正式声明见 [`docs/mobile/MOBILE_CLOSEOUT.md`](docs/mobile/MOBILE_CLOSEOUT.md)（`not_implemented`）
 - `js/friends/`：v1 已实装（owner SQLite + X25519/ChaCha20-Poly1305 + Host-to-Host HMAC）。`friends_enabled` 默认 false，未启用不进 Host import 图
 - `features.pipeline_enabled` 默认 true **只是能力旗标**，不等于冷启动加载 `js.pipeline`
 - `js/evolution/`：cycle 只生成提案；批准后才应用并跑 mock benchmark，回归自动回滚；冷启动仍不跑。磁盘满时 applied 文件写失败保持 `proposed`，不半应用。
