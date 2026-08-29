@@ -108,7 +108,7 @@ jobs:
       - name: Coverage floors
         run: |
           uv run pytest tests/ -q --tb=line \
-            --cov=js --cov-branch \
+            --cov=js --cov=js_work --cov-branch \
             --cov-report=json:coverage.json \
             --cov-report=term:skip-covered
           uv run python scripts/check_coverage_floors.py --json coverage.json

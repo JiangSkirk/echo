@@ -63,6 +63,7 @@ def test_ci_runs_density_and_coverage_floors() -> None:
     assert "scripts/test_density_report.py" in text
     assert "scripts/check_coverage_floors.py" in text
     assert "--cov-branch" in text
+    assert "--cov=js_work" in text
     assert "coverage.json" in text
 
 

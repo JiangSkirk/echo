@@ -52,6 +52,23 @@ def test_enospc_on_apply_leaves_proposal_open(
     assert not list((tmp_path / "evolution" / "applied").glob("*.json"))
 
 
+def test_kill_after_file_write_leaves_proposal_open_for_retry(tmp_path: Path) -> None:
+    cycle = EvolutionCycle(tmp_path)
+    proposal = cycle.generate("owner-a", max_proposals=1)[0]
+    leftover_path = Path(cycle._write_applied(proposal))
+    assert leftover_path.is_file()
+    assert cycle.get(proposal.proposal_id, "owner-a").status == STATUS_PROPOSED
+    updated = cycle.approve_and_apply(
+        proposal.proposal_id,
+        "owner-a",
+        decided_by="admin",
+        benchmark=lambda: 1.0,
+        baseline_score=1.0,
+    )
+    assert updated.status == STATUS_APPLIED
+    assert Path(updated.applied_path or "").is_file()
+
+
 def test_kill9_after_file_write_rolls_back_when_benchmark_crashes(tmp_path: Path) -> None:
     cycle = EvolutionCycle(tmp_path)
     proposal = cycle.generate("owner-a", max_proposals=1)[0]

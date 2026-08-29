@@ -201,7 +201,6 @@ class EvolutionCycle:
         except OSError:
             logger.exception("evolution applied file write failed")
             raise
-        self._set_status(proposal_id, owner, STATUS_APPROVED, decided_by=decided_by)
         score: float | None = None
         try:
             score = 1.0 if benchmark is None else float(benchmark())
