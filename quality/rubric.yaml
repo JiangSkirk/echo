@@ -1,7 +1,7 @@
 # Canonical quality criteria. New bars require a rubric_version bump + changelog.
 # Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
 
-rubric_version: "2026.09.12"
+rubric_version: "2026.09.13"
 
 label_enum:
   - OPEN
@@ -107,10 +107,13 @@ inventory_units:
       - AGENTS.md
       - SECURITY.md
       - SECURITY_en.md
+      - constraints.txt
+      - scripts/export_constraints.py
     scopes:
       - repo.default
       - security.policy_doc
       - ci.frozen_install
+      - ci.constraints
   evolution:
     paths:
       - js/evolution/
@@ -312,6 +315,12 @@ scopes:
         description: CI workflows use uv --frozen and SHA-pinned actions
         evidence_kind: pytest_node
         nodeid: tests/test_ci_workflow_frozen.py
+  ci.constraints:
+    criteria:
+      - id: ci.constraints
+        description: Runtime deps have upper bounds; constraints.txt matches uv.lock
+        evidence_kind: pytest_node
+        nodeid: tests/test_supply_chain_pins.py
   security.posture:
     criteria:
       - id: security.posture
@@ -368,6 +377,10 @@ scopes:
         nodeid: tests/test_audit_pack.py
 
 changelog:
+  - version: "2026.09.13"
+    date: "2026-08-29"
+    changes:
+      - "Runtime deps cap next major; hashed constraints.txt exported from uv.lock"
   - version: "2026.09.12"
     date: "2026-08-29"
     changes:

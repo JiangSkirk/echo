@@ -69,6 +69,16 @@ JS Agent 不是聊天机器人，而是一套**本地个人 Agent Harness**—�
 
 手动安装：
 
+发布面或不用 `uv.lock` 的下游安装，用仓库根目录的 hashed `constraints.txt`，不要让 pip 现场解析区间：
+
+```bash
+pip install js-agent -c constraints.txt
+# 若要校验传递依赖哈希：
+# pip install --require-hashes -r constraints.txt && pip install --no-deps js-agent
+```
+
+开发机推荐 `uv sync --frozen`。仅当确认走锁文件时才用可编辑安装：
+
 ```bash
 # 核心安装（不含 Office/PDF 重依赖）
 pip install -e .

@@ -102,6 +102,9 @@ jobs:
           uv lock --check
           uv sync --frozen --extra dev --extra monitor --extra echo-tokenizer
 
+      - name: Constraints freshness
+        run: uv run python scripts/export_constraints.py --check
+
       - name: Test density ratchet
         run: uv run python scripts/test_density_report.py --min 1.2
 

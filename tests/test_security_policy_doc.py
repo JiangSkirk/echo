@@ -24,6 +24,7 @@ _REQUIRED_ZH = (
     "## 3. 范围",
     "## 2.5 供应链姿态",
     "uv.lock",
+    "constraints.txt",
     "not_implemented",
     "compat",
 )
@@ -42,6 +43,7 @@ _REQUIRED_EN = (
     "## 3. Scope",
     "## 2.5 Supply Chain",
     "uv.lock",
+    "constraints.txt",
     "not_implemented",
     "compat",
 )

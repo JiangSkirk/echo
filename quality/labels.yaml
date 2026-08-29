@@ -1,14 +1,14 @@
 # Current review stamps. One row per inventory unit.
 # Authoritative with quality/rubric.yaml only. Do not invent criteria here.
 
-rubric_version: "2026.09.12"
+rubric_version: "2026.09.13"
 
 labels:
   - unit: echo.ledger
     paths:
       - js/echo/ledger/
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -30,7 +30,7 @@ labels:
       - js/echo/spi.py
       - js/echo/context_store.py
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -52,7 +52,7 @@ labels:
       - js/orin/
       - js/orind/
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -78,7 +78,7 @@ labels:
       - js/web/
       - js/appshell/
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-27"
     reviewer: "agent:switch-memory-ui"
     evidence:
@@ -105,7 +105,7 @@ labels:
     paths:
       - js/memory/
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -123,7 +123,7 @@ labels:
       - js/agent/
       - js/tools/
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -140,7 +140,7 @@ labels:
     paths:
       - js/security/
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -161,7 +161,7 @@ labels:
     paths:
       - js/runtime/
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -179,7 +179,7 @@ labels:
       - js/pipeline/
       - js/mobile/
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -196,7 +196,7 @@ labels:
     paths:
       - js/friends/
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-29"
     reviewer: "agent:gap-closure-wp6b"
     evidence:
@@ -213,7 +213,7 @@ labels:
     paths:
       - js/evolution/
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-29"
     reviewer: "agent:gap-closure-wp5"
     evidence:
@@ -230,7 +230,7 @@ labels:
     paths:
       - js_work/
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -245,7 +245,7 @@ labels:
     paths:
       - js/bots/
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-28"
     reviewer: "agent:bots-surface"
     evidence:
@@ -262,10 +262,12 @@ labels:
       - AGENTS.md
       - SECURITY.md
       - SECURITY_en.md
+      - constraints.txt
+      - scripts/export_constraints.py
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-29"
-    reviewer: "agent:gap-closure-wp1"
+    reviewer: "agent:gap-closure-s1"
     evidence:
       - criterion_id: gate.ruff
         status: pass
@@ -277,12 +279,14 @@ labels:
         status: pass
       - criterion_id: ci.frozen_install
         status: pass
-    notes: "Public SECURITY.md + frozen CI/audit workflows; Stage C still not implemented"
+      - criterion_id: ci.constraints
+        status: pass
+    notes: "Runtime deps capped; hashed constraints.txt from uv.lock; Stage C still not implemented"
   - unit: gateway
     paths:
       - js/gateway/
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-29"
     reviewer: "agent:gap-closure-wp4a"
     evidence:
@@ -307,7 +311,7 @@ labels:
       - scripts/test_density_report.py
       - scripts/check_coverage_floors.py
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-29"
     reviewer: "agent:gap-closure-wp7"
     evidence:
@@ -329,7 +333,7 @@ labels:
       - tests/multiuser/
       - docker-compose.staging.yaml
     label: PEAK
-    rubric_version: "2026.09.12"
+    rubric_version: "2026.09.13"
     stamped_at: "2026-08-29"
     reviewer: "agent:gap-closure-wp8"
     evidence:

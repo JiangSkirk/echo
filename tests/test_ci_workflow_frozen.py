@@ -25,6 +25,7 @@ def test_ci_uses_frozen_uv_sync() -> None:
     assert "pip install -e" not in text
     assert "uv lock --check" in text
     assert "uv sync --frozen --extra dev --extra monitor --extra echo-tokenizer" in text
+    assert "scripts/export_constraints.py" in text
     assert "0.11.24" in text
 
 

@@ -44,6 +44,7 @@ RELEASE_SDIST_FILES = {
     "SECURITY.md",
     "SECURITY_en.md",
     "THIRD_PARTY_NOTICES.md",
+    "constraints.txt",
     "pyproject.toml",
     "uv.lock",
 }

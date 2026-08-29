@@ -129,6 +129,12 @@ warning. `enforce` allows them only when `isolation_posture=container-full`.
 - `scripts/install.sh` refuses remote `curl | sh` and lockless installs.
 - Version ranges in `pyproject.toml` are resolver bounds; reproducible builds
   follow the lockfile.
+- Downstream installs that do not use `uv.lock` must consume repo-root
+  `constraints.txt` (`pip install js-agent -c constraints.txt`; to verify
+  transitive hashes: `pip install --require-hashes -r constraints.txt`
+  then `pip install --no-deps js-agent`).
+  `scripts/export_constraints.py` exports it from the lockfile; CI `--check`
+  fails on drift.
 
 ## 3. Scope
 

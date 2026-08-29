@@ -114,6 +114,11 @@ Host 本身仍在原生进程内。
 - 桌面构建 `desktop/requirements-build.txt` 使用精确 pin + `--hash`。
 - `scripts/install.sh` 拒绝远程 `curl | sh` 与无锁文件安装。
 - `pyproject.toml` 中的版本区间是解析上界；可复现构建以锁文件为准。
+- 不走 `uv.lock` 的下游安装必须使用仓库根目录 `constraints.txt`
+  （`pip install js-agent -c constraints.txt`；要校验传递依赖哈希则
+  `pip install --require-hashes -r constraints.txt` 后再
+  `pip install --no-deps js-agent`）。
+  该文件由 `scripts/export_constraints.py` 从锁文件导出，CI `--check` 防漂移。
 
 ## 3. 范围
 
