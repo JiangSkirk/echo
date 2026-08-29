@@ -5,6 +5,8 @@ An AI agent harness, not a chatbot. JS Agent wraps your chosen model with persis
 The model is the engine. The harness is the complete frame that lets the engine work.
 
 > **Status**: v0.1.5 local release candidate / controlled trial — feedback welcome!
+>
+> [Security policy / trust model](SECURITY_en.md) · [中文安全政策](SECURITY.md)
 
 ## Core Harness Capabilities
 
@@ -23,6 +25,7 @@ The model is the engine. The harness is the complete frame that lets the engine 
 - **Parallel execution**: Independent tools can be called concurrently to reduce latency
 
 ### 🛡️ Safety Guardrails (Defense in Depth)
+- **Trust model**: The load-bearing boundary against an adversarial model is OS isolation; Echo/lease/guard are authorization and depth. See [SECURITY_en.md](SECURITY_en.md)
 - **Strategy-pattern defense**: Tool-call defenses are injectable, ordered strategy objects—not hardcoded if-else chains
 - **Fail-Closed semantics**: Echo authorization and the durable ledger fail closed when missing, unhealthy, or unverifiable — side effects are not bypassed
 - **Behavior audit**: Immutable hash-chained audit log of every tool call; tampering/truncation detectable
@@ -104,7 +107,7 @@ That moves leases back in-process and changes the daily security boundary. Do no
 | Capability | OpenClaw | Hermes | **JS Agent** |
 |---|---|---|---|
 | Runtime | Node.js (3700 chunks) | Python + Node UI | **Unified Python 3.12** |
-| Security | External plugin (ClawAegis) | Tirith + approval | **Built-in + Strategy pattern + Fail-Closed** |
+| Security | External plugin (ClawAegis) | Tirith + approval | **Per-tool OS sandbox + Echo fail-closed** ([SECURITY_en.md](SECURITY_en.md); optional whole-process container; `orin.enforce` off by default) |
 | Context Compression | ❌ | ✅ Best-in-class | ✅ **Hermes-style compressor + Context capsules** |
 | Checkpoint | ❌ | ✅ Git Shadow | ⚠️ **Checkpoints removed — not shipped in this package** |
 | Circuit Breaker | ❌ | ❌ | ✅ **Auto-recovery probes** |
@@ -114,7 +117,7 @@ That moves leases back in-process and changes the daily security boundary. Do no
 | MCP | ❌ | Relatively new | ✅ **Native stdio/SSE** |
 | Skills | Static files | ❌ | ✅ **Code/Prompt/Workflow + security scan + installable** |
 | Multi-Agent | Simple sub-agent | Delegation thread pool | ✅ **Role system + parallel orchestration** |
-| Self-Learning | ❌ | ❌ | ✅ **Interaction learning + A/B testing** |
+| Self-Learning | ❌ | ❌ | ⚠️ **Components exist; the loop is not closed** (scoring/proposals exist; daemon evolution does not auto-apply) |
 | Install Experience | JSON manual config | YAML 388-line | ✅ **`js setup` one-shot** |
 
 ## Testing

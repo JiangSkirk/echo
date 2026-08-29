@@ -41,6 +41,8 @@ RELEASE_SDIST_FILES = {
     "PKG-INFO",
     "README.md",
     "README_en.md",
+    "SECURITY.md",
+    "SECURITY_en.md",
     "THIRD_PARTY_NOTICES.md",
     "pyproject.toml",
     "uv.lock",
@@ -123,14 +125,10 @@ def test_wheel_contains_runtime_packages(release_artifacts: dict[str, Path]) -> 
     assert members >= REQUIRED_RUNTIME_MEMBERS
     assert members >= _all_source_runtime_members()
     required_metadata = {
-        member
-        for member in members
-        if member.endswith(REQUIRED_WHEEL_METADATA_SUFFIXES)
+        member for member in members if member.endswith(REQUIRED_WHEEL_METADATA_SUFFIXES)
     }
     assert len(required_metadata) == len(REQUIRED_WHEEL_METADATA_SUFFIXES)
-    assert all(
-        member_sizes[member] > 0 for member in REQUIRED_RUNTIME_MEMBERS | required_metadata
-    )
+    assert all(member_sizes[member] > 0 for member in REQUIRED_RUNTIME_MEMBERS | required_metadata)
     assert not any(
         member.startswith(prefix) for member in members for prefix in REMOVED_RUNTIME_PREFIXES
     )
@@ -149,8 +147,7 @@ def test_sdist_contains_runtime_packages(release_artifacts: dict[str, Path]) -> 
     assert members >= _all_source_runtime_members()
     assert members >= RELEASE_SDIST_FILES
     assert all(
-        members_with_sizes[member] > 0
-        for member in REQUIRED_RUNTIME_MEMBERS | RELEASE_SDIST_FILES
+        members_with_sizes[member] > 0 for member in REQUIRED_RUNTIME_MEMBERS | RELEASE_SDIST_FILES
     )
     assert not any(
         member.startswith(prefix) for member in members for prefix in REMOVED_RUNTIME_PREFIXES
@@ -250,6 +247,8 @@ def test_sdist_includes_readme_en(release_artifacts: dict[str, Path]) -> None:
             member.name.split("/", 1)[1] for member in sdist.getmembers() if "/" in member.name
         }
     assert "README_en.md" in members
+    assert "SECURITY.md" in members
+    assert "SECURITY_en.md" in members
 
 
 def test_isolated_venv_e2e_summary_schema_requires_source_digest_and_chat_200() -> None:

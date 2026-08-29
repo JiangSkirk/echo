@@ -2,7 +2,7 @@
 
 > **当前版本: v0.1.5 本地 release candidate / 受控试用 — 欢迎反馈！**
 >
-> [English README](README_en.md)
+> [English README](README_en.md) · [安全政策 / 信任模型](SECURITY.md)
 
 JS Agent 不是聊天机器人，而是一套**本地个人 Agent Harness**——围绕你选择的模型，提供记忆持久化、上下文胶囊、工具执行、安全护栏、测试反馈、模型切换和任务复盘的一整套本地驾驭系统。
 
@@ -25,6 +25,7 @@ JS Agent 不是聊天机器人，而是一套**本地个人 Agent Harness**—�
 - **并行执行**: 独立工具可并发调用，减少等待
 
 ### 🛡️ 安全护栏（Defense in Depth）
+- **信任模型**: 对抗性模型的承重边界是 OS 隔离；Echo/lease/guard 是授权与纵深。详见 [SECURITY.md](SECURITY.md)
 - **策略模式防御**: 工具调用防御不是硬编码 if-else，是可注入、可排序的策略对象
 - **Fail-Closed 语义**: Echo 授权与 ledger 在缺失、异常或不可验证时 fail-closed，不 bypass 主路径
 - **行为审计**: 完整记录每个工具调用，哈希链式日志可检测篡改/截断
@@ -123,7 +124,7 @@ pytest tests -q -p no:cacheprovider
 | 能力 | OpenClaw | Hermes | **JS Agent** |
 |------|----------|--------|-----------|
 | 运行时 | Node.js (3700 chunks) | Python + Node UI | **Python 3.12+ 统一** |
-| 安全 | 外部插件 (ClawAegis) | Tirith + 审批 | **内置 + 策略模式 + Fail-Closed** |
+| 安全 | 外部插件 (ClawAegis) | Tirith + 审批 | **每工具 OS 沙箱 + Echo fail-closed**（[SECURITY.md](SECURITY.md)；整进程容器可选；`orin.enforce` 默认关） |
 | 上下文压缩 | ❌ | ✅ 最强 | ✅ **Hermes 式压缩器 + 上下文胶囊** |
 | Checkpoint | ❌ | ✅ Git Shadow | ⚠️ **已移除 checkpoints，不随包发布** |
 | 配置缓存 | ❌ | ✅ Stat-based | ⚠️ 已移除 (YAGNI) |
@@ -134,7 +135,7 @@ pytest tests -q -p no:cacheprovider
 | MCP | ❌ | 较新 | ✅ **Stdio/SSE 原生** |
 | Skills | 静态文件 | ❌ | ✅ **代码/Prompt/工作流 + 安全扫描 + 可安装** |
 | 多Agent | 简单子Agent | 委托线程池 | ✅ **角色系统 + 并行编排** |
-| 自主学习 | ❌ | ❌ | ✅ **交互学习 + A/B 测试** |
+| 自主学习 | ❌ | ❌ | ⚠️ **组件在、环未闭**（提案/评分存在，daemon 进化任务尚未自动应用） |
 | 安装体验 | JSON 手动配置 | YAML 388行 | ✅ **`js setup` 一键** |
 
 ## Skill 系统

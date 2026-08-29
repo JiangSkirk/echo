@@ -1,14 +1,14 @@
 # Current review stamps. One row per inventory unit.
 # Authoritative with quality/rubric.yaml only. Do not invent criteria here.
 
-rubric_version: "2026.09.1"
+rubric_version: "2026.09.2"
 
 labels:
   - unit: echo.ledger
     paths:
       - js/echo/ledger/
     label: PEAK
-    rubric_version: "2026.09.1"
+    rubric_version: "2026.09.2"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -30,7 +30,7 @@ labels:
       - js/echo/spi.py
       - js/echo/context_store.py
     label: PEAK
-    rubric_version: "2026.09.1"
+    rubric_version: "2026.09.2"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -52,7 +52,7 @@ labels:
       - js/orin/
       - js/orind/
     label: PEAK
-    rubric_version: "2026.09.1"
+    rubric_version: "2026.09.2"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -78,7 +78,7 @@ labels:
       - js/web/
       - js/appshell/
     label: PEAK
-    rubric_version: "2026.09.1"
+    rubric_version: "2026.09.2"
     stamped_at: "2026-08-27"
     reviewer: "agent:switch-memory-ui"
     evidence:
@@ -103,7 +103,7 @@ labels:
     paths:
       - js/memory/
     label: PEAK
-    rubric_version: "2026.09.1"
+    rubric_version: "2026.09.2"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -121,7 +121,7 @@ labels:
       - js/agent/
       - js/tools/
     label: PEAK
-    rubric_version: "2026.09.1"
+    rubric_version: "2026.09.2"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -138,7 +138,7 @@ labels:
     paths:
       - js/security/
     label: PEAK
-    rubric_version: "2026.09.1"
+    rubric_version: "2026.09.2"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -157,7 +157,7 @@ labels:
     paths:
       - js/runtime/
     label: PEAK
-    rubric_version: "2026.09.1"
+    rubric_version: "2026.09.2"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -178,7 +178,7 @@ labels:
       - js/mobile/
       - js/evolution/
     label: PEAK
-    rubric_version: "2026.09.1"
+    rubric_version: "2026.09.2"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -195,7 +195,7 @@ labels:
     paths:
       - js_work/
     label: PEAK
-    rubric_version: "2026.09.1"
+    rubric_version: "2026.09.2"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -210,7 +210,7 @@ labels:
     paths:
       - js/bots/
     label: PEAK
-    rubric_version: "2026.09.1"
+    rubric_version: "2026.09.2"
     stamped_at: "2026-08-28"
     reviewer: "agent:bots-surface"
     evidence:
@@ -225,10 +225,12 @@ labels:
     paths:
       - TECH_DEBT.md
       - AGENTS.md
+      - SECURITY.md
+      - SECURITY_en.md
     label: PEAK
-    rubric_version: "2026.09.1"
-    stamped_at: "2026-08-27"
-    reviewer: "agent:echo-orin-upgrade"
+    rubric_version: "2026.09.2"
+    stamped_at: "2026-08-29"
+    reviewer: "agent:gap-closure-wp1"
     evidence:
       - criterion_id: gate.ruff
         status: pass
@@ -236,4 +238,6 @@ labels:
         status: pass
       - criterion_id: gate.pytest
         status: pass
-    notes: "TECH_DEBT aligned to compact schedule, tip anchor v1, skill registry; Stage C still not implemented"
+      - criterion_id: security.policy_doc
+        status: pass
+    notes: "Public SECURITY.md trust model; Stage C still not implemented"

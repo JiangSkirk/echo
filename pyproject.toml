@@ -103,6 +103,8 @@ include = [
     "/ORIGIN_LEDGER.md",
     "/README.md",
     "/README_en.md",
+    "/SECURITY.md",
+    "/SECURITY_en.md",
     "/THIRD_PARTY_NOTICES.md",
     "/pyproject.toml",
     "/resources/**",

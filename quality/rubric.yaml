@@ -1,7 +1,7 @@
 # Canonical quality criteria. New bars require a rubric_version bump + changelog.
 # Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
 
-rubric_version: "2026.09.1"
+rubric_version: "2026.09.2"
 
 label_enum:
   - OPEN
@@ -106,8 +106,11 @@ inventory_units:
     paths:
       - TECH_DEBT.md
       - AGENTS.md
+      - SECURITY.md
+      - SECURITY_en.md
     scopes:
       - repo.default
+      - security.policy_doc
   bots.surface:
     paths:
       - js/bots/
@@ -251,8 +254,19 @@ scopes:
         description: User cannot reopen onboarding after skip
         evidence_kind: pytest_node
         nodeid: tests/test_onboarding_skip_and_status.py::TestOnboardingSkip::test_user_cannot_reopen_onboarding
+  security.policy_doc:
+    criteria:
+      - id: security.policy_doc
+        description: SECURITY.md trust model matches config defaults
+        evidence_kind: pytest_node
+        nodeid: tests/test_security_policy_doc.py
 
 changelog:
+  - version: "2026.09.2"
+    date: "2026-08-29"
+    changes:
+      - "Public SECURITY.md / SECURITY_en.md trust model; policy-doc consistency test"
+      - "README comparison table true-up: security posture + self-learning is not a closed loop"
   - version: "2026.09.1"
     date: "2026-08-27"
     changes:

@@ -5,6 +5,7 @@
 >
 > 库存审查落盘：[`quality/rubric.yaml`](quality/rubric.yaml) + [`quality/labels.yaml`](quality/labels.yaml)。
 > 「本轮是否到顶」只跑 `uv run python scripts/check_quality_labels.py --peak`，不要临时发明新标准。
+> 对外信任模型：[`SECURITY.md`](SECURITY.md) / [`SECURITY_en.md`](SECURITY_en.md)。内部 Orin 规格不替代该文件。
 
 ---
 
