@@ -17,6 +17,7 @@ from js.gateway.channels.webhook import (
     webhook_signature,
 )
 from js.gateway.service import GatewayService
+from js.security.posture import IsolationLevel, IsolationPosture
 
 
 def _body(sender: str = "peer-1", text: str = "hello") -> bytes:
@@ -145,3 +146,47 @@ async def test_webhook_paired_dispatches_tainted_echo(monkeypatch: pytest.Monkey
     assert seen["channel"] == "gateway:webhook"
     assert seen["owner"] == "owner-a"
     assert seen["text"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_echo_enforce_blocks_native_posture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = JSSettings()
+    settings.gateway = GatewayConfig(
+        enabled=True,
+        channels=[
+            GatewayChannelConfig(
+                name="webhook",
+                enabled=True,
+                bot_id="bot-1",
+                owner="owner-a",
+            )
+        ],
+    )
+    settings.security.untrusted_ingestion_policy = "enforce"  # type: ignore[assignment]
+    monkeypatch.setattr(
+        "js.security.posture.detect_posture",
+        lambda **_kwargs: IsolationPosture(
+            level=IsolationLevel.NATIVE_TOOL_SANDBOX,
+            in_container=False,
+            sandbox_exec=True,
+            bwrap=False,
+            unshare=False,
+            rlimit_as=False,
+            platform_name="Darwin",
+            untrusted_ingestion_policy="enforce",
+        ),
+    )
+    called = {"n": 0}
+
+    async def _boom(*_args, **_kwargs):
+        called["n"] += 1
+        raise AssertionError("echo must not run when enforce blocks the surface")
+
+    monkeypatch.setattr("js.echo.turn_runtime.run_echo_turn", _boom)
+    service = GatewayService(settings)
+    service.pairing.allow(ChannelPeer(channel="webhook", peer_id="peer-1"), "owner-a")
+    with pytest.raises(RuntimeError, match="container-full"):
+        await service.dispatch_echo(object(), parse_webhook_body(_body(), received_at=1.0))
+    assert called["n"] == 0

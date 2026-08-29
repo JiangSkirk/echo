@@ -18,6 +18,12 @@ async def inbound_webhook(request: Request) -> JSONResponse:
     settings = get_settings()
     if not bool(getattr(settings.gateway, "enabled", False)):
         raise HTTPException(status_code=404, detail="gateway disabled")
+    from js.security.posture import require_untrusted_surface
+
+    try:
+        require_untrusted_surface(settings, "webhook")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     from js.gateway.channels.webhook import (
         SIGNATURE_HEADER,
         TIMESTAMP_HEADER,

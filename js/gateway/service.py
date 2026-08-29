@@ -108,6 +108,7 @@ class GatewayService:
         decision = self.handle_inbound(envelope)
         if not decision.accepted or decision.route is None or decision.owner is None:
             return decision
+        require_untrusted_surface(self._settings, f"gateway:{envelope.peer.channel}")
         from js.echo.turn_runtime import run_echo_turn
 
         await run_echo_turn(
