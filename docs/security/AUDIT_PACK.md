@@ -68,6 +68,12 @@ python -m benchmarks.runner --mock
 
 Multi-owner abuse matrix: `uv run pytest tests/multiuser -q`.
 
+Internal live-deployment trial (process-level AppShell, not an external
+audit): `uv run python scripts/staging_trial.py`. Dated receipt:
+[`docs/security/staging-trial-2026-08-29.md`](staging-trial-2026-08-29.md).
+The container recipe `docker-compose.staging.yaml` was not executed on the
+authoring host (no Docker).
+
 Isolation posture: `js doctor --security`.
 
 Container trial:

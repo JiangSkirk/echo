@@ -1,7 +1,7 @@
 # Canonical quality criteria. New bars require a rubric_version bump + changelog.
 # Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
 
-rubric_version: "2026.09.15"
+rubric_version: "2026.09.16"
 
 label_enum:
   - OPEN
@@ -147,9 +147,12 @@ inventory_units:
       - docs/security/AUDIT_PACK.md
       - tests/multiuser/
       - docker-compose.staging.yaml
+      - docs/security/staging-trial-2026-08-29.md
+      - scripts/staging_trial.py
     scopes:
       - repo.default
       - security.threat_model
+      - security.staging_trial
   tests.quality:
     paths:
       - tests/adversarial/
@@ -392,8 +395,18 @@ scopes:
         description: Threat model maps multi-owner surfaces; audit pack and staging compose exist
         evidence_kind: pytest_node
         nodeid: tests/test_audit_pack.py
+  security.staging_trial:
+    criteria:
+      - id: security.staging_trial
+        description: Process-level multi-owner HTTP trial is internal, not an external audit
+        evidence_kind: pytest_node
+        nodeid: tests/test_staging_trial.py
 
 changelog:
+  - version: "2026.09.16"
+    date: "2026-08-30"
+    changes:
+      - "Internal live-deployment multi-owner trial; external red team still pending"
   - version: "2026.09.15"
     date: "2026-08-30"
     changes:

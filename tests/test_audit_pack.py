@@ -36,6 +36,8 @@ def test_audit_pack_points_at_boundaries_and_repro() -> None:
         "orin.enforce",
         "tests/multiuser",
         "docs/security/external/",
+        "scripts/staging_trial.py",
+        "staging-trial-2026-08-29.md",
     ):
         assert marker in text
 
