@@ -244,6 +244,7 @@ class JSAgent(
                 compression_feedback=self.compression_feedback,
                 compression_config=self.compression_config,
                 composer=self.composer,
+                auto_apply=False,
             )
             self.curator = SkillCurator(
                 settings.state_dir,

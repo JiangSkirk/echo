@@ -1304,7 +1304,23 @@ def create_app(
     ) -> dict[str, Any]:
         agent = get_agent()
         proposals = agent.metacognition.get_proposals(limit=limit)
-        return {"proposals": proposals}
+        from js.evolution.cycle import EvolutionCycle
+
+        cycle_rows = [
+            {
+                "proposal_id": item.proposal_id,
+                "owner": item.owner,
+                "kind": item.kind,
+                "title": item.title,
+                "status": item.status,
+                "source": "evolution_cycle",
+            }
+            for item in EvolutionCycle(agent.settings.state_dir).list_proposals(
+                memory_owner(auth) or "local-user",
+                limit=limit,
+            )
+        ]
+        return {"proposals": proposals, "cycle_proposals": cycle_rows}
 
     @app.get("/api/evolution/insights")
     async def evolution_insights(
@@ -1371,6 +1387,20 @@ def create_app(
         if agent.metacognition is None:
             raise HTTPException(503, "Metacognition subsystem not ready")
         return await _execute_evolution_action("reflect", auth)
+
+    @app.post("/api/evolution/proposals/{proposal_id}/approve")
+    async def evolution_approve(
+        proposal_id: str,
+        auth: dict[str, Any] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return await _execute_evolution_action("approve", auth, proposal_id=proposal_id)
+
+    @app.post("/api/evolution/proposals/{proposal_id}/reject")
+    async def evolution_reject(
+        proposal_id: str,
+        auth: dict[str, Any] = Depends(require_admin),
+    ) -> dict[str, Any]:
+        return await _execute_evolution_action("reject", auth, proposal_id=proposal_id)
 
     @app.get("/api/agents/config")
     async def get_agent_config(

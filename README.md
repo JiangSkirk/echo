@@ -135,7 +135,7 @@ pytest tests -q -p no:cacheprovider
 | MCP | ❌ | 较新 | ✅ **Stdio/SSE 原生** |
 | Skills | 静态文件 | ❌ | ✅ **代码/Prompt/工作流 + 安全扫描 + 可安装** |
 | 多Agent | 简单子Agent | 委托线程池 | ✅ **角色系统 + 并行编排** |
-| 自主学习 | ❌ | ❌ | ⚠️ **组件在、环未闭**（提案/评分存在，daemon 进化任务尚未自动应用） |
+| 自主学习 | ❌ | ❌ | ✅ **提案制闭环**（生成→人工批准→应用→benchmark 回归回滚，无无人值守自改） |
 | 安装体验 | JSON 手动配置 | YAML 388行 | ✅ **`js setup` 一键** |
 
 ## Skill 系统

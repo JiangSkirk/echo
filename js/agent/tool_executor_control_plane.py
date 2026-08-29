@@ -1675,9 +1675,12 @@ class ControlPlaneMixin(AgentBase):
                 metadata={"result_ref": result_ref},
             )
 
-        async def evolution_action_handler(action: str) -> ToolResult:
+        async def evolution_action_handler(
+            action: str,
+            proposal_id: str = "",
+        ) -> ToolResult:
             """Run privileged evolution actions and stage their private reports."""
-            if action not in {"run", "reflect"}:
+            if action not in {"run", "reflect", "approve", "reject"}:
                 return failure("Invalid evolution action", 400)
             context = current_runtime_context()
             if context is None or not context.owner_key_hash:
@@ -1742,7 +1745,7 @@ class ControlPlaneMixin(AgentBase):
                             "message": "Evolution cycle completed",
                             "report": report,
                         }
-                    else:
+                    elif action == "reflect":
                         metacognition = getattr(self, "metacognition", None)
                         reflect = getattr(metacognition, "reflect", None)
                         if not callable(reflect):
@@ -1757,6 +1760,39 @@ class ControlPlaneMixin(AgentBase):
                             "actions_taken": len(report.actions_taken),
                             "timestamp": report.timestamp,
                         }
+                    else:
+                        if not proposal_id.strip():
+                            return evolution_failure("proposal_id is required", 400)
+                        from js.evolution.cycle import (
+                            EvolutionCycle,
+                            load_baseline_score,
+                            run_mock_benchmark,
+                        )
+
+                        cycle = EvolutionCycle(self.settings.state_dir)
+
+                        def _decide() -> dict[str, Any]:
+                            if action == "reject":
+                                item = cycle.reject(
+                                    proposal_id,
+                                    owner,
+                                    decided_by=owner,
+                                )
+                            else:
+                                item = cycle.approve_and_apply(
+                                    proposal_id,
+                                    owner,
+                                    decided_by=owner,
+                                    benchmark=run_mock_benchmark,
+                                    baseline_score=load_baseline_score(),
+                                )
+                            return {
+                                "proposal_id": item.proposal_id,
+                                "status": item.status,
+                                "owner": item.owner,
+                            }
+
+                        response = await asyncio.to_thread(_decide)
             except asyncio.CancelledError:
                 self._discard_memory_control_value(
                     "_evolution_action_results",
@@ -2591,8 +2627,9 @@ class ControlPlaneMixin(AgentBase):
                             "action",
                             "string",
                             "Evolution action",
-                            enum=["run", "reflect"],
-                        )
+                            enum=["run", "reflect", "approve", "reject"],
+                        ),
+                        ToolParam("proposal_id", "string", "Evolution proposal id"),
                     ],
                     model_visible=False,
                 ),

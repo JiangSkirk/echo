@@ -230,7 +230,15 @@ class JSDaemon:
             logger.info(f"[cron] Search task: query={q}")
 
     async def _cb_skill_evolve(self, job: ScheduledJob) -> None:
-        logger.info("[cron] Skill evolution task triggered")
+        from js.evolution.cycle import EvolutionCycle
+
+        owner = job.owner_key_hash
+        if not owner:
+            logger.warning("[cron] skill_evolve rejected: job has no explicit owner scope")
+            return
+        cycle = EvolutionCycle(self.agent.settings.state_dir)
+        created = cycle.generate(owner, learner=getattr(self.agent, "learner", None))
+        logger.info("[cron] Skill evolution generated %s proposal(s)", len(created))
 
     async def _cb_shell(self, job: ScheduledJob) -> str:
         cmd = job.payload.get("command", "")

@@ -62,7 +62,7 @@ class MetacognitionLoop:
         compression_feedback: CompressionFeedback | None = None,
         compression_config: CompressionConfig | None = None,
         composer: SkillComposer | None = None,
-        auto_apply: bool = True,
+        auto_apply: bool = False,
     ) -> None:
         self.state_dir = state_dir
         self.db_path = state_dir / "metacognition.db"

@@ -1,7 +1,7 @@
 # Canonical quality criteria. New bars require a rubric_version bump + changelog.
 # Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
 
-rubric_version: "2026.09.7"
+rubric_version: "2026.09.8"
 
 label_enum:
   - OPEN
@@ -94,7 +94,6 @@ inventory_units:
       - js/pipeline/
       - js/friends/
       - js/mobile/
-      - js/evolution/
     scopes:
       - repo.default
       - reserved.isolation
@@ -113,6 +112,12 @@ inventory_units:
       - repo.default
       - security.policy_doc
       - ci.frozen_install
+  evolution:
+    paths:
+      - js/evolution/
+    scopes:
+      - repo.default
+      - evolution.cycle
   bots.surface:
     paths:
       - js/bots/
@@ -294,6 +299,12 @@ scopes:
         description: HMAC webhook rejects bad signatures and replay; unpaired drops Echo
         evidence_kind: pytest_node
         nodeid: tests/gateway/test_webhook.py
+  evolution.cycle:
+    criteria:
+      - id: evolution.cycle
+        description: Evolution cycle generates proposals only; approve+benchmark can roll back
+        evidence_kind: pytest_node
+        nodeid: tests/evolution/test_cycle.py
   gateway.discord:
     criteria:
       - id: gateway.discord
@@ -302,6 +313,10 @@ scopes:
         nodeid: tests/gateway/test_discord_e2e.py
 
 changelog:
+  - version: "2026.09.8"
+    date: "2026-08-29"
+    changes:
+      - "Evolution cycle is proposal-only; admin approve applies and mock-benchmark rollback"
   - version: "2026.09.7"
     date: "2026-08-29"
     changes:

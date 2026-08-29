@@ -66,7 +66,7 @@
 - `js/gateway/`：骨架已落地（ADR 0008），`gateway.enabled` 默认 false，Host 冷启动不 import
 - `js/pipeline/`、`js/friends/`、`js/mobile/`：默认不在 AppShell / Host 启动 import 图里；`friends_enabled` / `mobile_enabled` 默认 false
 - `features.pipeline_enabled` 默认 true **只是能力旗标**，不等于冷启动加载 `js.pipeline`
-- `js/evolution/`：Host 上 mutate 走 admin；冷启动不跑 cycle
+- `js/evolution/`：cycle 只生成提案；批准后才应用并跑 mock benchmark，回归自动回滚；冷启动仍不跑
 - Host 任务页（`/api/tasks` + `tabs/tasks.js`）是空壳：列表为空，mutate 503。不是已删除的 `TaskManager` / `TaskStore`
 - 已删孤儿：`js/persistence/task_store.py`、`agent_store.py`。历史审计里对 `task_store.py` 的 High **作废**（文件不在树里）
 - Fleet ≠ Bots。Fleet 是一次性集群（`js/orchestration/fleet/`）。Bots 是命名机器人 + 房间 + Goal（`js/bots/`），回合仍走 Echo。Orin 的 `bot.room.create` / `bot.message.send` / `bot.soul.write` 是收紧规格；v1 生产仍写 `bots.db`，不是第二套运行时。

@@ -43,3 +43,11 @@ def test_evolution_mutate_routes_require_admin_in_source() -> None:
     assert "Depends(require_admin)" in source
     assert "async def evolution_run(auth: dict[str, Any] = Depends(require_admin))" in source
     assert "async def evolution_reflect(auth: dict[str, Any] = Depends(require_admin))" in source
+    assert "async def evolution_approve(" in source
+    assert "async def evolution_reject(" in source
+    approve_idx = source.index("async def evolution_approve(")
+    reject_idx = source.index("async def evolution_reject(")
+    assert "Depends(require_admin)" in source[approve_idx : approve_idx + 220]
+    assert "Depends(require_admin)" in source[reject_idx : reject_idx + 220]
+    assert '_execute_evolution_action("approve", auth, proposal_id=proposal_id)' in source
+    assert '_execute_evolution_action("reject", auth, proposal_id=proposal_id)' in source

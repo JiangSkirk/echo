@@ -117,7 +117,7 @@ That moves leases back in-process and changes the daily security boundary. Do no
 | MCP | ❌ | Relatively new | ✅ **Native stdio/SSE** |
 | Skills | Static files | ❌ | ✅ **Code/Prompt/Workflow + security scan + installable** |
 | Multi-Agent | Simple sub-agent | Delegation thread pool | ✅ **Role system + parallel orchestration** |
-| Self-Learning | ❌ | ❌ | ⚠️ **Components exist; the loop is not closed** (scoring/proposals exist; daemon evolution does not auto-apply) |
+| Self-Learning | ❌ | ❌ | ✅ **Proposal loop** (generate → human approve → apply → mock benchmark rollback; never unattended) |
 | Install Experience | JSON manual config | YAML 388-line | ✅ **`js setup` one-shot** |
 
 ## Testing

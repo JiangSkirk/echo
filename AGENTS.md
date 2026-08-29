@@ -97,7 +97,7 @@ js/
 ├── compression/           # Context compression
 │   ├── compressor.py      # Dual-threshold compressor
 │   └── feedback.py        # Auto-tuning feedback loop
-├── evolution/             # Self-improvement
+├── evolution/             # Self-improvement (proposal-only cycle; never unattended)
 │   ├── metacognition.py   # System reflection
 │   ├── optimizer.py       # Prompt A/B testing
 │   ├── learner.py         # Pattern extraction

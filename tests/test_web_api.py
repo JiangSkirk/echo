@@ -299,6 +299,14 @@ class TestUserCannotModifyGlobalState:
         resp = user_client.post("/api/skills/promotions/event-1/revert")
         assert resp.status_code == 403
 
+    def test_user_cannot_approve_evolution_proposal(self, user_client: TestClient) -> None:
+        resp = user_client.post("/api/evolution/proposals/p1/approve")
+        assert resp.status_code == 403
+
+    def test_user_cannot_reject_evolution_proposal(self, user_client: TestClient) -> None:
+        resp = user_client.post("/api/evolution/proposals/p1/reject")
+        assert resp.status_code == 403
+
     def test_user_cannot_read_audit_log(self, user_client: TestClient) -> None:
         resp = user_client.get("/api/audit")
         assert resp.status_code == 403
@@ -1533,6 +1541,37 @@ class TestEvolutionEndpoints:
         data = resp.json()
         assert "health_score" in data
         agent.metacognition.reflect.assert_not_called()
+
+    def test_evolution_proposals_include_cycle_desk(self, client: TestClient) -> None:
+        resp = client.get("/api/evolution/proposals")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "proposals" in data
+        assert data["cycle_proposals"] == []
+
+    def test_evolution_approve_goes_through_echo(self, client: TestClient) -> None:
+        agent = web_server._agent
+        agent.take_evolution_action_result.return_value = {
+            "proposal_id": "p1",
+            "status": "applied",
+            "owner": "admin",
+        }
+        agent.echo_runtime.execute_tool_effect = AsyncMock(
+            return_value=(
+                ChatMessage(role="tool", content="completed", name="control_evolution_action"),
+                ToolResult(
+                    success=True,
+                    output="completed",
+                    metadata={"result_ref": "evolution-result-ref"},
+                ),
+            )
+        )
+        resp = client.post("/api/evolution/proposals/p1/approve")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "applied"
+        effect, _context = agent.echo_runtime.execute_tool_effect.await_args.args
+        assert effect.tool_name == "control_evolution_action"
+        assert effect.arguments_json == '{"action":"approve","proposal_id":"p1"}'
 
     @pytest.mark.parametrize("endpoint", ["/api/evolution/run", "/api/evolution/reflect"])
     def test_evolution_errors_do_not_expose_internal_exception(

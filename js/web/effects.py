@@ -124,6 +124,8 @@ async def _execute_private_skill_mutation(
 async def _execute_evolution_action(
     action: str,
     auth: dict[str, Any],
+    *,
+    proposal_id: str = "",
 ) -> dict[str, Any]:
     """Execute one privileged evolution action through Echo."""
     agent = _get_agent()
@@ -137,10 +139,13 @@ async def _execute_evolution_action(
         role=str(auth.get("role") or "admin"),
         capabilities=(CONTROL_EVOLUTION_ACTION_TOOL,),
     )
+    arguments: dict[str, Any] = {"action": action}
+    if proposal_id:
+        arguments["proposal_id"] = proposal_id
     _message, result = await runtime.execute_tool_effect(
         ToolEffect.from_arguments(
             CONTROL_EVOLUTION_ACTION_TOOL,
-            {"action": action},
+            arguments,
             user_input=f"Run administrator-approved evolution action: {action}",
             allowed_tools=(CONTROL_EVOLUTION_ACTION_TOOL,),
         ),
