@@ -147,3 +147,10 @@ Host 本身仍在原生进程内。
 - **协调披露窗口**：自报告起 90 天，或修复发布之日，以先到者为准。
 - **渠道**：GitHub Security Advisories。
 - **致谢**：除非报告者要求匿名，否则在发行说明中致谢。
+
+## 6. 可审计性（仓库内）
+
+- 多 owner 威胁模型：[`docs/security/THREAT_MODEL.md`](docs/security/THREAT_MODEL.md)
+- 外部审计入口：[`docs/security/AUDIT_PACK.md`](docs/security/AUDIT_PACK.md)
+- 试运行拓扑：`docker-compose.staging.yaml`
+- 本树**没有**独立红队背书；外部报告应归档到 `docs/security/external/`。

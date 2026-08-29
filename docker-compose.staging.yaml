@@ -1,0 +1,40 @@
+# Staging topology for a controlled multi-owner trial.
+# One hardened process, two operator keys (minted after first boot),
+# audit/state on an external volume. Not a public multi-tenant service.
+# Do not mount docker.sock. Bind stays loopback.
+
+services:
+  js-agent-staging:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: js-agent-staging
+    ports:
+      - "127.0.0.1:8000:8000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    user: "1000:1000"
+    volumes:
+      - ./workspace:/app/workspace
+      - ./state-staging:/app/state
+      - ./audit-logs:/app/state/logs
+    environment:
+      - JS_LOG_LEVEL=INFO
+      - JS_STATE_DIR=/app/state
+      - JS_APPSHELL_PROVISION_KEY=1
+      # After first boot, read state-staging/bootstrap_admin_key.txt.
+      # Mint a second API key from a trusted shell against that state_dir
+      # (AuthManager.create_key). Keep the two key_hash values as owner-a / owner-b.
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

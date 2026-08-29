@@ -32,7 +32,7 @@
 
 | 项 | 为什么还不能盖「外部已审」 |
 |----|---------------------------|
-| 独立红队 / K§15.6 #9 | 仓库外人员与范围，本树不能自证 |
+| 独立红队 / K§15.6 #9 | 仓库外人员与范围，本树不能自证。入口包已落盘 `docs/security/AUDIT_PACK.md`；报告归档 `docs/security/external/` |
 | 正式 TCC / Developer ID / 公证 | `official_tcc_packaging` 保持 false |
 | 技能可信公钥目录 | 已落地 registry + 吊销；TRUSTED 需目录内公钥。外部人工审计仍缺 |
 | 解析引擎与 `_fs_restricted_rejection` 合一 | 架构债，ADR 0006 设计先行，本轮不施工 |

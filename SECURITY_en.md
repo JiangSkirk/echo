@@ -169,3 +169,11 @@ warning. `enforce` allows them only when `isolation_posture=container-full`.
   released, whichever comes first.
 - **Channel:** GitHub Security Advisories.
 - **Credit:** reporters are credited in release notes unless they ask otherwise.
+
+## 6. In-repo auditability
+
+- Multi-owner threat model: [`docs/security/THREAT_MODEL.md`](docs/security/THREAT_MODEL.md)
+- External-review entry: [`docs/security/AUDIT_PACK.md`](docs/security/AUDIT_PACK.md)
+- Trial topology: `docker-compose.staging.yaml`
+- This tree has **no** independent red-team endorsement; archive reports under
+  `docs/security/external/`.

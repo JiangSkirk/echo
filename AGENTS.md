@@ -9,7 +9,7 @@ durable recovery behind one fail-closed execution boundary.
 - **回合权威**：`run_echo_turn` / `EchoRuntime` / `execute_tool_effect`。模型、工具、附件、副作用只从这里进。
 - **`JSAgent` 是 facade + 子系统装配**，不是第二套 loop。回合状态机在 `js/echo/turn_loop/`。
 - **Fleet** = 一次性集群（`js/orchestration/fleet/`，UI 仍可切集群）。**Bots** = 命名机器人 + 房间 + Goal（`js/bots/`，`product_id` 仍是 `js-agent`）。Bots 不复用 Fleet。
-- **对外信任模型**：`SECURITY.md` / `SECURITY_en.md`。对抗性模型的承重边界是 OS 隔离；Echo/lease/guard 是授权与纵深。
+- **对外信任模型**：`SECURITY.md` / `SECURITY_en.md`。对抗性模型的承重边界是 OS 隔离；Echo/lease/guard 是授权与纵深。多 owner 威胁模型与外部审计入口见 `docs/security/THREAT_MODEL.md` / `AUDIT_PACK.md`。
 - **Orin 三层**：配置默认 `orin.enabled=false`；AppShell 启动打开 **Stage A**（lease/policy）；**Stage C / cells / `orin.enforce` 默认关**。完成声明见 `docs/security/orin/ORIN_STAGE_C_CLOSEOUT.md`（`not_implemented`）。
 - **`pulse()` 只观察背压**（ADR 0005），不 Exec，不是第二套运行时。
 - **Gateway** 是渠道表面不是运行时（ADR 0008，`gateway.enabled=false`）。未配对发件人丢弃；回合仍走 Echo。

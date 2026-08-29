@@ -1,7 +1,7 @@
 # Canonical quality criteria. New bars require a rubric_version bump + changelog.
 # Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
 
-rubric_version: "2026.09.11"
+rubric_version: "2026.09.12"
 
 label_enum:
   - OPEN
@@ -136,6 +136,15 @@ inventory_units:
       - gateway.cold_start
       - gateway.webhook
       - gateway.discord
+  security.audit:
+    paths:
+      - docs/security/THREAT_MODEL.md
+      - docs/security/AUDIT_PACK.md
+      - tests/multiuser/
+      - docker-compose.staging.yaml
+    scopes:
+      - repo.default
+      - security.threat_model
   tests.quality:
     paths:
       - tests/adversarial/
@@ -351,8 +360,18 @@ scopes:
         description: M1 coverage ratchet security 86 / echo 85 / lib 65 branch; 90/85/75 is M2
         evidence_kind: pytest_node
         nodeid: tests/test_coverage_floors.py
+  security.threat_model:
+    criteria:
+      - id: security.threat_model
+        description: Threat model maps multi-owner surfaces; audit pack and staging compose exist
+        evidence_kind: pytest_node
+        nodeid: tests/test_audit_pack.py
 
 changelog:
+  - version: "2026.09.12"
+    date: "2026-08-29"
+    changes:
+      - "In-repo audit pack: THREAT_MODEL, multiuser abuse matrix, staging compose"
   - version: "2026.09.11"
     date: "2026-08-29"
     changes:

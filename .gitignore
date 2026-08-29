@@ -100,3 +100,4 @@ docs/security/_enum_findings.json
 docs/security/_unique_findings_*.json
 docs/security/_round_review_summary.json
 docs/security/VULN_CATALOG_FULL.md
+docs/security/external/

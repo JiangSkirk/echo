@@ -25,7 +25,7 @@ JS Agent 不是聊天机器人，而是一套**本地个人 Agent Harness**—�
 - **并行执行**: 独立工具可并发调用，减少等待
 
 ### 🛡️ 安全护栏（Defense in Depth）
-- **信任模型**: 对抗性模型的承重边界是 OS 隔离；Echo/lease/guard 是授权与纵深。详见 [SECURITY.md](SECURITY.md)
+- **信任模型**: 对抗性模型的承重边界是 OS 隔离；Echo/lease/guard 是授权与纵深。详见 [SECURITY.md](SECURITY.md)。仓库内审计入口：[AUDIT_PACK.md](docs/security/AUDIT_PACK.md)（无外部红队背书）。
 - **策略模式防御**: 工具调用防御不是硬编码 if-else，是可注入、可排序的策略对象
 - **Fail-Closed 语义**: Echo 授权与 ledger 在缺失、异常或不可验证时 fail-closed，不 bypass 主路径
 - **行为审计**: 完整记录每个工具调用，哈希链式日志可检测篡改/截断

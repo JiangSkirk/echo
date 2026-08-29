@@ -25,7 +25,7 @@ The model is the engine. The harness is the complete frame that lets the engine 
 - **Parallel execution**: Independent tools can be called concurrently to reduce latency
 
 ### 🛡️ Safety Guardrails (Defense in Depth)
-- **Trust model**: The load-bearing boundary against an adversarial model is OS isolation; Echo/lease/guard are authorization and depth. See [SECURITY_en.md](SECURITY_en.md)
+- **Trust model**: The load-bearing boundary against an adversarial model is OS isolation; Echo/lease/guard are authorization and depth. See [SECURITY_en.md](SECURITY_en.md). In-repo audit entry: [AUDIT_PACK.md](docs/security/AUDIT_PACK.md) (no external red-team endorsement).
 - **Strategy-pattern defense**: Tool-call defenses are injectable, ordered strategy objects—not hardcoded if-else chains
 - **Fail-Closed semantics**: Echo authorization and the durable ledger fail closed when missing, unhealthy, or unverifiable — side effects are not bypassed
 - **Behavior audit**: Immutable hash-chained audit log of every tool call; tampering/truncation detectable
