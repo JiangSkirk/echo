@@ -85,8 +85,38 @@ dev = [
     "playwright>=1.52,<2",
     "httpx2>=2.4",  # Starlette TestClient prefers httpx2 over plain httpx
     "hypothesis>=6.112",
+    "mutmut>=3.3,<4",
     "js-agent[office,pdf]",
 ]
+
+[tool.mutmut]
+source_paths = ["js"]
+only_mutate = [
+    "js/security/parser.py",
+    "js/security/guard.py",
+    "js/security/rules.py",
+    "js/security/net_guard.py",
+    "js/echo/ledger/strict_json.py",
+    "js/echo/ledger/journal.py",
+]
+pytest_add_cli_args_test_selection = [
+    "tests/test_security.py",
+    "tests/test_security_rules.py",
+    "tests/test_security_shell_allowlist.py",
+    "tests/test_security_hardening_round3.py",
+    "tests/test_net_guard.py",
+    "tests/echo/ledger/test_file_journal_recovery.py",
+    "tests/echo/ledger/test_journal_effects.py",
+    "tests/echo/ledger/test_core_contract.py",
+    "tests/property/test_parser_ast.py",
+    "tests/property/test_ledger_json.py",
+    "tests/security/test_mutation_kills.py",
+    "tests/test_security_expanded.py",
+]
+pytest_add_cli_args = ["-q", "--tb=no"]
+do_not_mutate = ["**/__init__.py"]
+also_copy = ["js_work/", "resources/"]
+
 [project.scripts]
 js = "js.__main__:main"
 js-work = "js_work.cli:compat_main"

@@ -41,6 +41,9 @@ coverage.json
 coverage.xml
 htmlcov/
 .playwright-mcp/
+.mutmut-cache/
+mutants/
+*.meta
 
 # Build
 build/

@@ -1,7 +1,7 @@
 # Canonical quality criteria. New bars require a rubric_version bump + changelog.
 # Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
 
-rubric_version: "2026.09.14"
+rubric_version: "2026.09.15"
 
 label_enum:
   - OPEN
@@ -157,10 +157,13 @@ inventory_units:
       - tests/faults/
       - scripts/test_density_report.py
       - scripts/check_coverage_floors.py
+      - scripts/run_mutation.py
+      - docs/quality/mutation-2026-08-29.md
     scopes:
       - repo.default
       - tests.density
       - tests.coverage
+      - tests.mutation
 
 scopes:
   repo.default:
@@ -368,9 +371,15 @@ scopes:
   tests.density:
     criteria:
       - id: tests.density
-        description: M1 test/product line density >= 1.2
+        description: M1 density >= 1.2 and py-only density >= 0.937
         evidence_kind: pytest_node
         nodeid: tests/test_density_report.py
+  tests.mutation:
+    criteria:
+      - id: tests.mutation
+        description: Local mutmut sample report exists; mutmut is not a CI gate
+        evidence_kind: pytest_node
+        nodeid: tests/test_mutation_report.py
   tests.coverage:
     criteria:
       - id: tests.coverage
@@ -385,6 +394,10 @@ scopes:
         nodeid: tests/test_audit_pack.py
 
 changelog:
+  - version: "2026.09.15"
+    date: "2026-08-30"
+    changes:
+      - "Py-only density ratchet 0.937; local mutmut sample on security core"
   - version: "2026.09.14"
     date: "2026-08-29"
     changes:
