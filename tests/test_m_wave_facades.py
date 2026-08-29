@@ -32,6 +32,13 @@ def test_m2_facades() -> None:
     assert CONTROL_TASK_MUTATE_TOOL == "control_task_mutate"
 
 
+def test_telegram_gateway_facade() -> None:
+    from js.gateway.channels.telegram import TelegramBotIntegration as Impl
+    from js.integrations.telegram_bot import TelegramBotIntegration as Facade
+
+    assert Facade is Impl
+
+
 def test_m3_facades() -> None:
     from js.echo.capability import LeaseAuthority
     from js.echo.ledger.service import EchoSafetyService

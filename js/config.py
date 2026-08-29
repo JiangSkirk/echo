@@ -681,6 +681,8 @@ class GatewayConfig(BaseModel):
     pairing_ttl_seconds: int = Field(default=600, ge=1)
     discard_log_min_interval_seconds: float = Field(default=5.0, ge=0.0)
     max_pairing_attempts_per_peer: int = Field(default=8, ge=1)
+    webhook_secret: str = Field(default="", repr=False)
+    webhook_max_skew_seconds: int = Field(default=300, ge=1)
     channels: list[GatewayChannelConfig] = Field(default_factory=list)
 
     @field_validator("enabled", mode="before")

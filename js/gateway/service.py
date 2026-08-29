@@ -102,6 +102,24 @@ class GatewayService:
             return DispatchDecision(accepted=False, reason="owner_mismatch", owner=owner)
         return DispatchDecision(accepted=True, reason="routed", route=route, owner=owner)
 
+    async def dispatch_echo(self, agent: Any, envelope: InboundEnvelope) -> DispatchDecision:
+        """Pair, route, then run one tainted Echo turn. Returns the inbound decision."""
+
+        decision = self.handle_inbound(envelope)
+        if not decision.accepted or decision.route is None or decision.owner is None:
+            return decision
+        from js.echo.turn_runtime import run_echo_turn
+
+        await run_echo_turn(
+            agent,
+            envelope.text,
+            channel=f"gateway:{envelope.peer.channel}",
+            owner_key_hash=decision.owner,
+            session_id=decision.route.session_key,
+            attachments=list(envelope.attachments) or None,
+        )
+        return decision
+
     async def send(self, peer: ChannelPeer, text: str) -> None:
         adapter = self._adapters.get(peer.channel)
         if adapter is None:

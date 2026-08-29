@@ -224,14 +224,29 @@ _current_snapshot: ContextVar[ToolTaintSnapshot | None] = ContextVar(
 _ENTRY_SOURCE_TAINT: ContextVar[int] = ContextVar("orin_entry_source_taint", default=0)
 
 
+_UNTRUSTED_ENTRY_PREFIXES: Final[tuple[str, ...]] = (
+    "telegram",
+    "webhook",
+    "discord",
+    "gateway",
+)
+
+
 def set_entry_source(channel: str) -> object:
     """Tag the entry channel (Orin site 8): cron/daemon ⇒ AUTO_TASK.
 
     Called by ``run_echo_turn`` — the single Echo turn boundary — so every
     automatic task's user input carries AUTO_TASK instead of plain trust.
+    Gateway / messaging channels carry INBOX_CONTENT | WEB_CONTENT so taint
+    can only tighten later verdicts.
     """
 
-    value = AUTO_TASK if channel.startswith(("cron", "daemon")) else 0
+    if channel.startswith(("cron", "daemon")):
+        value = AUTO_TASK
+    elif channel.startswith(_UNTRUSTED_ENTRY_PREFIXES):
+        value = INBOX_CONTENT | WEB_CONTENT
+    else:
+        value = 0
     return _ENTRY_SOURCE_TAINT.set(value)
 
 

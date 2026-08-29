@@ -1,7 +1,7 @@
 # Canonical quality criteria. New bars require a rubric_version bump + changelog.
 # Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
 
-rubric_version: "2026.09.5"
+rubric_version: "2026.09.6"
 
 label_enum:
   - OPEN
@@ -124,6 +124,7 @@ inventory_units:
     scopes:
       - repo.default
       - gateway.cold_start
+      - gateway.webhook
 
 scopes:
   repo.default:
@@ -286,8 +287,18 @@ scopes:
         description: Gateway default-off and Host cold start does not import js.gateway
         evidence_kind: pytest_node
         nodeid: tests/gateway/test_gateway_cold_start.py
+  gateway.webhook:
+    criteria:
+      - id: gateway.webhook
+        description: HMAC webhook rejects bad signatures and replay; unpaired drops Echo
+        evidence_kind: pytest_node
+        nodeid: tests/gateway/test_webhook.py
 
 changelog:
+  - version: "2026.09.6"
+    date: "2026-08-29"
+    changes:
+      - "Telegram moved under js/gateway/channels with facade; HMAC webhook + inbound taint"
   - version: "2026.09.5"
     date: "2026-08-29"
     changes:

@@ -49,7 +49,7 @@ async def test_telegram_text_error_does_not_echo_private_exception(
         message=message,
     )
     monkeypatch.setattr(
-        "js.integrations.telegram_bot.run_echo_turn",
+        "js.gateway.channels.telegram.run_echo_turn",
         AsyncMock(side_effect=RuntimeError(private_detail)),
     )
 
@@ -133,11 +133,7 @@ async def test_telegram_document_uses_secure_streamed_owner_session_upload(
     ) -> dict[str, object] | None:
         assert product_id == "js-agent"
         entry = results.pop(reference, None)
-        return (
-            entry[2]
-            if entry is not None and entry[:2] == (owner, session_id)
-            else None
-        )
+        return entry[2] if entry is not None and entry[:2] == (owner, session_id) else None
 
     agent.stage_upload_commit = MagicMock(side_effect=stage_commit)
     agent.discard_upload_commit = MagicMock()
@@ -175,7 +171,7 @@ async def test_telegram_document_uses_secure_streamed_owner_session_upload(
         messages=[SimpleNamespace(role="assistant", content="processed")],
     )
     run_turn = AsyncMock(return_value=state)
-    monkeypatch.setattr("js.integrations.telegram_bot.run_echo_turn", run_turn)
+    monkeypatch.setattr("js.gateway.channels.telegram.run_echo_turn", run_turn)
 
     await integration._on_document(update, None)
 
@@ -186,10 +182,7 @@ async def test_telegram_document_uses_secure_streamed_owner_session_upload(
     assert kwargs["attachments"][0].startswith("uploads/")
     assert "\\" not in kwargs["attachments"][0]
     assert not (integration.settings.workspace / kwargs["attachments"][0]).exists()
-    effects = [
-        call.args[0]
-        for call in agent.echo_runtime.execute_tool_effect.await_args_list
-    ]
+    effects = [call.args[0] for call in agent.echo_runtime.execute_tool_effect.await_args_list]
     assert [effect.tool_name for effect in effects] == [
         "control_upload_mutate",
         "control_upload_mutate",

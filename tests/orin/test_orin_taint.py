@@ -113,11 +113,25 @@ class TestEntrySource:
         finally:
             t.reset_entry_source(token)
 
+    def test_gateway_channels_carry_inbox_and_web_taint(self) -> None:
+        expected = t.INBOX_CONTENT | t.WEB_CONTENT
+        for channel in ("telegram", "webhook", "discord", "gateway:webhook"):
+            token = t.set_entry_source(channel)
+            try:
+                assert t.current_entry_source_taint() == expected
+            finally:
+                t.reset_entry_source(token)
+
 
 class TestCredentialPatterns:
     def test_env_and_key_paths_flagged(self) -> None:
-        for path in ("/workspace/.env", "/w/server.pem", "~/.ssh/id_rsa",
-                     "/w/secrets/api.txt", "/w/deploy.key"):
+        for path in (
+            "/workspace/.env",
+            "/w/server.pem",
+            "~/.ssh/id_rsa",
+            "/w/secrets/api.txt",
+            "/w/deploy.key",
+        ):
             assert t.path_is_credential(path), path
 
     def test_normal_paths_not_flagged(self) -> None:
@@ -139,9 +153,7 @@ class TestToolResultTaint:
         assert t.source_taint_for_tool("webbridge_navigate") & t.WEB_CONTENT
 
     def test_skill_marker_via_metadata(self) -> None:
-        bits = t.source_taint_for_tool(
-            "some-skill", {"orin_taint_extra": t.SKILL_CONTENT}
-        )
+        bits = t.source_taint_for_tool("some-skill", {"orin_taint_extra": t.SKILL_CONTENT})
         assert bits & t.SKILL_CONTENT
 
     def test_secret_metadata_flag(self) -> None:

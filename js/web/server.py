@@ -507,6 +507,7 @@ def create_app(
     from js.appshell.switch_api import router as appshell_router
     from js.web.routers import approvals, fleet, manual_reviews, system
     from js.web.routers import bots as bots_router
+    from js.web.routers import gateway as gateway_router
 
     app.include_router(chat_router.router)
     app.include_router(cron.router)
@@ -523,6 +524,7 @@ def create_app(
     app.include_router(scenarios_router.router)
     app.include_router(desktop.router)
     app.include_router(metrics.router)
+    app.include_router(gateway_router.router)
 
     @app.get("/", response_class=HTMLResponse)
     async def root() -> str:
