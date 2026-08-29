@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from js.config import JSSettings, OrinConfig
+from js.config import JSSettings, OrinConfig, OrinPolicyProfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SECURITY_ZH = ROOT / "SECURITY.md"
@@ -24,6 +24,7 @@ _REQUIRED_ZH = (
     "## 2.5 供应链姿态",
     "uv.lock",
     "not_implemented",
+    "compat",
 )
 
 _REQUIRED_EN = (
@@ -40,6 +41,7 @@ _REQUIRED_EN = (
     "## 2.5 Supply Chain",
     "uv.lock",
     "not_implemented",
+    "compat",
 )
 
 
@@ -63,6 +65,7 @@ def test_security_policy_matches_config_defaults() -> None:
     assert JSSettings.model_fields["friends_enabled"].default is False
     assert JSSettings.model_fields["mobile_enabled"].default is False
     assert JSSettings.model_fields["remote_collaboration_enabled"].default is False
+    assert OrinConfig.model_fields["policy_profile"].default is OrinPolicyProfile.CONSERVATIVE
 
     for path in (SECURITY_ZH, SECURITY_EN):
         text = path.read_text(encoding="utf-8")

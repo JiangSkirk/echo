@@ -77,7 +77,11 @@ Host 本身仍在原生进程内。
 - **Echo 单一运行时边界**：模型、工具、附件、副作用只经 `run_echo_turn` /
   `execute_tool_effect`。缺失、不健康或不可验证的闸门 fail-closed。
 - **单次租约**：绑定 product / owner / session / run / 工具 / 参数 / 预算。
-- **污点与 conservative 审批**：不可信输入打标后，副作用走更严审批。
+- **污点与策略表**：不可信输入会打标。`OrinConfig.policy_profile` 字段默认是
+  `conservative`（未匹配行需审批）。AppShell 在打开 Stage A、且
+  `orin.enforce` 仍为 false 时，会把该默认值改成 `compat`：非 allow 裁决降为
+  允许并记日志。因此**默认桌面/Host 路径不把污点当作审批闸**。
+  `conservative` 是显式配置或未来 enforce 姿态，不是当前产品默认。
 - **技能四级信任**：`builtin` → `trusted` → `community` → `quarantine`。
   TRUSTED 需要可信公钥目录内未吊销的公钥；自签最高 COMMUNITY。
 - **进程内启发式**（审批正则、输出脱敏、技能扫描、shell allowlist）捕获合作模式

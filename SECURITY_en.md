@@ -87,7 +87,13 @@ sandbox alone.
   unverifiable gates fail closed.
 - **Single-use leases** bind product, owner, session, run, tool, arguments,
   and budget.
-- **Taint + conservative approval** for untrusted input.
+- **Taint and the policy table.** Untrusted input is marked. The
+  `OrinConfig.policy_profile` field default is `conservative` (unmatched rows
+  require approval). When AppShell turns on Stage A and `orin.enforce` is still
+  false, that default is rewritten to `compat`: non-allow verdicts become
+  allow-with-log. **The default desktop/Host path does not treat taint as an
+  approval gate.** `conservative` is an explicit setting or a future enforce
+  posture, not the current product default.
 - **Skill trust tiers** `builtin` → `trusted` → `community` → `quarantine`.
   TRUSTED requires an unrevoked key in the trusted public-key directory;
   self-signatures stop at COMMUNITY.
