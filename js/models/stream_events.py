@@ -120,15 +120,12 @@ def parse_openai_chunk(chunk: Any) -> list[StreamEvent]:
     # Some providers emit a final chunk with usage but no choices.
     usage = getattr(chunk, "usage", None)
     if usage is not None:
+        from js.models.usage import map_openai_usage
+
         events.append(
             StreamEvent(
                 kind="usage",
-                usage={
-                    "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
-                    "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
-                    "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
-                    "cached_tokens": _extract_cached_tokens(usage),
-                },
+                usage=map_openai_usage(usage).to_usage_dict(),
             )
         )
 
@@ -260,17 +257,12 @@ def parse_anthropic_event(event: Any) -> list[StreamEvent]:
         msg = _get(event, "message") or {}
         usage = _get(msg, "usage") or {}
         if usage:
+            from js.models.usage import map_anthropic_usage
+
             return [
                 StreamEvent(
                     kind="usage",
-                    usage={
-                        "prompt_tokens": int(_get(usage, "input_tokens") or 0),
-                        "completion_tokens": int(_get(usage, "output_tokens") or 0),
-                        "total_tokens": int(
-                            (_get(usage, "input_tokens") or 0) + (_get(usage, "output_tokens") or 0)
-                        ),
-                        "cached_tokens": int(_get(usage, "cache_read_input_tokens") or 0),
-                    },
+                    usage=map_anthropic_usage(usage).to_usage_dict(),
                 )
             ]
         return []
@@ -280,17 +272,12 @@ def parse_anthropic_event(event: Any) -> list[StreamEvent]:
         delta = _get(event, "delta") or {}
         out: list[StreamEvent] = []
         if usage:
+            from js.models.usage import map_anthropic_usage
+
             out.append(
                 StreamEvent(
                     kind="usage",
-                    usage={
-                        "prompt_tokens": int(_get(usage, "input_tokens") or 0),
-                        "completion_tokens": int(_get(usage, "output_tokens") or 0),
-                        "total_tokens": int(
-                            (_get(usage, "input_tokens") or 0) + (_get(usage, "output_tokens") or 0)
-                        ),
-                        "cached_tokens": int(_get(usage, "cache_read_input_tokens") or 0),
-                    },
+                    usage=map_anthropic_usage(usage).to_usage_dict(),
                 )
             )
         stop_reason = _get(delta, "stop_reason")

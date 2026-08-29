@@ -1,4 +1,4 @@
-"""Web UI for JS Agent."""
+"""Local AppShell Host API and window UI for the JS Agent desktop app."""
 
 from __future__ import annotations
 

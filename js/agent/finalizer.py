@@ -77,6 +77,10 @@ class FinalizerMixin(AgentBase):
                 if msg.role == "user" and isinstance(msg.content, str):
                     first_user = msg.content
                     break
+            if runtime_context is not None and runtime_context.surface == "bots":
+                from js.bots.persona import strip_volatile_tail
+
+                first_user = strip_volatile_tail(first_user)
             if completed:
                 for msg in reversed(state.messages):
                     if msg.role == "assistant" and isinstance(msg.content, str):
@@ -121,11 +125,19 @@ class FinalizerMixin(AgentBase):
                 for msg in state.messages
                 if msg.role in ("user", "assistant") and isinstance(msg.content, str)
             ]
-            new_messages: list[dict[str, str]] = [
-                {"role": msg.role, "content": str(msg.content)}
-                for msg in ua_messages[history_ua_count:]
-                if completed or msg.role == "user"
-            ]
+            bots_surface = runtime_context is not None and runtime_context.surface == "bots"
+            new_messages: list[dict[str, str]] = []
+            for msg in ua_messages[history_ua_count:]:
+                if not (completed or msg.role == "user"):
+                    continue
+                content = str(msg.content)
+                if bots_surface:
+                    from js.bots.persona import strip_volatile_tail
+
+                    content = strip_volatile_tail(content)
+                    if not content:
+                        continue
+                new_messages.append({"role": msg.role, "content": content})
             if new_messages:
                 redacted_messages = [
                     {
@@ -191,44 +203,49 @@ class FinalizerMixin(AgentBase):
             )
             return
 
-        # Store episodic memory second
-        try:
-            safe_user_input = self.secrets.detect_and_redact(user_input, "user_input")
-            summary = self.secrets.detect_and_redact(
-                f"User: {safe_user_input[:80]}... → Assistant: {assistant_output[:80]}...",
-                "episode_summary",
-            )
-            topics = list(
-                {
-                    word.lower()
-                    for word in (user_input + " " + assistant_output).split()
-                    if len(word) > 4 and word.isalpha()
-                }
-            )[:5]
-            await asyncio.to_thread(
-                self.memory.store_episode,
-                session_id=session_id,
-                summary=summary,
-                topics=topics,
-                tokens_used=sum(state.total_tokens.values()),
-                turn_count=state.turn_count,
-                importance=7 if state.status == "completed" else 4,
-                owner_key_hash=owner_key_hash,
-            )
+        # Store episodic memory second. Bots persist only stripped room
+        # bubbles; do not write episodes into the shared room session.
+        bots_surface = runtime_context is not None and runtime_context.surface == "bots"
+        if not bots_surface:
             try:
-                self._dream_scheduler.notify_activity(
-                    user_input,
-                    assistant_output,
-                    owner_key_hash=owner_key_hash,
-                    session_id=session_id,
+                safe_user_input = self.secrets.detect_and_redact(user_input, "user_input")
+                summary = self.secrets.detect_and_redact(
+                    f"User: {safe_user_input[:80]}... → Assistant: {assistant_output[:80]}...",
+                    "episode_summary",
                 )
-            except Exception as e:
-                self.logger.debug(f"Failed to notify scheduler: {e}")
-        except Exception as mem_err:
-            self.logger.warning(f"Memory consolidation failed: {mem_err}")
+                topics = list(
+                    {
+                        word.lower()
+                        for word in (user_input + " " + assistant_output).split()
+                        if len(word) > 4 and word.isalpha()
+                    }
+                )[:5]
+                await asyncio.to_thread(
+                    self.memory.store_episode,
+                    session_id=session_id,
+                    summary=summary,
+                    topics=topics,
+                    tokens_used=sum(state.total_tokens.values()),
+                    turn_count=state.turn_count,
+                    importance=7 if state.status == "completed" else 4,
+                    owner_key_hash=owner_key_hash,
+                )
+                try:
+                    self._dream_scheduler.notify_activity(
+                        user_input,
+                        assistant_output,
+                        owner_key_hash=owner_key_hash,
+                        session_id=session_id,
+                    )
+                except Exception as e:
+                    self.logger.debug(f"Failed to notify scheduler: {e}")
+            except Exception as mem_err:
+                self.logger.warning(f"Memory consolidation failed: {mem_err}")
 
         # Inject learning context into working memory (OpenHuman-style)
-        if self._quality_scorer is not None:
+        if self._quality_scorer is not None and not (
+            runtime_context is not None and runtime_context.surface == "bots"
+        ):
             try:
                 learning_ctx = self._quality_scorer.build_learning_context(
                     max_tokens=200,
@@ -248,7 +265,9 @@ class FinalizerMixin(AgentBase):
                 self.logger.debug("Learning context injection failed", exc_info=True)
 
         # Session Capsule: summarize long conversations for cheaper follow-up turns
-        if self.settings.memory.capsule_enabled:
+        if self.settings.memory.capsule_enabled and not (
+            runtime_context is not None and runtime_context.surface == "bots"
+        ):
             try:
                 total_tokens = sum(state.total_tokens.values())
                 threshold = self.settings.memory.capsule_token_threshold

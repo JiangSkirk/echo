@@ -60,7 +60,7 @@ def canonical_effect_hash_of(draft: EffectDraft) -> str:
     return "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
-READ_EFFECTS: frozenset[str] = frozenset({"artifact.read", "desktop.observe"})
+READ_EFFECTS: frozenset[str] = frozenset({"artifact.read", "desktop.observe", "memory.read"})
 STAGE_EFFECTS: frozenset[str] = frozenset({"artifact.stage", "net.fetch"})
 AUTO_EFFECTS: frozenset[str] = READ_EFFECTS | STAGE_EFFECTS
 DUAL_CONTROL_EFFECTS: frozenset[str] = frozenset({"policy.change", "admin.unfreeze"})
@@ -190,7 +190,9 @@ class GateKernel:
             if draft.effect_type == "file.commit":
                 directory_handle = draft.arguments.get("directory_handle")
                 changes = draft.arguments.get("changes")
-                if not isinstance(directory_handle, str) or not directory_handle.startswith("dirh:"):
+                if not isinstance(directory_handle, str) or not directory_handle.startswith(
+                    "dirh:"
+                ):
                     return GateDecision(
                         verdict="deny_policy",
                         reason_code="file_commit_requires_directory_handle",
@@ -222,18 +224,13 @@ class GateKernel:
                     )
             elif draft.effect_type == "desktop.action":
                 target_handle = draft.arguments.get("desktop_target_handle")
-                if (
-                    not isinstance(target_handle, str)
-                    or not target_handle.startswith("desktop:")
-                ):
+                if not isinstance(target_handle, str) or not target_handle.startswith("desktop:"):
                     return GateDecision(
                         verdict="deny_policy",
                         reason_code="desktop_action_requires_target_handle",
                     )
                 try:
-                    desktop_action = normalize_desktop_action(
-                        draft.arguments.get("action")
-                    )
+                    desktop_action = normalize_desktop_action(draft.arguments.get("action"))
                 except Exception:
                     return GateDecision(
                         verdict="deny_policy",
@@ -287,7 +284,11 @@ class GateKernel:
                 return GateDecision(verdict="deny_policy", reason_code="handle_expired")
             if intent is not None and handle.owner_key_hash != intent.owner_key_hash:
                 return GateDecision(verdict="deny_policy", reason_code="handle_owner_mismatch")
-            if intent is not None and handle.kind in {"DirectoryHandle", "ArtifactHandle"}:
+            if intent is not None and handle.kind in {
+                "DirectoryHandle",
+                "ArtifactHandle",
+                "ApplicationHandle",
+            }:
                 if handle_id not in intent.allowed_resource_handles:
                     return GateDecision(
                         verdict="deny_policy",

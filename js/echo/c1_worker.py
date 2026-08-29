@@ -1,10 +1,13 @@
-"""Fixed, test-only real Echo worker for the WP-C1 process harness.
+"""Opt-in Echo worker for AppShell process split and the WP-C1 harness.
 
-The module is intentionally not wired into any product launcher.  It accepts
-one authenticated, authority-free projection over stdin, executes one genuine
-``JSAgent`` turn through ``run_echo_turn``, and writes one authenticated JSON
-response to stdout.  Host owner keys, AppShell signing routes, or orind
-control-plane modules are neither inputs nor imports of this worker.
+Default product launch does not start this module.  When
+``appshell_process_split=true``, ``js.appshell.echo_process_split`` spawns it as
+the worker entry.  That flag is not Stage C and does not open ``orin.enforce``.
+
+The worker accepts one authenticated, authority-free projection over stdin,
+executes one genuine ``JSAgent`` turn through ``run_echo_turn``, and writes one
+authenticated JSON response to stdout.  Host owner keys, AppShell signing
+routes, or orind control-plane modules are neither inputs nor imports.
 """
 
 from __future__ import annotations
@@ -65,9 +68,7 @@ _AUTHORITY_KEYS: Final[frozenset[str]] = frozenset(
         "workspaceroot",
     }
 )
-_REQUEST_KEYS: Final[frozenset[str]] = frozenset(
-    {"schema", "seq", "nonce", "payload", "mac"}
-)
+_REQUEST_KEYS: Final[frozenset[str]] = frozenset({"schema", "seq", "nonce", "payload", "mac"})
 _RESPONSE_KEYS: Final[frozenset[str]] = frozenset(
     {"schema", "seq", "nonce", "ok", "code", "evidence", "mac"}
 )
@@ -161,9 +162,7 @@ def _normalize_json(
             if not isinstance(key, str) or not key or len(key) > 128:
                 raise _MessageDeniedError(f"{path} contains an invalid field name")
             if reject_authority and _authority_key(key) in _AUTHORITY_KEYS:
-                raise _AuthorityDeniedError(
-                    f"{path} contains authority-bearing field {key!r}"
-                )
+                raise _AuthorityDeniedError(f"{path} contains authority-bearing field {key!r}")
             normalized[key] = _normalize_json(
                 item,
                 path=f"{path}.{key}",
@@ -191,11 +190,7 @@ def _normalize_model_context(value: object) -> dict[str, JsonValue]:
 
 
 def _normalize_safe_projection(value: object) -> dict[str, JsonValue]:
-    if (
-        not isinstance(value, dict)
-        or not value
-        or not set(value).issubset(_SAFE_PROJECTION_KEYS)
-    ):
+    if not isinstance(value, dict) or not value or not set(value).issubset(_SAFE_PROJECTION_KEYS):
         raise _MessageDeniedError("safe_projection fields are not on the C1 allowlist")
     normalized = _normalize_json(value, path="safe_projection")
     if not isinstance(normalized, dict):

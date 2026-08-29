@@ -36,12 +36,17 @@ from js.appshell.routing import (
 from js.echo.capability import LeaseDenied
 from js.echo.ledger.service import EchoSafetyService
 from js.echo.mode_contract import AppMode
+from js.utils.log import get_logger
 from js.web.auth import (
     AuthManager,
     check_origin,
     request_is_direct_loopback,
+    require_admin,
     require_auth_dep,
 )
+from js.web.bootstrap import consume_bootstrap_admin_key_file
+
+logger = get_logger("js.appshell")
 
 router = APIRouter(prefix="/api/appshell", tags=["appshell"])
 
@@ -66,6 +71,27 @@ class AppShellSwitchRequest(BaseModel):
         if value is not None and not value.strip():
             raise ValueError("session_id must be null or a non-empty string")
         return value
+
+
+async def _await_work_runtime(request: Request) -> None:
+    """Fail-closed start of Work before any Work-mode parent API."""
+    if getattr(request.app.state, "work_runtime_ready", False):
+        return
+    ensure = getattr(request.app.state, "ensure_work_runtime", None)
+    if not callable(ensure):
+        raise HTTPException(
+            503,
+            {"code": "work_runtime_starting", "message": "正在启动 Work"},
+        )
+    try:
+        await ensure()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            503,
+            {"code": "work_runtime_starting", "message": "正在启动 Work"},
+        ) from exc
 
 
 def _trusted_principal(request: Request) -> AppShellPrincipalV1:
@@ -223,13 +249,28 @@ async def _exchange_session(
         raise
 
     roles = {"personal": str(personal_identity["role"])}
+    work_auth = AuthManager(work_settings.state_dir)
     try:
-        work_identity = AuthManager(work_settings.state_dir).verify(api_key)
+        work_identity = work_auth.verify(api_key)
     except Exception as exc:
         from js.exceptions import AuthRequiredError
 
         if not isinstance(exc, AuthRequiredError):
             raise
+        # Docker recreate wipes the ephemeral Work store while Personal
+        # survives on the mounted volume. Restore the first-boot binding
+        # only when Work has no admin left — never widen an existing store.
+        if personal_identity.get("role") == "admin" and not work_auth.has_admin():
+            work_identity = work_auth.provision_existing_key(
+                api_key,
+                name=str(personal_identity.get("name") or "appshell-admin"),
+                role="admin",
+            )
+            roles["work"] = str(work_identity["role"])
+            logger.warning(
+                "Restored missing Work admin from Personal key after empty Work store",
+                work_state_dir=str(work_settings.state_dir),
+            )
     else:
         # The same plaintext credential produces the same physical owner hash.
         # Refuse any future verifier that claims otherwise.
@@ -264,7 +305,11 @@ async def create_appshell_session(
     body: AppShellSessionRequest | None = None,
 ) -> JSONResponse:
     """Exchange one shared credential for the sole parent browser session."""
-    return await _exchange_session(request, body)
+    response = await _exchange_session(request, body)
+    personal_settings = request.app.state.personal_app.state.runtime_settings
+
+    consume_bootstrap_admin_key_file(personal_settings.state_dir)
+    return response
 
 
 @router.post("/logout")
@@ -302,32 +347,11 @@ async def bootstrap_appshell_session(
     if not api_key:
         if personal_auth.has_admin():
             raise HTTPException(401, "Existing Personal admin login is required")
-        from js.web.auth import _generate_key
-        from js.web.server import _persist_bootstrap_admin_key
+        from js.appshell.bootstrap_key import provision_shared_bootstrap_key
 
-        api_key = _generate_key()
-        personal_identity = personal_auth.provision_existing_key(
-            api_key,
-            name="appshell-bootstrap",
-            role="admin",
-        )
-        try:
-            work_auth.provision_existing_key(
-                api_key,
-                name="appshell-bootstrap",
-                role="admin",
-            )
-            _persist_bootstrap_admin_key(
-                personal_settings.state_dir / "bootstrap_admin_key.txt",
-                api_key,
-            )
-        except Exception:
-            personal_auth.revoke_key(str(personal_identity["key_hash"]))
-            try:
-                work_auth.revoke_key(str(personal_identity["key_hash"]))
-            except Exception:
-                pass
-            raise
+        api_key = provision_shared_bootstrap_key(personal_settings, work_settings)
+        if api_key is None:
+            raise HTTPException(401, "Existing Personal admin login is required")
     else:
         try:
             personal_identity = personal_auth.verify(api_key)
@@ -430,9 +454,11 @@ def _safe_file_commit_previews(raw: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             raise HTTPException(502, {"code": "orind_invalid_projection"})
         witness_id = item.get("witness_id")
-        if not isinstance(witness_id, str) or not witness_id.startswith("state:") or len(
-            witness_id
-        ) > 256:
+        if (
+            not isinstance(witness_id, str)
+            or not witness_id.startswith("state:")
+            or len(witness_id) > 256
+        ):
             raise HTTPException(502, {"code": "orind_invalid_projection"})
         try:
             preview = file_commit_preview_from_dict(
@@ -819,13 +845,16 @@ async def grant_export_pass(
 async def admin_unfreeze_session(
     request: Request,
     body: AdminUnfreezeRequest,
-    auth: dict[str, Any] = Depends(require_auth_dep),
+    auth: dict[str, Any] = Depends(require_admin),
+    principal: AppShellPrincipalV1 = Depends(_trusted_principal),
 ) -> dict[str, Any]:
     """R3 de-escalation: requires the admin API key plus a dual-control
     admin.unfreeze IntentEnvelope signed by the owner witness. Echo has no
     path here — the ladder can only be unwound by the human operator."""
     check_origin(request)
-    runtime = request.app.state.web_runtime
+    if principal.active_mode == "work":
+        await _await_work_runtime(request)
+    runtime = _mode_runtime(request, principal)
     if runtime is None:
         raise HTTPException(503, {"code": "runtime_unavailable"})
     adapter, reason = _stage_b_adapter(runtime)
@@ -870,6 +899,36 @@ async def admin_unfreeze_session(
     }
 
 
+@router.post("/prewarm")
+async def prewarm_work_runtime(
+    request: Request,
+    principal: AppShellPrincipalV1 = Depends(_trusted_principal),
+) -> dict[str, str]:
+    """Start Work runtime in the background without changing the active mode."""
+    check_origin(request)
+    if "work" not in principal.mode_roles:
+        raise HTTPException(403, {"code": "work_role_required"})
+    if getattr(request.app.state, "work_runtime_ready", False):
+        return {"status": "ready"}
+    ensure = getattr(request.app.state, "ensure_work_runtime", None)
+    if not callable(ensure):
+        raise HTTPException(
+            503,
+            {"code": "work_runtime_starting", "message": "正在启动 Work"},
+        )
+
+    async def _run() -> None:
+        try:
+            await ensure()
+        except Exception:
+            logger.warning("Work runtime prewarm failed", exc_info=True)
+
+    task = getattr(request.app.state, "work_prewarm_task", None)
+    if task is None or task.done():
+        request.app.state.work_prewarm_task = asyncio.create_task(_run())
+    return {"status": "warming"}
+
+
 @router.post("/switch")
 async def switch_appshell_mode(
     request: Request,
@@ -895,6 +954,7 @@ async def switch_appshell_mode(
         if body.workspace_handle != request.app.state.work_workspace_handle:
             raise HTTPException(400, {"code": "invalid_work_workspace_handle"})
         target_workspace = request.app.state.work_workspace_handle
+        await _await_work_runtime(request)
     else:
         if body.workspace_handle is not None:
             raise HTTPException(400, {"code": "personal_workspace_must_be_null"})
@@ -1087,6 +1147,8 @@ async def get_inbox(
             headers={"Cache-Control": "no-store"},
         ) from exc
     try:
+        if principal.active_mode == "work":
+            await _await_work_runtime(request)
         authority = _projection_authority(
             request,
             principal,
@@ -1139,6 +1201,8 @@ async def list_artifacts(
             headers={"Cache-Control": "no-store"},
         ) from exc
     try:
+        if principal.active_mode == "work":
+            await _await_work_runtime(request)
         authority = _projection_authority(
             request,
             principal,
@@ -1213,6 +1277,7 @@ async def get_work_context(
             headers={"Cache-Control": "no-store"},
         ) from exc
     try:
+        await _await_work_runtime(request)
         authority = _projection_authority(
             request,
             principal,

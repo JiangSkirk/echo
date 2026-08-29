@@ -1,21 +1,19 @@
 #!/usr/bin/env bash
 #
-# JS Agent macOS 一键启动脚本
-# 首次运行会自动创建 .venv、安装依赖、初始化配置并打开 Web UI。
+# JS Agent macOS 一键准备脚本
+# 首次运行会自动创建 .venv、安装依赖、初始化配置。
+# 产品主入口是桌面应用；本脚本不打开浏览器、不启动网页服务。
 #
 # 用法:
-#   ./scripts/macos_start.sh                # 启动 Web UI 并打开浏览器
+#   ./scripts/macos_start.sh                # 准备环境并提示打开桌面应用
 #   ./scripts/macos_start.sh setup -y       # 透传子命令给 js
 #   DRY_RUN=1 ./scripts/macos_start.sh      # 仅检查环境，不安装、不启动
-#   HOST=0.0.0.0 PORT=8080 ./scripts/macos_start.sh
 #
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-HOST="${HOST:-127.0.0.1}"
-PORT="${PORT:-8000}"
 DRY_RUN="${DRY_RUN:-0}"
 
 # ── 中文彩色日志（风格对齐 install.sh）──────────────────
@@ -116,10 +114,6 @@ if [[ $# -gt 0 ]]; then
   exec "$VENV_PY" -m js "$@"
 fi
 
-# 普通用户找回路径：首次启动时服务端会自动生成管理员密钥并注入本地浏览器；
-# 若换浏览器或清了缓存需要手动登录，密钥保存在下面这个文件里。
-STATE_DIR="${JS_STATE_DIR:-$HOME/.js/state}"
-log_warn "如需在其他浏览器手动登录，管理员密钥保存在: $STATE_DIR/bootstrap_admin_key.txt"
-
-log_step "正在启动 JS Agent: http://${HOST}:${PORT}"
-exec "$VENV_PY" -m js open --host "$HOST" --port "$PORT"
+log_ok "环境已就绪。请打开 JS Agent 桌面应用。"
+echo "终端可用: js / js tui / js daemon"
+echo "本机 Host（不打开浏览器）: js appshell"

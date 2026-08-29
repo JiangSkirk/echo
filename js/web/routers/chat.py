@@ -15,6 +15,7 @@ from js.web.auth import require_user_write, runtime_owner
 from js.web.deps import coerce_body_session_id, get_agent, get_stats_store
 from js.web.messages import humanize_error
 from js.web.runtime_context import prepare_web_message, web_channel
+from js.web.schemas import ChatRequest
 
 logger = get_logger("js.web")
 
@@ -31,25 +32,40 @@ _chat_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_CHATS)
 _MAX_PAYLOAD_BYTES = 256 * 1024
 
 
+def _bots_binding_id() -> str:
+    try:
+        from js.bots.persona import current_bot_binding
+
+        binding = current_bot_binding()
+    except Exception:
+        return ""
+    return binding.bot_id if binding is not None else ""
+
+
+def _exclude_first_write(buckets: dict[str, Any]) -> bool:
+    return (
+        int(buckets.get("cache_write", 0) or 0) > 0 and int(buckets.get("cache_read", 0) or 0) == 0
+    )
+
+
 @router.post("/api/chat")
 async def chat(
-    payload: dict[str, Any],
+    payload: ChatRequest,
     auth: dict[str, Any] = Depends(require_user_write),
 ) -> dict[str, Any]:
-    # Size limit
-    payload_size = len(json.dumps(payload).encode("utf-8"))
+
+    # Match typical client JSON spacing so the 256 KiB cap is on wire-sized bytes.
+    payload_size = len(json.dumps(payload.model_dump(exclude_unset=True)).encode("utf-8"))
     if payload_size > _MAX_PAYLOAD_BYTES:
         raise HTTPException(
             413, f"Request payload too large: {payload_size} bytes (max {_MAX_PAYLOAD_BYTES})"
         )
 
     agent = get_agent()
-    message = payload.get("message", "")
-    session_id = coerce_body_session_id(payload.get("session_id"))
-    model = payload.get("model")
-    attachments = payload.get("attachments", [])
-    if not isinstance(attachments, list):
-        raise HTTPException(400, "attachments must be a list")
+    message = payload.message
+    session_id = coerce_body_session_id(payload.session_id)
+    model = payload.model
+    attachments = list(payload.attachments)
     from js.web.session_locks import get_session_lock
     from js.web.uploads import validate_chat_attachments
 
@@ -127,6 +143,7 @@ async def chat(
         cached_tokens = getattr(state, "cached_tokens", 0)
         if not isinstance(cached_tokens, int):
             cached_tokens = 0
+        buckets = getattr(state, "usage_buckets", {}) or {}
         try:
             stats_store.record(
                 model=model_id,
@@ -137,6 +154,16 @@ async def chat(
                 cached_tokens=cached_tokens,
                 session_id=getattr(state, "session_id", ""),
                 run_id=getattr(state, "run_id", ""),
+                uncached_input=int(buckets.get("uncached_input", max(total_in - cached_tokens, 0))),
+                cache_read=int(buckets.get("cache_read", cached_tokens)),
+                cache_write=int(buckets.get("cache_write", 0)),
+                output=int(buckets.get("output", total_out)),
+                reasoning=int(buckets.get("reasoning", 0)),
+                input_total=int(buckets.get("input_total", total_in)),
+                usage_source=str(getattr(state, "usage_source", "unavailable") or "unavailable"),
+                prefix_id=str(getattr(state, "prefix_id", "") or ""),
+                bot_id=_bots_binding_id(),
+                exclude_from_hit_rate=_exclude_first_write(buckets),
             )
         except Exception as exc:
             logger.warning(

@@ -103,6 +103,7 @@ CELL_CONNECT_CAPS: Final[tuple[str, ...]] = (
     "cell.build",
     "cell.desktop",
     "cell.file",
+    "cell.memory",
     "cell.net",
     "cell.secret",
     "cell.connector",
@@ -198,8 +199,11 @@ REQUIRED_CAP: Final[dict[str, str]] = {
 }
 """Stage-B message type → hello cap that must have been negotiated."""
 
-HEARTBEAT_INTERVAL_S: Final[float] = 1.0
+HEARTBEAT_INTERVAL_S: Final[float] = 10.0
 """Heartbeat cadence; the connection is the real liveness signal."""
+
+REQUEST_TIMEOUT_S: Final[float] = 10.0
+"""Independent RPC timeout; do not couple request waits to heartbeat cadence."""
 
 _LEASE_MAC_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
 """Lease MAC in wire dicts is bare hex (same as the JSONL ledger payload)."""
@@ -446,6 +450,7 @@ _SCHEMA: Final[dict[str, tuple[FieldSpec, ...]]] = {
         # enforced at the two socket boundaries, not by this common parser.
         FieldSpec("executor_id", kinds=_S, optional=True, max_len=128),
         FieldSpec("package", kinds=(dict,), optional=True),
+        FieldSpec("session_id", kinds=_S, optional=True, max_len=128),
     ),
     "preflight_ack": (
         FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
@@ -504,6 +509,9 @@ _SCHEMA: Final[dict[str, tuple[FieldSpec, ...]]] = {
         FieldSpec("code", kinds=_S, optional=True, max_len=32),
         FieldSpec("reason", kinds=_S, optional=True),
         FieldSpec("state", kinds=_S, optional=True, max_len=16),
+        FieldSpec("before_digest", kinds=_S, optional=True, max_len=71),
+        FieldSpec("after_digest", kinds=_S, optional=True, max_len=71),
+        FieldSpec("target_digest", kinds=_S, optional=True, max_len=71),
     ),
 }
 
@@ -983,6 +991,7 @@ __all__ = [
     "GATE_VERDICTS",
     "HANDLE_OPS",
     "HEARTBEAT_INTERVAL_S",
+    "REQUEST_TIMEOUT_S",
     "INTENT_OPS",
     "MAC_PREFIX",
     "MAX_FRAME_BYTES",

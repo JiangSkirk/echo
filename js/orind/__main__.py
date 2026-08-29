@@ -38,6 +38,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="dev",
         help="Key custody tier (production = macOS Keychain)",
     )
+    parser.add_argument(
+        "--policy-profile",
+        choices=["conservative", "compat"],
+        default="conservative",
+        help="Lease policy table profile",
+    )
     stage_b = parser.add_argument_group("Stage B (opt-in)")
     stage_b.add_argument(
         "--stage-b",
@@ -69,6 +75,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Enable the Stage-B durable Commit Membrane",
     )
+    stage_c = parser.add_argument_group("Stage C (opt-in, default off)")
+    stage_c.add_argument(
+        "--cell-identity-enforce",
+        action="store_true",
+        help="Enable Cell OS/launch/protocol identity without the C1 test harness",
+    )
     args = parser.parse_args(argv)
     if not args.stage_b and any(
         (
@@ -77,9 +89,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             args.cell_net,
             args.cell_file,
             args.commit_membrane,
+            args.cell_identity_enforce,
         )
     ):
-        parser.error("Stage-B Cell and membrane switches require --stage-b")
+        parser.error("Stage-B Cell, membrane, and identity switches require --stage-b")
     return args
 
 
@@ -106,12 +119,14 @@ async def _main_async(args: argparse.Namespace) -> int:
         state_dir=args.state_dir,
         socket_path=args.socket_path,
         keybox_tier=args.keybox_tier,
+        policy_profile=args.policy_profile,
         stage_b=args.stage_b,
         cell_build=args.cell_build,
         cell_secret=args.cell_secret,
         cell_net=args.cell_net,
         cell_file=args.cell_file,
         commit_membrane=args.commit_membrane,
+        cell_identity_enforce=args.cell_identity_enforce,
     )
     await daemon.start()
     print(

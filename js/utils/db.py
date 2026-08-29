@@ -19,9 +19,30 @@ _WAL_BOOTSTRAP_TIMEOUT_SECONDS = 1.0
 _WAL_MAX_ATTEMPTS = 16
 _WAL_RETRY_BASE_DELAY_SECONDS = 0.01
 _WAL_RETRY_MAX_DELAY_SECONDS = 0.1
+# path -> (st_dev, st_ino, st_mtime_ns) of a file already confirmed WAL.
+_WAL_READY: dict[str, tuple[int, int, int]] = {}
 _CORRUPTION_MESSAGES = (
     "database disk image is malformed",
     "file is not a database",
+)
+
+# Known product SQLite files at state_dir root. Startup WAL checks and the
+# governor checkpoint the same set — do not walk the whole tree.
+PRODUCT_STATE_DB_NAMES: tuple[str, ...] = (
+    "memory_enhanced.db",
+    "memory.db",
+    "appshell_sessions.db",
+    "cron.db",
+    "api_keys.db",
+    "token_stats.db",
+    "audit.db",
+    "secrets.db",
+    "checkpoints.db",
+    "lifecycle.db",
+    "review_capsules.db",
+    "skills.db",
+    "skill_promotions.db",
+    "bots.db",
 )
 
 
@@ -39,6 +60,7 @@ def is_recoverable_database_corruption(error: sqlite3.DatabaseError) -> bool:
 def quarantine_corrupt_database(db_path: Path | str) -> Path | None:
     """Move corrupt SQLite bytes and sidecars aside, preserving evidence."""
     path = Path(db_path)
+    _wal_cache_drop(path)
     if not path.exists():
         return None
     quarantine_path = path.with_name(f"{path.name}.corrupt-{time.time_ns()}")
@@ -84,6 +106,40 @@ def _retry_delay(attempt: int, remaining: float) -> float:
     return float(min(exponential_delay, _WAL_RETRY_MAX_DELAY_SECONDS, remaining))
 
 
+def _wal_identity(db_path: Path) -> tuple[str, int, int, int] | None:
+    try:
+        resolved = db_path.resolve()
+        stat = resolved.stat()
+    except OSError:
+        return None
+    return (str(resolved), stat.st_dev, stat.st_ino, stat.st_mtime_ns)
+
+
+def _wal_cache_hit(db_path: Path) -> bool:
+    identity = _wal_identity(db_path)
+    if identity is None:
+        return False
+    path_key, dev, ino, mtime_ns = identity
+    return _WAL_READY.get(path_key) == (dev, ino, mtime_ns)
+
+
+def _wal_cache_store(db_path: Path) -> None:
+    identity = _wal_identity(db_path)
+    if identity is None:
+        return
+    path_key, dev, ino, mtime_ns = identity
+    _WAL_READY[path_key] = (dev, ino, mtime_ns)
+
+
+def _wal_cache_drop(db_path: Path | str) -> None:
+    path = Path(db_path)
+    try:
+        key = str(path.resolve())
+    except OSError:
+        key = str(path)
+    _WAL_READY.pop(key, None)
+
+
 def _enable_wal(conn: sqlite3.Connection) -> None:
     cursor = conn.execute("PRAGMA journal_mode=WAL")
     try:
@@ -102,8 +158,10 @@ def _set_busy_timeout(conn: sqlite3.Connection, timeout_ms: int) -> None:
         cursor.close()
 
 
-def _ensure_wal(conn: sqlite3.Connection) -> None:
+def _ensure_wal(conn: sqlite3.Connection, db_path: Path | None = None) -> None:
     """Enable WAL only when the database's persistent mode has drifted."""
+    if db_path is not None and _wal_cache_hit(db_path):
+        return
     deadline = time.monotonic() + _WAL_BOOTSTRAP_TIMEOUT_SECONDS
     last_lock_error: sqlite3.OperationalError | None = None
     for attempt in range(_WAL_MAX_ATTEMPTS):
@@ -116,8 +174,12 @@ def _ensure_wal(conn: sqlite3.Connection) -> None:
             finally:
                 cursor.close()
             if row is not None and str(row[0]).lower() == "wal":
+                if db_path is not None:
+                    _wal_cache_store(db_path)
                 return
             _enable_wal(conn)
+            if db_path is not None:
+                _wal_cache_store(db_path)
             return
         except sqlite3.OperationalError as error:
             if not _is_locked_or_busy(error):
@@ -151,7 +213,9 @@ async def _set_busy_timeout_async(conn: aiosqlite.Connection, timeout_ms: int) -
         await cursor.close()
 
 
-async def _ensure_wal_async(conn: aiosqlite.Connection) -> None:
+async def _ensure_wal_async(conn: aiosqlite.Connection, db_path: Path | None = None) -> None:
+    if db_path is not None and _wal_cache_hit(db_path):
+        return
     deadline = time.monotonic() + _WAL_BOOTSTRAP_TIMEOUT_SECONDS
     last_lock_error: sqlite3.OperationalError | None = None
     for attempt in range(_WAL_MAX_ATTEMPTS):
@@ -164,8 +228,12 @@ async def _ensure_wal_async(conn: aiosqlite.Connection) -> None:
             finally:
                 await cursor.close()
             if row is not None and str(row[0]).lower() == "wal":
+                if db_path is not None:
+                    _wal_cache_store(db_path)
                 return
             await _enable_wal_async(conn)
+            if db_path is not None:
+                _wal_cache_store(db_path)
             return
         except sqlite3.OperationalError as error:
             if not _is_locked_or_busy(error):
@@ -182,7 +250,9 @@ async def _ensure_wal_async(conn: aiosqlite.Connection) -> None:
 
 
 @contextmanager
-def db_connection(db_path: Path | str, *, row_factory: Any = None) -> Generator[sqlite3.Connection, None, None]:
+def db_connection(
+    db_path: Path | str, *, row_factory: Any = None
+) -> Generator[sqlite3.Connection, None, None]:
     """Open a SQLite connection and guarantee it is closed on exit.
 
     Usage::
@@ -194,7 +264,7 @@ def db_connection(db_path: Path | str, *, row_factory: Any = None) -> Generator[
     conn = sqlite3.connect(str(db_path), timeout=10.0)
     try:
         _set_busy_timeout(conn, _BOOTSTRAP_BUSY_TIMEOUT_MS)
-        _ensure_wal(conn)
+        _ensure_wal(conn, db_path)
         _set_busy_timeout(conn, _NORMAL_BUSY_TIMEOUT_MS)
         if row_factory is not None:
             conn.row_factory = row_factory
@@ -204,7 +274,9 @@ def db_connection(db_path: Path | str, *, row_factory: Any = None) -> Generator[
 
 
 @asynccontextmanager
-async def adb_connection(db_path: Path | str, *, row_factory: Any = None) -> AsyncGenerator[aiosqlite.Connection, None]:
+async def adb_connection(
+    db_path: Path | str, *, row_factory: Any = None
+) -> AsyncGenerator[aiosqlite.Connection, None]:
     """Open an async SQLite connection via aiosqlite.
 
     Enables WAL mode and 5-second busy timeout for concurrency safety.
@@ -217,7 +289,7 @@ async def adb_connection(db_path: Path | str, *, row_factory: Any = None) -> Asy
     db_path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(str(db_path), timeout=15.0) as conn:
         await _set_busy_timeout_async(conn, _BOOTSTRAP_BUSY_TIMEOUT_MS)
-        await _ensure_wal_async(conn)
+        await _ensure_wal_async(conn, db_path)
         await _set_busy_timeout_async(conn, _NORMAL_BUSY_TIMEOUT_MS)
         if row_factory is not None:
             conn.row_factory = row_factory

@@ -246,6 +246,28 @@ class EchoLedgerConfig(BaseModel):
         ge=1,
         le=64 * 1024 * 1024,
     )
+    lease_compact_trigger_records: int = Field(
+        default=512,
+        ge=8,
+        description="Governor compact() when the lease JSONL seq reaches this count",
+    )
+    lease_compact_trigger_bytes: int = Field(
+        default=256 * 1024,
+        ge=1024,
+        description="Governor compact() when the lease JSONL exceeds this size",
+    )
+    lease_compact_trigger_full_reloads: int = Field(
+        default=8,
+        ge=1,
+        description="Governor compact() after this many full ledger reloads",
+    )
+    external_tip_anchor: bool = Field(
+        default=False,
+        description=(
+            "Use an AnchorBackend outside the journal directory (Keychain on "
+            "Darwin, sibling file otherwise). Not TPM. Default off."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_trigger_exceeds_retention(self) -> EchoLedgerConfig:
@@ -499,36 +521,58 @@ class OrinConfig(BaseModel):
             "reconciliation for workspace commits and connector sends."
         ),
     )
-    # -- stage C (ORIN_STAGE_C_SPEC.md WP-C1): parsed now, but deliberately
-    # unusable as a production master switch until C2-C7 are complete.  The
-    # identity sub-switch is lazy while the master switch is off; only the
-    # explicit C1 test harness may exercise it in this WP.
+    # -- stage C (ORIN_STAGE_C_SPEC.md): parsed now.  Product routes stay
+    # inert while enforce is off.  The master switch fail-fasts unless the
+    # §6.1 conjunction (including external #8/#9/TCC bits) is fully observed.
     enforce: bool = Field(
         default=False,
         description=(
-            "Stage-C production enforce mode. Disabled and fail-fast until "
-            "the remaining C2-C7 construction gates are implemented."
+            "Stage-C production enforce mode. Fail-fast unless the §6.1 "
+            "conjunction is fully observed."
         ),
     )
     cell_identity_enforce: bool = Field(
         default=False,
         description=(
             "Require the WP-C1 Cell OS/launch/protocol identity contract. "
-            "Lazy unless Stage-C enforce is active or an explicit C1 test harness is used."
+            "Lazy on product routes unless Stage-C enforce is active."
         ),
     )
     cell_desktop: bool = Field(
         default=False,
         description=(
-            "WP-C2 Desktop Cell construction switch. It is inert on product "
-            "routes and may be exercised only by the explicit C2 test harness."
+            "WP-C2 Desktop Cell switch. Inert on product routes unless "
+            "orin.enforce is active; the C2 harness may still exercise it."
+        ),
+    )
+    cell_memory: bool = Field(
+        default=False,
+        description=(
+            "WP-C3 Memory Cell switch. Inert on product routes unless "
+            "orin.enforce is active; the C3 harness may still exercise it."
+        ),
+    )
+    echo_minimal_os: bool = Field(
+        default=False,
+        description=(
+            "Launch Echo through the optional deny-default OS carrier. "
+            "Not official TCC/notary evidence. Default off."
+        ),
+    )
+    cell_model_transport: bool = Field(
+        default=False,
+        description=(
+            "Opt-in model connector via Services Cell. Echo must not hydrate "
+            "provider tokens when this is observed. Default off; not enforce."
         ),
     )
 
     @model_validator(mode="after")
     def reject_unfinished_stage_c_enforce(self) -> OrinConfig:
         if self.enforce:
-            raise ValueError("orin.enforce is unavailable until Stage C C2-C7 are complete")
+            from js.orin.stage_c import require_stage_c_enforce
+
+            require_stage_c_enforce(self)
         return self
 
 
@@ -763,6 +807,13 @@ class JSSettings(BaseSettings):
     mcp_manifest: Path | None = Field(
         default=None,
         description="Optional Echo-controlled MCP manifest path",
+    )
+    appshell_process_split: bool = Field(
+        default=False,
+        description=(
+            "Opt-in AppShell/Echo OS process split. Default off (C-I01). "
+            "Does not flip orin.enforce or claim Stage C is implemented."
+        ),
     )
 
     # Echo engine mode. Echo is the only supported runtime architecture.

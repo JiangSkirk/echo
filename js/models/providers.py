@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -297,23 +298,11 @@ class OpenAICompatibleProvider(ModelProvider):
             )
             _http2 = True
 
-        _http_client = httpx.AsyncClient(
-            trust_env=False,
-            timeout=_timeout,
-            limits=_limits,
-            http2=_http2,
-        )
-
-        client_kwargs: dict[str, Any] = {
-            "base_url": config.base_url,
-            "api_key": config.api_key or "not-needed",
-            "http_client": _http_client,
-            "max_retries": 0,  # We handle retries ourselves
-        }
-        if config.auth_adapter == "query_param" and config.api_key and config.query_param_name:
-            client_kwargs["default_query"] = {config.query_param_name: config.api_key}
-            client_kwargs["api_key"] = "not-needed"  # Prevent Authorization Bearer token
-        self.client = AsyncOpenAI(**client_kwargs)
+        self._http_timeout = _timeout
+        self._http_limits = _limits
+        self._http2 = _http2
+        self._client: Any | None = None
+        self._client_guard = threading.Lock()
 
         self._last_health_check = 0.0
         self._health_status = False
@@ -354,6 +343,44 @@ class OpenAICompatibleProvider(ModelProvider):
             _redact_key(config.api_key),
             _http2,
         )
+
+    def _build_client(self) -> AsyncOpenAI:
+        http_client = httpx.AsyncClient(
+            trust_env=False,
+            timeout=self._http_timeout,
+            limits=self._http_limits,
+            http2=self._http2,
+        )
+        client_kwargs: dict[str, Any] = {
+            "base_url": self.config.base_url,
+            "api_key": self.config.api_key or "not-needed",
+            "http_client": http_client,
+            "max_retries": 0,
+        }
+        if (
+            self.config.auth_adapter == "query_param"
+            and self.config.api_key
+            and self.config.query_param_name
+        ):
+            client_kwargs["default_query"] = {self.config.query_param_name: self.config.api_key}
+            client_kwargs["api_key"] = "not-needed"
+        return AsyncOpenAI(**client_kwargs)
+
+    def _ensure_client(self) -> Any:
+        if self._client is not None:
+            return self._client
+        with self._client_guard:
+            if self._client is None:
+                self._client = self._build_client()
+            return self._client
+
+    @property
+    def client(self) -> Any:
+        return self._ensure_client()
+
+    @client.setter
+    def client(self, value: Any) -> None:
+        self._client = value
 
     def _convert_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
@@ -399,11 +426,19 @@ class OpenAICompatibleProvider(ModelProvider):
             raise RuntimeError(f"Circuit breaker OPEN for {self.config.name}")
 
         async def _do_chat() -> ChatResponse:
+            converted = self._convert_messages(messages)
             kwargs: dict[str, Any] = {
                 "model": model,
-                "messages": self._convert_messages(messages),
+                "messages": converted,
                 "temperature": temperature,
             }
+            from js.bots.persona import apply_bots_cache_hooks
+
+            apply_bots_cache_hooks(
+                converted,
+                kwargs,
+                transport_type=str(getattr(self.config, "transport_type", "") or ""),
+            )
             if tools:
                 kwargs["tools"] = tools
                 kwargs["tool_choice"] = "auto"
@@ -453,19 +488,13 @@ class OpenAICompatibleProvider(ModelProvider):
                                 }
                             )
 
-                    usage: dict[str, int] = {
-                        "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
-                        "completion_tokens": response.usage.completion_tokens
-                        if response.usage
-                        else 0,
-                        "total_tokens": response.usage.total_tokens if response.usage else 0,
-                        "cached_tokens": 0,
-                    }
-                    # Extract cached token count when available (OpenAI, Anthropic, etc.)
-                    if response.usage:
-                        details = getattr(response.usage, "prompt_tokens_details", None)
-                        if details:
-                            usage["cached_tokens"] = getattr(details, "cached_tokens", 0) or 0
+                    from js.models.usage import map_openai_usage
+
+                    buckets = map_openai_usage(
+                        response.usage,
+                        source="provider_actual" if response.usage else "unavailable",
+                    )
+                    usage = buckets.to_usage_dict()
 
                     latency = time.perf_counter() - start
                     try:
@@ -481,7 +510,7 @@ class OpenAICompatibleProvider(ModelProvider):
                         usage=usage,
                         finish_reason=choice.finish_reason or "stop",
                         reasoning_content=getattr(message, "reasoning_content", "") or "",
-                        usage_source=("provider_actual" if response.usage else "unavailable"),
+                        usage_source=buckets.usage_source,
                     )
                 except Exception as e:
                     # Convert at the boundary before metrics/logging so a metrics
@@ -546,12 +575,20 @@ class OpenAICompatibleProvider(ModelProvider):
         if not await self.circuit.can_execute():
             raise RuntimeError(f"Circuit breaker OPEN for {self.config.name}")
 
+        converted = self._convert_messages(messages)
         kwargs: dict[str, Any] = {
             "model": model,
-            "messages": self._convert_messages(messages),
+            "messages": converted,
             "temperature": temperature,
             "stream": True,
         }
+        from js.bots.persona import apply_bots_cache_hooks
+
+        apply_bots_cache_hooks(
+            converted,
+            kwargs,
+            transport_type=str(getattr(self.config, "transport_type", "") or ""),
+        )
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
@@ -575,17 +612,9 @@ class OpenAICompatibleProvider(ModelProvider):
             async with stream as stream_ctx:
                 async for chunk in stream_ctx:
                     if getattr(chunk, "usage", None):
-                        self._last_stream_usage = {
-                            "prompt_tokens": chunk.usage.prompt_tokens or 0,
-                            "completion_tokens": chunk.usage.completion_tokens or 0,
-                            "total_tokens": chunk.usage.total_tokens or 0,
-                            "cached_tokens": 0,
-                        }
-                        details = getattr(chunk.usage, "prompt_tokens_details", None)
-                        if details:
-                            self._last_stream_usage["cached_tokens"] = (
-                                getattr(details, "cached_tokens", 0) or 0
-                            )
+                        from js.models.usage import map_openai_usage
+
+                        self._last_stream_usage = map_openai_usage(chunk.usage).to_usage_dict()
                     if chunk.choices and chunk.choices[0].delta.content:
                         yield chunk.choices[0].delta.content
             await self.circuit.record_success()
@@ -637,13 +666,21 @@ class OpenAICompatibleProvider(ModelProvider):
             )
             return
 
+        converted = self._convert_messages(messages)
         kwargs: dict[str, Any] = {
             "model": model,
-            "messages": self._convert_messages(messages),
+            "messages": converted,
             "temperature": temperature,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        from js.bots.persona import apply_bots_cache_hooks
+
+        apply_bots_cache_hooks(
+            converted,
+            kwargs,
+            transport_type=str(getattr(self.config, "transport_type", "") or ""),
+        )
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
@@ -786,4 +823,6 @@ class OpenAICompatibleProvider(ModelProvider):
         return await self.circuit.execute(_do_embed())  # type: ignore[no-any-return]
 
     async def close(self) -> None:
-        await self.client.close()
+        client = self._client
+        if client is not None:
+            await client.close()

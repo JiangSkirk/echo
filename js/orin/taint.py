@@ -60,9 +60,12 @@ AUTO_TASK: Final[int] = 1 << 10
 INBOX_CONTENT: Final[int] = 1 << 11
 SECRET: Final[int] = 1 << 12
 
-RESERVED_LOW: Final[int] = 1 << 13
-RESERVED_MASK: Final[int] = (1 << 13) | (1 << 14) | (1 << 15)
-"""bits 13–15 reserved for multi-agent delegation (fleet, Stage B+)."""
+BOT_PEER: Final[int] = 1 << 13
+BOT_SOUL: Final[int] = 1 << 14
+ROOM_SHARED: Final[int] = 1 << 15
+RESERVED_LOW: Final[int] = BOT_PEER
+RESERVED_MASK: Final[int] = BOT_PEER | BOT_SOUL | ROOM_SHARED
+"""bits 13–15: BOT_PEER / BOT_SOUL / ROOM_SHARED. Tighten only — never authorize."""
 
 SESSION_CUSTOM_BASE: Final[int] = 1 << 16
 
@@ -82,10 +85,13 @@ TAINT_NAMES: Final[dict[int, str]] = {
     AUTO_TASK: "AUTO_TASK",
     INBOX_CONTENT: "INBOX_CONTENT",
     SECRET: "SECRET",
+    BOT_PEER: "BOT_PEER",
+    BOT_SOUL: "BOT_SOUL",
+    ROOM_SHARED: "ROOM_SHARED",
 }
 
 # Bits that make tool arguments "dirty" for the write-file policy row.
-DIRTY_FOR_WRITE: Final[int] = WEB_CONTENT | TOOL_RESULT
+DIRTY_FOR_WRITE: Final[int] = WEB_CONTENT | TOOL_RESULT | BOT_PEER
 
 # Bits that block or gate network egress.
 EGRESS_SENSITIVE: Final[int] = MEMORY_READ
@@ -187,11 +193,9 @@ def arg_taint(
 def dirty_text_of(messages: list[tuple[int, str]]) -> list[str]:
     """Extract text of messages carrying dirty bits (for overlap checks)."""
 
-    dirty_bits = WEB_CONTENT | TOOL_RESULT | ATTACHMENT | CANARY_ADJACENT
+    dirty_bits = WEB_CONTENT | TOOL_RESULT | ATTACHMENT | CANARY_ADJACENT | BOT_PEER | ROOM_SHARED
     return [
-        text[:_MAX_COMPARE_CHARS]
-        for taint, text in messages
-        if taint & dirty_bits and text.strip()
+        text[:_MAX_COMPARE_CHARS] for taint, text in messages if taint & dirty_bits and text.strip()
     ]
 
 
@@ -344,6 +348,10 @@ def source_taint_for_tool(tool_name: str, metadata: dict[str, Any] | None = None
         bits |= WEB_CONTENT
     if tool_name in SKILL_TOOLS:
         bits |= SKILL_CONTENT
+    if tool_name in {"bots_ask", "rooms_create"}:
+        bits |= ROOM_SHARED
+    if tool_name == "bots_ask":
+        bits |= BOT_PEER
     if metadata:
         if metadata.get(METADATA_SECRET_FLAG):
             bits |= SECRET
@@ -356,6 +364,8 @@ def source_taint_for_tool(tool_name: str, metadata: dict[str, Any] | None = None
 __all__ = [
     "ATTACHMENT",
     "AUTO_TASK",
+    "BOT_PEER",
+    "BOT_SOUL",
     "CANARY_ADJACENT",
     "CLEARANCE_INTERNAL",
     "CLEARANCE_PUBLIC",
@@ -372,6 +382,7 @@ __all__ = [
     "MODEL_OUTPUT",
     "RESERVED_LOW",
     "RESERVED_MASK",
+    "ROOM_SHARED",
     "SECRET",
     "SESSION_CUSTOM_BASE",
     "SKILL_CONTENT",

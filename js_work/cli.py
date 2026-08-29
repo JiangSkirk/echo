@@ -297,6 +297,7 @@ def init(ctx: click.Context, path: str | None) -> None:
 def run(ctx: click.Context, message: tuple[str, ...], model: str | None) -> None:
     """Run one Work task and exit."""
     cli = WorkCLI(**ctx.obj)
+
     async def _run_once() -> None:
         try:
             await cli.run_message(" ".join(message), model=model)
@@ -434,13 +435,17 @@ def routine_list(ctx: click.Context) -> None:
         ctx.obj["config"], home=ctx.obj["home"], personal_roots=ctx.obj["personal_roots"]
     )
     store = _local_store(settings)
-    click.echo(json.dumps({"routines": [r.to_dict() for r in store.list_routines()]}, ensure_ascii=False))
+    click.echo(
+        json.dumps({"routines": [r.to_dict() for r in store.list_routines()]}, ensure_ascii=False)
+    )
 
 
 @routine.command(name="draft")
 @click.option("--name", required=True, help="Routine name")
 @click.option("--trigger", multiple=True, required=True, help="Trigger phrase")
-@click.option("--routine-type", default="spreadsheet_template", show_default=True, help="Routine type")
+@click.option(
+    "--routine-type", default="spreadsheet_template", show_default=True, help="Routine type"
+)
 @click.option("--mapping", default="{}", help="JSON output-to-source field mapping")
 @click.option("--required-field", multiple=True, help="Required output field")
 @click.option("--row-filter", multiple=True, help="JSON row filter object")
@@ -565,7 +570,12 @@ def routine_run(
 @click.option("--host", default="127.0.0.1", show_default=True, help="Bind host")
 @click.option("--port", default=8000, show_default=True, help="Bind parent AppShell port")
 @click.option("--reload", is_flag=True, help="Enable auto-reload on code changes")
-@click.option("--open-browser", is_flag=True, help="Open the Work Web UI in a browser")
+@click.option(
+    "--open-browser",
+    is_flag=True,
+    hidden=True,
+    help="Ignored; Work never opens a browser.",
+)
 @click.pass_context
 def web(
     ctx: click.Context,
@@ -574,7 +584,8 @@ def web(
     reload: bool,
     open_browser: bool,
 ) -> None:
-    """Run Work through the single parent AppShell host."""
+    """Run Work through the single parent AppShell host. Never opens a browser."""
+    del open_browser
     if reload and ctx.obj["personal_roots"] is not None:
         raise click.ClickException("AppShell object mode does not support --reload")
     personal_roots: StorageRoots | None = ctx.obj["personal_roots"]
@@ -592,11 +603,11 @@ def web(
             host=host,
             port=port,
             reload=reload,
-            open_browser=open_browser,
         )
         return
 
     from js.appshell.server import create_appshell_app
+    from js.web.local_host import run_local_host
 
     app = create_appshell_app(
         personal_config=str(personal_roots.config_path),
@@ -605,16 +616,9 @@ def web(
         work_profile=ctx.obj["profile"],
         host=host,
         port=port,
+        manage_orind=True,
     )
-    url = f"http://{host}:{port}"
-    if open_browser:
-        import webbrowser
-
-        webbrowser.open(url)
-    console.print(f"[green]Starting JS Agent AppShell at {url}[/green]")
-    import uvicorn
-
-    uvicorn.run(app, host=host, port=port, reload=False)
+    run_local_host(app, host=host, port=port, reload=False)
 
 
 def compat_main() -> None:
@@ -642,7 +646,7 @@ def compat_main() -> None:
             continue
         translated.append(item)
         index += 1
-    canonical_args = (["--config", personal_config] if personal_config else [])
+    canonical_args = ["--config", personal_config] if personal_config else []
     canonical_args.extend(["work", *translated])
     from js.ui.cli import main as canonical_main
 

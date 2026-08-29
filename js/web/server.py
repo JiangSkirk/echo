@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import re
-import secrets
+import secrets as secrets
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlparse
@@ -20,8 +19,6 @@ from fastapi import (
     HTTPException,
     Request,
     UploadFile,
-    WebSocket,
-    WebSocketDisconnect,
 )
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -31,28 +28,22 @@ try:
     from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
     from prometheus_client import make_asgi_app
 
-    HTTPXClientInstrumentor().instrument()
     _MONITORING_AVAILABLE = True
 except ImportError:
     _MONITORING_AVAILABLE = False
     FastAPIInstrumentor = None  # type: ignore[misc,assignment]
+    HTTPXClientInstrumentor = None  # type: ignore[misc,assignment]
     make_asgi_app = None  # type: ignore[assignment]
 
 from js.agent.tool_executor import (
-    CONTROL_EVOLUTION_ACTION_TOOL,
-    CONTROL_SESSION_MUTATE_TOOL,
-    CONTROL_SKILL_MUTATE_TOOL,
     CONTROL_UPLOAD_MUTATE_TOOL,
 )
 from js.config import JSSettings, ModelConfig, ModelProviderConfig
 from js.echo.effect_interpreter import ToolEffect
 from js.echo.ledger.service import (
-    EchoBlockedError,
     EchoSafetyService,
-    EchoUnavailableError,
 )
-from js.echo.turn_runtime import run_echo_turn
-from js.tools.registry import ToolResult
+from js.echo.turn_runtime import run_echo_turn as run_echo_turn
 from js.utils.log import get_logger
 from js.web import model_refresh
 from js.web.auth import (
@@ -63,17 +54,21 @@ from js.web.auth import (
     require_user_write,
     runtime_owner,
 )
+from js.web.bootstrap import (
+    _persist_bootstrap_admin_key as _persist_bootstrap_admin_key,
+)
+from js.web.bootstrap import (
+    _provision_bootstrap_admin_key as _provision_bootstrap_admin_key,
+)
+from js.web.bootstrap import (
+    consume_bootstrap_admin_key_file as consume_bootstrap_admin_key_file,
+)
 from js.web.deps import (
     AgentConfigState,
     get_active_model,
     get_agent_config_state,
     get_stats_store,
     optional_query_session_id,
-    set_active_model,
-    set_globals,
-)
-from js.web.deps import (
-    coerce_ws_session_id as _coerce_ws_session_id,
 )
 from js.web.deps import (
     require_path_session_id as _require_path_session_id,
@@ -81,7 +76,34 @@ from js.web.deps import (
 from js.web.deps import (
     require_upload_session_id as _require_upload_session_id,
 )
-from js.web.messages import humanize_error
+from js.web.effects import (
+    _execute_evolution_action as _execute_evolution_action,
+)
+from js.web.effects import (
+    _execute_fleet_config_effect as _execute_fleet_config_effect,
+)
+from js.web.effects import (
+    _execute_private_skill_mutation as _execute_private_skill_mutation,
+)
+from js.web.effects import (
+    _execute_provider_discovery_effect as _execute_provider_discovery_effect,
+)
+from js.web.effects import (
+    _execute_provider_mutation_effect as _execute_provider_mutation_effect,
+)
+from js.web.effects import (
+    _execute_session_mutation as _execute_session_mutation,
+)
+from js.web.effects import (
+    _execute_web_tool_effect as _execute_web_tool_effect,
+)
+from js.web.effects import (
+    _raise_control_tool_error as _raise_control_tool_error,
+)
+from js.web.effects import (
+    _raise_session_mutation_error as _raise_session_mutation_error,
+)
+from js.web.lifespan import lifespan as lifespan
 
 # Imported routers (extracted from this file)
 from js.web.routers import chat as chat_router
@@ -91,24 +113,40 @@ from js.web.routers import plugins as plugins_router
 from js.web.routers import scenarios as scenarios_router
 from js.web.routers import tasks as tasks_router
 from js.web.runtime_context import (
-    WebRuntime,
-    bind_web_runtime,
-    clear_web_runtime,
     current_web_runtime,
     install_web_runtime_context,
-    prepare_web_message,
     web_channel,
 )
-from js.web.session_locks import get_session_lock
 from js.web.stats_store import TokenStatsStore
 from js.web.uploads import (
     list_owned_upload_entries,
     read_agent_attachment,
     safe_upload_filename,
     secure_upload_writer,
-    validate_chat_attachments,
 )
-from js.web.ws_inbox import BoundedWebSocketInbox, InboxOverloadError
+
+_OTEL_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_HTTPX_INSTRUMENTED = False
+
+
+def _otel_enabled() -> bool:
+    raw = os.environ.get("JS_ENABLE_OTEL", "")
+    return raw.strip().lower() in _OTEL_TRUTHY
+
+
+def _maybe_instrument_httpx() -> None:
+    """Instrument httpx only when JS_ENABLE_OTEL is explicitly enabled."""
+    global _HTTPX_INSTRUMENTED
+    if (
+        _HTTPX_INSTRUMENTED
+        or not _MONITORING_AVAILABLE
+        or HTTPXClientInstrumentor is None
+        or not _otel_enabled()
+    ):
+        return
+    HTTPXClientInstrumentor().instrument()
+    _HTTPX_INSTRUMENTED = True
+
 
 logger = get_logger("js.web")
 
@@ -124,7 +162,8 @@ _active_model: str = ""
 _startup_time: float = 0.0
 # Plaintext of an admin key minted this session for first-run bootstrap.
 # Set only when auth is required and no admin key existed at startup; used to
-# auto-authenticate the local browser so the fresh install lands usable.
+# auto-authenticate the desktop window / local Host so the fresh install lands
+# usable.
 _bootstrap_admin_key: str | None = None
 
 
@@ -179,146 +218,6 @@ class _PreviewSnapshot(Protocol):
     def data(self) -> bytes: ...
 
 
-async def _execute_session_mutation(
-    action: str,
-    session_id: str,
-    auth: dict[str, Any],
-) -> ToolResult:
-    """Run an owner-bound session mutation through the Echo tool boundary."""
-    agent = get_agent()
-    runtime = agent.echo_runtime
-    context = runtime.build_context(
-        channel=web_channel(agent.settings, f"session_{action}"),
-        owner_key_hash=runtime_owner(auth),
-        role=str(auth.get("role") or "user"),
-        capabilities=(CONTROL_SESSION_MUTATE_TOOL,),
-    )
-    _message, result = await runtime.execute_tool_effect(
-        ToolEffect.from_arguments(
-            CONTROL_SESSION_MUTATE_TOOL,
-            {"action": action, "session_id": session_id},
-            user_input=f"Apply owner-bound session action: {action}",
-            allowed_tools=(CONTROL_SESSION_MUTATE_TOOL,),
-        ),
-        context,
-    )
-    return result
-
-
-def _raise_session_mutation_error(result: ToolResult) -> None:
-    if result.success:
-        return
-    status_code = result.metadata.get("status_code", 500)
-    if not isinstance(status_code, int) or not 400 <= status_code <= 599:
-        status_code = 500
-    raise HTTPException(status_code, result.error or "Session update failed")
-
-
-async def _execute_private_skill_mutation(
-    action: str,
-    payload: dict[str, Any],
-    auth: dict[str, Any],
-) -> dict[str, Any]:
-    """Run a privileged skill mutation without journaling private payloads."""
-    agent = get_agent()
-    if str(getattr(agent.settings, "product_id", "js-agent")) == "js-work":
-        raise HTTPException(403, "Runtime skill mutation is disabled in JS Agent Work")
-    owner = runtime_owner(auth)
-    runtime = agent.echo_runtime
-    context = runtime.build_context(
-        channel=web_channel(agent.settings, f"skill_{action}"),
-        owner_key_hash=owner,
-        role=str(auth.get("role") or "admin"),
-        capabilities=(CONTROL_SKILL_MUTATE_TOOL,),
-    )
-    payload_ref = agent.stage_skill_mutation_payload(
-        owner,
-        payload,
-        product_id=context.product_id,
-        session_id=context.session_id,
-    )
-    if not isinstance(payload_ref, str) or not payload_ref:
-        raise HTTPException(503, "Skill mutation admission is unavailable")
-    try:
-        _message, result = await runtime.execute_tool_effect(
-            ToolEffect.from_arguments(
-                CONTROL_SKILL_MUTATE_TOOL,
-                {"action": action, "payload_ref": payload_ref},
-                user_input=f"Apply administrator-approved skill action: {action}",
-                allowed_tools=(CONTROL_SKILL_MUTATE_TOOL,),
-            ),
-            context,
-        )
-    finally:
-        agent.discard_skill_mutation_payload(
-            payload_ref,
-            owner,
-            product_id=context.product_id,
-            session_id=context.session_id,
-        )
-    if not result.success:
-        status_code = result.metadata.get("status_code", 500)
-        if not isinstance(status_code, int) or not 400 <= status_code <= 599:
-            status_code = 500
-        raise HTTPException(status_code, result.error or "Skill update failed")
-    result_ref = result.metadata.get("result_ref")
-    if not isinstance(result_ref, str) or not result_ref:
-        raise HTTPException(500, "Skill result handoff failed")
-    response = agent.take_skill_mutation_result(
-        result_ref,
-        owner,
-        product_id=context.product_id,
-        session_id=context.session_id,
-    )
-    if not isinstance(response, dict):
-        raise HTTPException(500, "Skill result handoff failed")
-    return response
-
-
-async def _execute_evolution_action(
-    action: str,
-    auth: dict[str, Any],
-) -> dict[str, Any]:
-    """Execute one privileged evolution action through Echo."""
-    agent = get_agent()
-    if str(getattr(agent.settings, "product_id", "js-agent")) == "js-work":
-        raise HTTPException(403, "Evolution is disabled in JS Agent Work")
-    owner = runtime_owner(auth)
-    runtime = agent.echo_runtime
-    context = runtime.build_context(
-        channel=web_channel(agent.settings, f"evolution_{action}"),
-        owner_key_hash=owner,
-        role=str(auth.get("role") or "admin"),
-        capabilities=(CONTROL_EVOLUTION_ACTION_TOOL,),
-    )
-    _message, result = await runtime.execute_tool_effect(
-        ToolEffect.from_arguments(
-            CONTROL_EVOLUTION_ACTION_TOOL,
-            {"action": action},
-            user_input=f"Run administrator-approved evolution action: {action}",
-            allowed_tools=(CONTROL_EVOLUTION_ACTION_TOOL,),
-        ),
-        context,
-    )
-    if not result.success:
-        status_code = result.metadata.get("status_code", 500)
-        if not isinstance(status_code, int) or not 400 <= status_code <= 599:
-            status_code = 500
-        raise HTTPException(status_code, result.error or "Evolution action failed")
-    result_ref = result.metadata.get("result_ref")
-    if not isinstance(result_ref, str) or not result_ref:
-        raise HTTPException(500, "Evolution result handoff failed")
-    response = agent.take_evolution_action_result(
-        result_ref,
-        owner,
-        product_id=context.product_id,
-        session_id=context.session_id,
-    )
-    if not isinstance(response, dict):
-        raise HTTPException(500, "Evolution result handoff failed")
-    return response
-
-
 async def _drain_inflight(timeout: float = 5.0) -> None:
     """Wait for in-flight HTTP requests to complete."""
     deadline = asyncio.get_event_loop().time() + timeout
@@ -366,165 +265,6 @@ def get_agent() -> JSAgent:
     return _agent
 
 
-async def _execute_web_tool_effect(
-    agent: Any,
-    auth: dict[str, Any],
-    *,
-    channel: str,
-    tool_name: str,
-    arguments: dict[str, Any],
-    user_input: str,
-    control_arguments: dict[str, Any] | None = None,
-    session_id: str = "",
-) -> ToolResult:
-    """Execute one Web control-plane action through Echo's leased tool boundary."""
-    owner = memory_owner(auth) or "local-user"
-    runtime = agent.echo_runtime
-    runtime_context = runtime.build_context(
-        channel=web_channel(agent.settings, channel),
-        owner_key_hash=owner,
-        session_id=session_id,
-        role=str(auth.get("role") or "user"),
-        capabilities=(tool_name,),
-        control_arguments=control_arguments,
-    )
-    _message, result = await runtime.execute_tool_effect(
-        ToolEffect.from_arguments(
-            tool_name,
-            arguments,
-            user_input=user_input,
-            allowed_tools=(tool_name,),
-        ),
-        runtime_context,
-    )
-    return cast("ToolResult", result)
-
-
-async def _execute_provider_discovery_effect(
-    agent: Any,
-    auth: dict[str, Any],
-    *,
-    base_url: str,
-    api_key: str,
-    allow_private: bool,
-    channel: str,
-) -> ToolResult:
-    """Run exact-endpoint model discovery without persisting its credential."""
-    owner = memory_owner(auth) or "local-user"
-    product_id = str(getattr(agent.settings, "product_id", "js-agent"))
-    session_id = f"provider-discovery-{secrets.token_hex(16)}"
-    api_key_ref = agent.stage_provider_discovery_key(
-        api_key,
-        owner_key_hash=owner,
-        product_id=product_id,
-        session_id=session_id,
-    )
-    if api_key and not api_key_ref:
-        raise HTTPException(503, "Provider credential admission is unavailable")
-    arguments = {
-        "base_url": base_url,
-        "api_key_ref": api_key_ref,
-        "allow_private": allow_private,
-    }
-    try:
-        return await _execute_web_tool_effect(
-            agent,
-            auth,
-            channel=channel,
-            tool_name="control_provider_discover",
-            arguments=arguments,
-            control_arguments=arguments,
-            user_input="Discover models from an administrator-approved exact provider URL",
-            session_id=session_id,
-        )
-    finally:
-        agent.discard_provider_discovery_key(
-            api_key_ref,
-            owner_key_hash=owner,
-            product_id=product_id,
-            session_id=session_id,
-        )
-
-
-async def _execute_provider_mutation_effect(
-    agent: Any,
-    auth: dict[str, Any],
-    *,
-    action: str,
-    provider: ModelProviderConfig | None = None,
-    name: str = "",
-    api_key: str | None = None,
-    channel: str,
-) -> ToolResult:
-    """Run one provider write through Echo without serializing its credential."""
-    owner = memory_owner(auth) or "local-user"
-    product_id = str(getattr(agent.settings, "product_id", "js-agent"))
-    session_id = f"provider-mutation-{secrets.token_hex(16)}"
-    api_key_ref = agent.stage_provider_discovery_key(
-        api_key or "",
-        owner_key_hash=owner,
-        product_id=product_id,
-        session_id=session_id,
-    )
-    if api_key and not api_key_ref:
-        raise HTTPException(503, "Provider credential admission is unavailable")
-    arguments: dict[str, Any] = {
-        "action": action,
-        "name": name,
-        "api_key_ref": api_key_ref,
-    }
-    if provider is not None:
-        arguments["provider"] = provider.model_dump(
-            mode="json",
-            exclude={"api_key", "api_key_env"},
-        )
-    try:
-        return await _execute_web_tool_effect(
-            agent,
-            auth,
-            channel=channel,
-            tool_name="control_provider_mutate",
-            arguments=arguments,
-            user_input="Apply an administrator-approved provider configuration mutation",
-            session_id=session_id,
-        )
-    finally:
-        agent.discard_provider_discovery_key(
-            api_key_ref,
-            owner_key_hash=owner,
-            product_id=product_id,
-            session_id=session_id,
-        )
-
-
-async def _execute_fleet_config_effect(
-    agent: Any,
-    auth: dict[str, Any],
-    *,
-    config: dict[str, str],
-    channel: str,
-) -> ToolResult:
-    """Apply one runtime-owned Fleet configuration through Echo."""
-    arguments = {"config": dict(config)}
-    return await _execute_web_tool_effect(
-        agent,
-        auth,
-        channel=channel,
-        tool_name="control_fleet_configure",
-        arguments=arguments,
-        user_input="Apply an administrator-approved Fleet model configuration",
-    )
-
-
-def _raise_control_tool_error(result: ToolResult, *, default_status: int) -> None:
-    if result.success:
-        return
-    status_code = result.metadata.get("status_code", default_status)
-    if not isinstance(status_code, int) or status_code < 400 or status_code > 599:
-        status_code = default_status
-    raise HTTPException(status_code, result.error or "Echo control-plane tool failed")
-
-
 def _resolve_provider_from_state(state: Any) -> str:
     """Extract provider name from agent state via router model lookup."""
     agent = get_agent()
@@ -535,6 +275,32 @@ def _resolve_provider_from_state(state: Any) -> str:
     if cfg:
         return cfg.provider or ""
     return ""
+
+
+def _bots_bot_id() -> str:
+    try:
+        from js.bots.persona import current_bot_binding
+
+        binding = current_bot_binding()
+    except Exception:
+        return ""
+    return binding.bot_id if binding is not None else ""
+
+
+def _bots_prefix_id() -> str:
+    try:
+        from js.bots.persona import current_bot_binding
+
+        binding = current_bot_binding()
+    except Exception:
+        return ""
+    return binding.prefix_id if binding is not None else ""
+
+
+def _bots_exclude_first_write(buckets: dict[str, Any]) -> bool:
+    return (
+        int(buckets.get("cache_write", 0) or 0) > 0 and int(buckets.get("cache_read", 0) or 0) == 0
+    )
 
 
 def _record_usage(state: Any, explicit_model: str | None = None) -> None:
@@ -554,6 +320,7 @@ def _record_usage(state: Any, explicit_model: str | None = None) -> None:
     cached_tokens = getattr(state, "cached_tokens", 0)
     if not isinstance(cached_tokens, int):
         cached_tokens = 0
+    buckets = getattr(state, "usage_buckets", {}) or {}
     try:
         stats_store.record(
             model=model_id,
@@ -564,6 +331,16 @@ def _record_usage(state: Any, explicit_model: str | None = None) -> None:
             cached_tokens=cached_tokens,
             session_id=getattr(state, "session_id", ""),
             run_id=getattr(state, "run_id", ""),
+            uncached_input=int(buckets.get("uncached_input", max(total_in - cached_tokens, 0))),
+            cache_read=int(buckets.get("cache_read", cached_tokens)),
+            cache_write=int(buckets.get("cache_write", 0)),
+            output=int(buckets.get("output", total_out)),
+            reasoning=int(buckets.get("reasoning", 0)),
+            input_total=int(buckets.get("input_total", total_in)),
+            usage_source=str(getattr(state, "usage_source", "unavailable") or "unavailable"),
+            prefix_id=str(getattr(state, "prefix_id", "") or _bots_prefix_id()),
+            bot_id=_bots_bot_id(),
+            exclude_from_hit_rate=_bots_exclude_first_write(buckets),
         )
     except Exception as exc:
         logger.warning(
@@ -578,84 +355,6 @@ def _assistant_text_from_state(state: Any) -> str:
         if msg.role == "assistant" and isinstance(msg.content, str) and msg.content:
             return msg.content
     return ""
-
-
-def _provision_bootstrap_admin_key(settings: JSSettings) -> str | None:
-    """Ensure an admin key exists when auth is required; return new plaintext.
-
-    Prevents the "first_run_completed=true but no admin key → site-wide 401"
-    lockdown by self-healing on every startup: if auth is required and no admin
-    key exists, one is minted and written to a 0600 file so a headless operator
-    can recover it. The plaintext credential is never written to logs. Returns
-    ``None`` when nothing was minted.
-    """
-    if not settings.security.api_key_required:
-        return None
-    from js.web.auth import AuthManager
-
-    key_file = settings.state_dir / "bootstrap_admin_key.txt"
-    persisted = False
-
-    def persist(plaintext: str) -> None:
-        nonlocal persisted
-        _persist_bootstrap_admin_key(key_file, plaintext)
-        persisted = True
-
-    try:
-        key = AuthManager(settings.state_dir).ensure_bootstrap_admin_key(persist)
-    except Exception as exc:
-        if persisted:
-            try:
-                key_file.unlink()
-            except FileNotFoundError:
-                pass
-        logger.warning(
-            "Could not persist bootstrap admin key; refusing to start with an unrecoverable key",
-            error_type=type(exc).__name__,
-        )
-        raise RuntimeError("Could not persist bootstrap admin key; startup aborted") from None
-    if not key:
-        return None
-    logger.warning("Bootstrap admin key created for first run; saved to %s", key_file)
-    return key
-
-
-def _persist_bootstrap_admin_key(path: Path, key: str) -> None:
-    """Atomically persist a bootstrap credential with private permissions."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(path.parent, 0o700)
-    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
-    fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    installed = False
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            fd = -1
-            handle.write(key + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_path, path)
-        installed = True
-        os.chmod(path, 0o600)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    except Exception:
-        if installed:
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-        raise
-    finally:
-        if fd >= 0:
-            os.close(fd)
-        try:
-            temp_path.unlink()
-        except FileNotFoundError:
-            pass
 
 
 class _AdminOnlyASGIMount:
@@ -713,187 +412,14 @@ class _AdminOnlyASGIMount:
         await self._inner(scope, receive, send)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    global \
-        _agent, \
-        _settings, \
-        _stats_store, \
-        _echo_safety_service, \
-        _bootstrap_admin_key, \
-        _active_model
-    # Explicit create_app(runtime_settings=...) / CLI ``-c`` is the sole authority.
-    # Never silently reload ~/.config/js when an explicit settings object was passed.
-    runtime_settings = getattr(app.state, "runtime_settings", None)
-    if isinstance(runtime_settings, JSSettings):
-        _settings = runtime_settings
-    else:
-        _settings = JSSettings.from_file()
-    os.environ["JS_ECHO_ENGINE"] = _settings.echo_engine
-    # Allow tests/CI to override state_dir without editing config files, but only
-    # when no explicit runtime_settings object was provided (env is a fallback).
-    if not isinstance(runtime_settings, JSSettings) and (
-        state_dir_env := os.getenv("JS_STATE_DIR")
-    ):
-        _settings.state_dir = Path(state_dir_env)
-        _settings.state_dir.mkdir(parents=True, exist_ok=True)
-    from js.agent import JSAgent
-
-    _agent = JSAgent(_settings)
-    _echo_safety_service = _agent.echo_safety_service
-    # Register fleet collaboration tool so the agent can delegate to multi-agent team
-    try:
-        from js.web.routers.fleet import get_fleet
-
-        _agent.register_fleet_tool(get_fleet)
-        _agent.set_fleet_getter(get_fleet)
-    except Exception:
-        logger.warning("Fleet tool registration failed (fleet may be unavailable)", exc_info=True)
-    _agent.start_background_tasks()
-    _stats_store = TokenStatsStore(_settings.state_dir)
-    runtime = WebRuntime(
-        agent=_agent,
-        settings=_settings,
-        stats_store=_stats_store,
-        echo_safety_service=_echo_safety_service,
-    )
-    _agent.set_active_model_publisher(set_active_model)
-    bind_web_runtime(app, runtime)
-    # Sync shared deps so routers can access agent and stats store
-    set_globals(_agent, _settings, _stats_store, _echo_safety_service)
-    # Guarantee a usable admin key exists so a fresh install lands usable and
-    # we never get stuck in a keyless, fully-401-locked state.
-    _bootstrap_admin_key = (
-        None
-        if bool(getattr(_settings, "_appshell_managed", False))
-        else _provision_bootstrap_admin_key(_settings)
-    )
-    runtime.bootstrap_admin_key = _bootstrap_admin_key
-    # Restore the persisted active model from the configured state dir, but
-    # only adopt it if it still maps to a real configured provider/model.
-    # This self-heals stale values (e.g. a leftover/test-polluted entry) that
-    # would otherwise pin router.preferred_model to a non-existent model and
-    # make every "default" run fall back to the wrong model.
-    _active_model = ""
-    persisted_model = _load_active_model(_settings.state_dir)
-    if persisted_model and _agent and _agent.router:
-        if _agent.router.get_model_config(persisted_model) is not None:
-            _active_model = persisted_model
-            _agent.router.preferred_model = persisted_model
-        else:
-            logger.warning(
-                "Ignoring stale persisted active model %r (no matching configured "
-                "provider/model); falling back to auto-select",
-                persisted_model,
-            )
-            _active_model = ""
-    runtime.active_model = _active_model
-    # Clean up empty sessions on startup (sessions with no messages are orphaned)
-    try:
-        before_cleanup = _agent.memory.enhanced.list_sessions(limit=1000)
-        cleaned = _agent.memory.cleanup_empty_sessions()
-        after_cleanup = _agent.memory.enhanced.list_sessions(limit=1000)
-        logger.info(
-            f"Sessions on startup: {len(before_cleanup)} total, "
-            f"{cleaned} empty cleaned, {len(after_cleanup)} remaining"
-        )
-    except Exception:
-        logger.warning("Failed to clean up empty sessions", exc_info=True)
-
-    # Startup self-diagnostics
-    try:
-        import shutil
-
-        state_dir = _settings.state_dir
-        total, used, free = shutil.disk_usage(str(state_dir))
-        free_gb = free / (1024**3)
-        if free_gb < 1.0:
-            logger.warning("CRITICAL: state_dir has only %.1fGB free space remaining", free_gb)
-        elif free_gb < 5.0:
-            logger.warning("Disk low: state_dir has %.1fGB free space remaining", free_gb)
-        else:
-            logger.info("Disk check: state_dir has %.1fGB free", free_gb)
-
-        # Check WAL size
-        import sqlite3
-
-        for db_file in state_dir.rglob("*.db"):
-            wal = db_file.with_suffix(".db-wal")
-            if wal.exists() and wal.stat().st_size > 100 * 1024 * 1024:
-                logger.warning(
-                    "Large WAL file detected: %s (%.1fMB), checkpointing",
-                    wal,
-                    wal.stat().st_size / (1024**2),
-                )
-                try:
-                    with sqlite3.connect(str(db_file), timeout=5.0) as conn:
-                        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception:
-                    pass
-
-        # Check event logs size
-        event_dir = state_dir / "events"
-        if event_dir.exists():
-            total_size = sum(f.stat().st_size for f in event_dir.rglob("*") if f.is_file())
-            if total_size > 1024**3:
-                logger.warning(
-                    "Event log directory > 1GB (%.1fMB), consider pruning", total_size / (1024**2)
-                )
-    except Exception:
-        logger.debug("Startup self-diagnostics failed", exc_info=True)
-
-    # Load Hermes skills asynchronously only when explicitly enabled.
-    warm_start = os.getenv("JS_WARM_START")
-    skills = getattr(_agent, "skills", None)
-    hermes_opt_in = bool(skills is not None and getattr(skills, "hermes_skills_enabled", False))
-    if hermes_opt_in and skills is not None and warm_start:
-        try:
-            await asyncio.wait_for(skills.load_hermes_async(), timeout=60.0)
-            logger.info("Warm start: Hermes skills loaded")
-        except TimeoutError:
-            logger.warning("Warm start: Hermes skill loading timed out after 60s")
-        except Exception:
-            logger.warning("Warm start: Hermes skill loading failed", exc_info=True)
-
-    elif hermes_opt_in and skills is not None:
-        try:
-            asyncio.create_task(skills.load_hermes_async())
-            logger.info("Hermes skill loading started in background")
-        except Exception:
-            logger.warning("Failed to start Hermes skill loading", exc_info=True)
-    else:
-        logger.info("Hermes skill bridge skipped (features.hermes_skills_enabled=false)")
-    logger.info("Web UI agent initialized")
-    global _startup_time
-    _startup_time = asyncio.get_event_loop().time()
-    runtime.startup_time = _startup_time
-
-    try:
-        yield
-    finally:
-        logger.info("Shutting down JS Agent Web UI")
-        # Graceful: give in-flight requests a brief window to finish
-        try:
-            await asyncio.wait_for(_drain_inflight(), timeout=5.0)
-        except TimeoutError:
-            logger.warning("Some in-flight requests did not finish within grace period")
-        try:
-            await _close_runtime_fleet(runtime.fleet, runtime_name="JS Agent Web")
-        finally:
-            try:
-                await runtime.agent.close()
-            finally:
-                _agent = None
-                clear_web_runtime(app, runtime)
-        logger.info("Shutdown complete")
-
-
 def create_app(
     *,
     lifespan_context: Any | None = None,
-    title: str = "JS Agent Web UI",
+    title: str = "JS Agent",
     runtime_settings: JSSettings | None = None,
+    manage_orind: bool = False,
 ) -> FastAPI:
+    _maybe_instrument_httpx()
     selected_lifespan = lifespan if lifespan_context is None else lifespan_context
 
     @asynccontextmanager
@@ -916,6 +442,7 @@ def create_app(
         openapi_url=None,
     )
     app.state.runtime_settings = runtime_settings
+    app.state.manage_orind = manage_orind
     app.state.agent_config_state = AgentConfigState()
     app.state.model_refresh_state = model_refresh.ModelRefreshState()
 
@@ -925,20 +452,19 @@ def create_app(
     # server works on any port without hard-coding :8000.
     from fastapi.middleware.cors import CORSMiddleware
 
+    from js.web.auth import cors_allow_origins
+
     effective_settings = runtime_settings or _settings
-    _bind_host = (
+    raw_host = (
         getattr(effective_settings, "bind_host", "127.0.0.1") if effective_settings else "127.0.0.1"
     )
-    _bind_port = getattr(effective_settings, "bind_port", 8000) if effective_settings else 8000
-    _cors_origins = [
-        f"http://{_bind_host}:{_bind_port}",
-        f"http://127.0.0.1:{_bind_port}",
-        f"http://localhost:{_bind_port}",
-    ]
+    _bind_host = raw_host if isinstance(raw_host, str) and raw_host else "127.0.0.1"
+    raw_port = getattr(effective_settings, "bind_port", 8000) if effective_settings else 8000
+    _bind_port = raw_port if isinstance(raw_port, int) else 8000
     # Port-less http://127.0.0.1 and http://localhost mean :80. SameSite
     # cookies ignore ports, so listing those origins would let a page on :80
     # read credentialed GET responses from this bind port.
-    _cors_origins = list(dict.fromkeys(_cors_origins))
+    _cors_origins = cors_allow_origins(str(_bind_host), int(_bind_port))
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins,
@@ -960,8 +486,10 @@ def create_app(
         )
 
     if _MONITORING_AVAILABLE:
-        FastAPIInstrumentor.instrument_app(app)
-        app.mount("/metrics", cast("Any", _AdminOnlyASGIMount(make_asgi_app())))
+        if _otel_enabled() and FastAPIInstrumentor is not None:
+            FastAPIInstrumentor.instrument_app(app)
+        if make_asgi_app is not None:
+            app.mount("/metrics", cast("Any", _AdminOnlyASGIMount(make_asgi_app())))
 
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
@@ -978,11 +506,13 @@ def create_app(
     # Include extracted routers
     from js.appshell.switch_api import router as appshell_router
     from js.web.routers import approvals, fleet, manual_reviews, system
+    from js.web.routers import bots as bots_router
 
     app.include_router(chat_router.router)
     app.include_router(cron.router)
     app.include_router(plugins_router.router)
     app.include_router(fleet.router)
+    app.include_router(bots_router.router)
     app.include_router(approvals.router)
     app.include_router(manual_reviews.router)
     app.include_router(system.router)
@@ -996,9 +526,9 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     async def root() -> str:
-        # Credentials are never embedded in an HTTP response. ``js open`` puts
-        # the one-time local bootstrap key in a URL fragment, which browsers do
-        # not transmit to this server or to a reverse proxy.
+        # Credentials are never embedded in an HTTP response. The desktop Host
+        # puts the one-time local bootstrap key in a URL fragment, which the
+        # window does not transmit to this server or to a reverse proxy.
         settings = app.state.runtime_settings or _settings
         product_name = (
             "JS Agent Work"
@@ -1025,7 +555,6 @@ def create_app(
             session_cookie_name,
         )
 
-        check_origin(request)
         settings = app.state.runtime_settings or _settings
         if settings is None:
             raise HTTPException(
@@ -1041,6 +570,14 @@ def create_app(
                 body_key = body.get("api_key")
                 if isinstance(body_key, str):
                     api_key = body_key
+        # Invalid credentials are 401, not 403-as-Origin. A missing Origin with
+        # no valid key still fail-closes in check_origin (CSRF).
+        if api_key:
+            try:
+                AuthManager(settings.state_dir).verify(api_key)
+            except AuthRequiredError as exc:
+                raise HTTPException(401, str(exc), headers={"WWW-Authenticate": "Bearer"}) from exc
+        check_origin(request)
         try:
             token, expires_at = AuthManager(settings.state_dir).create_session(api_key)
         except AuthRequiredError as exc:
@@ -1062,6 +599,7 @@ def create_app(
         # cannot keep failing closed as "Invalid session" / HTTP 401.
         if cookie_name != _SESSION_COOKIE:
             response.delete_cookie(_SESSION_COOKIE, path="/")
+        consume_bootstrap_admin_key_file(settings.state_dir)
         return response
 
     @app.post("/api/auth/logout")
@@ -2486,1227 +2024,13 @@ def create_app(
 
         return result
 
-    @app.websocket("/ws")
-    async def websocket_endpoint(websocket: WebSocket) -> None:
-        # Authenticate WebSocket connection via X-API-Key header + Origin check.
-        # Bootstrap anonymous access is REMOVED — all connections require a
-        # valid key (or auth-optional mode with Origin whitelist).
-        from js.exceptions import AuthRequiredError
-        from js.web.auth import AuthManager, check_origin
-
-        # Origin check first — reject cross-origin WebSocket upgrades
-        try:
-            check_origin(websocket)
-        except HTTPException as exc:
-            await websocket.close(code=1008, reason=exc.detail)
-            return
-
-        # Browsers authenticate WebSockets with the same-site HttpOnly session
-        # cookie (the legacy key cookie still works); native clients may use
-        # the header. Query-string credentials are deliberately unsupported
-        # because URLs leak into proxy/access logs and history.
-        from js.web.auth import resolve_session_cookie
-
-        agent = get_agent()
-        settings = agent.settings
-        ws_owner_hash: str | None = None
-        auth_ctx: dict[str, Any] = {"name": "anonymous", "role": "guest"}
-        ws_can_turn = False
-
-        from js.appshell.principal import appshell_auth_context_from_scope
-
-        managed, injected_auth = appshell_auth_context_from_scope(websocket.scope)
-        if managed:
-            if injected_auth is None:
-                await websocket.close(code=1008, reason="Authentication failed")
-                return
-            auth_ctx = injected_auth
-            ws_owner_hash = auth_ctx.get("key_hash")
-            ws_can_turn = auth_ctx.get("role") != "guest"
-        else:
-            api_key = websocket.cookies.get("x-api-key", "") or websocket.headers.get(
-                "x-api-key", ""
-            )
-            session_token = (
-                resolve_session_cookie(
-                    websocket.cookies,
-                    str(getattr(settings, "product_id", "js-agent") or "js-agent"),
-                )
-                or ""
-            )
-            if settings.security.api_key_required or api_key or session_token:
-                # Standalone compatibility keeps the legacy child auth path.
-                auth_mgr = AuthManager(settings.state_dir)
-                try:
-                    if api_key:
-                        auth_ctx = auth_mgr.verify(api_key)
-                    else:
-                        auth_ctx = auth_mgr.verify_session(session_token)
-                    ws_owner_hash = auth_ctx.get("key_hash")
-                    ws_can_turn = auth_ctx.get("role") != "guest"
-                except AuthRequiredError:
-                    await websocket.close(code=1008, reason="Authentication failed")
-                    return
-
-        ws_owner_hash = ws_owner_hash or runtime_owner(auth_ctx)
-
-        await websocket.accept()
-        # The socket may carry many turns; cancellation and routing identity
-        # are turn-owned, never connection-owned.
-        session_id: str | None = f"ws-{secrets.token_hex(16)}"
-        connection_closed = asyncio.Event()
-        turn_task: asyncio.Task[Any] | None = None
-        active_turn: dict[str, Any] | None = None
-        max_msg_bytes = 1024 * 1024  # 1MB
-        ping_interval = 30.0
-        # Per-connection pending budget (independent of the 1MB single-frame cap).
-        max_inbox_messages = 32
-        max_inbox_bytes = 4 * 1024 * 1024
-
-        def _bind_turn_cancel(
-            target_session: str,
-            cancel_event: asyncio.Event,
-            *,
-            run_id: str,
-            request_id: str,
-        ) -> None:
-            bind = getattr(agent, "bind_cancel_token", None)
-            if callable(bind):
-                try:
-                    bind(
-                        target_session,
-                        cancel_event,
-                        owner_key_hash=ws_owner_hash,
-                        run_id=run_id,
-                        request_id=request_id,
-                    )
-                except TypeError:
-                    # Compatibility for narrow test/extension doubles. Real
-                    # JSAgent always binds client identity fail-closed.
-                    bind(
-                        target_session,
-                        cancel_event,
-                        owner_key_hash=ws_owner_hash,
-                        run_id=run_id,
-                    )
-                return
-            # Test doubles without bind helpers still expose the cancel map.
-            from js.echo.turn_context import runtime_partition_key
-
-            partition_key = runtime_partition_key(
-                getattr(agent.settings, "product_id", "js-agent"),
-                ws_owner_hash,
-                target_session,
-            )
-            tokens = getattr(agent, "_cancel_tokens", None)
-            if isinstance(tokens, dict):
-                tokens[partition_key] = (
-                    cancel_event,
-                    run_id,
-                    ws_owner_hash,
-                    target_session,
-                )
-
-        def _unbind_turn_cancel(
-            target_session: str | None,
-            cancel_event: asyncio.Event | None,
-        ) -> None:
-            if not target_session or cancel_event is None:
-                return
-            unbind = getattr(agent, "unbind_cancel_token", None)
-            if callable(unbind):
-                unbind(
-                    target_session,
-                    cancel_event,
-                    owner_key_hash=ws_owner_hash,
-                )
-                return
-            from js.echo.turn_context import runtime_partition_key
-
-            partition_key = runtime_partition_key(
-                getattr(agent.settings, "product_id", "js-agent"),
-                ws_owner_hash,
-                target_session,
-            )
-            tokens = getattr(agent, "_cancel_tokens", None)
-            if isinstance(tokens, dict):
-                entry = tokens.get(partition_key)
-                if entry is not None and entry[0] is cancel_event:
-                    tokens.pop(partition_key, None)
-
-        def _cancel_active_turn(expected: dict[str, Any] | None = None) -> bool:
-            turn = active_turn
-            if turn is None:
-                return False
-            if expected is not None and any(
-                expected.get(key) != turn.get(key)
-                for key in ("request_id", "turn_id", "run_id", "session_id")
-            ):
-                return False
-            cancel_event = turn["cancel_event"]
-            cancel_event.set()
-            cancelled = False
-            target_session = turn["session_id"]
-            if target_session:
-                try:
-                    try:
-                        cancelled = bool(
-                            agent.request_cancel(
-                                target_session,
-                                owner_key_hash=ws_owner_hash,
-                                expected_run_id=turn["run_id"],
-                                expected_request_id=turn["request_id"],
-                            )
-                        )
-                    except TypeError:
-                        if expected is not None:
-                            raise
-                        cancelled = bool(
-                            agent.request_cancel(
-                                target_session,
-                                owner_key_hash=ws_owner_hash,
-                            )
-                        )
-                except (PermissionError, RuntimeError):
-                    logger.warning(
-                        "Failed to cancel WebSocket turn via request_cancel",
-                        exc_info=True,
-                    )
-            if not cancelled:
-                task = turn_task
-                if task is not None and not task.done():
-                    task.cancel()
-            return True
-
-        def _cancel_connection_work() -> None:
-            """Cancel the active turn when the socket itself is lost."""
-            connection_closed.set()
-            _cancel_active_turn()
-
-        def _adopt_session_id(next_session: str) -> None:
-            nonlocal session_id
-            session_id = next_session
-
-        async def _run_ws_turn(
-            agent: Any,
-            message: str,
-            *,
-            cancel_event: asyncio.Event | None = None,
-            **turn_kwargs: Any,
-        ) -> Any:
-            """Run one Echo turn as a cancellable child task.
-
-            The turn must be a distinct Task so ``turn_task.cancel()`` (used when
-            ``request_cancel`` returns False) does not cancel the WebSocket
-            endpoint itself — that would deadlock Starlette TestClient drains.
-            """
-            nonlocal turn_task
-
-            async def _execute() -> Any:
-                effective_cancel = cancel_event or asyncio.Event()
-                return await run_echo_turn(
-                    agent,
-                    message,
-                    cancel_token=effective_cancel,
-                    **turn_kwargs,
-                )
-
-            turn_task = asyncio.create_task(_execute(), name="echo-ws-turn")
-            try:
-                return await turn_task
-            finally:
-                turn_task = None
-
-        seen_request_ids: set[str] = set()
-
-        def _start_turn(payload: dict[str, Any], target_session: str) -> dict[str, Any]:
-            nonlocal active_turn
-            raw_request_id = payload.get("request_id")
-            request_id = (
-                raw_request_id.strip()
-                if isinstance(raw_request_id, str) and raw_request_id.strip()
-                else f"request-{secrets.token_hex(16)}"
-            )
-            if len(request_id) > 128:
-                raise ValueError("invalid request_id")
-            if request_id in seen_request_ids:
-                raise ValueError("duplicate request_id")
-            seen_request_ids.add(request_id)
-            if len(seen_request_ids) > 512:
-                seen_request_ids.pop()
-            raw_turn_id = payload.get("turn_id")
-            turn_id = (
-                raw_turn_id.strip()
-                if isinstance(raw_turn_id, str) and raw_turn_id.strip()
-                else f"turn-{secrets.token_hex(16)}"
-            )
-            if len(turn_id) > 128:
-                raise ValueError("invalid turn_id")
-            turn: dict[str, Any] = {
-                "request_id": request_id,
-                "turn_id": turn_id,
-                "run_id": f"ws-run-{secrets.token_hex(16)}",
-                "session_id": target_session,
-                "cancel_event": asyncio.Event(),
-            }
-            active_turn = turn
-            _bind_turn_cancel(
-                target_session,
-                turn["cancel_event"],
-                run_id=turn["run_id"],
-                request_id=request_id,
-            )
-            return turn
-
-        def _turn_frame(turn: dict[str, Any], **payload: Any) -> dict[str, Any]:
-            return {
-                **payload,
-                "request_id": turn["request_id"],
-                "turn_id": turn["turn_id"],
-                "run_id": turn["run_id"],
-                "session_id": turn["session_id"],
-            }
-
-        def _finish_turn(turn: dict[str, Any]) -> None:
-            nonlocal active_turn
-            _unbind_turn_cancel(turn["session_id"], turn["cancel_event"])
-            if active_turn is turn:
-                active_turn = None
-
-        async def _receive_with_limit() -> tuple[dict[str, Any], int]:
-            raw = await websocket.receive()
-            if isinstance(raw, str):
-                nbytes = len(raw.encode("utf-8"))
-                if nbytes > max_msg_bytes:
-                    raise ValueError("Message too large")
-                return json.loads(raw), nbytes
-            if isinstance(raw, bytes):
-                nbytes = len(raw)
-                if nbytes > max_msg_bytes:
-                    raise ValueError("Message too large")
-                return json.loads(raw.decode("utf-8")), nbytes
-            # WebSocket text frame from Starlette
-            if raw.get("type") == "websocket.disconnect":
-                raise WebSocketDisconnect(
-                    code=raw.get("code", 1000),
-                    reason=raw.get("reason"),
-                )
-            data = raw.get("text") or raw.get("bytes", b"").decode("utf-8")
-            nbytes = len(data.encode("utf-8")) if isinstance(data, str) else len(data)
-            if nbytes > max_msg_bytes:
-                raise ValueError("Message too large")
-            result: dict[str, Any] = json.loads(data)
-            return result, nbytes
-
-        inbox = BoundedWebSocketInbox(
-            max_messages=max_inbox_messages,
-            max_bytes=max_inbox_bytes,
-        )
-
-        async def _read_websocket() -> None:
-            """Own all receive calls so disconnects can cancel an in-flight turn."""
-            try:
-                while True:
-                    payload, nbytes = await _receive_with_limit()
-                    if payload.get("type") == "cancel":
-                        cancelled = _cancel_active_turn(payload)
-                        await websocket.send_json(
-                            {
-                                "type": "cancelled" if cancelled else "cancel_rejected",
-                                "request_id": payload.get("request_id"),
-                                "turn_id": payload.get("turn_id"),
-                                "run_id": payload.get("run_id"),
-                                "session_id": payload.get("session_id"),
-                            }
-                        )
-                        continue
-                    try:
-                        await inbox.put_data(payload, nbytes=nbytes)
-                    except InboxOverloadError as overload:
-                        _cancel_connection_work()
-                        await inbox.put_control(overload)
-                        try:
-                            await websocket.close(
-                                code=1008,
-                                reason="WebSocket inbox overload policy",
-                            )
-                        except Exception:
-                            logger.warning(
-                                "Failed to close overloaded WebSocket",
-                                exc_info=True,
-                            )
-                        return
-            except BaseException as exc:  # noqa: BLE001 - forwarded to the endpoint task
-                # Any reader failure (disconnect, decode, etc.) closes the connection
-                # and cancels in-flight work before the control signal is delivered.
-                _cancel_connection_work()
-                await inbox.put_control(exc)
-
-        reader_task = asyncio.create_task(_read_websocket(), name="echo-ws-reader")
-
-        try:
-            while True:
-                # Receive with timeout to allow periodic ping checks
-                try:
-                    incoming = await asyncio.wait_for(inbox.get(), timeout=ping_interval)
-                except TimeoutError:
-                    try:
-                        await websocket.send_json({"type": "ping"})
-                    except Exception:
-                        break
-                    continue
-                if isinstance(incoming, InboxOverloadError):
-                    raise incoming
-                if isinstance(incoming, BaseException):
-                    raise incoming
-                data = incoming
-
-                msg_type = data.get("type", "message")
-
-                if msg_type in ("message", "stream") and not ws_can_turn:
-                    await websocket.send_json(
-                        {
-                            "type": "error",
-                            "content": ("Guest role is read-only; authenticate to send chat turns"),
-                            "session_id": session_id,
-                        }
-                    )
-                    continue
-
-                if msg_type == "message":
-                    user_msg = data.get("content", "")
-                    try:
-                        _adopt_session_id(
-                            _coerce_ws_session_id(data.get("session_id"), current=session_id)
-                        )
-                    except ValueError as exc:
-                        await websocket.send_json(
-                            {
-                                "type": "error",
-                                "content": str(exc),
-                            }
-                        )
-                        await websocket.close(code=1008, reason="invalid session_id")
-                        return
-                    assert session_id is not None
-                    try:
-                        turn = _start_turn(data, session_id)
-                    except ValueError as exc:
-                        await websocket.send_json(
-                            {"type": "error", "content": str(exc), "session_id": session_id}
-                        )
-                        continue
-                    model = data.get("model") or get_active_model() or None
-                    attachments = data.get("attachments", [])
-
-                    if connection_closed.is_set():
-                        raise WebSocketDisconnect(code=1001, reason="client disconnected")
-
-                    try:
-                        validate_chat_attachments(
-                            workspace=agent.settings.workspace,
-                            attachments=attachments,
-                            owner_key_hash=ws_owner_hash,
-                            session_id=session_id,
-                        )
-                    except HTTPException as exc:
-                        await websocket.send_json(
-                            _turn_frame(
-                                turn,
-                                type="error",
-                                terminal=True,
-                                content=str(exc.detail),
-                            )
-                        )
-                        _finish_turn(turn)
-                        continue
-
-                    await websocket.send_json(
-                        _turn_frame(turn, type="status", content="thinking...")
-                    )
-
-                    # Progress callback: notify frontend of each tool execution
-                    async def _progress(
-                        tool_name: str,
-                        result: Any,
-                        _turn: dict[str, Any] = turn,
-                    ) -> None:
-                        try:
-                            output_preview = (
-                                result.output[:200] if getattr(result, "output", None) else ""
-                            )
-                            await websocket.send_json(
-                                _turn_frame(
-                                    _turn,
-                                    type="progress",
-                                    tool=tool_name,
-                                    success=getattr(result, "success", False),
-                                    preview=output_preview,
-                                )
-                            )
-                        except Exception:
-                            pass
-
-                    if connection_closed.is_set():
-                        raise WebSocketDisconnect(code=1001, reason="client disconnected")
-
-                    session_lock = await get_session_lock(session_id, ws_owner_hash)
-                    async with session_lock:
-                        if connection_closed.is_set():
-                            raise WebSocketDisconnect(code=1001, reason="client disconnected")
-                        try:
-                            state = await _run_ws_turn(
-                                agent,
-                                prepare_web_message(settings, user_msg),
-                                cancel_event=turn["cancel_event"],
-                                channel=web_channel(settings, "ws_message"),
-                                owner_key_hash=ws_owner_hash,
-                                session_id=session_id,
-                                model=model,
-                                attachments=attachments,
-                                progress_callback=_progress,
-                            )
-                        except asyncio.CancelledError:
-                            if connection_closed.is_set():
-                                raise WebSocketDisconnect(
-                                    code=1001, reason="client disconnected"
-                                ) from None
-                            if turn["cancel_event"].is_set():
-                                await websocket.send_json(
-                                    _turn_frame(
-                                        turn,
-                                        type="cancelled",
-                                        terminal=True,
-                                        content="Run cancelled",
-                                    )
-                                )
-                                _finish_turn(turn)
-                                continue
-                            raise
-                        except EchoBlockedError:
-                            await websocket.send_json(
-                                _turn_frame(
-                                    turn,
-                                    type="error",
-                                    terminal=True,
-                                    content=("Echo blocked sensitive input before model execution"),
-                                )
-                            )
-                            _finish_turn(turn)
-                            continue
-                        except EchoUnavailableError:
-                            await websocket.send_json(
-                                _turn_frame(
-                                    turn,
-                                    type="error",
-                                    terminal=True,
-                                    content=(
-                                        "Echo safety layer is unavailable; request was not executed"
-                                    ),
-                                )
-                            )
-                            _finish_turn(turn)
-                            continue
-                        except PermissionError as exc:
-                            await websocket.send_json(
-                                _turn_frame(
-                                    turn,
-                                    type="error",
-                                    terminal=True,
-                                    content=humanize_error(str(exc)),
-                                )
-                            )
-                            _finish_turn(turn)
-                            continue
-                    session_id = state.session_id
-                    turn["session_id"] = session_id
-
-                    if connection_closed.is_set():
-                        raise WebSocketDisconnect(code=1001, reason="client disconnected")
-
-                    # Record token usage
-                    _record_usage(state, explicit_model=model)
-                    assistant_msg = _assistant_text_from_state(state)
-
-                    if state.status != "completed":
-                        await websocket.send_json(
-                            _turn_frame(
-                                turn,
-                                type="error",
-                                terminal=True,
-                                content=humanize_error(state.error_message),
-                                turns=state.turn_count,
-                                tokens=state.total_tokens,
-                                cost=round(state.cost_estimate, 6),
-                                model=state.model or model or "unknown",
-                            )
-                        )
-                    else:
-                        await websocket.send_json(
-                            _turn_frame(
-                                turn,
-                                type="response",
-                                terminal=True,
-                                content=assistant_msg,
-                                turns=state.turn_count,
-                                tokens=state.total_tokens,
-                                cost=round(state.cost_estimate, 6),
-                                status=state.status,
-                                compression=state.compression_stats,
-                                model=state.model or model or "unknown",
-                            )
-                        )
-                    _finish_turn(turn)
-
-                elif msg_type == "stream":
-                    user_msg = data.get("content", "")
-                    try:
-                        _adopt_session_id(
-                            _coerce_ws_session_id(data.get("session_id"), current=session_id)
-                        )
-                    except ValueError as exc:
-                        await websocket.send_json(
-                            {
-                                "type": "error",
-                                "content": str(exc),
-                            }
-                        )
-                        await websocket.close(code=1008, reason="invalid session_id")
-                        return
-                    assert session_id is not None
-                    try:
-                        turn = _start_turn(data, session_id)
-                    except ValueError as exc:
-                        await websocket.send_json(
-                            {"type": "error", "content": str(exc), "session_id": session_id}
-                        )
-                        continue
-                    model = data.get("model")
-                    attachments = data.get("attachments", [])
-                    raw_enable_tools = data.get("enable_tools", True)
-                    if isinstance(raw_enable_tools, bool):
-                        enable_tools = raw_enable_tools
-                    elif isinstance(raw_enable_tools, str):
-                        enable_tools = raw_enable_tools.strip().lower() in ("true", "1", "yes")
-                    elif isinstance(raw_enable_tools, (int, float)):
-                        enable_tools = bool(raw_enable_tools)
-                    else:
-                        enable_tools = True
-
-                    if connection_closed.is_set():
-                        raise WebSocketDisconnect(code=1001, reason="client disconnected")
-
-                    try:
-                        validate_chat_attachments(
-                            workspace=agent.settings.workspace,
-                            attachments=attachments,
-                            owner_key_hash=ws_owner_hash,
-                            session_id=session_id,
-                        )
-                    except HTTPException as exc:
-                        await websocket.send_json(
-                            _turn_frame(
-                                turn,
-                                type="error",
-                                terminal=True,
-                                content=str(exc.detail),
-                            )
-                        )
-                        _finish_turn(turn)
-                        continue
-
-                    await websocket.send_json(
-                        _turn_frame(turn, type="status", content="streaming...")
-                    )
-
-                    # Native token-level streaming for the final assistant response.
-                    # Tool-calling turns remain non-streaming (parsed atomically).
-                    streamed = False
-
-                    async def _send_token(
-                        token: str,
-                        _turn: dict[str, Any] = turn,
-                    ) -> None:
-                        nonlocal streamed
-                        streamed = True
-                        await websocket.send_json(
-                            _turn_frame(
-                                _turn,
-                                type="token",
-                                content=token,
-                                provisional=True,
-                            )
-                        )
-
-                    async def _send_event(
-                        payload: dict[str, Any],
-                        _turn: dict[str, Any] = turn,
-                    ) -> None:
-                        """PR-4.3 side-channel: structured StreamEvent → WS frame.
-
-                        Maps:
-                          thinking_delta  → {type:"thinking", content:<text>}
-                          tool_call_delta → {type:"tool_call", tool_call:<dict>}
-                          usage           → {type:"usage", usage:<dict>}
-                          error           → {type:"stream_diagnostic", content:<str>}
-                        Empty/unknown kinds are dropped silently so the
-                        legacy frontend ({type:"token"}) keeps working.
-                        """
-                        kind = payload.get("kind")
-                        try:
-                            if kind == "thinking_delta":
-                                text = payload.get("text") or ""
-                                if text:
-                                    await websocket.send_json(
-                                        _turn_frame(_turn, type="thinking", content=text)
-                                    )
-                            elif kind == "tool_call_delta":
-                                tc = payload.get("tool_call") or {}
-                                if tc:
-                                    await websocket.send_json(
-                                        _turn_frame(_turn, type="tool_call", tool_call=tc)
-                                    )
-                            elif kind == "usage":
-                                usage = payload.get("usage") or {}
-                                if usage:
-                                    await websocket.send_json(
-                                        _turn_frame(_turn, type="usage", usage=usage)
-                                    )
-                            elif kind == "error":
-                                err = payload.get("error") or ""
-                                if err:
-                                    await websocket.send_json(
-                                        _turn_frame(
-                                            _turn,
-                                            type="stream_diagnostic",
-                                            content=humanize_error(str(err)),
-                                        )
-                                    )
-                        except Exception:
-                            # Never let the side-channel kill the main turn.
-                            logger.warning("WebSocket event-channel send failed", exc_info=True)
-
-                    if connection_closed.is_set():
-                        raise WebSocketDisconnect(code=1001, reason="client disconnected")
-
-                    session_lock = await get_session_lock(session_id, ws_owner_hash)
-                    async with session_lock:
-                        if connection_closed.is_set():
-                            raise WebSocketDisconnect(code=1001, reason="client disconnected")
-                        try:
-                            state = await _run_ws_turn(
-                                agent,
-                                prepare_web_message(settings, user_msg),
-                                cancel_event=turn["cancel_event"],
-                                channel=web_channel(settings, "ws_stream"),
-                                owner_key_hash=ws_owner_hash,
-                                session_id=session_id,
-                                model=model,
-                                attachments=attachments,
-                                stream_callback=_send_token,
-                                event_callback=_send_event,
-                                disable_tools=not enable_tools,
-                            )
-                        except asyncio.CancelledError:
-                            if connection_closed.is_set():
-                                raise WebSocketDisconnect(
-                                    code=1001, reason="client disconnected"
-                                ) from None
-                            if turn["cancel_event"].is_set():
-                                await websocket.send_json(
-                                    _turn_frame(
-                                        turn,
-                                        type="cancelled",
-                                        terminal=True,
-                                        content="Run cancelled",
-                                    )
-                                )
-                                _finish_turn(turn)
-                                continue
-                            raise
-                        except EchoBlockedError:
-                            await websocket.send_json(
-                                _turn_frame(
-                                    turn,
-                                    type="error",
-                                    terminal=True,
-                                    content=("Echo blocked sensitive input before model execution"),
-                                )
-                            )
-                            _finish_turn(turn)
-                            continue
-                        except EchoUnavailableError:
-                            await websocket.send_json(
-                                _turn_frame(
-                                    turn,
-                                    type="error",
-                                    terminal=True,
-                                    content=(
-                                        "Echo safety layer is unavailable; request was not executed"
-                                    ),
-                                )
-                            )
-                            _finish_turn(turn)
-                            continue
-                        except PermissionError as exc:
-                            await websocket.send_json(
-                                _turn_frame(
-                                    turn,
-                                    type="error",
-                                    terminal=True,
-                                    content=humanize_error(str(exc)),
-                                )
-                            )
-                            _finish_turn(turn)
-                            continue
-                    session_id = state.session_id
-                    turn["session_id"] = session_id
-                    if connection_closed.is_set():
-                        raise WebSocketDisconnect(code=1001, reason="client disconnected")
-                    _record_usage(state, explicit_model=model)
-                    assistant_msg = _assistant_text_from_state(state)
-
-                    if state.status != "completed":
-                        await websocket.send_json(
-                            _turn_frame(
-                                turn,
-                                type="error",
-                                terminal=True,
-                                content=humanize_error(state.error_message),
-                                turns=state.turn_count,
-                                tokens=state.total_tokens,
-                                cost=round(state.cost_estimate, 6),
-                                model=state.model or model or "unknown",
-                            )
-                        )
-                    else:
-                        # Fallback: if streaming never fired (all tool turns or provider
-                        # doesn't support streaming), send the full response in one go.
-                        if not streamed and assistant_msg:
-                            await websocket.send_json(
-                                _turn_frame(turn, type="response", content=assistant_msg)
-                            )
-
-                        await websocket.send_json(
-                            _turn_frame(
-                                turn,
-                                type="done",
-                                terminal=True,
-                                turns=state.turn_count,
-                                tokens=state.total_tokens,
-                                cost=round(state.cost_estimate, 6),
-                                status=state.status,
-                                compression=state.compression_stats,
-                            )
-                        )
-                    _finish_turn(turn)
-
-                elif msg_type == "ping":
-                    await websocket.send_json({"type": "pong"})
-
-        except WebSocketDisconnect:
-            pass
-        except InboxOverloadError:
-            logger.warning("WebSocket closed by inbox overload policy")
-        except Exception as exc:
-            logger.error("WebSocket error: %s", type(exc).__name__)
-            try:
-                await websocket.send_json(
-                    {"type": "error", "content": "An internal error occurred. Please try again."}
-                )
-            except Exception:
-                logger.warning("Failed to send error to websocket", exc_info=True)
-        finally:
-            connection_closed.set()
-            if active_turn is not None:
-                active_turn["cancel_event"].set()
-            reader_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await reader_task
-            with suppress(Exception):
-                await inbox.close()
-            if active_turn is not None:
-                _finish_turn(active_turn)
-
-    @app.websocket("/ws/fleet")
-    async def fleet_websocket_endpoint(websocket: WebSocket) -> None:
-        """Real-time fleet dashboard WebSocket."""
-        from js.exceptions import AuthRequiredError
-        from js.orchestration.fleet import (
-            AgentFleet,
-            bind_fleet_event_identity,
-            validate_fleet_event_identity,
-        )
-        from js.web.auth import _ADMIN_ROLE, AuthManager, check_origin, memory_owner
-        from js.web.routers.fleet import get_fleet
-
-        # Origin check first — reject cross-origin WebSocket upgrades
-        try:
-            check_origin(websocket)
-        except HTTPException as exc:
-            await websocket.close(code=1008, reason=exc.detail)
-            return
-
-        # Keep credentials out of URLs. Browsers use the same-site HttpOnly
-        # session cookie (or the legacy key cookie); native clients may send
-        # X-API-Key during the upgrade.
-        from js.web.auth import resolve_session_cookie
-
-        settings = get_agent().settings
-        from js.appshell.principal import appshell_auth_context_from_scope
-
-        managed, injected_auth = appshell_auth_context_from_scope(websocket.scope)
-        if managed:
-            if injected_auth is None:
-                await websocket.close(code=1008, reason="Authentication failed")
-                return
-            auth_ctx = injected_auth
-        else:
-            api_key = websocket.cookies.get("x-api-key", "") or websocket.headers.get(
-                "x-api-key", ""
-            )
-            session_token = (
-                resolve_session_cookie(
-                    websocket.cookies,
-                    str(getattr(settings, "product_id", "js-agent") or "js-agent"),
-                )
-                or ""
-            )
-            auth_mgr = AuthManager(settings.state_dir)
-            try:
-                if api_key:
-                    auth_ctx = auth_mgr.verify(api_key)
-                else:
-                    auth_ctx = auth_mgr.verify_session(session_token)
-            except AuthRequiredError:
-                await websocket.close(code=1008, reason="Authentication failed")
-                return
-        if auth_ctx.get("role") != _ADMIN_ROLE:
-            await websocket.close(code=1008, reason="Admin role required")
-            return
-        owner_key_hash = memory_owner(auth_ctx) or "local-user"
-        product_id = str(getattr(settings, "product_id", "js-agent"))
-        await websocket.accept()
-
-        fleet = get_fleet()
-        event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=500)
-        background_tasks: set[asyncio.Task[None]] = set()
-        fleet_effect_tasks: dict[tuple[str, str, str], asyncio.Task[None]] = {}
-
-        async def _on_event(event: dict[str, Any]) -> None:
-            try:
-                request_id, turn_id, session_id = validate_fleet_event_identity(
-                    event.get("request_id"),
-                    event.get("turn_id"),
-                    event.get("session_id"),
-                )
-            except (TypeError, ValueError):
-                logger.warning("Dropped Fleet event without a valid runtime identity")
-                return
-            validated_event = dict(event)
-            validated_event.update(
-                {
-                    "request_id": request_id,
-                    "turn_id": turn_id,
-                    "session_id": session_id,
-                }
-            )
-            try:
-                event_queue.put_nowait(validated_event)
-            except asyncio.QueueFull:
-                pass
-
-        async def _run_fleet_effect(
-            *,
-            tool_name: str,
-            arguments: dict[str, Any],
-            action: str,
-            request_id: str,
-            turn_id: str,
-            session_id: str,
-        ) -> None:
-            with bind_fleet_event_identity(request_id, turn_id, session_id):
-                try:
-                    result = await _execute_web_tool_effect(
-                        get_agent(),
-                        auth_ctx,
-                        channel=f"fleet_ws_{action}",
-                        tool_name=tool_name,
-                        arguments=arguments,
-                        user_input=f"Run an administrator-approved Fleet {action} request",
-                    )
-                    if result.success:
-                        return
-                    logger.warning(
-                        "Fleet WebSocket effect failed",
-                        action=action,
-                        status_code=result.metadata.get("status_code"),
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.warning(
-                        "Fleet WebSocket effect failed",
-                        action=action,
-                        exc_info=True,
-                    )
-                try:
-                    event_queue.put_nowait(
-                        {
-                            "type": "error",
-                            "message": f"Fleet {action} failed",
-                            "request_id": request_id,
-                            "turn_id": turn_id,
-                            "session_id": session_id,
-                        }
-                    )
-                except asyncio.QueueFull:
-                    pass
-
-        def _start_fleet_effect(
-            *,
-            tool_name: str,
-            arguments: dict[str, Any],
-            action: str,
-            request_id: str,
-            turn_id: str,
-            session_id: str,
-        ) -> None:
-            request_id, turn_id, session_id = validate_fleet_event_identity(
-                request_id, turn_id, session_id
-            )
-            key = (request_id, turn_id, session_id)
-            existing = fleet_effect_tasks.get(key)
-            if existing is not None and not existing.done():
-                return
-            task = asyncio.create_task(
-                _run_fleet_effect(
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    action=action,
-                    request_id=request_id,
-                    turn_id=turn_id,
-                    session_id=session_id,
-                )
-            )
-            background_tasks.add(task)
-            fleet_effect_tasks[key] = task
-
-            def _discard(done: asyncio.Task[None]) -> None:
-                background_tasks.discard(done)
-                if fleet_effect_tasks.get(key) is done:
-                    fleet_effect_tasks.pop(key, None)
-
-            task.add_done_callback(_discard)
-
-        subscription = fleet.on_event(
-            _on_event,
-            product_id=product_id,
-            owner_key_hash=owner_key_hash,
-        )
-
-        # Send initial status
-        try:
-            await websocket.send_json(
-                {
-                    "type": "status",
-                    "data": fleet.get_status(owner_key_hash=owner_key_hash),
-                }
-            )
-        except Exception:
-            pass
-
-        try:
-            while True:
-                # Drain event queue with timeout to also check for client messages
-                try:
-                    event = await asyncio.wait_for(event_queue.get(), timeout=0.5)
-                    await websocket.send_json(event)
-                    continue
-                except TimeoutError:
-                    pass
-                except RuntimeError as e:
-                    if "disconnect" in str(e).lower():
-                        break
-                    raise
-
-                # Check for client messages (non-blocking)
-                try:
-                    raw = await asyncio.wait_for(websocket.receive(), timeout=0.1)
-                    if raw.get("type") == "websocket.disconnect":
-                        raise WebSocketDisconnect(
-                            code=raw.get("code", 1000),
-                            reason=raw.get("reason"),
-                        )
-                    payload = raw.get("text")
-                    if payload is None:
-                        raw_bytes = raw.get("bytes") or b""
-                        if not isinstance(raw_bytes, bytes) or len(raw_bytes) > 262_144:
-                            raise ValueError("invalid Fleet WebSocket message")
-                        payload = raw_bytes.decode("utf-8")
-                    if not isinstance(payload, str) or len(payload.encode("utf-8")) > 262_144:
-                        raise ValueError("invalid Fleet WebSocket message")
-                    data = json.loads(payload)
-                    if not isinstance(data, dict):
-                        raise ValueError("invalid Fleet WebSocket message")
-
-                    msg_type = data.get("type", "")
-                    if not isinstance(msg_type, str):
-                        raise ValueError("invalid Fleet WebSocket message type")
-                    if msg_type == "cancel":
-                        request_id, turn_id, session_id = validate_fleet_event_identity(
-                            data.get("request_id"),
-                            data.get("turn_id"),
-                            data.get("session_id"),
-                        )
-                        background_task = fleet_effect_tasks.get((request_id, turn_id, session_id))
-                        if background_task is None:
-                            await websocket.send_json(
-                                {
-                                    "type": "cancel_rejected",
-                                    "request_id": request_id,
-                                    "turn_id": turn_id,
-                                    "session_id": session_id,
-                                }
-                            )
-                            continue
-                        background_task.cancel()
-                        await asyncio.gather(background_task, return_exceptions=True)
-                        await websocket.send_json(
-                            {
-                                "type": "cancelled",
-                                "request_id": request_id,
-                                "turn_id": turn_id,
-                                "session_id": session_id,
-                            }
-                        )
-                    elif msg_type == "status":
-                        await websocket.send_json(
-                            {
-                                "type": "status",
-                                "data": fleet.get_status(owner_key_hash=owner_key_hash),
-                            }
-                        )
-                    elif msg_type == "collaborate":
-                        request_id, turn_id, requested_session_id = validate_fleet_event_identity(
-                            data.get("request_id"),
-                            data.get("turn_id"),
-                            data.get("session_id"),
-                        )
-                        raw_subtasks = data.get("subtasks")
-                        normalized_subtasks: list[str] | None = None
-                        if raw_subtasks is not None:
-                            if not isinstance(raw_subtasks, list):
-                                raise ValueError("invalid Fleet subtasks")
-                            normalized_subtasks = []
-                            for raw_subtask in raw_subtasks:
-                                if isinstance(raw_subtask, str):
-                                    normalized_subtasks.append(raw_subtask)
-                                elif isinstance(raw_subtask, dict) and isinstance(
-                                    raw_subtask.get("description"), str
-                                ):
-                                    normalized_subtasks.append(raw_subtask["description"])
-                                else:
-                                    raise ValueError("invalid Fleet subtask")
-                        (
-                            task,
-                            subtasks,
-                            validated_session_id,
-                            role_mapping,
-                            mode,
-                        ) = AgentFleet._validate_collaboration_request(
-                            data.get("task", ""),
-                            normalized_subtasks,
-                            requested_session_id,
-                            data.get("role_mapping"),
-                            data.get("mode", "auto"),
-                        )
-                        await websocket.send_json({"type": "ack", "action": "collaborate"})
-                        _start_fleet_effect(
-                            tool_name="fleet_collaborate",
-                            arguments={
-                                "task": task,
-                                "subtasks": subtasks,
-                                "session_id": validated_session_id,
-                                "role_mapping": role_mapping,
-                                "mode": mode,
-                            },
-                            action="collaborate",
-                            request_id=request_id,
-                            turn_id=turn_id,
-                            session_id=requested_session_id,
-                        )
-                    elif msg_type == "continue":
-                        request_id, turn_id, requested_session_id = validate_fleet_event_identity(
-                            data.get("request_id"),
-                            data.get("turn_id"),
-                            data.get("session_id"),
-                        )
-                        (
-                            follow_up,
-                            _subtasks,
-                            validated_session_id,
-                            _role_mapping,
-                            _mode,
-                        ) = AgentFleet._validate_collaboration_request(
-                            data.get("task", ""),
-                            None,
-                            requested_session_id,
-                            None,
-                            "auto",
-                        )
-                        assert validated_session_id is not None
-                        await websocket.send_json({"type": "ack", "action": "continue"})
-                        _start_fleet_effect(
-                            tool_name="control_fleet_continue",
-                            arguments={
-                                "session_id": validated_session_id,
-                                "follow_up": follow_up,
-                            },
-                            action="continue",
-                            request_id=request_id,
-                            turn_id=turn_id,
-                            session_id=requested_session_id,
-                        )
-                    elif msg_type == "spawn":
-                        # Spawn is no longer supported; agents are created on-demand
-                        await websocket.send_json(
-                            {
-                                "type": "ack",
-                                "action": "spawn",
-                                "warning": "Spawn is deprecated. Agents are created automatically.",
-                            }
-                        )
-                    elif msg_type == "ping":
-                        await websocket.send_json({"type": "pong"})
-                    else:
-                        await websocket.send_json(
-                            {"type": "error", "message": "Unsupported Fleet message type"}
-                        )
-                except TimeoutError:
-                    pass
-                except WebSocketDisconnect:
-                    break
-                except RuntimeError as e:
-                    if "disconnect" in str(e).lower():
-                        break
-                    raise
-                except (TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
-                    logger.warning("Invalid Fleet WebSocket client message")
-                    await websocket.send_json({"type": "error", "message": "Invalid Fleet request"})
-                except Exception:
-                    logger.warning("Fleet WebSocket client message failed", exc_info=True)
-                    await websocket.send_json({"type": "error", "message": "Fleet request failed"})
-        except WebSocketDisconnect:
-            logger.info("Fleet WebSocket disconnected")
-        except Exception as exc:
-            logger.error("Fleet WebSocket error: %s", type(exc).__name__)
-        finally:
-            for background_task in tuple(background_tasks):
-                background_task.cancel()
-            if background_tasks:
-                await asyncio.gather(*background_tasks, return_exceptions=True)
-            fleet.off_event(subscription)
+    from js.web.ws.bots import bots_websocket_endpoint
+    from js.web.ws.chat import websocket_endpoint
+    from js.web.ws.fleet import fleet_websocket_endpoint
+
+    app.websocket("/ws")(websocket_endpoint)
+    app.websocket("/ws/fleet")(fleet_websocket_endpoint)
+    app.websocket("/ws/bots")(bots_websocket_endpoint)
 
     # ------------------------------------------------------------------
     # Resource-aware rate-limiting middleware

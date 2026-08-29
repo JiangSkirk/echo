@@ -57,6 +57,11 @@ class CommandNode:
     # Parallel to ``args``: True when the argument contains an UNQUOTED glob
     # character (``*``, ``?``, ``[``) that sh would expand at runtime.
     arg_globs: list[bool] = field(default_factory=list)
+    # Parallel to ``args``: True when the argument contains a ``$`` expansion
+    # (``$name`` / ``${...}`` / special parameter) that sh would expand at
+    # runtime.  Write-path allowlist checks use this instead of a lexical
+    # ``"$" in token`` scan.  ``$(...)`` is a subshell, not a var.
+    arg_vars: list[bool] = field(default_factory=list)
 
 
 @dataclass
@@ -478,7 +483,7 @@ def _is_pipe_token(token: _Token) -> bool:
 
 def _collect_segment(
     tokens: list[_Token], pos: int
-) -> tuple[list[str], list[bool], list[RedirectNode], int] | None:
+) -> tuple[list[str], list[bool], list[bool], list[RedirectNode], int] | None:
     """Collect words and redirections for one command, starting at ``pos``.
 
     Stops at a control operator or end of input.  Returns ``None`` when a
@@ -487,6 +492,7 @@ def _collect_segment(
     """
     args: list[str] = []
     arg_globs: list[bool] = []
+    arg_vars: list[bool] = []
     redirects: list[RedirectNode] = []
     while pos < len(tokens):
         token = tokens[pos]
@@ -510,8 +516,9 @@ def _collect_segment(
             continue
         args.append(token.text)
         arg_globs.append(token.unquoted_glob)
+        arg_vars.append(token.has_var)
         pos += 1
-    return args, arg_globs, redirects, pos
+    return args, arg_globs, arg_vars, redirects, pos
 
 
 def parse(command: str) -> ChainedCommands | None:
@@ -532,7 +539,7 @@ def parse(command: str) -> ChainedCommands | None:
         segment = _collect_segment(tokens, pos)
         if segment is None:
             return None
-        args, arg_globs, redirects, pos = segment
+        args, arg_globs, arg_vars, redirects, pos = segment
 
         if not args:
             if redirects:
@@ -552,6 +559,7 @@ def parse(command: str) -> ChainedCommands | None:
             args=args,
             redirects=redirects,
             arg_globs=arg_globs,
+            arg_vars=arg_vars,
         )
 
         # Check for pipe chain
@@ -563,7 +571,7 @@ def parse(command: str) -> ChainedCommands | None:
                 stage = _collect_segment(tokens, pos)
                 if stage is None:
                     return None
-                stage_args, stage_globs, stage_redirs, pos = stage
+                stage_args, stage_globs, stage_vars, stage_redirs, pos = stage
                 if not stage_args:
                     if stage_redirs:
                         return None
@@ -574,6 +582,7 @@ def parse(command: str) -> ChainedCommands | None:
                         args=stage_args,
                         redirects=stage_redirs,
                         arg_globs=stage_globs,
+                        arg_vars=stage_vars,
                     )
                 )
                 if pos < len(tokens) and _is_pipe_token(tokens[pos]):

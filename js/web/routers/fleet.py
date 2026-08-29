@@ -18,6 +18,7 @@ from js.web.deps import (
     require_path_session_id,
 )
 from js.web.runtime_context import current_web_runtime, web_channel
+from js.web.schemas import FleetCollaborateRequest, FleetContinueRequest
 
 logger = get_logger("js.web")
 
@@ -127,7 +128,7 @@ def _raise_fleet_effect_error(result: Any, *, default: str) -> None:
 
 @router.post("/collaborate")
 async def fleet_collaborate(
-    payload: dict[str, Any],
+    payload: FleetCollaborateRequest,
     auth: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     """Execute a task with an auto-formed agent team.
@@ -146,11 +147,11 @@ async def fleet_collaborate(
             role_mapping,
             mode,
         ) = AgentFleet._validate_collaboration_request(
-            payload.get("task", ""),
-            payload.get("subtasks"),
-            payload.get("session_id"),
-            payload.get("role_mapping"),
-            payload.get("mode", "auto"),
+            payload.task,
+            payload.subtasks,
+            payload.session_id,
+            cast("dict[int | str, str] | None", payload.role_mapping),
+            payload.mode,
         )
     except (TypeError, ValueError) as exc:
         raise HTTPException(400, "Invalid Fleet collaboration request") from exc
@@ -260,16 +261,13 @@ async def fleet_session_delete(
 
 @router.post("/sessions/{session_id}/continue")
 async def fleet_session_continue(
-    payload: dict[str, Any],
+    payload: FleetContinueRequest,
     session_id: str = Depends(require_path_session_id),
     auth: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     """Continue a previous collaboration session with a follow-up task."""
-    raw_follow_up = payload.get("follow_up")
-    if not isinstance(raw_follow_up, str):
-        raise HTTPException(400, "follow_up must be a string")
-    follow_up = raw_follow_up.strip()
-    if not follow_up or len(follow_up) > 20_000:
+    follow_up = payload.follow_up.strip()
+    if not follow_up:
         raise HTTPException(400, "follow_up is required")
 
     try:

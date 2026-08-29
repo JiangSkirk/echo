@@ -173,9 +173,9 @@ SOURCE_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SOURCE_DIR"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8000}"
-echo "Starting JS Agent Web UI..."
-echo "Open http://${HOST}:${PORT} in your browser"
-.venv/bin/python -m js open --host "$HOST" --port "$PORT"
+echo "Preparing JS Agent..."
+echo "Open the JS Agent desktop app."
+echo "Local Host (does not open a browser): .venv/bin/python -m js appshell --no-browser --host ${HOST} --port ${PORT}"
 EOF
 chmod +x "$SOURCE_DIR/start.sh"
 
@@ -244,16 +244,11 @@ echo -e "${GREEN}  JS Agent 安装完成!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo "启动方式:"
-echo "  1. 双击启动: ~/Applications/JS Agent.app"
-echo "  2. 命令行启动: $SOURCE_DIR/start.sh"
-echo "  3. CLI 命令: js-agent (如果 ~/.local/bin 在 PATH 中)"
-echo ""
-echo "Web UI 地址: http://127.0.0.1:8000"
+echo "  1. 打开 JS Agent 桌面应用"
+echo "  2. 命令行 CLI: js-agent (如果 ~/.local/bin 在 PATH 中)"
+echo "  3. 本机 Host（不打开浏览器）: $SOURCE_DIR/.venv/bin/python -m js appshell"
 echo ""
 
 # Ask to start
-read -p "是否立即启动? (y/n) " -n 1 -r
+read -p "配置已完成。请打开 JS Agent 桌面应用。按 Enter 退出。 " -n 1 -r
 echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    "$SOURCE_DIR/start.sh"
-fi

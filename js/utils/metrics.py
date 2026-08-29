@@ -177,6 +177,65 @@ class MetricsCollector:
             "governor_reaped_total",
             "Total number of idle agents reaped",
         )
+        self.journal_tip_present = Gauge(
+            "echo_journal_tip_present",
+            "1 when Echo journal health published a tip hash",
+        )
+        self.lease_tip_present = Gauge(
+            "echo_lease_tip_present",
+            "1 when the lease ledger published a tip hash",
+        )
+        self.lease_ledger_records = Gauge(
+            "echo_lease_ledger_records",
+            "Lease JSONL sequence / record count",
+        )
+        self.lease_ledger_bytes = Gauge(
+            "echo_lease_ledger_bytes",
+            "Lease JSONL size in bytes",
+        )
+        self.lease_ledger_full_reloads = Gauge(
+            "echo_lease_ledger_full_reloads",
+            "Lease ledger full-replay count",
+        )
+        self.lease_compact_total = Counter(
+            "echo_lease_compact_total",
+            "Successful lease ledger compact() calls",
+        )
+        self.lease_compact_skip_total = Counter(
+            "echo_lease_compact_skip_total",
+            "Lease compact decisions by skip reason",
+            ["reason"],
+        )
+        self.echo_outbox_pending = Gauge(
+            "echo_outbox_pending",
+            "Pending Echo outbox effects",
+        )
+        self.echo_outbox_claimed = Gauge(
+            "echo_outbox_claimed",
+            "Claimed Echo outbox effects",
+        )
+        self.echo_outbox_manual_review = Gauge(
+            "echo_outbox_manual_review",
+            "Manual-review Echo outbox effects",
+        )
+        self.amber_slot_overwrites = Gauge(
+            "echo_amber_slot_overwrites",
+            "Pulse Amber request-slot overwrites",
+        )
+        self.effect_ids_bound_total = Counter(
+            "echo_effect_ids_bound_total",
+            "Effect/outbox/lease id bindings at the interpreter boundary",
+            ["kind"],
+        )
+        self.bots_prefix_hit_rate = Gauge(
+            "bots_prefix_hit_rate",
+            "Latest warmup-excluded Bots prefix-cache hit rate",
+        )
+        self.bots_prefix_hit_below_target_total = Counter(
+            "bots_prefix_hit_below_target_total",
+            "Bots prefix-cache hit rate observations below 0.96",
+            ["reason"],
+        )
 
 
 _metrics = MetricsCollector()
@@ -184,6 +243,31 @@ _metrics = MetricsCollector()
 
 def get_metrics() -> MetricsCollector:
     return _metrics
+
+
+def bind_effect_ids(
+    *,
+    kind: str,
+    effect_id: str = "",
+    outbox_id: str = "",
+    lease_id: str = "",
+) -> None:
+    """Count a correlation binding. Empty ids still increment the kind."""
+
+    try:
+        get_metrics().effect_ids_bound_total.labels(kind=kind).inc()
+    except Exception:
+        return
+    if effect_id or outbox_id or lease_id:
+        logger.debug(
+            "effect ids bound",
+            extra={
+                "effect_kind": kind,
+                "effect_id": effect_id,
+                "outbox_id": outbox_id,
+                "lease_id": lease_id,
+            },
+        )
 
 
 @contextmanager

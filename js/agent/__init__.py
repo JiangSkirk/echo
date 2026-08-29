@@ -1,16 +1,18 @@
-"""Core Agent engine: reasoning loop, delegation, and state management.
+"""Agent assembly and Echo facade. The turn state machine lives in Echo.
 
-``JSAgent`` is assembled from focused mixins:
+``JSAgent`` wires subsystems and exposes a compatibility run/stream API.
+Every turn is owned by :class:`~js.echo.turn_runtime.EchoRuntime`; the loop
+is :class:`~js.echo.turn_loop.EchoTurnLoop` in ``js/echo/turn_loop/``.
+
+Mixins:
   * :class:`~js.agent.state.StateMixin` — checkpoint save/load/resume
   * :class:`~js.agent.prompt_builder.PromptBuilderMixin` — system/context prompts
-  * :class:`~js.agent.tool_executor.ToolExecutorMixin` — tool schema + execution
+  * :class:`~js.agent.tool_executor.ToolExecutorMixin` — leased tool execution
   * :class:`~js.agent.finalizer.FinalizerMixin` — post-run persistence/learning
-  * :class:`~js.agent.runner.RunnerMixin` — public run/stream API facade over
-    :class:`~js.echo.turn_runtime.EchoRuntime`
+  * :class:`~js.agent.runner.RunnerMixin` — public run/stream API over Echo
 
-The residual orchestration (subsystem wiring, health, evolution, dreaming) lives
-on ``JSAgent`` here.  ``AgentState`` is re-exported for backward compatibility:
-``from js.agent import JSAgent, AgentState`` keeps working.
+Residual orchestration (health, evolution, dreaming) stays on ``JSAgent``.
+``AgentState`` is re-exported: ``from js.agent import JSAgent, AgentState``.
 """
 
 from __future__ import annotations
@@ -108,6 +110,7 @@ class JSAgent(
             thread_name_prefix=f"echo-{getattr(settings, 'product_id', 'js-agent')}"
         )
         self._role: str | None = None  # Set by AgentFleet.spawn() for role-based tool restrictions
+        self._orind_ref = False
         self._init_subsystems()
 
     def _push_summary_tenant(self, tenant_id: str | None) -> contextvars.Token[str | None]:
@@ -120,6 +123,16 @@ class JSAgent(
         """Initialize all agent subsystems."""
         settings = self.settings
         features = settings.features
+        from js.orin.stage_c import (
+            bind_product_enforce,
+            echo_may_hold_provider_tokens,
+            product_enforce_enabled,
+        )
+
+        enforce = product_enforce_enabled(getattr(settings, "orin", None))
+        bind_product_enforce(enforce)
+        if not echo_may_hold_provider_tokens(getattr(settings, "orin", None)):
+            raise RuntimeError("Echo must not hold provider tokens under orin.enforce")
 
         # Core infrastructure
         static_provider_secrets = SecretManager(settings.state_dir)
@@ -169,14 +182,14 @@ class JSAgent(
 
         # Plugin system
         self.plugins: Any = None
-        if features.plugins_enabled:
+        if features.plugins_enabled and not enforce:
             self._init_plugins()
 
         # Tooling layer
         self.registry = ToolRegistry(settings.tools, self.guard)
         self.promotion_store = None
         self.skills = None  # type: ignore[assignment]
-        if features.skills_enabled:
+        if features.skills_enabled and not enforce:
             # v0.1.5-alpha: PromotionStore must be constructed before SkillManager
             # so trust changes / proposals can be audited from the very first
             # ``trust_skill`` call. Curator and Evolver share the same store.
@@ -215,7 +228,7 @@ class JSAgent(
         self._model_token_counter_lock = threading.Lock()
         self.metacognition = None  # type: ignore[assignment]
         self.curator = None  # type: ignore[assignment]
-        if features.evolution_enabled:
+        if features.evolution_enabled and not enforce:
             self.learner = SelfLearner(settings.state_dir)
             self.optimizer = PromptOptimizer(settings.state_dir)
             self.evolver = SkillEvolver(
@@ -262,7 +275,7 @@ class JSAgent(
 
         # Register skills as callable tools
         if self.skills is not None and features.skills_enabled and features.skill_tools_enabled:
-            self.skills.register_as_tools(self.registry)
+            self.skills.register_as_tools(self.registry, load=False)
 
         # Register default prompt variant for optimization
         self._init_default_prompt_variant()
@@ -306,20 +319,6 @@ class JSAgent(
         from js.persistence.review_store import ReviewStore
 
         self.review_store = ReviewStore(settings.state_dir / "review_capsules.db")
-        try:
-            # Startup recovery must sweep ALL owners — a crash kills every
-            # in-flight run regardless of who owns it. The per-owner
-            # ``recover_aborted_sessions`` would only sweep the legacy-local
-            # partition and silently leave authenticated owners' stale rows
-            # stuck in ``running`` forever.
-            recovered = self.lifecycle_store.recover_all_aborted_sessions()
-            if recovered:
-                self.logger.info(
-                    f"Recovered {len(recovered)} aborted sessions",
-                    extra={"sessions": [sid for sid, _ in recovered]},
-                )
-        except Exception:
-            self.logger.warning("Session recovery failed", exc_info=True)
         from js.events.store import EventStore
 
         self.event_store = EventStore(settings.state_dir / "events")
@@ -353,6 +352,12 @@ class JSAgent(
         self._fleet_getter: Any | None = None
         # Desktop control tools (set dynamically by web layer via desktop_toggle)
         self._desktop_tools: Any | None = None
+        if getattr(getattr(settings, "orin", None), "enabled", False) is True:
+            from js.orin.supervisor import ensure_orind
+
+            ensure_orind(settings, wait=False)
+            self._orind_ref = True
+            self.logger.info("Orin gatekeeper spawn requested (Stage A leases via orind)")
 
     @property
     def degraded(self) -> bool:
@@ -940,13 +945,23 @@ class JSAgent(
         manager.register(BingEngine(timeout=10.0), default=True)
         manager.register(DuckDuckGoEngine(timeout=8.0))
         # Try to load Tavily key from secrets
-        tavily_key = self.secrets.retrieve("tavily_api_key")
+        tavily_key = None
+        from js.orin.stage_c import product_enforce_enabled
+
+        if not product_enforce_enabled(getattr(self.settings, "orin", None)):
+            tavily_key = self.secrets.retrieve("tavily_api_key")
         if tavily_key:
             manager.register(TavilyEngine(tavily_key))
         return manager
 
     def register_fleet_tool(self, fleet_factory: Any) -> None:
         """Register the fleet collaboration tool (called from web layer)."""
+        from js.orin.stage_c import product_enforce_enabled, should_register_product_tool
+
+        enforce = product_enforce_enabled(getattr(self.settings, "orin", None))
+        if not should_register_product_tool("fleet_collaborate", enforce=enforce):
+            self.logger.info("Fleet collaboration tool disabled under orin.enforce")
+            return
         try:
             from js.tools.fleet_tools import FleetCollaborateTool
 
@@ -1397,6 +1412,14 @@ class JSAgent(
             except Exception as e:
                 self.logger.warning(f"Failed to close {name}: {e}")
         self._echo_durable_executor.shutdown(wait=True)
+        if self._orind_ref:
+            from js.orin.supervisor import release_orind
+
+            try:
+                release_orind(self.settings)
+            except Exception as e:
+                self.logger.warning(f"Failed to release orind: {e}")
+            self._orind_ref = False
 
     async def _run_dreaming(self) -> None:
         """Background task for memory consolidation with LLM insight generation."""

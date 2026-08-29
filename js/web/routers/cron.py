@@ -11,6 +11,7 @@ from js.echo.effect_interpreter import ToolEffect
 from js.web.auth import memory_owner, require_admin_write, require_auth_dep
 from js.web.deps import get_agent
 from js.web.runtime_context import web_channel
+from js.web.schemas import CronJobWriteRequest, CronParseRequest
 
 router = APIRouter(prefix="/api/cron", tags=["cron"])
 
@@ -106,22 +107,22 @@ async def cron_get_job(
 
 @router.post("/jobs")
 async def cron_create_job(
-    payload: dict[str, Any], auth: dict[str, Any] = Depends(require_admin_write)
+    payload: CronJobWriteRequest, auth: dict[str, Any] = Depends(require_admin_write)
 ) -> dict[str, Any]:
     """Create a new scheduled job."""
-    return await _mutate_cron("create", payload, auth)
+    return await _mutate_cron("create", payload.model_dump(exclude_none=True), auth)
 
 
 @router.put("/jobs/{job_id}")
 async def cron_update_job(
     job_id: str,
-    payload: dict[str, Any],
+    payload: CronJobWriteRequest,
     auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Update an existing job."""
     return await _mutate_cron(
         "update",
-        {"job_id": job_id, "changes": payload},
+        {"job_id": job_id, "changes": payload.model_dump(exclude_none=True)},
         auth,
     )
 
@@ -219,12 +220,12 @@ async def cron_templates(
 
 @router.post("/parse")
 async def cron_parse_natural(
-    payload: dict[str, Any], auth: dict[str, Any] = Depends(require_auth_dep)
+    payload: CronParseRequest, auth: dict[str, Any] = Depends(require_auth_dep)
 ) -> dict[str, Any]:
     """Parse natural language into cron expression."""
     from js.cron.nlp import parse_natural_language, suggest_cron_examples
 
-    text = payload.get("text", "")
+    text = payload.text
     if not text:
         return {"examples": suggest_cron_examples()}
     result = parse_natural_language(text)

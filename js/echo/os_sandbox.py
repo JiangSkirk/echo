@@ -503,6 +503,12 @@ class SandboxExecutor:
             for git_component in (*git_dirs, *git_files):
                 if git_component.exists():
                     wrapped.extend(("--ro-bind", str(git_component), str(git_component)))
+            git_root = self.workspace / ".git"
+            if not git_root.exists():
+                placeholder = self._sandbox_home_dir() / "git-deny-placeholder"
+                placeholder.mkdir(parents=True, exist_ok=True)
+                wrapped.extend(("--dir", str(git_root)))
+                wrapped.extend(("--ro-bind", str(placeholder), str(git_root)))
             from js.security.runtime_tcb import (
                 workspace_tcb_allow_targets,
                 workspace_tcb_deny_targets,
@@ -872,16 +878,82 @@ class SandboxExecutor:
 
         return _apply_rlimit
 
+    @staticmethod
+    def _process_tree_rss(pid: int) -> int:
+        """Sum RSS of ``pid`` and all descendants. Missing children are skipped."""
+        root = psutil.Process(pid)
+        total = root.memory_info().rss
+        try:
+            children = root.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return total
+        for child in children:
+            try:
+                total += child.memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return total
+
+    @staticmethod
+    def _process_group_rss(pid: int) -> int:
+        """Sum RSS of every live process that still shares ``pid``'s process group.
+
+        Children that called ``setsid()`` are out of scope. Prefer the larger
+        of the psutil tree walk and the group sum so neither under-counts.
+        """
+        tree = SandboxExecutor._process_tree_rss(pid)
+        try:
+            pgid = os.getpgid(pid)
+        except OSError:
+            return tree
+        group_total = 0
+        for proc in psutil.process_iter(["pid"]):
+            child_pid = proc.info.get("pid")
+            if not isinstance(child_pid, int):
+                continue
+            try:
+                if os.getpgid(child_pid) != pgid:
+                    continue
+                group_total += proc.memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied, OSError, ProcessLookupError):
+                continue
+        return max(tree, group_total)
+
+    @staticmethod
+    def _cgroup_rss(pid: int) -> int | None:
+        """Linux cgroup v2 ``memory.current`` when the controller is mounted."""
+        try:
+            text = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8")
+        except OSError:
+            return None
+        for line in text.splitlines():
+            if not line.startswith("0::"):
+                continue
+            relative = line[3:].lstrip("/")
+            current = Path("/sys/fs/cgroup") / relative / "memory.current"
+            try:
+                return int(current.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                return None
+        return None
+
+    def _accounted_rss(self, pid: int) -> int:
+        group = self._process_group_rss(pid)
+        cgroup = self._cgroup_rss(pid)
+        if cgroup is None:
+            return group
+        return max(group, cgroup)
+
     async def _monitor_memory(self, proc: asyncio.subprocess.Process, max_mb: int) -> bool:
-        """Monitor process memory and kill if it exceeds limit."""
+        """Monitor process-group (and cgroup) RSS and kill if the sum exceeds the limit."""
         max_bytes = max_mb * 1024 * 1024
         try:
             while proc.returncode is None:
                 await asyncio.sleep(0.5)
                 try:
-                    p = psutil.Process(proc.pid)
-                    mem_info = p.memory_info()
-                    if mem_info.rss > max_bytes:
+                    if proc.pid is None:
+                        break
+                    if self._accounted_rss(proc.pid) > max_bytes:
                         self._kill_process_tree(proc)
                         return True
                 except psutil.NoSuchProcess:

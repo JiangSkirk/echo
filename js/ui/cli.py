@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import stat
 from pathlib import Path
-from typing import Any
-from urllib.parse import quote
+from typing import TYPE_CHECKING, Any
 
 import click
 from prompt_toolkit import PromptSession
@@ -18,16 +16,15 @@ from rich.panel import Panel
 from rich.table import Table
 
 from js import __version__
-from js.agent import JSAgent
-from js.agent.tool_executor import CONTROL_SKILL_MUTATE_TOOL
 from js.config import JSSettings
-from js.echo.effect_interpreter import ToolEffect
-from js.echo.turn_context import RuntimeContext
-from js.echo.turn_runtime import run_echo_turn
-from js.tools.registry import ToolResult
 from js.utils.log import configure_logging, get_logger
 from js.web.messages import humanize_error
 from js_work.cli import main as work_main
+
+if TYPE_CHECKING:
+    from js.agent import JSAgent
+    from js.echo.turn_context import RuntimeContext
+    from js.tools.registry import ToolResult
 
 console = Console()
 
@@ -37,6 +34,15 @@ PROMPT_STYLE = Style.from_dict(
         "": "#ffffff",
     }
 )
+
+
+def _product_settings(config: str | None = None) -> JSSettings:
+    """Load settings for a product entry that should run Stage A orind."""
+    from js.orin.supervisor import prepare_product_orin
+
+    settings = JSSettings.from_file(config)
+    prepare_product_orin(settings)
+    return settings
 
 
 class JSCLI:
@@ -49,6 +55,8 @@ class JSCLI:
         self.logger = get_logger("js.cli")
 
     async def init(self) -> None:
+        from js.agent import JSAgent
+
         if self.agent is not None:
             await self.agent.close()
         self.agent = JSAgent(self.settings)
@@ -68,6 +76,8 @@ class JSCLI:
         context: RuntimeContext | None = None,
     ) -> ToolResult:
         """Execute a local CLI control action through the Echo boundary."""
+        from js.echo.effect_interpreter import ToolEffect
+
         if self.agent is None:
             raise click.ClickException("Agent not initialized")
         runtime = self.agent.echo_runtime
@@ -96,6 +106,8 @@ class JSCLI:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         """Run a CLI skill mutation without journaling private operator input."""
+        from js.agent.tool_executor import CONTROL_SKILL_MUTATE_TOOL
+
         if self.agent is None:
             raise click.ClickException("Agent not initialized")
         owner = "js-cli-local"
@@ -196,6 +208,8 @@ class JSCLI:
 
     async def _process_message(self, user_input: str) -> None:
         """Process a user message through the agent."""
+        from js.echo.turn_runtime import run_echo_turn
+
         if not self.agent:
             console.print("[red]Agent not initialized[/red]")
             return
@@ -456,7 +470,7 @@ def main(ctx: click.Context, config: str | None, verbose: bool) -> None:
         )
 
     if ctx.invoked_subcommand is None:
-        settings = JSSettings.from_file(config)
+        settings = _product_settings(config)
 
         # First-run guidance: if no models are configured, prompt for setup
         if not settings.providers:
@@ -511,7 +525,12 @@ def main(ctx: click.Context, config: str | None, verbose: bool) -> None:
     is_flag=True,
     hidden=True,
 )
-@click.option("--no-browser", is_flag=True, help="Do not open a browser window")
+@click.option(
+    "--no-browser",
+    is_flag=True,
+    hidden=True,
+    help="Accepted for compatibility; AppShell never opens a browser.",
+)
 def appshell_cmd(
     personal_config: str | None,
     work_config: str | None,
@@ -522,12 +541,13 @@ def appshell_cmd(
     legacy_dual_host: bool,
     no_browser: bool,
 ) -> None:
-    """Launch the unified JS Agent AppShell (single host, single port).
+    """Launch the local AppShell Host (desktop / development). Never opens a browser.
 
     Personal and Work are routed at root by the parent principal.
     Data planes stay isolated (separate state_dir / ledger / memory).
     The legacy flag is accepted as a hidden single-host compatibility shim.
     """
+    del no_browser
     if legacy_dual_host:
         from js.appshell.launcher import launch_appshell
 
@@ -537,13 +557,12 @@ def appshell_cmd(
                 work_config=work_config,
                 personal_base_url=personal_url or "http://127.0.0.1:8000",
                 work_base_url=work_url or personal_url or "http://127.0.0.1:8000",
-                open_browser=not no_browser,
+                open_browser=False,
             )
         )
 
-    import uvicorn
-
     from js.appshell.server import create_appshell_app
+    from js.web.local_host import run_local_host
     from js_work.tools import WorkToolProfile
 
     app = create_appshell_app(
@@ -552,23 +571,14 @@ def appshell_cmd(
         work_profile=WorkToolProfile.EXECUTE,
         host=host,
         port=int(port),
+        manage_orind=True,
     )
-    url = f"http://{host}:{port}"
-    console.print(f"[green]Starting JS Agent AppShell at {url}[/green]")
-    console.print("[dim]Personal and Work share this root; server mode decides routing.[/dim]")
-
-    if not no_browser:
-        import threading
-        import time
-        import webbrowser
-
-        def _open() -> None:
-            time.sleep(1.5)
-            webbrowser.open(url)
-
-        threading.Thread(target=_open, daemon=True).start()
-
-    uvicorn.run(app, host=host, port=int(port))
+    run_local_host(
+        app,
+        host=host,
+        port=int(port),
+        notes=("Use the JS Agent desktop app. This host does not open a browser.",),
+    )
 
 
 @main.command()
@@ -590,10 +600,12 @@ def init(path: str) -> None:
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
 def run(message: str, model: str | None, config: str | None) -> None:
     """Run a single message and exit."""
-    settings = JSSettings.from_file(config)
+    settings = _product_settings(config)
     cli = JSCLI(settings)
 
     async def _run() -> None:
+        from js.echo.turn_runtime import run_echo_turn
+
         try:
             await cli.init()
             if cli.agent:
@@ -620,7 +632,7 @@ def run_status(*, config: str | None = None, backup_journal: bool = False) -> No
     """Programmatic status entry used by CLI and tests."""
     from js.echo.ledger.journal_recovery import prepare_recovery
 
-    settings = JSSettings.from_file(config)
+    settings = _product_settings(config)
     recovery = prepare_recovery(settings.state_dir, backup=backup_journal, quarantine=False)
     if not recovery.ok:
         console.print(recovery.render_cli())
@@ -659,15 +671,23 @@ def status(config: str | None, backup_journal: bool) -> None:
     run_status(config=config, backup_journal=backup_journal)
 
 
-@main.group(invoke_without_command=True)
+BROWSER_UI_RETIRED = (
+    "The browser Web UI is retired. Use the JS Agent desktop app. "
+    "For a local Host without a browser, run: js appshell"
+)
+
+
+def _refuse_browser_ui(*_args: Any, **_kwargs: Any) -> None:
+    raise click.ClickException(BROWSER_UI_RETIRED)
+
+
+@main.group(invoke_without_command=True, hidden=True)
 @click.option("--host", default="127.0.0.1", help="Bind host")
 @click.option("--port", default=8000, help="Bind port")
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
-@click.option("--reload", is_flag=True, help="Enable auto-reload on code changes (dev mode)")
-@click.option(
-    "--warm", is_flag=True, help="Pre-load skills and warm up provider connections on startup"
-)
-@click.option("--daemon", is_flag=True, help="Run as a supervised daemon (auto-restart on crash)")
+@click.option("--reload", is_flag=True, help="Ignored; the browser Web UI is retired")
+@click.option("--warm", is_flag=True, help="Ignored; the browser Web UI is retired")
+@click.option("--daemon", is_flag=True, help="Ignored; the browser Web UI is retired")
 @click.pass_context
 def web(
     ctx: click.Context,
@@ -678,329 +698,54 @@ def web(
     warm: bool,
     daemon: bool,
 ) -> None:
-    """Web UI server management.\n\nExamples:\n  js web start --port 8000\n  js web stop\n  js web restart --port 8000\n  js web status"""
+    """Retired browser Web UI. Use the desktop app."""
+    del host, port, config, reload, warm, daemon
     if ctx.invoked_subcommand is None:
-        # Backward compatibility: js web --daemon --port 8000
-        if daemon:
-            _run_as_daemon(host, port, config, warm)
-        else:
-            _launch_web(host, port, config, open_browser=False, reload=reload, warm=warm)
+        _refuse_browser_ui()
 
 
 @web.command()
-@click.option("--host", default="127.0.0.1", help="Bind host")
-@click.option("--port", default=8000, help="Bind port")
-@click.option("--config", "-c", type=click.Path(), help="Config file path")
-@click.option(
-    "--warm", is_flag=True, help="Pre-load skills and warm up provider connections on startup"
-)
+@click.option("--host", default="127.0.0.1")
+@click.option("--port", default=8000)
+@click.option("--config", "-c", type=click.Path())
+@click.option("--warm", is_flag=True)
 def start(host: str, port: int, config: str | None, warm: bool) -> None:
-    """Start the web server as a supervised daemon."""
-    pid_file = Path.home() / ".js" / "run" / "js-web.pid"
-    if pid_file.exists():
-        try:
-            pid = int(pid_file.read_text().strip())
-            if _pid_alive(pid):
-                console.print(
-                    f"[yellow]Web server already running (PID {pid}). Use 'js web restart' or 'js web stop' first.[/yellow]"
-                )
-                return
-        except ValueError:
-            pass
-        pid_file.unlink(missing_ok=True)
-    _run_as_daemon(host, port, config, warm)
+    """Retired: browser Web UI daemon."""
+    del host, port, config, warm
+    _refuse_browser_ui()
 
 
 @web.command()
 def stop() -> None:
-    """Stop the running web server daemon."""
-    import os
-    import signal
-    import time
-
-    pid_file = Path.home() / ".js" / "run" / "js-web.pid"
-    if not pid_file.exists():
-        console.print("[yellow]No PID file found. Server may not be running.[/yellow]")
-        return
-
-    try:
-        pid = int(pid_file.read_text().strip())
-    except ValueError:
-        console.print("[red]PID file is corrupted.[/red]")
-        pid_file.unlink(missing_ok=True)
-        return
-
-    if not _pid_alive(pid):
-        console.print("[yellow]Server is not running (stale PID file removed).[/yellow]")
-        pid_file.unlink(missing_ok=True)
-        return
-
-    cmdline = _pid_cmdline(pid)
-    if "js" not in cmdline or "web" not in cmdline:
-        console.print(
-            f"[red]Refusing to stop PID {pid}: its command line does not look like a "
-            f"'js web' server ({cmdline or 'unreadable'}). Remove {pid_file} manually "
-            "if the server is gone.[/red]"
-        )
-        return
-
-    console.print(f"[yellow]Stopping server (PID {pid})...[/yellow]")
-    try:
-        os.kill(pid, signal.SIGINT)
-    except ProcessLookupError:
-        console.print("[yellow]Server process not found (already stopped).[/yellow]")
-        pid_file.unlink(missing_ok=True)
-        return
-
-    # Wait up to 10s for graceful shutdown
-    for _ in range(20):
-        if not _pid_alive(pid):
-            console.print("[green]Server stopped.[/green]")
-            pid_file.unlink(missing_ok=True)
-            return
-        time.sleep(0.5)
-
-    # Force kill
-    try:
-        os.kill(pid, signal.SIGKILL)
-        console.print("[red]Server force-killed.[/red]")
-    except ProcessLookupError:
-        console.print("[green]Server stopped.[/green]")
-    pid_file.unlink(missing_ok=True)
+    """Retired: browser Web UI daemon."""
+    _refuse_browser_ui()
 
 
 @web.command()
-@click.option("--host", default="127.0.0.1", help="Bind host")
-@click.option("--port", default=8000, help="Bind port")
-@click.option("--config", "-c", type=click.Path(), help="Config file path")
-@click.option(
-    "--warm", is_flag=True, help="Pre-load skills and warm up provider connections on startup"
-)
+@click.option("--host", default="127.0.0.1")
+@click.option("--port", default=8000)
+@click.option("--config", "-c", type=click.Path())
+@click.option("--warm", is_flag=True)
 def restart(host: str, port: int, config: str | None, warm: bool) -> None:
-    """Restart the web server daemon."""
-    ctx = click.get_current_context()
-    import time as _time
-
-    ctx.invoke(stop)
-    _time.sleep(1)
-    ctx.invoke(start, host=host, port=port, config=config, warm=warm)
+    """Retired: browser Web UI daemon."""
+    del host, port, config, warm
+    _refuse_browser_ui()
 
 
 @web.command(name="status")
 def web_status() -> None:
-    """Check whether the web server is running."""
-    import platform
-
-    pid_file = Path.home() / ".js" / "run" / "js-web.pid"
-    if not pid_file.exists():
-        console.print("[yellow]Server is not running.[/yellow]")
-        return
-
-    try:
-        pid = int(pid_file.read_text().strip())
-    except ValueError:
-        console.print("[red]PID file is corrupted.[/red]")
-        return
-
-    if not _pid_alive(pid):
-        console.print("[yellow]Server is not running (stale PID file).[/yellow]")
-        return
-
-    console.print(f"[green]Server is running (PID {pid}).[/green]")
-    if platform.system() == "Darwin":
-        import subprocess
-
-        try:
-            proc_info = subprocess.run(
-                ["ps", "-p", str(pid), "-o", "etime,args"],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            lines = proc_info.stdout.strip().split("\n")
-            if len(lines) >= 2:
-                console.print(f"[dim]{lines[1].strip()}[/dim]")
-        except Exception:
-            pass
+    """Retired: browser Web UI daemon."""
+    _refuse_browser_ui()
 
 
-@main.command(name="open")
+@main.command(name="open", hidden=True)
 @click.option("--host", default="127.0.0.1", help="Bind host")
 @click.option("--port", default=8000, help="Bind port")
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
 def open_cmd(host: str, port: int, config: str | None) -> None:
-    """Launch Web UI and open browser."""
-    _launch_web(host, port, config, open_browser=True, reload=False)
-
-
-def _pid_alive(pid: int) -> bool:
-    """Check whether a process with the given PID exists."""
-    import os
-
-    try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
-        return False
-    return True
-
-
-def _pid_cmdline(pid: int) -> str:
-    """Return the full command line of a process, or "" if it cannot be read.
-
-    Used to guard against PID reuse before signalling a daemon. Prefers `ps`
-    (macOS/Linux); falls back to /proc on minimal Linux systems without ps.
-    """
-    import subprocess
-
-    try:
-        result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "command="],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        pass
-    try:
-        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except OSError:
-        return ""
-    return raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
-
-
-def _launch_web(
-    host: str,
-    port: int,
-    config: str | None,
-    open_browser: bool,
-    reload: bool = False,
-    warm: bool = False,
-) -> None:
-    import threading
-    import time
-    import webbrowser
-
-    import uvicorn
-
-    from js.web import create_app
-
-    if warm:
-        import os
-
-        os.environ["JS_WARM_START"] = "1"
-        console.print("[yellow]Warm start enabled: pre-loading skills...[/yellow]")
-
-    url = f"http://{host}:{port}"
-    console.print(f"[green]Starting JS Web UI at {url}[/green]")
-
-    # Load the specified config file so --config actually takes effect
-    # (previously _config was ignored and create_app() used defaults).
-    runtime_settings = JSSettings.from_file(config) if config else None
-
-    if open_browser:
-
-        def _open() -> None:
-            import os
-
-            time.sleep(1.5)
-            settings = runtime_settings or JSSettings.from_file()
-            state_dir = Path(os.getenv("JS_STATE_DIR", str(settings.state_dir)))
-            webbrowser.open(_bootstrap_browser_url(url, state_dir))
-
-        threading.Thread(target=_open, daemon=True).start()
-
-    app = create_app(runtime_settings=runtime_settings)
-    uvicorn.run(app, host=host, port=port, reload=reload)
-
-
-def _bootstrap_browser_url(url: str, state_dir: Path) -> str:
-    """Return a local launch URL whose credential never enters an HTTP request."""
-    key_file = state_dir / "bootstrap_admin_key.txt"
-    try:
-        metadata = key_file.lstat()
-        if key_file.is_symlink() or not stat.S_ISREG(metadata.st_mode):
-            return url
-        if stat.S_IMODE(metadata.st_mode) != 0o600:
-            return url
-        key = key_file.read_text(encoding="utf-8").strip()
-    except OSError:
-        return url
-    if not key:
-        return url
-    return url.rstrip("/") + "/#bootstrap-api-key=" + quote(key, safe="")
-
-
-def _run_as_daemon(host: str, port: int, config: str | None, warm: bool) -> None:
-    """Run the web server as a supervised daemon with auto-restart."""
-    import os
-    import signal
-    import subprocess
-    import sys
-    import time
-    from pathlib import Path
-
-    pid_file = Path.home() / ".js" / "run" / "js-web.pid"
-    pid_file.parent.mkdir(parents=True, exist_ok=True)
-
-    # Build the child command (without --daemon to avoid recursion)
-    cmd = [sys.executable, "-m", "js", "web", "--host", host, "--port", str(port)]
-    if config:
-        cmd.extend(["--config", config])
-    if warm:
-        cmd.append("--warm")
-
-    child: subprocess.Popen[str] | None = None
-    shutdown = False
-    restarts: list[float] = []
-    max_restarts = 5
-    restart_window = 3600.0  # 1 hour
-
-    def _on_signal(signum: int, _frame: Any) -> None:
-        nonlocal shutdown
-        shutdown = True
-        if child is not None:
-            child.send_signal(signum)
-
-    signal.signal(signal.SIGTERM, _on_signal)
-    signal.signal(signal.SIGINT, _on_signal)
-
-    # Write supervisor PID
-    pid_file.write_text(str(os.getpid()))
-    console.print(f"[green]Daemon supervisor PID {os.getpid()} started[/green]")
-
-    while not shutdown:
-        now = time.time()
-        restarts = [t for t in restarts if now - t < restart_window]
-        if len(restarts) >= max_restarts:
-            console.print(
-                f"[red]Too many restarts ({max_restarts}) in {restart_window}s, giving up.[/red]"
-            )
-            pid_file.unlink(missing_ok=True)
-            sys.exit(1)
-
-        console.print(f"[green]Starting web server: {' '.join(cmd)}[/green]")
-        child = subprocess.Popen(cmd, text=True)
-        restarts.append(time.time())
-        assert child is not None
-        exit_code = child.wait()
-
-        if shutdown:
-            console.print("[green]Daemon shutdown complete.[/green]")
-            break
-
-        if exit_code == 0:
-            console.print("[green]Server exited cleanly.[/green]")
-            break
-
-        backoff = min(2 ** len(restarts[-5:]), 30)
-        console.print(
-            f"[yellow]Server crashed (exit {exit_code}), restarting in {backoff}s...[/yellow]"
-        )
-        time.sleep(backoff)
-
-    pid_file.unlink(missing_ok=True)
+    """Retired: do not open a browser Web UI."""
+    del host, port, config
+    _refuse_browser_ui()
 
 
 @main.command()
@@ -1101,7 +846,7 @@ def skill_info(skill_id: str, config: str | None) -> None:
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
 def skill_install(source: str, skill_id: str | None, config: str | None) -> None:
     """Install a skill from a local path or git URL."""
-    settings = JSSettings.from_file(config)
+    settings = _product_settings(config)
     cli = JSCLI(settings)
     asyncio.run(cli.init())
     if not cli.agent:
@@ -1138,7 +883,7 @@ def skill_install(source: str, skill_id: str | None, config: str | None) -> None
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
 def skill_uninstall(skill_id: str, yes: bool, config: str | None) -> None:
     """Uninstall a skill."""
-    settings = JSSettings.from_file(config)
+    settings = _product_settings(config)
     cli = JSCLI(settings)
     asyncio.run(cli.init())
     if not cli.agent:
@@ -1171,7 +916,7 @@ def skill_trust(skill_id: str, level: str, yes: bool, config: str | None) -> Non
             "Builtin trust bypasses security scanning.",
             abort=True,
         )
-    settings = JSSettings.from_file(config)
+    settings = _product_settings(config)
     cli = JSCLI(settings)
 
     async def _do() -> None:
@@ -1277,7 +1022,7 @@ def skill_promote_show(event_id: str, config: str | None) -> None:
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
 def skill_promote_approve(event_id: str, config: str | None) -> None:
     """Approve and apply a promotion proposal."""
-    settings = JSSettings.from_file(config)
+    settings = _product_settings(config)
     cli = JSCLI(settings)
 
     async def _do() -> None:
@@ -1305,7 +1050,7 @@ def skill_promote_approve(event_id: str, config: str | None) -> None:
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
 def skill_promote_reject(event_id: str, reason: str, config: str | None) -> None:
     """Reject a promotion proposal."""
-    settings = JSSettings.from_file(config)
+    settings = _product_settings(config)
     cli = JSCLI(settings)
 
     async def _do() -> None:
@@ -1326,7 +1071,7 @@ def skill_promote_reject(event_id: str, reason: str, config: str | None) -> None
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
 def skill_promote_revert(event_id: str, config: str | None) -> None:
     """Revert an applied skill promotion."""
-    settings = JSSettings.from_file(config)
+    settings = _product_settings(config)
     cli = JSCLI(settings)
 
     async def _do() -> None:
@@ -1352,7 +1097,7 @@ def skill_promote_revert(event_id: str, config: str | None) -> None:
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
 def skill_discover(query: str, install: str | None, config: str | None) -> None:
     """Search the ClawHub skill marketplace."""
-    settings = JSSettings.from_file(config)
+    settings = _product_settings(config)
     cli = JSCLI(settings)
 
     async def _do() -> None:
@@ -1522,7 +1267,7 @@ def telegram(token: str | None, config: str | None) -> None:
         console.print("[red]Error: --token required or set TELEGRAM_BOT_TOKEN env var[/red]")
         raise click.ClickException("Telegram bot token is required")
 
-    settings = JSSettings.from_file(config)
+    settings = _product_settings(config)
     from js.integrations.telegram_bot import TelegramBotIntegration
 
     bot = TelegramBotIntegration(token=token, settings=settings)
@@ -1533,7 +1278,7 @@ def telegram(token: str | None, config: str | None) -> None:
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
 def daemon(config: str | None) -> None:
     """Run JS Agent in background daemon mode with scheduled tasks."""
-    settings = JSSettings.from_file(config)
+    settings = _product_settings(config)
     from js.daemon.core import build_default_daemon
 
     d = build_default_daemon(settings)
@@ -1544,7 +1289,7 @@ def daemon(config: str | None) -> None:
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
 def tui(config: str | None) -> None:
     """Launch the Terminal User Interface (Textual-based rich CLI)."""
-    settings = JSSettings.from_file(config)
+    settings = _product_settings(config)
     from js.tui.app import JSTuiApp
 
     app = JSTuiApp(settings)
@@ -1561,37 +1306,40 @@ def plugin() -> None:
 @click.option("--config", "-c", type=click.Path(), help="Config file path")
 def plugin_list(config: str | None) -> None:
     """List all discovered plugins and their status."""
-    settings = JSSettings.from_file(config)
+    settings = _product_settings(config)
     from js.agent import JSAgent
     from js.plugins.manager import PluginManager
 
     agent = JSAgent(settings)
-    pm = PluginManager(agent, settings)
-    pm.discover()
+    try:
+        pm = PluginManager(agent, settings)
+        pm.discover()
 
-    table = Table(title="Plugins")
-    table.add_column("ID", style="cyan")
-    table.add_column("Name")
-    table.add_column("Version")
-    table.add_column("Status", justify="center")
-    table.add_column("Tools")
-    table.add_column("Categories")
+        table = Table(title="Plugins")
+        table.add_column("ID", style="cyan")
+        table.add_column("Name")
+        table.add_column("Version")
+        table.add_column("Status", justify="center")
+        table.add_column("Tools")
+        table.add_column("Categories")
 
-    for p in pm.list_plugins():
-        status_color = {
-            "enabled": "green",
-            "disabled": "yellow",
-            "error": "red",
-        }.get(p.status, "dim")
-        table.add_row(
-            p.manifest.id,
-            p.manifest.name,
-            p.manifest.version,
-            f"[{status_color}]{p.status}[/{status_color}]",
-            str(len(p._tools)),
-            ", ".join(p.manifest.categories),
-        )
-    console.print(table)
+        for p in pm.list_plugins():
+            status_color = {
+                "enabled": "green",
+                "disabled": "yellow",
+                "error": "red",
+            }.get(p.status, "dim")
+            table.add_row(
+                p.manifest.id,
+                p.manifest.name,
+                p.manifest.version,
+                f"[{status_color}]{p.status}[/{status_color}]",
+                str(len(p._tools)),
+                ", ".join(p.manifest.categories),
+            )
+        console.print(table)
+    finally:
+        asyncio.run(agent.close())
 
 
 @plugin.command("enable")

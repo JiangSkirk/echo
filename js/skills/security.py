@@ -156,7 +156,32 @@ def _assess_trust(spec: SkillSpec, risk_flags: list[str]) -> TrustLevel:
                 if verify_skill_manifest(manifest_path, spec.signature, spec.public_key):
                     if is_builtin_public_key(spec.public_key):
                         return TrustLevel.BUILTIN
-                    return TrustLevel.TRUSTED
+                    from js.skills.key_registry import (
+                        REGISTRY_NAME,
+                        is_trusted_public_key,
+                    )
+
+                    candidates: list[Path] = []
+                    env_state = os.environ.get("JS_STATE_DIR")
+                    if env_state:
+                        candidates.append(Path(env_state))
+                    if spec.path is not None:
+                        for parent in (spec.path, *spec.path.resolve().parents):
+                            if (parent / REGISTRY_NAME).is_file():
+                                candidates.append(parent)
+                    candidates.append(Path.home() / ".js" / "state")
+                    trusted = any(
+                        is_trusted_public_key(candidate, spec.public_key)
+                        for candidate in candidates
+                    )
+                    if trusted:
+                        return TrustLevel.TRUSTED
+                    logger.warning(
+                        "Skill '%s' has a valid self-signature outside the "
+                        "trusted key registry — downgrading to COMMUNITY",
+                        spec.id,
+                    )
+                    return TrustLevel.COMMUNITY
                 else:
                     logger.warning(
                         "Skill '%s' has invalid Ed25519 signature — downgrading to COMMUNITY",

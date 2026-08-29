@@ -1,6 +1,6 @@
 # Vendored Web Assets
 
-The Web UI serves these files locally and does not load public CDN resources.
+The local Host UI serves these files locally and does not load public CDN resources.
 
 - `tailwind.css` is generated with Tailwind CSS 3.4.17 from
   `../tailwind.input.css`, scanning `js/web/templates/**/*.html` and

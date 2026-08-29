@@ -132,9 +132,7 @@ def normalize_desktop_safe_projection(
         "status",
     }
     allowed = observe_fields if effect_type == "desktop.observe" else action_fields
-    if effect_type not in {"desktop.observe", "desktop.action"} or not set(data).issubset(
-        allowed
-    ):
+    if effect_type not in {"desktop.observe", "desktop.action"} or not set(data).issubset(allowed):
         raise ProtocolError("desktop projection fields are invalid")
 
     result: dict[str, Any] = {}
@@ -155,7 +153,11 @@ def normalize_desktop_safe_projection(
             result[key] = value
         elif key in integer_bounds:
             lo, hi = integer_bounds[key]
-            result[key] = _integer(value, f"desktop projection {key}", lo=lo, hi=hi)
+            parsed = _integer(value, f"desktop projection {key}", lo=lo, hi=hi)
+            if key in {"owner_pid", "window_number"}:
+                # Cell-internal window/PID identity stays on the Cell/orind hop only.
+                continue
+            result[key] = parsed
         elif key == "scale":
             if type(value) not in {int, float} or not 0.25 <= value <= 8.0:
                 raise ProtocolError("desktop projection scale is invalid")
@@ -186,7 +188,12 @@ def normalize_desktop_safe_projection(
                 raise ProtocolError("desktop projection image type is invalid")
             result[key] = value
         elif key == "target_kind":
-            if type(value) is not str or value not in {"screen", "window", "control"}:
+            if type(value) is not str or value not in {
+                "application",
+                "control",
+                "screen",
+                "window",
+            }:
                 raise ProtocolError("desktop projection target kind is invalid")
             result[key] = value
         elif key == "action":
@@ -253,9 +260,7 @@ def normalize_desktop_safe_projection(
                         "app_name": _projection_text(
                             item["app_name"], "window app name", max_len=256
                         ),
-                        "title": _projection_text(
-                            item["title"], "window title", max_len=512
-                        ),
+                        "title": _projection_text(item["title"], "window title", max_len=512),
                         "bounds": [
                             _integer(bounds[0], "window x", lo=-32_768, hi=32_768),
                             _integer(bounds[1], "window y", lo=-32_768, hi=32_768),
@@ -268,9 +273,7 @@ def normalize_desktop_safe_projection(
         elif key == "dependencies":
             if not isinstance(value, list) or len(value) > 32:
                 raise ProtocolError("desktop projection dependencies are invalid")
-            result[key] = [
-                _projection_text(item, "dependency", max_len=128) for item in value
-            ]
+            result[key] = [_projection_text(item, "dependency", max_len=128) for item in value]
         else:  # pragma: no cover - closed field sets above are exhaustive
             raise ProtocolError("desktop projection field is unsupported")
     if ("image_base64" in result) != ("image_mime_type" in result):
@@ -291,9 +294,7 @@ def normalize_desktop_target(data: Any) -> dict[str, Any]:
             raise ProtocolError("screen target has unknown fields")
         result: dict[str, Any] = {"kind": "screen"}
         if "display_id" in data:
-            result["display_id"] = _integer(
-                data["display_id"], "display_id", lo=0, hi=MAX_SEQ
-            )
+            result["display_id"] = _integer(data["display_id"], "display_id", lo=0, hi=MAX_SEQ)
         return result
     if kind == "window":
         if set(data) != {"kind", "window_id"}:
@@ -309,6 +310,43 @@ def normalize_desktop_target(data: Any) -> dict[str, Any]:
             "kind": "control",
             "window_id": _integer(data["window_id"], "window_id", lo=1, hi=MAX_SEQ),
             "control_id": _string(data["control_id"], "control_id", max_len=256),
+        }
+    if kind == "point":
+        if set(data) != {"kind", "x", "y"}:
+            raise ProtocolError("point target fields are invalid")
+        return {
+            "kind": "point",
+            "x": _integer(data["x"], "point x", lo=-32_768, hi=32_768),
+            "y": _integer(data["y"], "point y", lo=-32_768, hi=32_768),
+        }
+    if kind == "drag":
+        if set(data) != {"kind", "start_x", "start_y", "end_x", "end_y"}:
+            raise ProtocolError("drag target fields are invalid")
+        return {
+            "kind": "drag",
+            "start_x": _integer(data["start_x"], "drag start_x", lo=-32_768, hi=32_768),
+            "start_y": _integer(data["start_y"], "drag start_y", lo=-32_768, hi=32_768),
+            "end_x": _integer(data["end_x"], "drag end_x", lo=-32_768, hi=32_768),
+            "end_y": _integer(data["end_y"], "drag end_y", lo=-32_768, hi=32_768),
+        }
+    if kind in {"pointer", "focused"}:
+        if set(data) != {"kind"}:
+            raise ProtocolError(f"{kind} target has unknown fields")
+        return {"kind": kind}
+    if kind == "window_query":
+        if set(data) != {"kind", "app_name", "window_title"}:
+            raise ProtocolError("window query target fields are invalid")
+        return {
+            "kind": "window_query",
+            "app_name": _string(data["app_name"], "app_name", max_len=256),
+            "window_title": _string(data["window_title"], "window_title", max_len=512),
+        }
+    if kind == "application":
+        if set(data) != {"kind", "app_name"}:
+            raise ProtocolError("application target fields are invalid")
+        return {
+            "kind": "application",
+            "app_name": _string(data["app_name"], "app_name", max_len=256),
         }
     raise ProtocolError("desktop target kind is invalid")
 
@@ -345,9 +383,7 @@ def normalize_desktop_observe_request(data: Any) -> dict[str, Any]:
         width = _integer(args["width"], "screenshot width", lo=0, hi=32_768)
         height = _integer(args["height"], "screenshot height", lo=0, hi=32_768)
         if (width == 0) != (height == 0):
-            raise ProtocolError(
-                "screenshot width and height must both be zero or positive"
-            )
+            raise ProtocolError("screenshot width and height must both be zero or positive")
         if type(args["show_cursor"]) is not bool:
             raise ProtocolError("screenshot show_cursor must be boolean")
         return {
@@ -378,9 +414,7 @@ def normalize_desktop_observe_request(data: Any) -> dict[str, Any]:
             raise ProtocolError("desktop_operation_log arguments are invalid")
         return {
             "tool": tool,
-            "arguments": {
-                "limit": _integer(args["limit"], "operation log limit", lo=1, hi=100)
-            },
+            "arguments": {"limit": _integer(args["limit"], "operation log limit", lo=1, hi=100)},
         }
     raise ProtocolError("desktop observe tool is invalid")
 
@@ -399,6 +433,7 @@ def normalize_desktop_action(data: Any) -> dict[str, Any]:
 
     def coord(value: Any, name: str) -> int:
         return _integer(value, name, lo=-32_768, hi=32_768)
+
     if kind == "click":
         _exact(data, {"kind", "x", "y", "button", "clicks"}, "click")
         button = data["button"]
@@ -452,8 +487,7 @@ def normalize_desktop_action(data: Any) -> dict[str, Any]:
             not isinstance(modifiers, list)
             or len(modifiers) > 4
             or any(
-                type(item) is not str
-                or item not in {"cmd", "option", "ctrl", "shift", "fn"}
+                type(item) is not str or item not in {"cmd", "option", "ctrl", "shift", "fn"}
                 for item in modifiers
             )
             or len(set(modifiers)) != len(modifiers)
@@ -485,9 +519,7 @@ def normalize_desktop_action(data: Any) -> dict[str, Any]:
             "kind": kind,
             "action": action,
             "app_name": _string(data["app_name"], "app_name", max_len=256),
-            "window_title": _string(
-                data["window_title"], "window_title", max_len=512
-            ),
+            "window_title": _string(data["window_title"], "window_title", max_len=512),
         }
         if action == "move":
             result.update({"x": coord(data["x"], "x"), "y": coord(data["y"], "y")})
@@ -511,6 +543,43 @@ def normalize_desktop_action(data: Any) -> dict[str, Any]:
         _exact(data, {"kind"}, "clear_stop")
         return {"kind": kind}
     raise ProtocolError("desktop action kind is invalid")
+
+
+def desktop_target_selector_for_action(data: Any) -> dict[str, Any]:
+    """Derive the sole trusted-observe selector for one exact native action.
+
+    Echo never supplies a native PID, window identity, AX path or bundle id.
+    It supplies only the existing tool arguments; the Desktop Cell resolves
+    those arguments to exact OS facts and seals them into its target handle.
+    """
+
+    action = normalize_desktop_action(data)
+    kind = action["kind"]
+    if kind in {"click", "move"}:
+        return {"kind": "point", "x": action["x"], "y": action["y"]}
+    if kind == "drag":
+        return {
+            "kind": "drag",
+            "start_x": action["start_x"],
+            "start_y": action["start_y"],
+            "end_x": action["end_x"],
+            "end_y": action["end_y"],
+        }
+    if kind == "scroll":
+        return {"kind": "pointer"}
+    if kind in {"type", "key"}:
+        return {"kind": "focused"}
+    if kind == "app":
+        return {"kind": "application", "app_name": action["app_name"]}
+    if kind == "window":
+        return {
+            "kind": "window_query",
+            "app_name": action["app_name"],
+            "window_title": action["window_title"],
+        }
+    if kind == "emergency_stop":
+        return {"kind": "screen"}
+    raise ProtocolError("desktop action has no C2 native target selector")
 
 
 @dataclass(frozen=True, slots=True)
@@ -565,14 +634,10 @@ def desktop_target_binding_from_dict(data: Any) -> DesktopTargetBindingV1:
         task_id=task_id,
         draft_id=draft_id,
         witness_id=witness_id,
-        canonical_effect_hash=_sha256(
-            data["canonical_effect_hash"], "canonical_effect_hash"
-        ),
+        canonical_effect_hash=_sha256(data["canonical_effect_hash"], "canonical_effect_hash"),
         owner_key_hash=_sha256(data["owner_key_hash"], "owner_key_hash"),
         tenant=tenant,
-        expires_at_ms=_integer(
-            data["expires_at_ms"], "expires_at_ms", lo=1, hi=MAX_SEQ
-        ),
+        expires_at_ms=_integer(data["expires_at_ms"], "expires_at_ms", lo=1, hi=MAX_SEQ),
     )
 
 
@@ -603,6 +668,7 @@ __all__ = [
     "DesktopTargetBindingV1",
     "derive_desktop_target_handle_id",
     "desktop_target_binding_from_dict",
+    "desktop_target_selector_for_action",
     "normalize_desktop_action",
     "normalize_desktop_observe_arguments",
     "normalize_desktop_observe_request",

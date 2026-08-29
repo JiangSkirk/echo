@@ -16,6 +16,7 @@ available" for that effect class only — every other tool keeps working.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 import secrets
@@ -123,6 +124,64 @@ class CellBase:
     def cap(self) -> str:
         return self._cap
 
+    def attach_signed_receipt(
+        self,
+        public: dict[str, Any],
+        *,
+        permit_id: str,
+        executor_id: str,
+        effect_hash: str,
+        receipt_id: str,
+    ) -> dict[str, Any]:
+        """Seal a Cell public result. Missing session key leaves the result unsigned."""
+
+        mac_key = self._session_key
+        if not isinstance(mac_key, bytes) or len(mac_key) != 32:
+            return public
+        from js.orin.draft import seal_signed_effect_receipt
+        from js.orin.protocol import canonical_json
+
+        sealed = dict(public)
+        started = int(time.time() * 1000)
+        sealed["signed_receipt"] = seal_signed_effect_receipt(
+            mac_key=mac_key,
+            permit_id=permit_id,
+            executor_id=executor_id,
+            status=str(public.get("status") or "COMMITTED"),
+            canonical_effect_hash=effect_hash,
+            result_digest="sha256:"
+            + hashlib.sha256(canonical_json(public).encode("utf-8")).hexdigest(),
+            started_at_ms=started,
+            finished_at_ms=started,
+            receipt_id=receipt_id,
+        )
+        return sealed
+
+    def _seal_commit_result(
+        self,
+        result: dict[str, Any],
+        *,
+        permit: Any,
+        package: Any | None = None,
+    ) -> dict[str, Any]:
+        """Attach a K§8.5 receipt once. Missing session key leaves the result unsigned."""
+
+        if "signed_receipt" in result:
+            return result
+        permit_id = getattr(permit, "permit_id", None)
+        if not permit_id and isinstance(permit, dict):
+            permit_id = permit.get("permit_id") or permit.get("id")
+        effect_hash = getattr(package, "canonical_effect_hash", None)
+        if not effect_hash and isinstance(permit, dict):
+            effect_hash = permit.get("canonical_effect_hash") or permit.get("hash")
+        return self.attach_signed_receipt(
+            result,
+            permit_id=str(permit_id or "permit"),
+            executor_id=self._cap,
+            effect_hash=str(effect_hash or ("sha256:" + "0" * 64)),
+            receipt_id="receipt:" + str(permit_id or "permit"),
+        )
+
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
@@ -220,9 +279,7 @@ class CellBase:
             )
             writer.write(encode_frame(proof))
             await writer.drain()
-            proof_header = await asyncio.wait_for(
-                reader.readexactly(4), timeout=_CONNECT_TIMEOUT_S
-            )
+            proof_header = await asyncio.wait_for(reader.readexactly(4), timeout=_CONNECT_TIMEOUT_S)
             proof_payload = await reader.readexactly(int.from_bytes(proof_header, "big"))
             proof_ack = parse_frame(proof_payload)
             if (
@@ -458,6 +515,12 @@ class CellBase:
                 session_key=self._session_key,
                 ok=True,
                 state=wire_state,
+                **{
+                    key: value
+                    for key in ("before_digest", "after_digest", "target_digest")
+                    for value in (raw_result.get(key),)
+                    if type(value) is str and value.startswith("sha256:") and len(value) == 71
+                },
             )
         except ProtocolError:
             reply = make_envelope(
@@ -540,6 +603,7 @@ class CellBase:
                     result = await result
                 if not isinstance(result, dict):
                     result = {"status": "COMMITTED", "raw": str(result)[:4096]}
+                result = self._seal_commit_result(result, permit=permit)
                 bounded = dict(result)
                 if "output" in bounded:
                     bounded["output"] = str(bounded["output"])[: 64 * 1024]
@@ -596,6 +660,7 @@ class CellBase:
             if not isinstance(result, dict):
                 raise ProtocolError("strict cell handler must return a result object")
             bounded = self._bounded_strict_result(result)
+            bounded = self._seal_commit_result(bounded, permit=permit, package=package)
             return make_envelope(
                 "commit_ack",
                 seq=request_seq,

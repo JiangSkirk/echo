@@ -1,10 +1,11 @@
 #!/bin/bash
 # JS Agent 一键部署脚本
-# 用法: ./deploy.sh
+# 用法: ./scripts/deploy.sh（在仓库根执行）
 
 set -e
 
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PYTHON_MIN="3.12"
 VENV_DIR="$PROJECT_DIR/.venv"
 
@@ -94,9 +95,9 @@ PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$PROJECT_DIR/.venv/bin/activate"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8000}"
-echo "Starting JS Agent Web UI..."
-echo "Open http://${HOST}:${PORT} in your browser"
-js web --host "$HOST" --port "$PORT"
+echo "Preparing JS Agent..."
+echo "Open the JS Agent desktop app."
+echo "Local Host (does not open a browser): js appshell --no-browser --host ${HOST} --port ${PORT}"
 EOF
 chmod +x "$LAUNCH_SCRIPT"
 echo "  ✅ 启动脚本已创建: $LAUNCH_SCRIPT"
@@ -121,17 +122,10 @@ echo "  ✅ JS Agent 部署完成!"
 echo "========================================"
 echo ""
 echo "启动方式:"
-echo "  1. 命令行: ./start.sh"
-echo "  2. Web UI: js web --port 8000"
-echo "  3. CLI: js"
-echo ""
-echo "打开浏览器访问: http://localhost:8000"
+echo "  1. 打开 JS Agent 桌面应用"
+echo "  2. CLI: js"
+echo "  3. 本机 Host（不打开浏览器）: js appshell"
 echo ""
 
-# 询问是否立即启动
-read -p "是否立即启动 Web UI? (y/n) " -n 1 -r
+read -p "配置已完成。请打开 JS Agent 桌面应用。按 Enter 退出。 " -n 1 -r
 echo ""
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "启动中..."
-    ./start.sh
-fi

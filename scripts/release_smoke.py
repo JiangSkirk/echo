@@ -2,9 +2,10 @@
 """Release smoke checks for JS Agent.
 
 These checks are intentionally small and end-to-end. They verify that a fresh
-install can start the CLI/Web UI, add and switch an OpenAI-compatible provider,
-load OpenClaw/Hermes-style skills, run dream memory, run the autonomous
-evolution entrypoint, and execute a multi-agent workflow.
+install can start the CLI and local AppShell Host, add and switch an
+OpenAI-compatible provider, load OpenClaw/Hermes-style skills, run dream
+memory, run the autonomous evolution entrypoint, and execute a multi-agent
+workflow.
 """
 
 from __future__ import annotations
@@ -81,6 +82,28 @@ def _write_config(base: Path) -> Path:
     return config_path
 
 
+def _write_work_config(base: Path) -> Path:
+    work_home = base / "work-home" / ".js-work"
+    work_home.mkdir(parents=True, exist_ok=True)
+    work_config = base / "work.yaml"
+    work_config.write_text(
+        yaml.safe_dump(
+            {
+                "work_home": str(work_home),
+                "workspace": str(work_home / "workspace"),
+                "state_dir": str(work_home / "state"),
+                "first_run_completed": True,
+                "providers": [],
+                "models": [],
+                "security": {"api_key_required": True},
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return work_config
+
+
 def _env(base: Path) -> dict[str, str]:
     env = os.environ.copy()
     env["JS_CONFIG_PATH"] = str(_write_config(base))
@@ -128,16 +151,19 @@ def _request_json(
     body: dict[str, Any] | None = None,
     timeout: float = 8.0,
     extra_headers: dict[str, str] | None = None,
+    opener: urllib.request.OpenerDirector | None = None,
 ) -> dict[str, Any]:
     data = None
-    headers = {"Content-Type": "application/json"}
+    headers: dict[str, str] = {}
     if extra_headers:
         headers.update(extra_headers)
     if body is not None:
+        headers["Content-Type"] = "application/json"
         data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    client = opener or _LOCAL_OPENER
     try:
-        with _LOCAL_OPENER.open(req, timeout=timeout) as resp:
+        with client.open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
@@ -168,7 +194,7 @@ def _wait_for_server(base_url: str, proc: subprocess.Popen[str], log_path: Path)
             log = (
                 log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
             )
-            raise SmokeError(f"Web 服务启动后立刻退出。\n日志:\n{_short(log)}")
+            raise SmokeError(f"AppShell Host 启动后立刻退出。\n日志:\n{_short(log)}")
         try:
             html = _request_text(base_url, timeout=2.0)
             if "<html" in html.lower() or "JS" in html:
@@ -177,7 +203,9 @@ def _wait_for_server(base_url: str, proc: subprocess.Popen[str], log_path: Path)
             last_error = str(exc)
         time.sleep(0.5)
     log = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
-    raise SmokeError(f"Web 服务没有在 45 秒内启动。\n最后错误: {last_error}\n日志:\n{_short(log)}")
+    raise SmokeError(
+        f"AppShell Host 没有在 45 秒内启动。\n最后错误: {last_error}\n日志:\n{_short(log)}"
+    )
 
 
 def _stop_process(proc: subprocess.Popen[str]) -> None:
@@ -195,8 +223,8 @@ def check_package(base: Path) -> None:
     env = _env(base)
     _run([sys.executable, "-m", "pip", "check"], env=env, timeout=120)
     help_text = _run([sys.executable, "-m", "js", "--help"], env=env, timeout=60)
-    if "web" not in help_text:
-        raise SmokeError("CLI 能启动，但帮助信息里没有 web 命令。")
+    if "appshell" not in help_text:
+        raise SmokeError("CLI 能启动，但帮助信息里没有 appshell 命令。")
     _run(
         [
             sys.executable,
@@ -213,9 +241,24 @@ def check_web_and_model(base: Path) -> None:
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
     log_path = base / "web-smoke.log"
+    work_config = _write_work_config(base)
     with log_path.open("w", encoding="utf-8") as log:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "js", "web", "--host", "127.0.0.1", "--port", str(port)],
+            [
+                sys.executable,
+                "-m",
+                "js",
+                "appshell",
+                "--personal-config",
+                env["JS_CONFIG_PATH"],
+                "--work-config",
+                str(work_config),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--no-browser",
+            ],
             stdout=log,
             stderr=subprocess.STDOUT,
             text=True,
@@ -225,10 +268,24 @@ def check_web_and_model(base: Path) -> None:
         )
         try:
             _wait_for_server(base_url, proc, log_path)
-            # F-01 semantics: anonymous requests are read-only guests.  When
-            # api_key_required=true the server mints a one-time bootstrap admin
-            # key for the local operator (0600, state dir); use it for all
-            # subsequent admin calls instead of unauthenticated bootstrap.
+            # AppShell mints the local bootstrap key on POST /api/appshell/bootstrap
+            # (not at Host start). Keep a cookie jar so later /api calls carry the
+            # parent session.
+            from http.cookiejar import CookieJar
+
+            opener = urllib.request.build_opener(
+                urllib.request.HTTPCookieProcessor(CookieJar()),
+                urllib.request.ProxyHandler({}),
+            )
+            origin_headers = {"Origin": base_url}
+            boot = _request_json(
+                f"{base_url}/api/appshell/bootstrap",
+                method="POST",
+                extra_headers=origin_headers,
+                opener=opener,
+            )
+            if not boot.get("success"):
+                raise SmokeError(f"AppShell bootstrap 返回异常: {boot}")
             key_file = base / "state" / "bootstrap_admin_key.txt"
             admin_key = ""
             for _ in range(20):
@@ -239,8 +296,10 @@ def check_web_and_model(base: Path) -> None:
                 time.sleep(0.25)
             if not admin_key:
                 raise SmokeError("服务器未生成 bootstrap 管理员密钥 (bootstrap_admin_key.txt)")
-            admin_headers = {"Origin": base_url, "x-api-key": admin_key}
-            status = _request_json(f"{base_url}/api/status", extra_headers=admin_headers)
+            admin_headers = {**origin_headers, "x-api-key": admin_key}
+            status = _request_json(
+                f"{base_url}/api/status", extra_headers=admin_headers, opener=opener
+            )
             if "state_dir" not in status:
                 raise SmokeError(f"/api/status 返回异常: {status}")
             echo_status = status.get("echo") or {}
@@ -252,7 +311,9 @@ def check_web_and_model(base: Path) -> None:
             ):
                 raise SmokeError(f"Echo primary 状态异常: {echo_status}")
 
-            skills = _request_json(f"{base_url}/api/skills", extra_headers=admin_headers)
+            skills = _request_json(
+                f"{base_url}/api/skills", extra_headers=admin_headers, opener=opener
+            )
             if not isinstance(skills.get("skills"), list):
                 raise SmokeError(f"/api/skills 返回异常: {skills}")
             skill_ids = {item.get("id") for item in skills["skills"] if isinstance(item, dict)}
@@ -261,7 +322,9 @@ def check_web_and_model(base: Path) -> None:
                 raise SmokeError(f"内置技能未正确加载: {sorted(missing_skills)}")
 
             presets = _request_json(
-                f"{base_url}/api/providers/cloud-presets", extra_headers=admin_headers
+                f"{base_url}/api/providers/cloud-presets",
+                extra_headers=admin_headers,
+                opener=opener,
             )
             if not presets.get("presets"):
                 raise SmokeError("云模型预设为空，普通用户无法一键选择常见 Provider。")
@@ -277,6 +340,7 @@ def check_web_and_model(base: Path) -> None:
                     "models": [{"id": model_id, "name": "Smoke Model"}],
                 },
                 extra_headers=admin_headers,
+                opener=opener,
             )
             if connect.get("provider") != provider_name or connect.get("models_added") != 1:
                 raise SmokeError(f"Provider 添加返回异常: {connect}")
@@ -286,11 +350,14 @@ def check_web_and_model(base: Path) -> None:
                 method="POST",
                 body={"model_id": f"{provider_name}/{model_id}"},
                 extra_headers=admin_headers,
+                opener=opener,
             )
             if not switch.get("success"):
                 raise SmokeError(f"模型切换失败: {switch}")
 
-            models = _request_json(f"{base_url}/api/models", extra_headers=admin_headers)
+            models = _request_json(
+                f"{base_url}/api/models", extra_headers=admin_headers, opener=opener
+            )
             if models.get("active_model") != f"{provider_name}/{model_id}":
                 raise SmokeError(f"模型切换未生效: {models}")
         finally:

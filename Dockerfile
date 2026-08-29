@@ -36,12 +36,15 @@ COPY tests/ ./tests/
 RUN uv sync --frozen --extra dev
 
 ENV PATH="/app/.venv/bin:$PATH"
+# AppShell skips Host lifespan key minting; Docker cannot use loopback
+# POST /api/appshell/bootstrap (bridge traffic is not 127.0.0.1).
+ENV JS_APPSHELL_PROVISION_KEY=1
 
 # Expose the application port
 EXPOSE 8000
 
-# Default command: run the web server with autoreload
-CMD ["js", "web", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Default command: local AppShell Host (does not open a browser)
+CMD ["js", "appshell", "--host", "0.0.0.0", "--port", "8000", "--no-browser"]
 
 # ---- production: frozen non-editable install, non-root (DEFAULT target) ----
 # Keep this stage LAST so a bare `docker build .` produces the hardened
@@ -52,6 +55,7 @@ FROM base AS production
 RUN uv sync --frozen --no-dev --no-editable
 
 ENV PATH="/app/.venv/bin:$PATH"
+ENV JS_APPSHELL_PROVISION_KEY=1
 
 # Create non-root user for security
 RUN useradd -m appuser
@@ -59,8 +63,11 @@ RUN useradd -m appuser
 # Switch to non-root user
 USER appuser
 
+# Work home defaults to /home/appuser/.js-work (credentials, memory, ledger).
+# Persist it with a host volume; JS_STATE_DIR only covers Personal.
+
 # Expose the application port
 EXPOSE 8000
 
-# Default command: run the web server
-CMD ["js", "web", "--host", "0.0.0.0", "--port", "8000"]
+# Default command: local AppShell Host (does not open a browser)
+CMD ["js", "appshell", "--host", "0.0.0.0", "--port", "8000", "--no-browser"]

@@ -527,9 +527,7 @@ class FileCell(CellBase):
             normalized_diff = "".join(
                 _normalized_diff(change, sources[change.path]) for change in changes
             )
-            overwrites = [
-                change.path for change in changes if sources[change.path].exists
-            ]
+            overwrites = [change.path for change in changes if sources[change.path].exists]
             bytes_written = sum(len(change.content) for change in changes)
             report: dict[str, Any] = {
                 "schema": _STAGE_SCHEMA,
@@ -1073,12 +1071,20 @@ class FileCell(CellBase):
             diff_text = report.get("normalized_diff")
             if not isinstance(diff_text, str):
                 raise ProtocolError("File Cell normalized diff is invalid")
-            return {
+            diff_hash = _sha256(diff_text.encode("utf-8"))
+            public = {
                 "status": "COMMITTED",
                 "files": [change.path for change in changes],
                 "bytes_written": sum(len(staged[change.path]) for change in changes),
-                "diff_hash": _sha256(diff_text.encode("utf-8")),
+                "diff_hash": diff_hash,
             }
+            return self.attach_signed_receipt(
+                public,
+                permit_id=permit.permit_id,
+                executor_id="cell.file",
+                effect_hash=package.canonical_effect_hash,
+                receipt_id="receipt:" + diff_hash.removeprefix("sha256:"),
+            )
         finally:
             self._cleanup_prepared([item for item in prepared if item.parent_fd >= 0])
             os.close(root.fd)

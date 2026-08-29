@@ -24,6 +24,15 @@ from js.orind.cells.base import CellBase
 _MAX_OUTPUT_CHARS = 64 * 1024
 
 
+def build_cell_private_staging(state_dir: Path) -> Path:
+    """Cell-private build staging. Not ``workspace/.js-code``."""
+
+    env = os.environ.get("ORIN_BUILD_WORKSPACE")
+    if env:
+        return Path(env)
+    return Path(state_dir) / "orin" / "cell-private" / "build"
+
+
 def _strip_credential_env() -> dict[str, str]:
     """Defense-in-depth: drop obvious credential carriers before exec."""
 
@@ -57,7 +66,10 @@ class BuildCell(CellBase):
         timeout_s: float = 60.0,
         max_output_bytes: int = 256 * 1024,
     ) -> None:
-        self._workspace = workspace or Path(os.environ.get("ORIN_BUILD_WORKSPACE", ".")) / ".build"
+        self._workspace = (
+            workspace if workspace is not None else build_cell_private_staging(state_dir)
+        )
+        self._workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._timeout_s = timeout_s
         self._max_output_bytes = max_output_bytes
         self._executor = SandboxExecutor(
@@ -106,13 +118,22 @@ class BuildCell(CellBase):
         if result.killed:
             output_parts.append("[Process was terminated (timeout or resource limit)]")
         text = "\n".join(part for part in output_parts if part)[:_MAX_OUTPUT_CHARS]
-        return {
+        public = {
             "output": text,
             "status": "COMMITTED" if result.returncode == 0 and not result.killed else "FAILED",
             "returncode": result.returncode,
             "duration_ms": round((time.monotonic() - started) * 1000),
             "killed": result.killed,
         }
+        permit_id = str(permit.get("permit_id") or permit.get("id") or "build")
+        effect_hash = str(permit.get("canonical_effect_hash") or permit.get("hash") or "")
+        return self.attach_signed_receipt(
+            public,
+            permit_id=permit_id,
+            executor_id="cell.build",
+            effect_hash=effect_hash or "sha256:" + "0" * 64,
+            receipt_id="receipt:build:" + permit_id,
+        )
 
 
 def main() -> None:  # pragma: no cover - subprocess entry
@@ -138,4 +159,4 @@ if __name__ == "__main__":  # pragma: no cover
     main()
 
 
-__all__ = ["BuildCell"]
+__all__ = ["BuildCell", "build_cell_private_staging"]

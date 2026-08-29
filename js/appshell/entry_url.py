@@ -1,6 +1,10 @@
 """Build local AppShell entry URLs that can carry a bootstrap fragment.
 
-The fragment never enters HTTP request logs; the Web UI exchanges it for an
+``bootstrap_browser_url`` is for headless Host, e2e, and curl-style smoke
+checks (``#bootstrap-api-key=``). The desktop Tauri window uses a separate
+``#bootstrap=`` token from the sidecar, not this helper.
+
+The fragment never enters HTTP request logs; the window UI exchanges it for an
 HttpOnly session cookie and strips it from the address bar.
 """
 
@@ -12,7 +16,10 @@ from urllib.parse import quote
 
 
 def bootstrap_browser_url(url: str, state_dir: Path | None) -> str:
-    """Return ``url`` or ``url#bootstrap-api-key=...`` when a safe key file exists."""
+    """Return ``url`` or ``url#bootstrap-api-key=...`` when a safe key file exists.
+
+    Headless/e2e only. Desktop bootstrap uses ``#bootstrap=``, not this helper.
+    """
     if state_dir is None:
         return url
     key_file = Path(state_dir) / "bootstrap_admin_key.txt"

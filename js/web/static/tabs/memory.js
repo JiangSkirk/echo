@@ -3,6 +3,12 @@ import { escapeHtml, showToast, showLoading, showError, el, onDataClick, bindDat
 // Current block filter for search
 let currentBlockPath = '';
 let searchScopeAll = true;
+let currentMemoryView = 'knowledge';
+let memoryPageLimit = 20;
+let memoryChromeBound = false;
+let enhancedCache = null;
+let enhancedIsAdmin = true;
+const loadedViews = new Set();
 // Top-level block paths currently expanded to show their sub-blocks.
 const expandedBlocks = new Set();
 // Inbox / modal state.
@@ -73,22 +79,22 @@ export function closeConfirmModal() {
   closeModal('memory-confirm-modal');
 }
 
-const ENTITY_COLORS = {
-  family: 'bg-orange-900/40 text-orange-400',
-  friend: 'bg-lime-900/40 text-lime-400',
-  colleague: 'bg-indigo-900/40 text-indigo-400',
-  project: 'bg-teal-900/40 text-teal-400',
-  company: 'bg-sky-900/40 text-sky-400',
-  preference: 'bg-green-900/40 text-green-400',
-  personality: 'bg-fuchsia-900/40 text-fuchsia-400',
-  body: 'bg-red-900/40 text-red-400',
-  device: 'bg-amber-900/40 text-amber-400',
-  identity: 'bg-rose-900/40 text-rose-400',
-  event: 'bg-violet-900/40 text-violet-400',
-  location: 'bg-emerald-900/40 text-emerald-400',
-  plan: 'bg-cyan-900/40 text-cyan-400',
-  chat: 'bg-slate-700 text-slate-300',
-  general: 'bg-gray-700 text-gray-400',
+const ENTITY_TONES = {
+  family: 'mem-tone-warn',
+  friend: 'mem-tone-ok',
+  colleague: 'mem-tone-pine',
+  project: 'mem-tone-celadon',
+  company: 'mem-tone-pine',
+  preference: 'mem-tone-ok',
+  personality: 'mem-tone-cinnabar',
+  body: 'mem-tone-cinnabar',
+  device: 'mem-tone-warn',
+  identity: 'mem-tone-cinnabar',
+  event: 'mem-tone-pine',
+  location: 'mem-tone-celadon',
+  plan: 'mem-tone-celadon',
+  chat: 'mem-tone-neutral',
+  general: 'mem-tone-neutral',
 };
 
 const ENTITY_LABELS = {
@@ -115,11 +121,12 @@ const CATEGORY_LABELS = {
   insight: '洞察',
 };
 
-// Build <option> markup from ENTITY_LABELS / CATEGORY_LABELS so the edit and
-// add dropdowns never drift out of sync with the taxonomy again (the newer
-// friend/personality/body/plan/chat types used to be missing here).  Pass
-// `selected` to pre-select the current value; set `includeAuto` for a leading
-// "自动推断" option in the add form.
+const CATEGORY_TONES = {
+  fact: 'mem-tone-pine',
+  preference: 'mem-tone-cinnabar',
+  insight: 'mem-tone-celadon',
+};
+
 function entityOptionsHtml(selected = '', includeAuto = false) {
   let html = includeAuto ? '<option value="">自动推断</option>' : '';
   for (const [val, label] of Object.entries(ENTITY_LABELS)) {
@@ -134,8 +141,74 @@ function categoryOptionsHtml(selected = 'fact') {
     .join('');
 }
 
+function emptyState(title, hint, action = null) {
+  const actionHtml = action
+    ? `<button type="button" class="mem-btn mem-btn-primary" data-mem-empty-action="${escapeHtml(action.id)}">${escapeHtml(action.label)}</button>`
+    : '';
+  return `
+    <div class="mem-empty">
+      <div class="mem-empty-title">${escapeHtml(title)}</div>
+      <div class="mem-empty-hint">${escapeHtml(hint)}</div>
+      ${actionHtml}
+    </div>
+  `;
+}
+
+function bindEmptyActions(root) {
+  if (!root) return;
+  root.querySelectorAll('[data-mem-empty-action]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const action = btn.getAttribute('data-mem-empty-action');
+      if (action === 'add') showAddSemanticModal();
+      else if (action === 'organize') organizeNow();
+    });
+  });
+}
+
+function bindMemoryChrome() {
+  if (memoryChromeBound) return;
+  memoryChromeBound = true;
+  document.querySelectorAll('#memory-subnav [data-mem-view]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const view = btn.getAttribute('data-mem-view');
+      if (view) switchMemoryView(view);
+    });
+  });
+  const more = document.getElementById('memory-load-more');
+  if (more) more.addEventListener('click', loadMoreMemory);
+}
+
+export function switchMemoryView(view) {
+  currentMemoryView = view || 'knowledge';
+  document.querySelectorAll('#memory-subnav [data-mem-view]').forEach((btn) => {
+    const on = btn.getAttribute('data-mem-view') === currentMemoryView;
+    btn.classList.toggle('is-active', on);
+    btn.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  document.querySelectorAll('#tab-memory [data-mem-panel]').forEach((panel) => {
+    panel.classList.toggle('hidden', panel.getAttribute('data-mem-panel') !== currentMemoryView);
+  });
+  renderMemoryView(currentMemoryView);
+}
+
+function setLoadMoreVisible(show) {
+  const btn = document.getElementById('memory-load-more');
+  if (btn) btn.classList.toggle('hidden', !show);
+}
+
+function loadMoreMemory() {
+  if (memoryPageLimit < 50) memoryPageLimit = 50;
+  else memoryPageLimit = 100;
+  loadMemory();
+}
+
+function setAdminHint(show) {
+  const hint = document.getElementById('memory-admin-hint');
+  if (hint) hint.classList.toggle('hidden', !show);
+}
+
 export async function loadMemory() {
-  // Set loading states for all sections
+  bindMemoryChrome();
   showLoading('memory-context', '加载记忆中...');
   showLoading('memory-working', '加载工作记忆...');
   showLoading('memory-semantic', '加载长期知识...');
@@ -144,7 +217,6 @@ export async function loadMemory() {
   showLoading('memory-files', '加载记忆文件...');
 
   try {
-    // Fetch embedder status in parallel
     let embedderStatus = null;
     try {
       const diagRes = await fetch('/api/diag');
@@ -154,167 +226,189 @@ export async function loadMemory() {
       }
     } catch (_) {}
 
-    const res = await fetch('/api/memory/enhanced');
+    const res = await fetch(`/api/memory/enhanced?limit=${memoryPageLimit}`);
     if (!res.ok) {
       if (res.status === 403) {
-        // Graceful degradation: fall back to basic endpoints
+        enhancedIsAdmin = false;
+        enhancedCache = null;
+        setAdminHint(true);
         const basicRes = await fetch('/api/memory');
         const basicData = basicRes.ok ? await basicRes.json() : {};
         const ctxEl = document.getElementById('memory-context');
         if (ctxEl) ctxEl.textContent = basicData.context || '暂无上下文';
-
-        ['memory-working', 'memory-semantic', 'memory-episodes', 'memory-dreams', 'memory-files'].forEach(id => {
-          const el = document.getElementById(id);
-          if (el) {
-            el.innerHTML = '<div class="text-yellow-500/80 text-sm"><i class="fas fa-lock mr-1"></i>此聚合视图需管理员权限</div>';
+        ['memory-working', 'memory-episodes', 'memory-dreams', 'memory-files'].forEach((id) => {
+          const node = document.getElementById(id);
+          if (node) {
+            node.innerHTML = emptyState('需要管理员权限', '此聚合视图仅管理员可打开。知识库搜索、区块和收件箱仍可使用。');
           }
         });
-
+        const semEl = document.getElementById('memory-semantic');
+        if (semEl) {
+          semEl.innerHTML = emptyState('使用搜索或选择区块', '聚合列表需要管理员权限。你可以搜索知识，或从左侧打开一个区块。');
+        }
+        setLoadMoreVisible(false);
+        loadedViews.clear();
+        loadedViews.add('knowledge');
+        loadedViews.add('context');
         loadBlockTree();
         loadProposals();
+        switchMemoryView(currentMemoryView);
         return;
       }
       throw new Error('HTTP ' + res.status);
     }
     const data = await res.json();
+    enhancedIsAdmin = true;
+    enhancedCache = data;
+    setAdminHint(false);
 
-    // Show embedder status
     const statusEl = document.getElementById('memory-embedder-status');
     const recoverBtn = document.getElementById('memory-embedder-recover');
     if (statusEl && embedderStatus) {
       statusEl.classList.remove('hidden');
       if (embedderStatus.active) {
-        statusEl.className = 'text-xs px-2 py-1 rounded bg-green-900/40 text-green-400';
-        statusEl.innerHTML = '<i class="fas fa-microchip mr-1"></i>' + escapeHtml(embedderStatus.provider);
+        statusEl.className = 'mem-chip mem-chip-ok';
+        statusEl.textContent = embedderStatus.provider || '就绪';
         if (recoverBtn) recoverBtn.classList.add('hidden');
       } else if (embedderStatus.fallback) {
-        statusEl.className = 'text-xs px-2 py-1 rounded bg-yellow-900/40 text-yellow-400';
-        statusEl.innerHTML = '<i class="fas fa-exclamation-triangle mr-1"></i>降级: ' + escapeHtml(embedderStatus.fallback);
+        statusEl.className = 'mem-chip mem-chip-warn';
+        statusEl.textContent = '降级: ' + embedderStatus.fallback;
         if (recoverBtn) recoverBtn.classList.remove('hidden');
       } else {
-        statusEl.className = 'text-xs px-2 py-1 rounded bg-gray-800 text-gray-400';
-        statusEl.textContent = escapeHtml(embedderStatus.provider);
+        statusEl.className = 'mem-chip';
+        statusEl.textContent = embedderStatus.provider || '';
         if (recoverBtn) recoverBtn.classList.add('hidden');
       }
     }
 
-    // Active context
-    const ctxEl = document.getElementById('memory-context');
-    if (ctxEl) ctxEl.textContent = data.context || '暂无上下文';
-
-    // Working memories
-    const workEl = document.getElementById('memory-working');
-    if (workEl) {
-      const items = data.working_memories || [];
-      if (items.length === 0) {
-        workEl.innerHTML = '<div class="text-gray-400 text-sm">暂无工作记忆</div>';
-      } else {
-        workEl.innerHTML = items.map(w => `
-          <div class="bg-gray-800 rounded-lg px-3 py-2">
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-mono text-cyan-400">${escapeHtml(w.key || 'unknown')}</span>
-              <span class="text-[10px] text-gray-500">${w.category || 'general'} · 重要性 ${w.importance || 0}</span>
-            </div>
-            <div class="text-sm text-gray-300 mt-0.5">${escapeHtml(w.value || '')}</div>
-          </div>
-        `).join('');
-      }
-    }
-
-    // Semantic memories
-    const semEl = document.getElementById('memory-semantic');
-    if (semEl) {
-      const items = data.semantic_memories || [];
-      if (items.length === 0) {
-        semEl.innerHTML = '<div class="text-gray-400 text-sm">暂无长期知识</div>';
-      } else {
-        semEl.innerHTML = items.map(s => renderSemanticMemoryItem(s)).join('');
-        bindMemoryActions(semEl);
-      }
-    }
-
-    // Episodes
-    const epEl = document.getElementById('memory-episodes');
-    if (epEl) {
-      if (!data.episodes || data.episodes.length === 0) {
-        epEl.innerHTML = '<div class="text-gray-400 text-sm">暂无情景记忆</div>';
-      } else {
-        epEl.innerHTML = data.episodes.map(e => `
-          <div class="bg-gray-800 rounded-lg px-3 py-2">
-            <div class="text-sm">${escapeHtml(e.summary)}</div>
-            <div class="text-xs text-gray-500 mt-1">
-              <span class="mr-2"><i class="fas fa-calendar mr-1"></i>${new Date(e.created_at * 1000).toLocaleDateString()}</span>
-              <span class="mr-2"><i class="fas fa-comment mr-1"></i>${e.turn_count} 轮</span>
-              <span class="mr-2"><i class="fas fa-coins mr-1"></i>${e.tokens_used} tokens</span>
-              ${e.topics && e.topics.length > 0 ? `<span class="text-blue-400">${e.topics.map(t => '#' + escapeHtml(t)).join(' ')}</span>` : ''}
-            </div>
-          </div>
-        `).join('');
-      }
-    }
-
-    // Dream logs
-    const dreamEl = document.getElementById('memory-dreams');
-    if (dreamEl) {
-      if (!data.dream_logs || data.dream_logs.length === 0) {
-        dreamEl.innerHTML = '<div class="text-gray-400 text-sm">暂无梦境日志</div>';
-      } else {
-        dreamEl.innerHTML = data.dream_logs.map(d => `
-          <div class="bg-gray-800 rounded-lg px-3 py-2">
-            <div class="flex items-center gap-2">
-              <span class="text-xs px-2 py-0.5 rounded ${d.phase === 'deep' ? 'bg-purple-900 text-purple-400' : d.phase === 'rem' ? 'bg-blue-900 text-blue-400' : 'bg-gray-700 text-gray-400'}">${escapeHtml(d.phase)}</span>
-              <span class="text-xs text-gray-500">${new Date(d.created_at * 1000).toLocaleString()}</span>
-            </div>
-            <div class="text-sm mt-1">${escapeHtml(d.summary)}</div>
-          </div>
-        `).join('');
-      }
-    }
-
-    // Memory files (dynamic)
-    const filesEl = document.getElementById('memory-files');
-    if (filesEl) {
-      const files = data.memory_files || [];
-      if (files.length === 0) {
-        filesEl.replaceChildren();
-        filesEl.appendChild(el('div', {
-          className: 'text-gray-400 text-sm col-span-3',
-          text: '暂无记忆文件',
-        }));
-      } else {
-        filesEl.replaceChildren();
-        for (const rawName of files) {
-          const name = sanitizeRuntimeId(rawName);
-          if (!name) continue;
-          const card = el('div', {
-            className: 'cursor-pointer bg-gray-800 rounded-lg p-3 hover:bg-gray-700 transition',
-            dataset: { memoryFile: name },
-          });
-          card.appendChild(el('div', {
-            className: 'text-sm font-medium',
-            text: `${name.toUpperCase()}.md`,
-          }));
-          card.appendChild(el('div', {
-            className: 'text-xs text-gray-500',
-            text: '点击编辑',
-          }));
-          onDataClick(card, 'memoryFile', (fileName) => {
-            openMemoryFileEditor(fileName);
-          });
-          filesEl.appendChild(card);
-        }
-      }
-    }
-
-    // Load block tree + pending proposals
+    loadedViews.clear();
+    renderKnowledgeFromCache(data);
     loadBlockTree();
     loadProposals();
+    switchMemoryView(currentMemoryView);
   } catch (e) {
     showError('memory-context', '加载记忆失败: ' + e.message);
-    ['memory-working','memory-semantic','memory-episodes','memory-dreams','memory-files'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.innerHTML = '<div class="text-gray-500 text-sm">加载失败</div>';
+    ['memory-working', 'memory-semantic', 'memory-episodes', 'memory-dreams', 'memory-files'].forEach((id) => {
+      const node = document.getElementById(id);
+      if (node) node.innerHTML = '<div class="mem-muted">加载失败</div>';
     });
+  }
+}
+
+function renderKnowledgeFromCache(data) {
+  const ctxEl = document.getElementById('memory-context');
+  if (ctxEl) ctxEl.textContent = data.context || '暂无上下文';
+
+  const workEl = document.getElementById('memory-working');
+  if (workEl) renderWorking(workEl, data.working_memories || []);
+
+  const semEl = document.getElementById('memory-semantic');
+  if (semEl) {
+    const items = data.semantic_memories || [];
+    if (items.length === 0) {
+      semEl.innerHTML = emptyState('还没有长期知识', '对话里确认过的事实会出现在这里，也可以手动添加。', { id: 'add', label: '添加知识' });
+      bindEmptyActions(semEl);
+    } else {
+      semEl.innerHTML = items.map((s) => renderSemanticMemoryItem(s)).join('');
+      bindMemoryActions(semEl);
+    }
+    setLoadMoreVisible(items.length >= memoryPageLimit && memoryPageLimit < 100);
+  }
+
+  const epEl = document.getElementById('memory-episodes');
+  if (epEl) renderEpisodes(epEl, data.episodes || []);
+
+  const dreamEl = document.getElementById('memory-dreams');
+  if (dreamEl) renderDreams(dreamEl, data.dream_logs || []);
+
+  const filesEl = document.getElementById('memory-files');
+  if (filesEl) renderFiles(filesEl, data.memory_files || []);
+
+  loadedViews.add('knowledge');
+  loadedViews.add('working');
+  loadedViews.add('episodes');
+  loadedViews.add('dreams');
+  loadedViews.add('files');
+  loadedViews.add('context');
+}
+
+function renderMemoryView(view) {
+  if (view === 'knowledge' || loadedViews.has(view)) return;
+  if (!enhancedIsAdmin && (view === 'working' || view === 'episodes' || view === 'dreams' || view === 'files')) {
+    loadedViews.add(view);
+    return;
+  }
+  if (!enhancedCache) return;
+  renderKnowledgeFromCache(enhancedCache);
+}
+
+function renderWorking(root, items) {
+  if (items.length === 0) {
+    root.innerHTML = emptyState('暂无工作记忆', '当前会话里暂存的要点会显示在这里。');
+    return;
+  }
+  root.innerHTML = items.map((w) => `
+    <article class="mem-card">
+      <div class="mem-card-head">
+        <span class="mem-card-title">${escapeHtml(w.key || 'unknown')}</span>
+        <span class="mem-muted">${escapeHtml(w.category || 'general')} · 重要性 ${w.importance || 0}</span>
+      </div>
+      <div class="mem-card-body">${escapeHtml(w.value || '')}</div>
+    </article>
+  `).join('');
+}
+
+function renderEpisodes(root, items) {
+  if (!items.length) {
+    root.innerHTML = emptyState('暂无情景记忆', '较长对话被整理后，会在这里留下摘要。');
+    return;
+  }
+  root.innerHTML = items.map((e) => `
+    <article class="mem-card">
+      <div class="mem-card-body">${escapeHtml(e.summary)}</div>
+      <div class="mem-card-meta">
+        <span class="mem-muted">${new Date(e.created_at * 1000).toLocaleDateString()} · ${e.turn_count} 轮 · ${e.tokens_used} tokens</span>
+        ${e.topics && e.topics.length > 0 ? `<span class="mem-chip">${e.topics.map((t) => '#' + escapeHtml(t)).join(' ')}</span>` : ''}
+      </div>
+    </article>
+  `).join('');
+}
+
+function renderDreams(root, items) {
+  if (!items.length) {
+    root.innerHTML = emptyState('暂无梦境日志', '空闲整理周期完成后，会把巩固结果记在这里。');
+    return;
+  }
+  root.innerHTML = items.map((d) => `
+    <article class="mem-card">
+      <div class="mem-card-head">
+        <span class="mem-badge mem-tone-pine">${escapeHtml(d.phase)}</span>
+        <span class="mem-muted">${new Date(d.created_at * 1000).toLocaleString()}</span>
+      </div>
+      <div class="mem-card-body">${escapeHtml(d.summary)}</div>
+    </article>
+  `).join('');
+}
+
+function renderFiles(root, files) {
+  root.replaceChildren();
+  if (files.length === 0) {
+    root.innerHTML = emptyState('暂无记忆文件', '身份、偏好等 Markdown 档案会出现在这里。');
+    return;
+  }
+  for (const rawName of files) {
+    const name = sanitizeRuntimeId(rawName);
+    if (!name) continue;
+    const card = el('div', {
+      className: 'mem-file-card',
+      dataset: { memoryFile: name },
+    });
+    card.appendChild(el('div', { className: 'mem-card-title', text: `${name.toUpperCase()}.md` }));
+    card.appendChild(el('div', { className: 'mem-muted', text: '点击编辑' }));
+    onDataClick(card, 'memoryFile', (fileName) => {
+      openMemoryFileEditor(fileName);
+    });
+    root.appendChild(card);
   }
 }
 
@@ -328,17 +422,16 @@ export async function loadBlockTree() {
     const blocks = data.blocks || [];
     treeEl.replaceChildren();
     const allBtn = el('div', {
-      className: `cursor-pointer px-2 py-1 rounded hover:bg-gray-800 transition ${currentBlockPath === '' ? 'bg-gray-800 text-pink-400' : 'text-gray-400'}`,
+      className: `mem-tree-row ${currentBlockPath === '' ? 'is-active' : ''}`,
     });
-    allBtn.appendChild(el('i', { className: 'fas fa-database mr-1 text-xs' }));
-    allBtn.appendChild(document.createTextNode('全部'));
+    allBtn.appendChild(el('span', { className: 'mem-tree-label', text: '全部' }));
     allBtn.addEventListener('click', (event) => {
       event.preventDefault();
       loadBlockMemories('');
     });
     treeEl.appendChild(allBtn);
     if (blocks.length === 0) {
-      treeEl.appendChild(el('div', { className: 'text-gray-500 text-xs px-2 py-1', text: '暂无区块' }));
+      treeEl.appendChild(el('div', { className: 'mem-muted', text: '暂无区块' }));
     }
     for (const b of blocks) {
       const path = b.block_path || b.path || '';
@@ -353,25 +446,17 @@ export async function loadBlockTree() {
         } catch (_) {}
       }
     }
-    const toolbar = el('div', { className: 'mt-3 pt-2 border-t border-gray-800 flex flex-col gap-1' });
-    const moveBtn = el('button', {
-      className: 'text-[11px] text-gray-400 hover:text-pink-400 text-left px-2 py-1 rounded hover:bg-gray-800 transition',
-    });
-    moveBtn.appendChild(el('i', { className: 'fas fa-arrows-up-down-left-right mr-1' }));
-    moveBtn.appendChild(document.createTextNode('移动区块'));
+    const toolbar = el('div', { className: 'mem-tree-tools' });
+    const moveBtn = el('button', { className: 'mem-btn', text: '移动区块' });
     moveBtn.addEventListener('click', () => openBlockMove());
-    const mergeBtn = el('button', {
-      className: 'text-[11px] text-gray-400 hover:text-pink-400 text-left px-2 py-1 rounded hover:bg-gray-800 transition',
-    });
-    mergeBtn.appendChild(el('i', { className: 'fas fa-code-merge mr-1' }));
-    mergeBtn.appendChild(document.createTextNode('合并区块'));
+    const mergeBtn = el('button', { className: 'mem-btn', text: '合并区块' });
     mergeBtn.addEventListener('click', () => openBlockMerge());
     toolbar.appendChild(moveBtn);
     toolbar.appendChild(mergeBtn);
     treeEl.appendChild(toolbar);
   } catch (e) {
     treeEl.replaceChildren();
-    treeEl.appendChild(el('div', { className: 'text-red-400 text-xs', text: '加载失败' }));
+    treeEl.appendChild(el('div', { className: 'mem-muted', text: '加载失败' }));
   }
 }
 
@@ -380,38 +465,32 @@ function renderBlockNode(block, depth, expandable) {
   const name = path.split('/').pop() || path || '未知';
   const count = block.memory_count || block.count || 0;
   const isActive = currentBlockPath === path;
-  const pad = depth > 0 ? 'ml-4' : '';
   const isOpen = expandedBlocks.has(path);
   const row = el('div', {
-    className: `flex items-center justify-between group ${pad} px-2 py-1 rounded hover:bg-gray-800 transition ${isActive ? 'bg-gray-800 text-pink-400' : 'text-gray-400'}`,
+    className: `mem-tree-row ${isActive ? 'is-active' : ''}`,
   });
-  const label = el('div', { className: 'cursor-pointer flex-1 truncate' });
+  if (depth > 0) row.style.marginLeft = '16px';
+  const label = el('div', { className: 'mem-tree-label' });
   if (expandable) {
-    const caret = el('i', {
-      className: `fas fa-chevron-${isOpen ? 'down' : 'right'} text-[9px] mr-1 text-gray-500 hover:text-pink-400 cursor-pointer`,
-    });
+    const caret = el('span', { className: 'mem-tree-count', text: isOpen ? '▾ ' : '▸ ' });
     caret.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       toggleBlockExpand(path);
     });
     label.appendChild(caret);
-  } else {
-    label.appendChild(el('span', { className: 'inline-block w-3' }));
   }
-  label.appendChild(el('i', {
-    className: `fas fa-folder mr-1 text-xs ${isActive ? 'text-pink-400' : 'text-gray-600'}`,
-  }));
-  label.appendChild(el('span', { className: isActive ? 'font-medium' : '', text: name }));
-  label.appendChild(el('span', { className: 'text-[10px] text-gray-600 ml-1', text: `(${count})` }));
+  label.appendChild(document.createTextNode(name + ' '));
+  label.appendChild(el('span', { className: 'mem-tree-count', text: `(${count})` }));
   label.addEventListener('click', (event) => {
     event.preventDefault();
     loadBlockMemories(path);
   });
-  const trash = el('i', {
-    className: 'fas fa-trash text-[9px] text-gray-700 hover:text-red-400 cursor-pointer opacity-0 group-hover:opacity-100 ml-1',
+  const trash = el('button', {
+    className: 'mem-icon-btn',
+    attrs: { type: 'button', title: '删除区块', 'aria-label': '删除区块' },
+    text: '×',
   });
-  trash.title = '删除区块';
   trash.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -547,12 +626,12 @@ async function doDeleteBlock(path) {
 
 export async function loadBlockMemories(path) {
   currentBlockPath = path;
-  loadBlockTree(); // refresh highlight
+  loadBlockTree();
+  switchMemoryView('knowledge');
   const semEl = document.getElementById('memory-semantic');
   if (!semEl) return;
 
   if (!path) {
-    // Show all memories
     loadMemory();
     return;
   }
@@ -564,21 +643,22 @@ export async function loadBlockMemories(path) {
     const data = await res.json();
     const items = data.memories || [];
     if (items.length === 0) {
-      semEl.innerHTML = '<div class="text-gray-400 text-sm">该区块暂无知识</div>';
+      semEl.innerHTML = emptyState('该区块暂无知识', '换一个区块，或把新知识归到这里。');
     } else {
-      semEl.innerHTML = items.map(s => renderSemanticMemoryItem(s)).join('');
+      semEl.innerHTML = items.map((s) => renderSemanticMemoryItem(s)).join('');
       bindMemoryActions(semEl);
     }
+    setLoadMoreVisible(false);
   } catch (e) {
-    semEl.innerHTML = '<div class="text-red-400 text-sm">加载失败: ' + escapeHtml(e.message) + '</div>';
+    semEl.innerHTML = '<div class="mem-muted">加载失败: ' + escapeHtml(e.message) + '</div>';
   }
 }
 
 function getConfidenceBadge(confidence) {
   const c = confidence || 0.5;
-  if (c >= 0.8) return { icon: '🟢', label: '高可信', color: 'text-green-400' };
-  if (c >= 0.5) return { icon: '🟡', label: '中可信', color: 'text-yellow-400' };
-  return { icon: '🔴', label: '低可信', color: 'text-red-400' };
+  if (c >= 0.8) return { label: '高可信', tone: 'ok' };
+  if (c >= 0.5) return { label: '中可信', tone: 'warn' };
+  return { label: '低可信', tone: 'bad' };
 }
 
 function getSourceLabel(source) {
@@ -595,46 +675,35 @@ function getSourceLabel(source) {
 export function renderSemanticMemoryItem(s) {
   const memId = parseMemoryId(s.id);
   if (memId == null) return '';
-  const catColor = {
-    fact: 'bg-blue-900/40 text-blue-400',
-    preference: 'bg-pink-900/40 text-pink-400',
-    insight: 'bg-purple-900/40 text-purple-400',
-  }[s.category] || 'bg-gray-700 text-gray-400';
   const confBadge = getConfidenceBadge(s.confidence);
   const etype = s.entity_type || 'general';
-  const entityColor = ENTITY_COLORS[etype] || ENTITY_COLORS.general;
+  const entityTone = ENTITY_TONES[etype] || ENTITY_TONES.general;
   const entityLabel = ENTITY_LABELS[etype] || etype;
+  const catTone = CATEGORY_TONES[s.category] || 'mem-tone-neutral';
   const isVerified = (s.last_verified_at || 0) > 0;
+  const pct = ((s.confidence || 0.5) * 100).toFixed(0);
   return `
-    <div class="bg-gray-800 rounded-lg px-3 py-2" data-memory-id="${memId}" data-category="${escapeHtml(s.category || 'fact')}" data-entity-type="${escapeHtml(etype)}" data-memory-path="${escapeHtml(s.memory_path || '')}" data-entity-name="${escapeHtml(s.entity_name || '')}">
-      <div class="flex items-center justify-between flex-wrap gap-1">
-        <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-xs font-mono text-pink-400">${escapeHtml(s.key || 'unknown')}</span>
-          <span class="text-[10px] px-1.5 py-0.5 rounded ${catColor}">${escapeHtml(s.category || 'fact')}</span>
-          <span class="text-[10px] ${confBadge.color}" title="${confBadge.label}">${confBadge.icon} ${((s.confidence || 0.5) * 100).toFixed(0)}%</span>
-          <span class="text-[10px] bg-gray-700/50 text-gray-400 px-1.5 py-0.5 rounded">${getSourceLabel(s.source)}</span>
-          <span class="text-[10px] px-1.5 py-0.5 rounded ${entityColor}">${escapeHtml(entityLabel)}</span>
-          ${isVerified ? '<span class="text-[10px] text-green-400" title="已验证"><i class="fas fa-check-circle"></i></span>' : ''}
+    <article class="mem-card" data-memory-id="${memId}" data-category="${escapeHtml(s.category || 'fact')}" data-entity-type="${escapeHtml(etype)}" data-memory-path="${escapeHtml(s.memory_path || '')}" data-entity-name="${escapeHtml(s.entity_name || '')}">
+      <div class="mem-card-head">
+        <div class="mem-card-meta">
+          <span class="mem-card-title">${escapeHtml(s.key || 'unknown')}</span>
+          <span class="mem-badge ${catTone}">${escapeHtml(CATEGORY_LABELS[s.category] || s.category || 'fact')}</span>
+          <span class="mem-conf mem-conf-${confBadge.tone}" title="${confBadge.label}"><span class="mem-conf-dot"></span>${pct}%</span>
+          <span class="mem-badge">${escapeHtml(getSourceLabel(s.source))}</span>
+          <span class="mem-badge ${entityTone}">${escapeHtml(entityLabel)}</span>
+          ${isVerified ? '<span class="mem-chip mem-chip-ok">已验证</span>' : ''}
         </div>
-        <div class="flex items-center gap-1">
-          <button type="button" data-mem-action="verify" data-mem-id="${memId}" class="text-[10px] bg-green-900/30 hover:bg-green-900/50 text-green-400 px-2 py-1 rounded transition" title="验证">
-            <i class="fas fa-check"></i>
-          </button>
-          <button type="button" data-mem-action="audit" data-mem-id="${memId}" class="text-[10px] bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded transition" title="历史版本">
-            <i class="fas fa-history"></i>
-          </button>
-          <button type="button" data-mem-action="edit" data-mem-id="${memId}" class="text-[10px] bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded transition" title="编辑">
-            <i class="fas fa-pen"></i>
-          </button>
-          <button type="button" data-mem-action="delete" data-mem-id="${memId}" class="text-[10px] bg-red-900/40 hover:bg-red-900/60 text-red-400 px-2 py-1 rounded transition" title="删除">
-            <i class="fas fa-trash"></i>
-          </button>
+        <div class="mem-card-actions">
+          <button type="button" data-mem-action="verify" data-mem-id="${memId}" class="mem-icon-btn" title="验证" aria-label="验证"><i class="fas fa-check"></i></button>
+          <button type="button" data-mem-action="audit" data-mem-id="${memId}" class="mem-icon-btn" title="历史版本" aria-label="历史版本"><i class="fas fa-history"></i></button>
+          <button type="button" data-mem-action="edit" data-mem-id="${memId}" class="mem-icon-btn" title="编辑" aria-label="编辑"><i class="fas fa-pen"></i></button>
+          <button type="button" data-mem-action="delete" data-mem-id="${memId}" class="mem-icon-btn" title="删除" aria-label="删除"><i class="fas fa-trash"></i></button>
         </div>
       </div>
-      <div class="text-sm text-gray-300 mt-1 memory-value">${escapeHtml(s.value || '')}</div>
-      ${s.memory_path ? `<div class="text-[10px] text-gray-600 mt-0.5"><i class="fas fa-folder-open mr-1"></i>${escapeHtml(s.memory_path)}</div>` : ''}
-      <div class="memory-audit hidden mt-2 bg-gray-900/50 rounded p-2 text-xs text-gray-400" id="memory-audit-${memId}"></div>
-    </div>
+      <div class="mem-card-body memory-value">${escapeHtml(s.value || '')}</div>
+      ${s.memory_path ? `<div class="mem-card-path">${escapeHtml(s.memory_path)}</div>` : ''}
+      <div class="memory-audit mem-audit hidden" id="memory-audit-${memId}"></div>
+    </article>
   `;
 }
 
@@ -645,27 +714,22 @@ export function editSemanticMemory(id) {
   if (!card) return;
   const valueEl = card.querySelector('.memory-value');
   const currentValue = valueEl.textContent;
-  // Read the real values off the card's data-* attributes so the edit form is
-  // pre-filled correctly.  Previously the entity_type select had no selection,
-  // so saving silently reset entity_type to "general" and lost the path/name.
   const currentCategory = card.dataset.category || 'fact';
   const currentEtype = card.dataset.entityType || 'general';
   const currentPath = card.dataset.memoryPath || '';
   const currentEname = card.dataset.entityName || '';
 
   valueEl.innerHTML = `
-    <textarea id="sem-edit-${memId}" rows="3" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-gray-300 resize-none focus:outline-none focus:border-pink-500">${escapeHtml(currentValue)}</textarea>
-    <div class="flex flex-wrap items-center gap-2 mt-2">
-      <select id="sem-cat-${memId}" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
-        ${categoryOptionsHtml(currentCategory)}
-      </select>
-      <select id="sem-etype-${memId}" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
-        ${entityOptionsHtml(currentEtype)}
-      </select>
-      <input id="sem-path-${memId}" type="text" value="${escapeHtml(currentPath)}" placeholder="路径" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 w-32">
-      <input id="sem-ename-${memId}" type="text" value="${escapeHtml(currentEname)}" placeholder="实体名" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 w-24">
-      <button type="button" data-mem-action="save" data-mem-id="${memId}" class="bg-pink-900/40 hover:bg-pink-900/60 text-pink-300 px-3 py-1 rounded text-xs">保存</button>
-      <button type="button" data-mem-action="cancel-edit" data-mem-id="${memId}" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-xs">取消</button>
+    <div class="mem-form">
+      <textarea id="sem-edit-${memId}" rows="3">${escapeHtml(currentValue)}</textarea>
+      <div class="mem-form-actions">
+        <select id="sem-cat-${memId}">${categoryOptionsHtml(currentCategory)}</select>
+        <select id="sem-etype-${memId}">${entityOptionsHtml(currentEtype)}</select>
+        <input id="sem-path-${memId}" type="text" value="${escapeHtml(currentPath)}" placeholder="路径">
+        <input id="sem-ename-${memId}" type="text" value="${escapeHtml(currentEname)}" placeholder="实体名">
+        <button type="button" data-mem-action="save" data-mem-id="${memId}" class="mem-btn mem-btn-primary">保存</button>
+        <button type="button" data-mem-action="cancel-edit" data-mem-id="${memId}" class="mem-btn">取消</button>
+      </div>
     </div>
   `;
   bindMemoryActions(valueEl);
@@ -679,33 +743,29 @@ export async function showMemoryAudit(id) {
     return;
   }
   auditEl.classList.remove('hidden');
-  auditEl.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>加载历史...';
+  auditEl.textContent = '加载历史...';
   try {
     const res = await fetch(`/api/memory/audit?memory_id=${id}&limit=20`);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     const entries = data.entries || [];
     if (entries.length === 0) {
-      auditEl.innerHTML = '<span class="text-gray-500">暂无变更记录</span>';
+      auditEl.textContent = '暂无变更记录';
       return;
     }
-    auditEl.innerHTML = entries.map(e => {
+    auditEl.innerHTML = entries.map((e) => {
       const actionMap = { create: '创建', update: '更新', delete: '删除', verify: '验证' };
       const time = new Date(e.created_at * 1000).toLocaleString();
       return `
-        <div class="border-l-2 border-gray-600 pl-2 mb-1">
-          <div class="flex items-center gap-2">
-            <span class="text-gray-300">${actionMap[e.action] || e.action}</span>
-            <span class="text-gray-500">${time}</span>
-            <span class="text-gray-600">来源: ${getSourceLabel(e.source)}</span>
-          </div>
-          ${e.old_value ? `<div class="text-gray-500 line-through">${escapeHtml(e.old_value.substring(0, 100))}</div>` : ''}
-          ${e.new_value ? `<div class="text-gray-300">${escapeHtml(e.new_value.substring(0, 100))}</div>` : ''}
+        <div>
+          <div>${escapeHtml(actionMap[e.action] || e.action)} · ${escapeHtml(time)} · ${escapeHtml(getSourceLabel(e.source))}</div>
+          ${e.old_value ? `<div class="mem-muted">${escapeHtml(e.old_value.substring(0, 100))}</div>` : ''}
+          ${e.new_value ? `<div>${escapeHtml(e.new_value.substring(0, 100))}</div>` : ''}
         </div>
       `;
     }).join('');
   } catch (e) {
-    auditEl.innerHTML = '<span class="text-red-400">加载失败</span>';
+    auditEl.textContent = '加载失败';
   }
 }
 
@@ -763,11 +823,9 @@ export async function verifyMemory(id) {
   }
 }
 
-// ── Memory inbox: proposed changes awaiting confirmation ──
-
 export async function loadProposals() {
-  const el = document.getElementById('memory-proposals');
-  if (!el) return;
+  const root = document.getElementById('memory-proposals');
+  if (!root) return;
   try {
     const res = await fetch('/api/memory/proposals?status=pending&limit=50');
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -775,17 +833,19 @@ export async function loadProposals() {
     const items = data.proposals || [];
     currentProposals = items;
     const countEl = document.getElementById('memory-proposals-count');
-    if (countEl) countEl.textContent = items.length ? `· ${items.length} 条待确认` : '· 已清空';
+    if (countEl) countEl.textContent = items.length ? String(items.length) : '';
     const allBtn = document.getElementById('memory-approve-all-btn');
     if (allBtn) allBtn.classList.toggle('hidden', items.length === 0);
     if (items.length === 0) {
-      el.innerHTML = '<div class="text-gray-500 text-sm">收件箱已清空，没有待确认的记忆。</div>';
+      root.innerHTML = emptyState('收件箱是空的', '整理最近对话后，待确认的记忆会出现在这里。', { id: 'organize', label: '立即整理' });
+      bindEmptyActions(root);
       return;
     }
-    el.innerHTML = items.map(renderProposal).join('');
-    bindMemoryActions(el);
+    root.innerHTML = items.map(renderProposal).join('');
+    bindMemoryActions(root);
+    loadedViews.add('inbox');
   } catch (e) {
-    el.innerHTML = '<div class="text-red-400 text-sm">加载收件箱失败</div>';
+    root.innerHTML = '<div class="mem-muted">加载收件箱失败</div>';
   }
 }
 
@@ -794,34 +854,32 @@ function renderProposal(p) {
   if (memId == null) return '';
   const conf = Math.round((p.confidence || 0) * 100);
   const etype = p.entity_type || 'general';
-  const entityColor = ENTITY_COLORS[etype] || ENTITY_COLORS.general;
+  const entityTone = ENTITY_TONES[etype] || ENTITY_TONES.general;
   const entityLabel = ENTITY_LABELS[etype] || etype;
   const confInfo = getConfidenceBadge(p.confidence);
   const srcLabel = getSourceLabel(p.source);
   return `
-    <div class="bg-gray-800 rounded-lg px-3 py-2 border-l-2 border-yellow-600/60">
-      <div class="text-[11px] text-gray-500 mb-1"><i class="fas fa-lightbulb text-yellow-500 mr-1"></i>${escapeHtml(srcLabel)}想记住（<span class="${entityColor.split(' ').find(c => c.startsWith('text-')) || ''}">${escapeHtml(entityLabel)}</span>）</div>
-      <div class="flex items-start justify-between gap-2">
-        <div class="flex-1 min-w-0">
-          <div class="text-sm text-gray-200">${p.key ? `<span class="text-gray-500">${escapeHtml(p.key)}：</span>` : ''}${escapeHtml(p.value || '')}</div>
-          ${p.memory_path ? `<div class="text-[10px] text-gray-600 mt-0.5"><i class="fas fa-folder-open mr-1"></i>${escapeHtml(p.memory_path)}</div>` : ''}
-          <div class="text-[10px] mt-0.5 ${confInfo.color}" title="${confInfo.label}">${confInfo.icon} ${confInfo.label} ${conf}%</div>
-          ${p.evidence ? `<details class="mt-1"><summary class="text-[10px] text-gray-500 cursor-pointer hover:text-gray-300">查看证据</summary><div class="text-[10px] text-gray-400 italic mt-1">${escapeHtml(p.evidence)}</div></details>` : ''}
-        </div>
-        <div class="flex flex-col gap-1 shrink-0">
-          <button type="button" data-mem-action="approve" data-mem-id="${memId}" class="text-[10px] bg-green-900/40 hover:bg-green-900/60 text-green-300 px-2 py-1 rounded" title="确认并写入"><i class="fas fa-check"></i></button>
-          <button type="button" data-mem-action="edit-proposal" data-mem-id="${memId}" class="text-[10px] bg-gray-700 hover:bg-gray-600 text-gray-300 px-2 py-1 rounded" title="编辑后确认"><i class="fas fa-pen"></i></button>
-          <button type="button" data-mem-action="reject" data-mem-id="${memId}" class="text-[10px] bg-red-900/40 hover:bg-red-900/60 text-red-300 px-2 py-1 rounded" title="拒绝"><i class="fas fa-times"></i></button>
+    <article class="mem-card mem-inbox-card">
+      <div class="mem-muted">${escapeHtml(srcLabel)}想记住 · <span class="mem-badge ${entityTone}">${escapeHtml(entityLabel)}</span></div>
+      <div class="mem-card-head">
+        <div class="mem-card-body">${p.key ? `<span class="mem-muted">${escapeHtml(p.key)}：</span>` : ''}${escapeHtml(p.value || '')}</div>
+        <div class="mem-card-actions">
+          <button type="button" data-mem-action="approve" data-mem-id="${memId}" class="mem-btn mem-btn-ok" title="确认并写入">确认</button>
+          <button type="button" data-mem-action="edit-proposal" data-mem-id="${memId}" class="mem-btn" title="编辑后确认">编辑</button>
+          <button type="button" data-mem-action="reject" data-mem-id="${memId}" class="mem-btn mem-btn-danger" title="拒绝">拒绝</button>
         </div>
       </div>
-    </div>
+      ${p.memory_path ? `<div class="mem-card-path">${escapeHtml(p.memory_path)}</div>` : ''}
+      <div class="mem-conf mem-conf-${confInfo.tone}" title="${confInfo.label}"><span class="mem-conf-dot"></span>${confInfo.label} ${conf}%</div>
+      ${p.evidence ? `<details class="mem-muted"><summary>查看证据</summary><div>${escapeHtml(p.evidence)}</div></details>` : ''}
+    </article>
   `;
 }
 
 export async function organizeNow() {
   const btn = document.getElementById('memory-organize-btn');
   const statusEl = document.getElementById('memory-organize-status');
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>整理中...'; }
+  if (btn) { btn.disabled = true; btn.textContent = '整理中...'; }
   if (statusEl) statusEl.textContent = '正在从最近的对话中提取要记住的信息…';
   try {
     const res = await fetch('/api/memory/organize', { method: 'POST' });
@@ -840,12 +898,13 @@ export async function organizeNow() {
       const now = new Date().toLocaleTimeString();
       if (statusEl) statusEl.textContent = `上次整理：${now} · 分析 ${d.turns} 轮对话 · 待确认 ${pend} · 自动收录 ${auto}`;
     }
+    switchMemoryView('inbox');
     loadMemory();
   } catch (e) {
     showToast('整理失败: ' + e.message, 'error');
     if (statusEl) statusEl.textContent = '整理失败：' + e.message;
   } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-wand-magic-sparkles mr-1"></i>立即整理'; }
+    if (btn) { btn.disabled = false; btn.textContent = '立即整理'; }
   }
 }
 
@@ -880,7 +939,7 @@ export function approveAllProposals() {
 }
 
 async function doApproveAll() {
-  const ids = currentProposals.map(p => p.id);
+  const ids = currentProposals.map((p) => p.id);
   let ok = 0;
   for (const id of ids) {
     try {
@@ -893,7 +952,7 @@ async function doApproveAll() {
 }
 
 export function openProposalEdit(id) {
-  const p = currentProposals.find(x => x.id === id);
+  const p = currentProposals.find((x) => x.id === id);
   if (!p) return;
   proposalEditId = id;
   const v = document.getElementById('proposal-edit-value');
@@ -924,7 +983,7 @@ export async function saveProposalEdit() {
     category: document.getElementById('proposal-edit-cat')?.value || 'fact',
   };
   const path = (document.getElementById('proposal-edit-path')?.value || '').trim();
-  const etype = document.getElementById('proposal-edit-etype')?.value || '';
+  const etype = (document.getElementById('proposal-edit-etype')?.value || '');
   if (path) overrides.memory_path = path;
   if (etype) overrides.entity_type = etype;
   try {
@@ -946,7 +1005,7 @@ export async function recoverEmbedder() {
   const btn = document.getElementById('memory-embedder-recover');
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>恢复中...';
+    btn.textContent = '恢复中...';
   }
   try {
     const res = await fetch('/api/memory/embedder/recover', { method: 'POST' });
@@ -963,7 +1022,7 @@ export async function recoverEmbedder() {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.innerHTML = '<i class="fas fa-undo mr-1"></i>恢复嵌入器';
+      btn.textContent = '恢复嵌入器';
     }
   }
 }
@@ -973,13 +1032,12 @@ export function toggleSearchScope() {
   const btn = document.getElementById('semantic-search-scope');
   if (btn) {
     btn.textContent = searchScopeAll ? '全部' : '当前区块';
-    btn.className = searchScopeAll
-      ? 'bg-gray-800 border border-gray-700 px-2 py-1.5 rounded-lg text-xs text-gray-400 transition'
-      : 'bg-pink-900/40 border border-pink-700 px-2 py-1.5 rounded-lg text-xs text-pink-300 transition';
+    btn.classList.toggle('is-active', !searchScopeAll);
   }
 }
 
 export async function searchSemantic() {
+  switchMemoryView('knowledge');
   const input = document.getElementById('semantic-search');
   const query = input.value.trim();
   const container = document.getElementById('memory-semantic');
@@ -1001,17 +1059,19 @@ export async function searchSemantic() {
     const data = await res.json();
     const items = data.results || [];
     if (items.length === 0) {
-      container.innerHTML = '<div class="text-gray-400 text-sm">未找到匹配的知识</div>';
+      container.innerHTML = emptyState('未找到匹配的知识', '换个关键词，或清空搜索查看全部。');
     } else {
-      container.innerHTML = items.map(s => renderSemanticMemoryItem(s)).join('');
+      container.innerHTML = items.map((s) => renderSemanticMemoryItem(s)).join('');
       bindMemoryActions(container);
     }
+    setLoadMoreVisible(false);
   } catch (e) {
-    container.innerHTML = '<div class="text-red-400 text-sm">搜索失败: ' + escapeHtml(e.message) + '</div>';
+    container.innerHTML = '<div class="mem-muted">搜索失败: ' + escapeHtml(e.message) + '</div>';
   }
 }
 
 export function showAddSemanticModal() {
+  switchMemoryView('knowledge');
   const container = document.getElementById('memory-semantic');
   const existing = document.getElementById('semantic-add-form');
   if (existing) {
@@ -1020,22 +1080,18 @@ export function showAddSemanticModal() {
   }
   const form = document.createElement('div');
   form.id = 'semantic-add-form';
-  form.className = 'bg-gray-800 rounded-lg p-3 space-y-2';
+  form.className = 'mem-card mem-form';
   form.innerHTML = `
-    <div class="flex gap-2 flex-wrap">
-      <input id="semantic-add-key" type="text" placeholder="键 (如: user_name)" class="flex-1 min-w-[8rem] bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm">
-      <select id="semantic-add-cat" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-gray-300">
-        ${categoryOptionsHtml('fact')}
-      </select>
-      <select id="semantic-add-etype" class="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm text-gray-300">
-        ${entityOptionsHtml('', true)}
-      </select>
+    <div class="mem-form-actions">
+      <input id="semantic-add-key" type="text" placeholder="键 (如: user_name)">
+      <select id="semantic-add-cat">${categoryOptionsHtml('fact')}</select>
+      <select id="semantic-add-etype">${entityOptionsHtml('', true)}</select>
     </div>
-    <input id="semantic-add-path" type="text" placeholder="路径 (可选, 如 /user/preferences)" class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm">
-    <textarea id="semantic-add-value" rows="2" placeholder="值..." class="w-full bg-gray-900 border border-gray-700 rounded px-2 py-1 text-sm resize-none"></textarea>
-    <div class="flex gap-2">
-      <button type="button" data-add-action="save" class="bg-pink-900/40 hover:bg-pink-900/60 text-pink-300 px-3 py-1 rounded text-sm">保存</button>
-      <button type="button" data-add-action="cancel" class="bg-gray-700 hover:bg-gray-600 px-3 py-1 rounded text-sm">取消</button>
+    <input id="semantic-add-path" type="text" placeholder="路径 (可选, 如 /user/preferences)">
+    <textarea id="semantic-add-value" rows="2" placeholder="值..."></textarea>
+    <div class="mem-form-actions">
+      <button type="button" data-add-action="save" class="mem-btn mem-btn-primary">保存</button>
+      <button type="button" data-add-action="cancel" class="mem-btn">取消</button>
     </div>
   `;
   form.querySelector('[data-add-action="save"]')?.addEventListener('click', () => submitSemanticMemory());

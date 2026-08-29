@@ -162,7 +162,10 @@ class BehaviorGuard:
                     "detected — may hide malicious payloads",
                 )
         except Exception:
-            pass
+            return SecurityDecision(
+                SecurityDecisionType.BLOCK,
+                "Security rule 'subshell': command parser failed — fail-closed",
+            )
 
         if self.config.defense_mode == DefenseMode.OFF:
             return SecurityDecision(SecurityDecisionType.ALLOW)

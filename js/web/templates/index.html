@@ -10,9 +10,17 @@
 <link href="/static/css/tokens.css" rel="stylesheet">
 <link href="/static/css/legacy.css" rel="stylesheet">
 <link href="/static/css/shell.css" rel="stylesheet">
+<link href="/static/css/memory.css" rel="stylesheet">
 <script src="/static/js/theme-init.js"></script>
 </head>
 <body class="h-screen overflow-hidden">
+
+<div id="mode-switch-overlay" hidden role="status" aria-live="polite" aria-busy="true">
+  <div id="mode-switch-card">
+    <div class="mode-switch-spinner" aria-hidden="true"></div>
+    <p id="mode-switch-overlay-text">正在切换模式…</p>
+  </div>
+</div>
 
 <div id="app-shell">
   <!-- 1. Nav rail -->
@@ -69,6 +77,7 @@
       <div id="product-switcher" role="group" aria-label="Personal / Work 模式切换">
         <button type="button" id="product-personal-btn" class="seg-active" onclick="switchProductWorkspace('js-agent')">Personal</button>
         <button type="button" id="product-work-btn" onclick="switchProductWorkspace('js-work')" hidden aria-hidden="true">Work</button>
+        <button type="button" id="product-bots-btn" onclick="switchBotsSurface()">Bots</button>
       </div>
       <span id="workspace-label" hidden>
         <span data-icon="folder"></span><span id="workspace-name">工作区</span>
@@ -87,6 +96,13 @@
     </header>
 
     <!-- Work context band (Work mode only) -->
+    <div id="bots-context-band" hidden aria-label="Bots 房间状态">
+      <span class="band-item" id="bots-band-members">成员 —</span>
+      <span class="band-sep">|</span>
+      <span class="band-item" id="bots-band-phase">闲聊</span>
+      <span class="band-sep">|</span>
+      <span class="band-item" id="bots-band-hit">命中率 —</span>
+    </div>
     <div id="work-context-band" hidden aria-label="工作上下文摘要">
       <span class="band-item band-workspace" id="band-workspace">工作区</span>
       <span class="band-sep">|</span>
@@ -197,6 +213,33 @@
         <button type="button" id="wizard-skip-3" onclick="wizardSkip()" class="w-full mt-3 bg-transparent hover:bg-gray-800 text-gray-300 border border-gray-600 py-2 rounded-xl transition">
           稍后再配置，直接进入
         </button>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-bots" class="tab-content hidden flex-1 flex-col">
+    <div class="bots-layout">
+      <form id="bots-create-form" class="bots-create">
+        <label for="bots-create-name">创建命名机器人</label>
+        <input id="bots-create-name" maxlength="64" placeholder="例如：调查bot" />
+        <button type="submit">觉醒</button>
+        <label for="bots-soul-editor">SOUL（保存后才 active）</label>
+        <textarea id="bots-soul-editor"></textarea>
+        <button type="button" id="bots-activate-btn">保存并激活</button>
+        <ul id="bots-roster"></ul>
+      </form>
+      <form id="bots-room-form" class="bots-room-create">
+        <input id="bots-room-title" maxlength="128" placeholder="群聊标题" />
+        <div id="bots-room-members"></div>
+        <button type="submit">手选建群</button>
+      </form>
+      <p id="bots-error" hidden class="bots-error" role="alert"></p>
+      <div id="bots-suggested" hidden></div>
+      <div id="bots-clarify-card" hidden></div>
+      <div id="bots-messages" class="bots-messages" role="log" aria-label="群聊消息"></div>
+      <div class="chat-input-bar">
+        <textarea id="bots-input" rows="2" placeholder="给房间发消息…" aria-label="Bots 消息"></textarea>
+        <button type="button" id="bots-send-btn">发送</button>
       </div>
     </div>
   </div>
@@ -332,105 +375,78 @@
   </div>
 
   <!-- Memory Tab -->
-  <div id="tab-memory" class="tab-content flex-1 hidden p-4 overflow-y-auto">
-    <div class="max-w-6xl mx-auto">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="text-xl font-bold">记忆内容</h2>
-        <div class="flex items-center gap-2">
-          <button onclick="loadMemory()" class="text-sm bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-lg transition flex items-center gap-1">
-            <i class="fas fa-sync-alt text-xs"></i> 刷新
-          </button>
-          <span id="memory-embedder-status" class="text-xs px-2 py-1 rounded bg-gray-800 text-gray-400 hidden"></span>
-          <button id="memory-embedder-recover" onclick="recoverEmbedder()" class="text-xs bg-blue-900/40 hover:bg-blue-800/60 text-blue-400 px-2 py-1 rounded hidden transition">
-            <i class="fas fa-undo mr-1"></i>恢复嵌入器
-          </button>
+  <div id="tab-memory" class="tab-content hidden">
+    <div class="mem-page">
+      <header class="mem-toolbar">
+        <div class="mem-toolbar-copy">
+          <h2>记忆</h2>
+          <p class="mem-toolbar-hint">按主题浏览、确认和整理长期知识</p>
         </div>
-      </div>
-
-      <div class="flex gap-4">
-        <!-- Left: Block Navigation Tree -->
-        <div class="w-52 shrink-0">
-          <div class="bg-gray-900 border border-gray-800 rounded-xl p-3 sticky top-0">
-            <h3 class="font-bold text-sm mb-2 text-gray-300"><i class="fas fa-folder-tree mr-1"></i>记忆区块</h3>
-            <div id="memory-block-tree" class="text-sm space-y-1">
-              <div class="text-gray-500 text-xs">加载中...</div>
-            </div>
-          </div>
+        <div class="mem-toolbar-actions">
+          <button type="button" id="memory-organize-btn" onclick="organizeNow()" class="mem-btn mem-btn-primary" title="从最近对话中整理记忆">立即整理</button>
+          <button type="button" onclick="showAddSemanticModal()" class="mem-btn">添加知识</button>
+          <button type="button" onclick="loadMemory()" class="mem-btn">刷新</button>
+          <span id="memory-embedder-status" class="mem-chip hidden"></span>
+          <button type="button" id="memory-embedder-recover" onclick="recoverEmbedder()" class="mem-btn hidden">恢复嵌入器</button>
         </div>
+      </header>
 
-        <!-- Right: Memory Content -->
-        <div class="flex-1 space-y-4 min-w-0">
-          <!-- Active Context -->
-          <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-            <h3 class="font-bold mb-2 text-blue-400"><i class="fas fa-brain mr-2"></i>当前上下文</h3>
-            <pre id="memory-context" class="text-sm font-mono whitespace-pre-wrap text-gray-300 min-h-[3rem]"></pre>
-          </div>
+      <nav id="memory-subnav" class="mem-subnav" role="tablist" aria-label="记忆视图">
+        <button type="button" class="mem-subnav-item is-active" data-mem-view="knowledge" role="tab" aria-selected="true">知识库</button>
+        <button type="button" class="mem-subnav-item" data-mem-view="inbox" role="tab" aria-selected="false">收件箱<span id="memory-proposals-count" class="mem-count"></span></button>
+        <button type="button" class="mem-subnav-item" data-mem-view="working" role="tab" aria-selected="false">工作记忆</button>
+        <button type="button" class="mem-subnav-item" data-mem-view="episodes" role="tab" aria-selected="false">情景</button>
+        <button type="button" class="mem-subnav-item" data-mem-view="dreams" role="tab" aria-selected="false">梦境</button>
+        <button type="button" class="mem-subnav-item" data-mem-view="files" role="tab" aria-selected="false">记忆文件</button>
+        <button type="button" class="mem-subnav-item" data-mem-view="context" role="tab" aria-selected="false">上下文</button>
+      </nav>
+      <p id="memory-admin-hint" class="mem-admin-hint hidden">部分聚合视图需要管理员权限，知识库搜索、区块和收件箱仍可使用。</p>
 
-          <!-- Memory inbox: proposed changes awaiting confirmation -->
-          <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-            <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
-              <h3 class="font-bold text-yellow-400">
-                <i class="fas fa-inbox mr-2"></i>记忆收件箱
-                <span id="memory-proposals-count" class="text-xs text-gray-500 ml-1"></span>
-              </h3>
-              <div class="flex items-center gap-2">
-                <button id="memory-organize-btn" onclick="organizeNow()" class="text-xs bg-blue-900/40 hover:bg-blue-900/60 text-blue-300 px-2 py-1 rounded transition" title="从最近对话中整理记忆">
-                  <i class="fas fa-wand-magic-sparkles mr-1"></i>立即整理
-                </button>
-                <button id="memory-approve-all-btn" onclick="approveAllProposals()" class="text-xs bg-green-900/40 hover:bg-green-900/60 text-green-300 px-2 py-1 rounded transition hidden" title="确认全部">
-                  <i class="fas fa-check-double mr-1"></i>全部确认
-                </button>
-              </div>
-            </div>
-            <div id="memory-organize-status" class="text-xs text-gray-500 mb-2">点击「立即整理」可从最近的对话中提取要记住的信息。</div>
-            <div id="memory-proposals" class="space-y-2"></div>
+      <section id="memory-view-knowledge" class="mem-view" data-mem-panel="knowledge">
+        <aside class="mem-sidebar">
+          <h3>记忆区块</h3>
+          <div id="memory-block-tree">
+            <div class="mem-muted">加载中...</div>
           </div>
-
-          <!-- Working Memory -->
-          <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-            <h3 class="font-bold mb-2 text-cyan-400"><i class="fas fa-bolt mr-2"></i>工作记忆 (Working)</h3>
-            <div id="memory-working" class="space-y-2"></div>
+        </aside>
+        <div class="mem-main">
+          <div class="mem-search-row">
+            <input id="semantic-search" type="search" placeholder="搜索知识..." aria-label="搜索知识">
+            <button type="button" id="semantic-search-scope" onclick="toggleSearchScope()" class="mem-btn" title="切换搜索范围">全部</button>
+            <button type="button" onclick="searchSemantic()" class="mem-btn">搜索</button>
           </div>
-
-          <!-- Semantic Memory -->
-          <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-            <div class="flex items-center justify-between mb-2">
-              <h3 class="font-bold text-pink-400"><i class="fas fa-database mr-2"></i>长期知识 (Semantic)</h3>
-              <button onclick="showAddSemanticModal()" class="text-xs bg-pink-900/40 hover:bg-pink-900/60 text-pink-300 px-2 py-1 rounded transition">
-                <i class="fas fa-plus mr-1"></i>添加
-              </button>
-            </div>
-            <div class="flex gap-2 mb-3">
-              <input id="semantic-search" type="text" placeholder="搜索知识..." class="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-pink-500">
-              <button id="semantic-search-scope" onclick="toggleSearchScope()" class="bg-gray-800 border border-gray-700 px-2 py-1.5 rounded-lg text-xs text-gray-400 transition" title="切换搜索范围">
-                全部
-              </button>
-              <button onclick="searchSemantic()" class="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded-lg text-sm transition">
-                <i class="fas fa-search"></i>
-              </button>
-            </div>
-            <div id="memory-semantic" class="space-y-2"></div>
-          </div>
-
-          <!-- Episodes -->
-          <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-            <h3 class="font-bold mb-2 text-green-400"><i class="fas fa-film mr-2"></i>情景记忆 (Episodes)</h3>
-            <div id="memory-episodes" class="space-y-2"></div>
-          </div>
-
-          <!-- Dream Logs -->
-          <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-            <h3 class="font-bold mb-2 text-purple-400"><i class="fas fa-moon mr-2"></i>梦境日志 (Dreams)</h3>
-            <div id="memory-dreams" class="space-y-2"></div>
-          </div>
-
-          <!-- Memory Files -->
-          <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
-            <h3 class="font-bold mb-2 text-yellow-400"><i class="fas fa-file-alt mr-2"></i>记忆文件</h3>
-            <div id="memory-files" class="grid grid-cols-1 md:grid-cols-3 gap-3"></div>
-          </div>
+          <div id="memory-semantic" class="mem-list"></div>
+          <button type="button" id="memory-load-more" class="mem-btn mem-load-more hidden">加载更多</button>
         </div>
-      </div>
+      </section>
+
+      <section id="memory-view-inbox" class="mem-view hidden" data-mem-panel="inbox">
+        <div class="mem-panel-head">
+          <p id="memory-organize-status" class="mem-status">点击「立即整理」可从最近的对话中提取要记住的信息。</p>
+          <button type="button" id="memory-approve-all-btn" onclick="approveAllProposals()" class="mem-btn mem-btn-primary hidden" title="确认全部">全部确认</button>
+        </div>
+        <div id="memory-proposals" class="mem-list"></div>
+      </section>
+
+      <section id="memory-view-working" class="mem-view hidden" data-mem-panel="working">
+        <div id="memory-working" class="mem-list"></div>
+      </section>
+
+      <section id="memory-view-episodes" class="mem-view hidden" data-mem-panel="episodes">
+        <div id="memory-episodes" class="mem-list"></div>
+      </section>
+
+      <section id="memory-view-dreams" class="mem-view hidden" data-mem-panel="dreams">
+        <div id="memory-dreams" class="mem-list"></div>
+      </section>
+
+      <section id="memory-view-files" class="mem-view hidden" data-mem-panel="files">
+        <div id="memory-files" class="mem-file-grid"></div>
+      </section>
+
+      <section id="memory-view-context" class="mem-view hidden" data-mem-panel="context">
+        <pre id="memory-context" class="mem-context"></pre>
+      </section>
     </div>
   </div>
 
@@ -1071,25 +1087,30 @@
   <div id="toast-region" class="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-2 pointer-events-none"
        aria-live="polite" aria-relevant="additions text" aria-atomic="false"></div>
 
-  <!-- Desktop bootstrap failure is deliberately outside #app-shell so the
+  <!-- Bootstrap failure is deliberately outside #app-shell so the
        failed shell can be made inert without hiding the recovery action. -->
   <section id="bootstrap-failure" class="hidden fixed inset-0 bg-gray-950 flex items-center justify-center p-6" style="z-index: 70;"
            role="alertdialog" aria-modal="true" aria-labelledby="bootstrap-failure-title"
-           aria-describedby="bootstrap-failure-description" tabindex="-1">
+           aria-describedby="bootstrap-failure-description-desktop" tabindex="-1">
     <div class="max-w-md w-full rounded-2xl border border-gray-700 bg-gray-900 p-6 shadow-2xl text-center">
       <div class="w-12 h-12 mx-auto mb-4 rounded-xl flex items-center justify-center" style="background: var(--color-primary-soft); color: var(--color-primary);">
         <span aria-hidden="true">JS</span>
       </div>
       <h1 id="bootstrap-failure-title" class="text-xl font-semibold mb-2">无法完成安全连接</h1>
-      <p id="bootstrap-failure-description" class="text-sm text-gray-400 mb-5">桌面外壳没有完成本地身份交换。你的凭据和本地路径不会显示在这里。</p>
-      <div id="bootstrap-recovery-guidance" class="rounded-lg border border-gray-700 bg-gray-800 p-4 text-sm text-gray-200" role="note">
+      <p id="bootstrap-failure-description-desktop" class="text-sm text-gray-400 mb-5">桌面外壳没有完成本地身份交换。你的凭据和本地路径不会显示在这里。</p>
+      <p id="bootstrap-failure-description-key" class="hidden text-sm text-gray-400 mb-5">本地登录没有完成。你的凭据和本地路径不会显示在这里。</p>
+      <div id="bootstrap-recovery-guidance-desktop" class="rounded-lg border border-gray-700 bg-gray-800 p-4 text-sm text-gray-200" role="note">
         <strong class="block mb-2">请退出后重新打开 JS Agent</strong>
         <span class="text-gray-400">请从菜单栏 JS Agent 图标选择“退出”，再从“应用程序”重新打开。安全令牌只能使用一次，本页面不会重复使用或自行重试。</span>
+      </div>
+      <div id="bootstrap-recovery-guidance-key" class="hidden rounded-lg border border-gray-700 bg-gray-800 p-4 text-sm text-gray-200" role="note">
+        <strong class="block mb-2">刷新页面可重试</strong>
+        <span class="text-gray-400">引导密钥仍保留在地址栏中，刷新即可再次尝试登录。在登录完成前，本页面不会继续使用。</span>
       </div>
     </div>
   </section>
 
   <script type="module" src="/static/js/shell.js"></script>
-  <script type="module" src="/static/app.js?v=5"></script>
+  <script type="module" src="/static/app.js?v=6"></script>
 </body>
 </html>

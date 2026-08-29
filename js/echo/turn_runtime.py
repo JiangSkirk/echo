@@ -82,6 +82,7 @@ class TurnRequest:
     progress_callback: Callable[[str, Any], Awaitable[None]] | None = None
     event_callback: EventSink | None = None
     disable_tools: bool = False
+    lease_tool_allowlist: tuple[str, ...] | None = None
 
 
 def _default_turn_loop_factory(agent: Any, request: TurnRequest) -> TurnLoop:
@@ -98,6 +99,7 @@ def _default_turn_loop_factory(agent: Any, request: TurnRequest) -> TurnLoop:
         request.progress_callback,
         request.event_callback,
         request.disable_tools,
+        lease_tool_allowlist=request.lease_tool_allowlist,
     )
 
 
@@ -234,6 +236,7 @@ class EchoRuntime:
             context.control_scope,
             task_ref_hash,
             appshell_binding_scope,
+            context.surface,
         )
         return hashlib.sha256(repr(payload).encode("utf-8")).hexdigest()
 
@@ -253,7 +256,9 @@ class EchoRuntime:
                 raise PermissionError("Echo context task_ref run mismatch")
             mode = mode_from_product_id(context.product_id)
             if mode is AppMode.PERSONAL and tr.workspace is not None:
-                raise PermissionError("Echo context task_ref must not carry workspace in personal mode")
+                raise PermissionError(
+                    "Echo context task_ref must not carry workspace in personal mode"
+                )
             if mode is AppMode.WORK and tr.workspace is None:
                 raise PermissionError("Echo context task_ref must carry workspace in work mode")
         signature = hmac.new(
@@ -399,6 +404,7 @@ class EchoRuntime:
         capabilities: tuple[str, ...] | None = None,
         control_arguments: Mapping[str, Any] | None = None,
         cancel_token: Any | None = None,
+        surface: str = "",
     ) -> RuntimeContext:
         """Build a complete context for non-chat Echo effects."""
         settings = self._agent.settings
@@ -520,6 +526,7 @@ class EchoRuntime:
                 control_scope=("provider_discovery" if control_arguments is not None else ""),
                 task_ref=task_ref,
                 appshell_epoch_binding=appshell_binding,
+                surface=surface,
             )
         )
         if control_arguments is not None:
@@ -646,6 +653,7 @@ class EchoRuntime:
                 progress_callback=request.progress_callback,
                 event_callback=emit,
                 disable_tools=request.disable_tools,
+                lease_tool_allowlist=request.lease_tool_allowlist,
             )
 
         lane = getattr(self._agent, "_lane_executor", None)
@@ -693,9 +701,13 @@ class EchoRuntime:
         event_callback: EventSink | None = None,
         disable_tools: bool = False,
         cancel_token: Any | None = None,
+        surface: str = "",
+        lease_tool_allowlist: tuple[str, ...] | None = None,
     ) -> Any:
         """Translate the historical public call shape into ``TurnRequest``."""
         parent_context = current_runtime_context()
+        if not surface and parent_context is not None:
+            surface = parent_context.surface
         if (
             parent_context is not None
             and owner_key_hash
@@ -715,6 +727,7 @@ class EchoRuntime:
             session_id=resolved_session,
             run_id=resolved_run,
             cancel_token=cancel_token,
+            surface=surface,
         )
         return await EchoRuntime.run_turn(
             self,
@@ -728,6 +741,7 @@ class EchoRuntime:
                 progress_callback=progress_callback,
                 event_callback=event_callback,
                 disable_tools=disable_tools,
+                lease_tool_allowlist=lease_tool_allowlist,
             ),
         )
 

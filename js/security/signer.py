@@ -917,18 +917,54 @@ def verify_skill_manifest(
     return verify_signature(content_hash, signature, public_key)
 
 
+def _strip_skill_signature_fields(payload: bytes) -> bytes:
+    """Drop signature/public_key so signing the manifest is not circular."""
+
+    text = payload.decode("utf-8", errors="replace")
+    if not text.startswith("---"):
+        return payload
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return payload
+    try:
+        import yaml
+    except ImportError:
+        return payload
+    front = yaml.safe_load(parts[1])
+    if not isinstance(front, dict):
+        return payload
+    front.pop("signature", None)
+    front.pop("public_key", None)
+    dumped = yaml.safe_dump(front, sort_keys=True, allow_unicode=True)
+    return f"---\n{dumped}---{parts[2]}".encode()
+
+
 def _compute_skill_content_hash(manifest_path: Path) -> str:
-    """Compute a SHA-256 hash of the skill manifest + all regular files.
+    """Hash the skill directory with SKILL.md signature fields stripped.
 
-    Delegates to ``js.skills.spec.compute_skill_dir_hash`` so manifest
-    signatures and ``SkillSpec.compute_hash()`` cover exactly the same file
-    set (the whole skill directory, minus volatile dirs/symlinks).
+    Signature and public_key live in the manifest. Including them in the
+    signed bytes would make a valid in-manifest signature impossible.
+    Other files use the same walk as ``compute_skill_dir_hash``.
     """
-    # Local import: keeps js.security free of import-order coupling with the
-    # skills package (which lazy-imports this module in the other direction).
-    from js.skills.spec import compute_skill_dir_hash
+    from js.skills.spec import HASH_EXCLUDED_DIRS
 
-    return compute_skill_dir_hash(manifest_path.parent)
+    skill_dir = manifest_path.parent
+    digest = hashlib.sha256()
+    entries: list[tuple[str, Path]] = []
+    for root, dirnames, filenames in os.walk(skill_dir, followlinks=False):
+        root_path = Path(root)
+        dirnames[:] = sorted(d for d in dirnames if d not in HASH_EXCLUDED_DIRS)
+        for name in filenames:
+            path = root_path / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            entries.append((path.relative_to(skill_dir).as_posix(), path))
+    for _rel, path in sorted(entries, key=lambda item: item[0]):
+        data = path.read_bytes()
+        if path.name == "SKILL.md":
+            data = _strip_skill_signature_fields(data)
+        digest.update(data)
+    return digest.hexdigest()
 
 
 def is_builtin_public_key(public_key_b64: str) -> bool:

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from js.web.auth import memory_owner, require_admin, require_admin_write
 from js.web.deps import get_echo_safety_service
 from js.web.runtime_context import current_web_runtime
+from js.web.schemas import ManualReviewResolveRequest
 
 router = APIRouter(prefix="/api/echo/manual-reviews", tags=["echo-manual-reviews"])
 
@@ -78,20 +79,15 @@ async def list_manual_reviews(
 @router.post("/{effect_id}/resolve")
 async def resolve_manual_review(
     effect_id: str,
-    payload: dict[str, Any],
+    payload: ManualReviewResolveRequest,
     tenant_id: str | None = None,
     auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Durably resolve an effect in the admin-selected tenant."""
     selected_tenant = _selected_tenant(auth, tenant_id)
-    action = payload.get("action")
-    if action not in _ALLOWED_ACTIONS:
-        raise HTTPException(400, "action must be cancel, override, or resolved")
-    reason = payload.get("reason")
-    if not isinstance(reason, str):
-        raise HTTPException(400, "reason is required")
-    reason = reason.strip()
-    if not reason or len(reason) > _MAX_REASON_LENGTH:
+    action = payload.action
+    reason = payload.reason.strip()
+    if not reason:
         raise HTTPException(400, f"reason must be 1 to {_MAX_REASON_LENGTH} characters")
 
     try:

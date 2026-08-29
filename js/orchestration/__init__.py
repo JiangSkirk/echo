@@ -1,6 +1,7 @@
 """Multi-agent orchestration and collaboration."""
 
-from js.orchestration.fleet import AgentFleet, AgentRole
-from js.orchestration.router import TaskRouter
+from __future__ import annotations
 
-__all__ = ["AgentFleet", "AgentRole", "TaskRouter"]
+from js.orchestration.fleet import AgentFleet, AgentRole
+
+__all__ = ["AgentFleet", "AgentRole"]

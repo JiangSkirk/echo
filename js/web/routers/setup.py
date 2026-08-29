@@ -16,6 +16,7 @@ from js.models.providers import ChatMessage
 from js.utils.log import get_logger
 from js.web.auth import memory_owner, require_setup_auth, require_user_write, runtime_owner
 from js.web.deps import get_agent, get_settings
+from js.web.schemas import SetupTestModelRequest
 
 logger = get_logger("js.web.setup")
 router = APIRouter(tags=["setup"])
@@ -173,6 +174,11 @@ async def setup_reopen(auth: dict[str, Any] = Depends(require_setup_auth)) -> di
             403,
             "Guest role is read-only; authenticate to reopen setup",
         )
+    if auth.get("role") != "admin":
+        raise HTTPException(
+            403,
+            "需要管理员权限才能重新打开初始化向导。",
+        )
     return await _setup_mutation_response("reopen", auth)
 
 
@@ -215,13 +221,13 @@ async def setup_reset(auth: dict[str, Any] = Depends(require_setup_auth)) -> dic
 
 @router.post("/api/setup/test-model")
 async def test_model(
-    body: dict[str, Any], auth: dict[str, Any] = Depends(require_user_write)
+    body: SetupTestModelRequest, auth: dict[str, Any] = Depends(require_user_write)
 ) -> dict[str, Any]:
     """Test whether a specific model is reachable and responsive.
 
     Sends a minimal completion request and measures latency.
     """
-    model_id = (body.get("model_id") or "").strip()
+    model_id = body.model_id.strip()
     if not model_id:
         raise HTTPException(400, "缺少必填参数 model_id")
 

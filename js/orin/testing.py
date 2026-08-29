@@ -24,6 +24,37 @@ from js.orind.daemon import OrinDaemon
 _MAX_UNIX_PATH = 100
 
 
+def derive_c2_appshell_application_handle(
+    *,
+    owner_key_hash: str,
+    task_id: str,
+    principal_owner: str,
+    principal_session: str,
+    principal_epoch: int,
+    bundle_id: str,
+    product_id: str = "js-work",
+    profile: str = "work",
+) -> str:
+    """Derive one AppShell ApplicationHandle id for the explicit C2 harness.
+
+    Production ``/intent`` still issues only File DirectoryHandle.  This helper
+    mirrors that owner/session/epoch binding for Desktop tests only.
+    """
+
+    from js.orin.handles import derive_appshell_application_handle_id
+
+    return derive_appshell_application_handle_id(
+        installation_owner_hash=owner_key_hash,
+        product_id=product_id,
+        task_id=task_id,
+        profile=profile,
+        principal_owner=principal_owner,
+        principal_session=principal_session,
+        principal_epoch=principal_epoch,
+        bundle_id=bundle_id,
+    )
+
+
 class TestOrind:
     """Real daemon on a temp socket; start/stop from sync test code."""
 
@@ -44,6 +75,7 @@ class TestOrind:
         cell_secret: bool = False,
         cell_file: bool = False,
         cell_desktop: bool = False,
+        cell_memory: bool = False,
         commit_membrane: bool = False,
         cell_identity_enforce: bool = False,
         c1_test_harness: bool = False,
@@ -70,6 +102,7 @@ class TestOrind:
         self._cell_secret = cell_secret
         self._cell_file = cell_file
         self._cell_desktop = cell_desktop
+        self._cell_memory = cell_memory
         self._commit_membrane = commit_membrane
         self._cell_identity_enforce = cell_identity_enforce
         self._c1_test_harness = c1_test_harness
@@ -141,6 +174,8 @@ class TestOrind:
             kwargs["cell_file"] = True
         if self._cell_desktop:
             kwargs["cell_desktop"] = True
+        if self._cell_memory:
+            kwargs["cell_memory"] = True
         if self._commit_membrane:
             kwargs["commit_membrane"] = True
         if self._cell_identity_enforce:
@@ -198,5 +233,42 @@ class C2TestOrind(C1TestOrind):
         kwargs["cell_desktop"] = True
         super().__init__(**kwargs)
 
+    @staticmethod
+    def appshell_application_handle(
+        *,
+        owner_key_hash: str,
+        task_id: str,
+        principal_owner: str,
+        principal_session: str,
+        principal_epoch: int,
+        bundle_id: str,
+        product_id: str = "js-work",
+        profile: str = "work",
+    ) -> str:
+        return derive_c2_appshell_application_handle(
+            owner_key_hash=owner_key_hash,
+            task_id=task_id,
+            principal_owner=principal_owner,
+            principal_session=principal_session,
+            principal_epoch=principal_epoch,
+            bundle_id=bundle_id,
+            product_id=product_id,
+            profile=profile,
+        )
 
-__all__ = ["C1TestOrind", "C2TestOrind", "TestOrind"]
+
+class C3TestOrind(C1TestOrind):
+    """Explicit WP-C3 Memory Cell harness; never used by product launchers."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs["cell_memory"] = True
+        super().__init__(**kwargs)
+
+
+__all__ = [
+    "C1TestOrind",
+    "C2TestOrind",
+    "C3TestOrind",
+    "TestOrind",
+    "derive_c2_appshell_application_handle",
+]

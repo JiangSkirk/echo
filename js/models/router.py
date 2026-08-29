@@ -332,10 +332,7 @@ def validate_model_for_activation(
                 if get_preset(provider_name) is not None:
                     raise ModelSwitchValidationError(
                         409,
-                        (
-                            f"Provider '{provider_name}' 尚未配置，"
-                            "请先添加该云模型并填写 API Key。"
-                        ),
+                        (f"Provider '{provider_name}' 尚未配置，请先添加该云模型并填写 API Key。"),
                         needs_config=True,
                     )
             except ModelSwitchValidationError:
@@ -369,7 +366,11 @@ def validate_model_for_activation(
             binding_short = get_model_binding(model_suffix)
         except Exception:
             binding_short = None
-        if binding_short is not None and isinstance(binding_short, tuple) and len(binding_short) == 2:
+        if (
+            binding_short is not None
+            and isinstance(binding_short, tuple)
+            and len(binding_short) == 2
+        ):
             bp_name, bp_config = binding_short
             if (
                 isinstance(bp_name, str)
@@ -471,10 +472,10 @@ class ModelRouter:
         # Close the old provider asynchronously without blocking the caller.
         if old_provider is not None:
             try:
-                import asyncio
-
                 asyncio.get_running_loop()
-                asyncio.create_task(old_provider.close())
+                from js.utils.async_tasks import spawn_background_task
+
+                spawn_background_task(old_provider.close(), name=f"close-provider-{name}")
             except RuntimeError:
                 pass
 
@@ -487,10 +488,10 @@ class ModelRouter:
         self._routing_cache.clear()
         # Close the old provider asynchronously without blocking the caller.
         try:
-            import asyncio
-
             asyncio.get_running_loop()
-            asyncio.create_task(old_provider.close())
+            from js.utils.async_tasks import spawn_background_task
+
+            spawn_background_task(old_provider.close(), name=f"close-provider-{name}")
         except RuntimeError:
             pass
         return True

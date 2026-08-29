@@ -134,9 +134,7 @@ def validate_entry_dict(data: Any) -> None:
     ):
         raise ProtocolError("permission_args must map argument names to handle prefixes")
     content = data.get("content_args", [])
-    if not isinstance(content, list) or any(
-        not isinstance(item, str) for item in content
-    ):
+    if not isinstance(content, list) or any(not isinstance(item, str) for item in content):
         raise ProtocolError("content_args must be a list of strings")
 
 
@@ -205,7 +203,12 @@ class EffectManifest:
         return out
 
 
-def builtin_manifest(mac_key: bytes, *, include_desktop: bool = False) -> EffectManifest:
+def builtin_manifest(
+    mac_key: bytes,
+    *,
+    include_desktop: bool = False,
+    include_memory: bool = False,
+) -> EffectManifest:
     """Stage-B built-ins for first-party effect types (all sealed)."""
 
     manifest = EffectManifest(mac_key)
@@ -233,11 +236,75 @@ def builtin_manifest(mac_key: bytes, *, include_desktop: bool = False) -> Effect
                 idempotent=False,
                 drafts_supported=True,
                 etag_support=True,
-                reconcile_query=False,
+                reconcile_query=True,
                 permission_args={"desktop_target_handle": "desktop"},
                 content_args=("action",),
                 description_hash=description_hash_of(
                     "perform one exact action against an observed desktop target"
+                ),
+            )
+        )
+    if include_memory:
+        manifest.register(
+            EffectManifestEntry(
+                effect_type="memory.read",
+                executor_id="cell.memory",
+                side_effect_class="R0",
+                idempotent=True,
+                drafts_supported=True,
+                etag_support=True,
+                reconcile_query=False,
+                content_args=("owner_key_hash", "profile", "session_id", "key"),
+                description_hash=description_hash_of(
+                    "read one owner-scoped memory record inside the Memory Cell"
+                ),
+            )
+        )
+        manifest.register(
+            EffectManifestEntry(
+                effect_type="memory.write",
+                executor_id="cell.memory",
+                side_effect_class="R1",
+                idempotent=True,
+                drafts_supported=True,
+                etag_support=True,
+                reconcile_query=True,
+                content_args=(
+                    "owner_key_hash",
+                    "profile",
+                    "session_id",
+                    "key",
+                    "value",
+                    "source",
+                    "taint",
+                    "clearance",
+                ),
+                description_hash=description_hash_of(
+                    "insert one owner-scoped memory record inside the Memory Cell"
+                ),
+            )
+        )
+        manifest.register(
+            EffectManifestEntry(
+                effect_type="memory.mutate",
+                executor_id="cell.memory",
+                side_effect_class="R2",
+                idempotent=False,
+                drafts_supported=True,
+                etag_support=True,
+                reconcile_query=True,
+                content_args=(
+                    "owner_key_hash",
+                    "profile",
+                    "session_id",
+                    "key",
+                    "value",
+                    "source",
+                    "taint",
+                    "clearance",
+                ),
+                description_hash=description_hash_of(
+                    "mutate one owner-scoped memory record inside the Memory Cell"
                 ),
             )
         )
@@ -319,6 +386,54 @@ def builtin_manifest(mac_key: bytes, *, include_desktop: bool = False) -> Effect
             content_args=("changes",),
             description_hash=description_hash_of(
                 "atomically rename staged files into the owner root"
+            ),
+        )
+    )
+    manifest.register(
+        EffectManifestEntry(
+            effect_type="bot.room.create",
+            executor_id="cell.memory",
+            side_effect_class="R2",
+            idempotent=True,
+            drafts_supported=True,
+            etag_support=True,
+            reconcile_query=True,
+            permission_args={"member_bot_handles": "bot"},
+            content_args=("title", "kind"),
+            description_hash=description_hash_of(
+                "create a bots room addressed only by sealed BotHandles"
+            ),
+        )
+    )
+    manifest.register(
+        EffectManifestEntry(
+            effect_type="bot.message.send",
+            executor_id="cell.memory",
+            side_effect_class="R1",
+            idempotent=True,
+            drafts_supported=True,
+            etag_support=True,
+            reconcile_query=True,
+            permission_args={"room_handle": "room", "speaker_bot_handle": "bot"},
+            content_args=("body",),
+            description_hash=description_hash_of(
+                "append one visible room bubble addressed by sealed handles"
+            ),
+        )
+    )
+    manifest.register(
+        EffectManifestEntry(
+            effect_type="bot.soul.write",
+            executor_id="cell.memory",
+            side_effect_class="R2",
+            idempotent=True,
+            drafts_supported=True,
+            etag_support=True,
+            reconcile_query=True,
+            permission_args={"bot_handle": "bot"},
+            content_args=("soul_text",),
+            description_hash=description_hash_of(
+                "write an owner-edited SOUL onto a sealed BotHandle"
             ),
         )
     )

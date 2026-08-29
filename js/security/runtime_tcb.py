@@ -86,7 +86,7 @@ def token_is_runtime_tcb_write(token: str, *, workspace: Path) -> bool:
     """Lexical path token (shell argv) that would write a workspace TCB path.
 
     Tokens containing ``$`` are not classified here; callers must deny them
-    the same way git metadata writes do (parser drops ``has_var``).
+    via ``CommandNode.arg_vars`` on write-path commands.
     """
     if not token or token in {".", "-"} or "\x00" in token:
         return False

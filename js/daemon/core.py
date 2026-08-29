@@ -185,9 +185,7 @@ class JSDaemon:
             logger.warning("[cron] cleanup rejected: job has no explicit owner scope")
             return
         try:
-            removed = self.agent.memory.enhanced.cleanup_empty_sessions(
-                owner_key_hash=owner
-            )
+            removed = self.agent.memory.enhanced.cleanup_empty_sessions(owner_key_hash=owner)
             if removed > 0:
                 logger.info(f"[cron] Cleanup: removed {removed} empty sessions for owner={owner}")
         except Exception as e:
@@ -198,6 +196,12 @@ class JSDaemon:
         owner = job.owner_key_hash
         if not owner or owner == "local-user":
             logger.warning("[cron] dream rejected: job has no explicit owner scope")
+            return
+        from js.orin.stage_c import product_memory_cell_required
+
+        orin = getattr(getattr(self.agent, "settings", None), "orin", None)
+        if product_memory_cell_required(orin):
+            logger.warning("[cron] dream refused: ambient MemoryStore is closed under enforce")
             return
         try:
             ds = getattr(self.agent, "_dream_scheduler", None)
@@ -240,9 +244,7 @@ class JSDaemon:
                 "[cron] shell job %s rejected: not admin-approved (system_scope)",
                 job.id,
             )
-            raise PermissionError(
-                "cron shell jobs require admin approval (system_scope)"
-            )
+            raise PermissionError("cron shell jobs require admin approval (system_scope)")
         for pattern, reason in _CRON_SHELL_BLOCKED_PATTERNS:
             if pattern.search(cmd):
                 logger.warning(
@@ -287,11 +289,7 @@ class JSDaemon:
         if state.status != "completed":
             raise RuntimeError(state.error_message or f"Echo cron turn ended as {state.status}")
         for message in reversed(state.messages):
-            if (
-                message.role == "assistant"
-                and isinstance(message.content, str)
-                and message.content
-            ):
+            if message.role == "assistant" and isinstance(message.content, str) and message.content:
                 return message.content
         raise RuntimeError("Echo cron turn completed without an assistant response")
 
@@ -362,9 +360,7 @@ class JSDaemon:
         fails after a successful delete, the persisted record is restored.
         """
         job = self.cron.get_job(job_id)
-        if job is None or (
-            owner_key_hash is not None and job.owner_key_hash != owner_key_hash
-        ):
+        if job is None or (owner_key_hash is not None and job.owner_key_hash != owner_key_hash):
             return False
         self.store.delete_job(job_id, owner_key_hash=owner_key_hash)
         try:
@@ -408,15 +404,11 @@ class JSDaemon:
         restart always reflects the last confirmed state.
         """
         job = self.cron.get_job(job_id)
-        if job is None or (
-            owner_key_hash is not None and job.owner_key_hash != owner_key_hash
-        ):
+        if job is None or (owner_key_hash is not None and job.owner_key_hash != owner_key_hash):
             raise KeyError(f"cron job not found: {job_id}")
         rejected = sorted(set(changes) - UPDATABLE_FIELDS)
         if rejected:
-            raise ValueError(
-                f"cron job fields are not updatable: {', '.join(rejected)}"
-            )
+            raise ValueError(f"cron job fields are not updatable: {', '.join(rejected)}")
         import copy
 
         candidate = copy.deepcopy(job)
@@ -435,13 +427,9 @@ class JSDaemon:
         job.updated_at = candidate.updated_at
         return job
 
-    def get_job(
-        self, job_id: str, owner_key_hash: str | None = None
-    ) -> ScheduledJob | None:
+    def get_job(self, job_id: str, owner_key_hash: str | None = None) -> ScheduledJob | None:
         job = self.cron.get_job(job_id)
-        if job is not None and (
-            owner_key_hash is None or job.owner_key_hash == owner_key_hash
-        ):
+        if job is not None and (owner_key_hash is None or job.owner_key_hash == owner_key_hash):
             return job
         return None
 
@@ -556,9 +544,7 @@ class JSDaemon:
         """
         # Reject symlink targets (follow attack vector)
         if os.path.lexists(self._heartbeat_path) and self._heartbeat_path.is_symlink():
-            raise ValueError(
-                f"heartbeat target is a symlink: {self._heartbeat_path}"
-            )
+            raise ValueError(f"heartbeat target is a symlink: {self._heartbeat_path}")
 
         jobs = self.cron.list_jobs()
         total_run = sum(job.run_count for job in jobs)

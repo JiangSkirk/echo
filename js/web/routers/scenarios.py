@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from js.scenarios.loader import load_builtin_scenarios
 from js.scenarios.registry import ScenarioRegistry
 from js.utils.log import get_logger
-from js.web.auth import require_auth_dep
+from js.web.auth import require_auth_dep, require_user_write
 from js.web.deps import get_agent
 
 logger = get_logger("js.web.scenarios")
@@ -26,7 +26,9 @@ async def list_scenarios(auth: dict[str, Any] = Depends(require_auth_dep)) -> di
 
 
 @router.get("/api/scenarios/{scenario_id}")
-async def get_scenario(scenario_id: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+async def get_scenario(
+    scenario_id: str, auth: dict[str, Any] = Depends(require_auth_dep)
+) -> dict[str, Any]:
     """Get a specific scenario template."""
     scenario = _registry.get(scenario_id)
     if not scenario:
@@ -35,7 +37,9 @@ async def get_scenario(scenario_id: str, auth: dict[str, Any] = Depends(require_
 
 
 @router.post("/api/scenarios/{scenario_id}/start")
-async def start_scenario(scenario_id: str, auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, Any]:
+async def start_scenario(
+    scenario_id: str, auth: dict[str, Any] = Depends(require_user_write)
+) -> dict[str, Any]:
     """Start a scenario: configure fleet roles and suggested skills."""
     scenario = _registry.get(scenario_id)
     if not scenario:
@@ -53,12 +57,19 @@ async def start_scenario(scenario_id: str, auth: dict[str, Any] = Depends(requir
     skills_manager = getattr(agent, "skills", None)
     skills_status: list[dict[str, Any]] = []
     for skill_id in scenario.suggested_skills:
-        skill = skills_manager.get(skill_id) if skills_manager is not None else None
-        skills_status.append({
-            "id": skill_id,
-            "available": skill is not None,
-            "active": getattr(skill, "enabled", False) if skill else False,
-        })
+        lookup = None
+        if skills_manager is not None:
+            lookup = getattr(skills_manager, "get_skill", None) or getattr(
+                skills_manager, "get", None
+            )
+        skill = lookup(skill_id) if callable(lookup) else None
+        skills_status.append(
+            {
+                "id": skill_id,
+                "available": skill is not None,
+                "active": getattr(skill, "enabled", False) if skill else False,
+            }
+        )
 
     return {
         "success": True,

@@ -604,6 +604,17 @@ class EffectInterpreter:
         error = runtime_context_error(context)
         if error is not None:
             raise ValueError(error)
+        try:
+            from js.utils.metrics import bind_effect_ids
+
+            bind_effect_ids(
+                kind=effect_kind,
+                effect_id=context.run_id,
+                outbox_id=context.session_id,
+                lease_id=context.owner_key_hash,
+            )
+        except Exception:
+            pass
 
     def _begin_effect_operation(
         self,

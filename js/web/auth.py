@@ -7,6 +7,7 @@ Keys are stored as SHA-256 hashes (the plaintext is shown once on creation).
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 import time
 from collections.abc import Callable, Mapping
@@ -42,6 +43,8 @@ __all__ = [
     "request_is_direct_loopback",
     "session_cookie_name",
     "runtime_owner",
+    "websocket_presented_api_key",
+    "cors_allow_origins",
 ]
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -57,6 +60,9 @@ _GUEST_ROLE = "guest"
 # ``session_cookie_name``.
 _SESSION_COOKIE = "js_session"
 _SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
+# Historical non-HttpOnly cookie that carried the plaintext API key. Rejected
+# on WebSocket upgrades so a same-origin script cannot mint a credential.
+_LEGACY_API_KEY_COOKIE = "x-api-key"
 
 
 def session_cookie_name(product_id: str | None = None) -> str:
@@ -84,6 +90,20 @@ def resolve_session_cookie(
         if isinstance(legacy, str) and legacy:
             return legacy
     return None
+
+
+def websocket_presented_api_key(websocket: WebSocket) -> str:
+    """Return the ``X-API-Key`` header, or empty string.
+
+    A non-empty ``x-api-key`` cookie is rejected: plaintext keys must not
+    ride a non-HttpOnly cookie (header + HttpOnly session cookie only).
+    """
+    cookie = websocket.cookies.get(_LEGACY_API_KEY_COOKIE)
+    if isinstance(cookie, str) and cookie:
+        logger.warning("Rejected WebSocket upgrade that presented an x-api-key cookie")
+        raise AuthRequiredError("x-api-key cookie is no longer accepted")
+    header = websocket.headers.get("x-api-key", "")
+    return header if isinstance(header, str) else ""
 
 
 # Client hosts allowed to use the unauthenticated setup bootstrap window.
@@ -131,7 +151,6 @@ def request_is_direct_loopback(request: Request) -> bool:
 def _load_allowed_origins() -> frozenset[str]:
     """Return the operator-configured origin allowlist (empty if unset)."""
     global _ALLOWED_ORIGINS, _ALLOWED_ORIGINS_ENV
-    import os
 
     env = os.getenv("JS_ALLOWED_ORIGINS", "")
     if _ALLOWED_ORIGINS is not None and env == _ALLOWED_ORIGINS_ENV:
@@ -142,6 +161,28 @@ def _load_allowed_origins() -> frozenset[str]:
     else:
         _ALLOWED_ORIGINS = frozenset()
     return _ALLOWED_ORIGINS
+
+
+_CORS_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+_LISTEN_ALL_HOSTS = frozenset({"0.0.0.0", "::", "*"})
+
+
+def cors_allow_origins(bind_host: str, bind_port: int) -> list[str]:
+    """Loopback aliases plus ``JS_ALLOWED_ORIGINS``; never the bind-host literal.
+
+    ``http://0.0.0.0:port`` is not a browser Origin. A concrete non-loopback
+    bind requires the operator to set ``JS_ALLOWED_ORIGINS``.
+    """
+    origins = [
+        f"http://127.0.0.1:{bind_port}",
+        f"http://localhost:{bind_port}",
+    ]
+    extra = sorted(_load_allowed_origins())
+    origins.extend(extra)
+    host = (bind_host or "127.0.0.1").strip().lower().strip("[]")
+    if host not in _CORS_LOOPBACK_HOSTS and host not in _LISTEN_ALL_HOSTS and not extra:
+        raise RuntimeError(f"Non-loopback bind_host {bind_host!r} requires JS_ALLOWED_ORIGINS")
+    return list(dict.fromkeys(origins))
 
 
 def _split_host(host: str) -> tuple[str, str | None]:
@@ -297,8 +338,12 @@ class AuthManager:
     # open the same DB path (FastAPI deps construct a fresh manager per request).
     _SHARED_VERIFY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
     _SHARED_LAST_USED: dict[str, float] = {}
+    # Per-DB-path epoch plus per-entry stamp. Revoke bumps the epoch so a
+    # verify that raced a revoke cannot rewrite (or reuse) a stale positive.
+    _SHARED_VERIFY_EPOCH: dict[str, int] = {}
+    _SHARED_VERIFY_STAMP: dict[str, int] = {}
     _INITIALIZED_DBS: set[str] = set()
-    _VERIFY_CACHE_TTL_SECONDS = 5.0  # positive cache only; revoke calls _invalidate_verify_cache
+    _VERIFY_CACHE_TTL_SECONDS = 5.0  # positive cache only; revoke bumps epoch
     _LAST_USED_MIN_INTERVAL_SECONDS = 60.0
     # Hard cap on the shared positive caches. Entries are keyed by distinct
     # key-hash, so without a bound the dicts grow for the life of the process.
@@ -315,17 +360,26 @@ class AuthManager:
     def _cache_key(self, key_hash: str) -> str:
         return f"{self._cache_ns}:{key_hash}"
 
+    def _current_epoch(self) -> int:
+        return self._SHARED_VERIFY_EPOCH.get(self._cache_ns, 0)
+
+    def _bump_verify_epoch(self) -> None:
+        self._SHARED_VERIFY_EPOCH[self._cache_ns] = self._current_epoch() + 1
+
     def _invalidate_verify_cache(self, key_hash: str | None = None) -> None:
+        self._bump_verify_epoch()
         if key_hash is None:
             prefix = f"{self._cache_ns}:"
             for cached_key in list(self._SHARED_VERIFY_CACHE):
                 if cached_key.startswith(prefix):
                     self._SHARED_VERIFY_CACHE.pop(cached_key, None)
                     self._SHARED_LAST_USED.pop(cached_key, None)
+                    self._SHARED_VERIFY_STAMP.pop(cached_key, None)
             return
         cache_key = self._cache_key(key_hash)
         self._SHARED_VERIFY_CACHE.pop(cache_key, None)
         self._SHARED_LAST_USED.pop(cache_key, None)
+        self._SHARED_VERIFY_STAMP.pop(cache_key, None)
 
     @classmethod
     def _enforce_verify_cache_bounds(cls, now: float) -> None:
@@ -347,9 +401,11 @@ class AuthManager:
         for cached_key in expired:
             cls._SHARED_VERIFY_CACHE.pop(cached_key, None)
             cls._SHARED_LAST_USED.pop(cached_key, None)
+            cls._SHARED_VERIFY_STAMP.pop(cached_key, None)
         if len(cls._SHARED_VERIFY_CACHE) > cls._VERIFY_CACHE_MAX_ENTRIES:
             cls._SHARED_VERIFY_CACHE.clear()
             cls._SHARED_LAST_USED.clear()
+            cls._SHARED_VERIFY_STAMP.clear()
 
     def _init_db(self) -> None:
         # Schema bootstrap once per DB path — CREATE IF NOT EXISTS is not free on
@@ -411,7 +467,27 @@ class AuthManager:
                 """
             )
             conn.commit()
+        self._harden_auth_store()
         self._INITIALIZED_DBS.add(self._cache_ns)
+
+    def _harden_auth_store(self) -> None:
+        """Restrict the key database and its parent directory (0600 / 0700)."""
+        state_dir = self._db_path.parent
+        state_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(state_dir, 0o700)
+        except OSError:
+            logger.warning("Could not restrict auth state_dir permissions", path=str(state_dir))
+        for path in (
+            self._db_path,
+            Path(str(self._db_path) + "-wal"),
+            Path(str(self._db_path) + "-shm"),
+        ):
+            if path.exists():
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    logger.warning("Could not restrict auth database permissions", path=str(path))
 
     # ------------------------------------------------------------------
     # Key lifecycle
@@ -689,10 +765,20 @@ class AuthManager:
         key_hash = _hash_key(key)
         now = time.time()
         cache_key = self._cache_key(key_hash)
+        epoch_at_start = self._current_epoch()
         cached = self._SHARED_VERIFY_CACHE.get(cache_key)
         if cached is not None and (now - cached[0]) < self._VERIFY_CACHE_TTL_SECONDS:
-            self._maybe_touch_last_used(key_hash, now)
-            return dict(cached[1])
+            cached_identity = cached[1]
+            stamped = self._SHARED_VERIFY_STAMP.get(cache_key)
+            # Admin identities never use the positive cache: revoke must be
+            # visible on the next privileged request, not after TTL.
+            if (
+                cached_identity.get("role") != _ADMIN_ROLE
+                and stamped == epoch_at_start
+                and epoch_at_start == self._current_epoch()
+            ):
+                self._maybe_touch_last_used(key_hash, now)
+                return dict(cached_identity)
 
         with db_connection(self._db_path) as conn:
             row = conn.execute(
@@ -710,8 +796,10 @@ class AuthManager:
             raise AuthRequiredError("API key has been revoked")
 
         identity = {"name": name, "role": role, "key_hash": key_hash}
-        self._enforce_verify_cache_bounds(now)
-        self._SHARED_VERIFY_CACHE[cache_key] = (now, identity)
+        if role != _ADMIN_ROLE and epoch_at_start == self._current_epoch():
+            self._enforce_verify_cache_bounds(now)
+            self._SHARED_VERIFY_CACHE[cache_key] = (now, identity)
+            self._SHARED_VERIFY_STAMP[cache_key] = epoch_at_start
         self._maybe_touch_last_used(key_hash, now)
         return dict(identity)
 
@@ -1015,6 +1103,8 @@ async def require_auth(
             )
         # In parent-managed scopes client API keys and child cookies are never
         # consulted; this injected context is the sole identity authority.
+        if request.method.upper() in _STATE_CHANGING_METHODS:
+            check_origin(request)
         return appshell_auth
 
     # Anti-CSRF: state-changing requests pass the Origin/Host check before any

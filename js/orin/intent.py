@@ -32,6 +32,9 @@ EFFECT_CLASSES: Final[frozenset[str]] = frozenset(
         "desktop.action",
         "desktop.observe",
         "file.commit",
+        "memory.mutate",
+        "memory.read",
+        "memory.write",
         "shell.exec",
         "net.fetch",
         "net.send",
@@ -39,6 +42,9 @@ EFFECT_CLASSES: Final[frozenset[str]] = frozenset(
         "secret.use",
         "policy.change",
         "admin.unfreeze",
+        "bot.room.create",
+        "bot.message.send",
+        "bot.soul.write",
     }
 )
 """Closed effect-class vocabulary for ``allowed_effect_classes``."""

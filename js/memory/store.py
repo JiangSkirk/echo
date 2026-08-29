@@ -16,6 +16,13 @@ from js.utils.log import get_logger
 logger = get_logger("js.memory")
 
 
+def _reject_ambient_memory_under_enforce() -> None:
+    from js.orin.stage_c import ambient_memory_blocked
+
+    if ambient_memory_blocked():
+        raise RuntimeError("ambient MemoryStore is unavailable under orin.enforce")
+
+
 def _orin_write_taint(key: str, value: str) -> int:
     """Orin WP2 site 5: provenance record for memory writes.
 
@@ -216,6 +223,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         importance: int = 5,
     ) -> None:
         """Store a memory entry."""
+        _reject_ambient_memory_under_enforce()
         now = time.time()
         entry = MemoryEntry(
             key=key,
@@ -251,6 +259,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
 
     def retrieve(self, key: str) -> str | None:
         """Retrieve a memory by key."""
+        _reject_ambient_memory_under_enforce()
         with db_connection(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute("SELECT * FROM memories WHERE key = ?", (key,)).fetchone()
@@ -394,6 +403,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         owner_key_hash: str | None = None,
     ) -> None:
         """Store a working memory entry for the current session."""
+        _reject_ambient_memory_under_enforce()
         _orin_write_taint(key, value)
         self.enhanced.store_working(
             session_id, key, value, category, importance, owner_key_hash=owner_key_hash
@@ -410,6 +420,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         owner_key_hash: str | None = None,
     ) -> None:
         """Store an episodic memory (session summary)."""
+        _reject_ambient_memory_under_enforce()
         self.enhanced.store_episode(
             session_id,
             summary,
@@ -427,6 +438,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         propagate_summarizer_errors: bool = False,
     ) -> dict[str, Any]:
         """Run memory consolidation, optionally surfacing summarizer failures."""
+        _reject_ambient_memory_under_enforce()
         if hasattr(self, "enhanced"):
             return await self.enhanced.dream(
                 llm_summarizer=llm_summarizer,
@@ -458,6 +470,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
 
     def cleanup_empty_sessions(self) -> int:
         """Remove episode records for sessions that have no messages."""
+        _reject_ambient_memory_under_enforce()
         if hasattr(self, "enhanced"):
             return self.enhanced.cleanup_empty_sessions()
         return 0
@@ -466,6 +479,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         self, session_id: str, messages: list[dict[str, str]], owner_key_hash: str | None = None
     ) -> None:
         """Store conversation messages in batch."""
+        _reject_ambient_memory_under_enforce()
         if hasattr(self, "enhanced"):
             self.enhanced.store_messages(session_id, messages, owner_key_hash=owner_key_hash)
 
@@ -479,6 +493,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
 
     def delete_session(self, session_id: str, owner_key_hash: str | None = None) -> bool:
         """Delete a session and all its data."""
+        _reject_ambient_memory_under_enforce()
         if hasattr(self, "enhanced"):
             return self.enhanced.delete_session(session_id, owner_key_hash=owner_key_hash)
         return False
@@ -491,6 +506,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Store or update a short context capsule for a session."""
+        _reject_ambient_memory_under_enforce()
         if hasattr(self, "enhanced"):
             return self.enhanced.store_capsule(
                 session_id, capsule_text, owner_key_hash=owner_key_hash, **kwargs
@@ -517,6 +533,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         owner_key_hash: str | None = None,
     ) -> bool:
         """Delete a session capsule."""
+        _reject_ambient_memory_under_enforce()
         if hasattr(self, "enhanced"):
             return self.enhanced.delete_capsule(session_id, owner_key_hash=owner_key_hash)
         return False
@@ -562,6 +579,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         evidence: str = "",
     ) -> dict[str, Any]:
         """Store a semantic memory."""
+        _reject_ambient_memory_under_enforce()
         _orin_write_taint(key, value)
         if hasattr(self, "enhanced"):
             return self.enhanced.store_semantic(
@@ -585,6 +603,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         self, memory_id: int, source: str = "", owner_key_hash: str | None = None
     ) -> bool:
         """Delete a semantic memory by id."""
+        _reject_ambient_memory_under_enforce()
         if hasattr(self, "enhanced"):
             return self.enhanced.delete_semantic(
                 memory_id, source=source, owner_key_hash=owner_key_hash
@@ -605,6 +624,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         owner_key_hash: str | None = None,
     ) -> bool:
         """Update a semantic memory by id."""
+        _reject_ambient_memory_under_enforce()
         if hasattr(self, "enhanced"):
             return self.enhanced.update_semantic(
                 memory_id,
@@ -669,6 +689,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
 
     def propose_change(self, **kwargs: Any) -> dict[str, Any]:
         """Stage a proposed memory change (auto-applied or pending)."""
+        _reject_ambient_memory_under_enforce()
         if hasattr(self, "enhanced"):
             return self.enhanced.propose_change(**kwargs)
         return {"proposal_id": None, "status": "disabled", "memory_id": None}
@@ -688,6 +709,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         overrides: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Apply a pending proposal (optionally editing it first via overrides)."""
+        _reject_ambient_memory_under_enforce()
         if hasattr(self, "enhanced"):
             return self.enhanced.approve_proposal(
                 proposal_id, owner_key_hash=owner_key_hash, overrides=overrides
@@ -698,6 +720,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         self, proposal_id: int, owner_key_hash: str | None = None
     ) -> dict[str, Any]:
         """Reject a pending proposal."""
+        _reject_ambient_memory_under_enforce()
         if hasattr(self, "enhanced"):
             return self.enhanced.reject_proposal(proposal_id, owner_key_hash=owner_key_hash)
         return {"success": False, "error": "disabled"}
@@ -706,6 +729,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         self, src_prefix: str, dst_prefix: str, owner_key_hash: str | None = None
     ) -> int:
         """Re-path memories from one block to another (owner-scoped)."""
+        _reject_ambient_memory_under_enforce()
         if hasattr(self, "enhanced"):
             return self.enhanced.move_block(src_prefix, dst_prefix, owner_key_hash=owner_key_hash)
         return 0
@@ -714,6 +738,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         self, src_prefix: str, dst_prefix: str, owner_key_hash: str | None = None
     ) -> int:
         """Merge one block into another (owner-scoped)."""
+        _reject_ambient_memory_under_enforce()
         if hasattr(self, "enhanced"):
             return self.enhanced.merge_blocks(src_prefix, dst_prefix, owner_key_hash=owner_key_hash)
         return 0
@@ -789,6 +814,7 @@ _Dreams are processed memories. Each entry represents a consolidation cycle._
         owner_key_hash: str | None = None,
     ) -> None:
         """Write content to a memory file."""
+        _reject_ambient_memory_under_enforce()
         path = self._memory_file_path(self._require_valid_memory_file(name), owner_key_hash)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")

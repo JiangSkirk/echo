@@ -111,7 +111,8 @@ class SkillManager:
         )
         self._owner_key_hash: str | None = owner_key_hash
         self._audit_logger: Any | None = audit_logger
-        self._load_all()
+        self._loaded = False
+        self._load_builtin()
 
     def _init_db(self) -> None:
         with db_connection(self.db_path) as conn:
@@ -168,8 +169,10 @@ class SkillManager:
         """Set the skill composer for chain discovery."""
         self._composer = composer
 
-    def register_as_tools(self, registry: Any) -> None:
+    def register_as_tools(self, registry: Any, *, load: bool = True) -> None:
         """Register all loaded skills as callable tools in the agent's registry."""
+        if load:
+            self.ensure_loaded()
         with self._skills_lock:
             self._ensure_open()
             if self._tool_registry is not None and self._tool_registry is not registry:
@@ -185,8 +188,21 @@ class SkillManager:
             self._publish_skill_tools_locked()
         logger.info(f"Registered auto-skill: {spec.id}")
 
+    def ensure_loaded(self) -> None:
+        """Scan builtin + installed skills on first use."""
+        if self._loaded or self._closed.is_set():
+            return
+        with self._skills_lock:
+            if self._loaded or self._closed.is_set():
+                return
+            self._load_all()
+            self._loaded = True
+            if self._tool_registry is not None:
+                self._publish_skill_tools_locked()
+
     def _skills_snapshot(self) -> tuple[SkillSpec, ...]:
         """Return a stable view while background discovery mutates the registry."""
+        self.ensure_loaded()
         with self._skills_lock:
             return tuple(self._skills.values())
 
@@ -362,15 +378,18 @@ class SkillManager:
     # Discovery
     # ------------------------------------------------------------------
 
-    def _load_all(self) -> None:
-        """Load builtin + installed skills. Hermes skills loaded separately."""
-        # 1. Builtin skills (shipped with agent)
+    def _load_builtin(self) -> None:
+        """Load shipped skills synchronously so the tool surface is ready."""
         if self.BUILTIN_DIR.exists():
             self._scan_directory(self.BUILTIN_DIR, trust_override=TrustLevel.BUILTIN)
 
-        # 2. User-installed skills
+    def _load_all(self) -> None:
+        """Load builtin (if missing) + installed user skills. Hermes is separate."""
+        if self.BUILTIN_DIR.exists() and not any(
+            spec.trust_level == TrustLevel.BUILTIN for spec in self._skills.values()
+        ):
+            self._load_builtin()
         self._scan_directory(self.skills_dir)
-
         logger.info(f"Loaded {len(self._skills)} native skills")
 
     def load_hermes_sync(self) -> None:
@@ -386,6 +405,7 @@ class SkillManager:
         await asyncio.to_thread(self._load_hermes_skills)
 
     def _load_hermes_skills(self) -> None:
+        self.ensure_loaded()
         self._publish_hermes_skills(replace_existing=False)
 
     def _publish_hermes_skills(self, *, replace_existing: bool) -> None:
@@ -536,7 +556,8 @@ class SkillManager:
                     self._save_scan_cache(result)
 
                 with self._skills_lock:
-                    self._skills[spec.id] = spec
+                    if spec.id not in self._skills:
+                        self._skills[spec.id] = spec
             except Exception as e:
                 logger.warning(f"Failed to load skill from {path.parent}: {e}")
 
@@ -621,6 +642,7 @@ class SkillManager:
 
         Loads the full Markdown body, references, and templates on demand.
         """
+        self.ensure_loaded()
         with self._skills_lock:
             spec = self._skills.get(skill_id)
         if not spec:
@@ -664,10 +686,16 @@ class SkillManager:
 
     def get_skill(self, skill_id: str) -> SkillSpec | None:
         with self._skills_lock:
+            spec = self._skills.get(skill_id)
+        if spec is not None:
+            return spec
+        self.ensure_loaded()
+        with self._skills_lock:
             return self._skills.get(skill_id)
 
     def get_all(self) -> dict[str, SkillSpec]:
         """Return all loaded skills."""
+        self.ensure_loaded()
         with self._skills_lock:
             return dict(self._skills)
 
@@ -688,6 +716,7 @@ class SkillManager:
 
     def check_prerequisites(self, skill_id: str) -> tuple[bool, list[str]]:
         """Check if a skill's prerequisites are satisfied."""
+        self.ensure_loaded()
         with self._skills_lock:
             spec = self._skills.get(skill_id)
         if not spec:
@@ -1626,6 +1655,7 @@ entry: main.py
         """
 
         self._ensure_open()
+        self.ensure_loaded()
         # Fail-closed recursion guard (defense in depth — the executor runs
         # the same checks before invoking the resolver).
         if _depth > MAX_SUBSKILL_DEPTH:

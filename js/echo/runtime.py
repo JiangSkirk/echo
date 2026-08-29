@@ -162,6 +162,12 @@ class EchoPulseRuntime:
             admitted = any(getattr(a, "metadata", None) == (("admit", "ok"),) for a in actions)
             if admitted and overwrites_slot:
                 self._amber_slot_overwrites += 1
+                try:
+                    from js.utils.metrics import get_metrics
+
+                    get_metrics().amber_slot_overwrites.set(self._amber_slot_overwrites)
+                except Exception:
+                    pass
             return PulseObservation(
                 amber_root_hash=new_amber_impl.root_hash,
                 amber_version=new_amber_impl.version,

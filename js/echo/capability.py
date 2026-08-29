@@ -39,251 +39,48 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import Any
 
+from js.echo.capability_constants import (
+    DEFAULT_CLEARANCE,
+    DEFAULT_NETWORK_POLICY,
+    DEFAULT_SANDBOX_PROFILE,
+    DEFAULT_TAINT_FLOOR,
+    DEFAULT_TAINT_SINK,
+    LEASE_MAC_DOMAIN,
+    LEASE_MAC_PREFIX,
+    LEASE_MAC_PREFIX_V2,
+    TOOL_CONTEXT_MAC_DOMAIN,
+)
+from js.echo.capability_encoding import (
+    _canonical_lease_payload as _canonical_lease_payload,
+)
+from js.echo.capability_encoding import (
+    _lease_v2_fields_nondefault,
+    _tool_context_payload,
+    compute_lease_mac,
+    lease_mac_tag,
+)
+from js.echo.capability_exceptions import (
+    EchoAnchorUnavailable,
+    LeaseBindingMismatch,
+    LeaseContextMismatch,
+    LeaseDenied,
+    LeaseExhausted,
+    LeaseExpired,
+    LeaseMacInvalid,
+    LeaseNonceReplay,
+    LeaseOwnerMismatch,
+    LeaseParentMissing,
+    LeaseRevoked,
+    LeaseScopeMismatch,
+    LeaseToolMismatch,
+    LeaseUnknownTool,
+)
+from js.echo.capability_exceptions import (
+    LeaseConsumeReceipt as LeaseConsumeReceipt,
+)
 from js.echo.types import CapabilityLease
-
-# ---------------------------------------------------------------------------
-# Public constants
-# ---------------------------------------------------------------------------
-DEFAULT_NETWORK_POLICY: Final[str] = "deny"
-"""Default network policy attached to a lease when the caller omits one."""
-
-LEASE_MAC_DOMAIN: Final[bytes] = b"echo-capability-lease-v1:"
-"""Domain separator prefixed to every lease MAC pre-image."""
-
-LEASE_MAC_PREFIX: Final[str] = "authority-hmac-sha256:"
-"""String form of a legacy lease MAC (default v2 fields)."""
-
-LEASE_MAC_PREFIX_V2: Final[str] = "authority-hmac-sha256-v2:"
-"""String form of a lease MAC covering the Orin v2 extension fields."""
-
-DEFAULT_TAINT_FLOOR: Final[int] = 0xFFFFFFFFFFFFFFFF
-DEFAULT_TAINT_SINK: Final[int] = 0
-DEFAULT_SANDBOX_PROFILE: Final[int] = 0
-DEFAULT_CLEARANCE: Final[int] = 1
-"""Orin v2 extension defaults (D appendix D.2); all-default = legacy MAC."""
-
-TOOL_CONTEXT_MAC_DOMAIN: Final[bytes] = b"echo-tool-execution-context-v1:"
-"""Domain separator for signed registry execution contexts."""
-
-
-# ---------------------------------------------------------------------------
-# Exception family
-# ---------------------------------------------------------------------------
-class LeaseDenied(Exception):  # noqa: N818  # Plan-mandated public API name; "Denied" reads as the policy verb, not an error suffix.
-    """Base class for any lease-related authority denial."""
-
-
-class LeaseMacInvalid(LeaseDenied):
-    """The lease's MAC did not match the canonical recomputed MAC."""
-
-
-class LeaseExpired(LeaseDenied):
-    """``now`` is strictly greater than ``lease.expires_at``."""
-
-
-class LeaseNonceReplay(LeaseDenied):
-    """The lease's nonce is unknown, already exhausted, or bound to another lease."""
-
-
-class LeaseRevoked(LeaseDenied):
-    """The lease (or one of its ancestors) has been revoked."""
-
-
-class LeaseExhausted(LeaseDenied):
-    """The lease has no remaining invocation slots."""
-
-
-class LeaseOwnerMismatch(LeaseDenied):
-    """``lease.owner_key_hash`` did not match the expected owner."""
-
-
-class LeaseScopeMismatch(LeaseDenied):
-    """``lease.resource_scope`` did not match the expected scope."""
-
-
-class LeaseToolMismatch(LeaseDenied):
-    """``lease.tool_name`` did not match the expected tool."""
-
-
-class LeaseUnknownTool(LeaseDenied):
-    """The tool referenced by a lease is unknown to the policy layer."""
-
-
-class LeaseParentMissing(LeaseDenied):
-    """A lease was issued with a ``parent_lease_id`` that is not registered."""
-
-
-class LeaseContextMismatch(LeaseDenied):
-    """A signed execution context did not match the stored lease record."""
-
-
-class LeaseBindingMismatch(LeaseDenied):
-    """A parent/child lease crossed its product, owner, or session binding."""
-
-
-class EchoAnchorUnavailable(LeaseDenied):
-    """The Echo anchor authority is unavailable for consume verification."""
-
-
-# ---------------------------------------------------------------------------
-# Durable consume receipt (R4A-B1)
-# ---------------------------------------------------------------------------
-@dataclass(frozen=True, slots=True)
-class LeaseConsumeReceipt:
-    """Durable proof of a single-use lease consumption.
-
-    The ``ledger_record_hash`` is the domain-separated SHA-256 of the
-    consume record written to the persistent lease ledger.  It is used
-    as the Echo anchor binding to detect valid-prefix rollback of the
-    lease ledger alone.
-    """
-
-    lease_id: str
-    nonce: str
-    consumed_at: int
-    ledger_seq: int
-    ledger_record_hash: str
-
-
-# ---------------------------------------------------------------------------
-# Canonical encoding primitives (capability-permit domain only)
-# ---------------------------------------------------------------------------
-def _enc_u64_be(value: int) -> bytes:
-    """Encode an unsigned 64-bit integer in big-endian byte order."""
-
-    return int(value).to_bytes(8, "big", signed=False)
-
-
-def _enc_u32_be(value: int) -> bytes:
-    """Encode an unsigned 32-bit integer in big-endian byte order."""
-
-    return int(value).to_bytes(4, "big", signed=False)
-
-
-def _enc_str(text: str) -> bytes:
-    """Encode a UTF-8 string as a length-prefixed byte sequence."""
-
-    payload = text.encode("utf-8")
-    return _enc_u32_be(len(payload)) + payload
-
-
-def _enc_tuple_str(items: tuple[str, ...]) -> bytes:
-    """Encode a tuple of strings as a length-prefixed sequence of length-prefixed UTF-8 strings."""
-
-    parts = [_enc_u32_be(len(items))]
-    parts.extend(_enc_str(item) for item in items)
-    return b"".join(parts)
-
-
-def _enc_opt_str(value: str | None) -> bytes:
-    """Encode an optional string as ``\\x00`` (None) or ``\\x01`` + length-prefixed UTF-8."""
-
-    if value is None:
-        return b"\x00"
-    return b"\x01" + _enc_str(value)
-
-
-def _canonical_lease_payload(lease: CapabilityLease) -> bytes:
-    """Return the canonical, domain-separated MAC pre-image for ``lease``.
-
-    The lease's ``mac`` field is *not* part of the pre-image: only the
-    other 14 fields participate, in the order documented in Echo spec §4.
-    The returned bytes already include the
-    :data:`LEASE_MAC_DOMAIN` prefix; callers should feed them directly
-    into HMAC.
-
-    Orin compat red line: these bytes are frozen. The v2 extension fields
-    (``taint_floor`` / ``taint_sink`` / ``sandbox_profile`` / ``clearance``)
-    are NEVER part of this pre-image; they ride in
-    :func:`_canonical_lease_payload_v2` appended after the legacy block.
-    """
-
-    return b"".join(
-        (
-            LEASE_MAC_DOMAIN,
-            _enc_str(lease.lease_id),
-            _enc_str(lease.product_id),
-            _enc_str(lease.owner_key_hash),
-            _enc_str(lease.session_id),
-            _enc_str(lease.run_id),
-            _enc_str(lease.tool_name),
-            _enc_str(lease.args_schema),
-            _enc_str(lease.resource_scope),
-            _enc_tuple_str(lease.fs_roots),
-            _enc_str(lease.network_policy),
-            _enc_tuple_str(lease.network_hosts),
-            _enc_u64_be(lease.max_bytes),
-            _enc_u64_be(lease.max_duration_ms),
-            _enc_u32_be(lease.max_invocations),
-            _enc_str(lease.nonce),
-            _enc_u64_be(lease.expires_at),
-            _enc_opt_str(lease.parent_lease_id),
-        )
-    )
-
-
-def _lease_v2_fields_nondefault(lease: CapabilityLease) -> bool:
-    """True when any Orin v2 extension field deviates from its default."""
-
-    return (
-        lease.taint_floor != DEFAULT_TAINT_FLOOR
-        or lease.taint_sink != DEFAULT_TAINT_SINK
-        or lease.sandbox_profile != DEFAULT_SANDBOX_PROFILE
-        or lease.clearance != DEFAULT_CLEARANCE
-    )
-
-
-def _canonical_lease_payload_v2(lease: CapabilityLease) -> bytes:
-    """v2 MAC pre-image: the frozen legacy block plus four appended fields.
-
-    Only used when :func:`_lease_v2_fields_nondefault` is true; the legacy
-    pre-image is byte-identical for default-valued leases either way.
-    """
-
-    return b"".join(
-        (
-            _canonical_lease_payload(lease),
-            _enc_u64_be(lease.taint_floor),
-            _enc_u64_be(lease.taint_sink),
-            _enc_u64_be(lease.sandbox_profile),
-            _enc_u64_be(lease.clearance),
-        )
-    )
-
-
-def lease_mac_tag(lease: CapabilityLease) -> str:
-    """Prefixed string form of a lease MAC (``authority-hmac-sha256[:v2:]…``)."""
-
-    prefix = LEASE_MAC_PREFIX_V2 if _lease_v2_fields_nondefault(lease) else LEASE_MAC_PREFIX
-    return prefix + lease.mac.hex()
-
-
-def _tool_context_payload(context: Any) -> bytes:
-    """Canonical payload for an Echo tool execution context."""
-
-    fs_roots = tuple(str(item) for item in getattr(context, "fs_roots", ()))
-    return b"".join(
-        (
-            TOOL_CONTEXT_MAC_DOMAIN,
-            _enc_str(str(getattr(context, "product_id", ""))),
-            _enc_str(str(getattr(context, "owner_key_hash", ""))),
-            _enc_str(str(getattr(context, "session_id", ""))),
-            _enc_str(str(getattr(context, "run_id", ""))),
-            _enc_str(str(getattr(context, "profile", ""))),
-            _enc_str(str(getattr(context, "tool_name", ""))),
-            _enc_str(str(getattr(context, "args_hash", ""))),
-            _enc_str(str(getattr(context, "resource_scope", ""))),
-            _enc_tuple_str(fs_roots),
-            _enc_str(str(getattr(context, "network_policy", ""))),
-            _enc_tuple_str(tuple(str(item) for item in getattr(context, "network_hosts", ()))),
-            _enc_u64_be(int(getattr(context, "max_bytes", 0))),
-            _enc_u64_be(int(getattr(context, "max_duration_ms", 0))),
-            _enc_str(str(getattr(context, "lease_id", ""))),
-            _enc_str(str(getattr(context, "lease_mac", ""))),
-        )
-    )
 
 
 def sign_tool_execution_context(
@@ -367,28 +164,6 @@ def sign_tool_execution_context(
     return dataclasses.replace(signed, signature=f"authority-hmac-sha256:{mac}")
 
 
-def compute_lease_mac(mac_key: bytes, lease: CapabilityLease) -> bytes:
-    """Compute the HMAC-SHA-256 MAC tag for ``lease`` under ``mac_key``.
-
-    The lease's own ``mac`` field is ignored; only the non-MAC fields
-    contribute to the pre-image. Pre-image dispatch (Orin v2): leases
-    whose four extension fields are all default use the frozen legacy
-    pre-image byte-for-byte; any non-default extension field switches to
-    the v2 pre-image (legacy block + appended fields), matching the
-    ``authority-hmac-sha256-v2:`` string prefix in :func:`lease_mac_tag`.
-    Returns 32 raw bytes.
-    """
-
-    payload = (
-        _canonical_lease_payload_v2(lease)
-        if _lease_v2_fields_nondefault(lease)
-        else _canonical_lease_payload(lease)
-    )
-    digest = hmac.new(mac_key, digestmod=hashlib.sha256)
-    digest.update(payload)
-    return digest.digest()
-
-
 # ---------------------------------------------------------------------------
 # Internal nonce bookkeeping
 # ---------------------------------------------------------------------------
@@ -424,6 +199,9 @@ class LeaseAuthority:
         "_ledger_prev_hash",
         "_ledger_seq",
         "_ledger_lock_depth",
+        "_ledger_disk_fp",
+        "_ledger_full_reloads",
+        "_compact_skip_reason",
     )
 
     def __init__(
@@ -463,9 +241,13 @@ class LeaseAuthority:
         self._ledger_prev_hash = "sha256:" + "0" * 64
         self._ledger_seq = 0
         self._ledger_lock_depth = 0
+        self._ledger_disk_fp: tuple[int, int, int] | None = None
+        self._ledger_full_reloads = 0
+        self._compact_skip_reason = "never"
         if self._ledger_path is not None:
             with self._ledger_transaction():
                 pass
+            self._verify_local_tip_seal()
 
     # -- issuance ----------------------------------------------------------
     def issue(
@@ -1217,6 +999,263 @@ class LeaseAuthority:
         with self._lock, self._ledger_transaction():
             return frozenset(self._issued.keys())
 
+    def compact(self) -> str:
+        """Snapshot lease state and retain only a replay tail.
+
+        The Echo turn journal already has ``Journal.compact()``; this is the
+        lease-ledger counterpart. Snapshot hash is written into the local
+        tip seal. This is not an external anchor.
+        """
+
+        with self._lock, self._ledger_transaction():
+            snapshot_hash = self._compact_locked()
+            self._compact_skip_reason = ""
+            return snapshot_hash
+
+    def ledger_stats(self) -> dict[str, int | str]:
+        """Read-only lease-ledger counters for governor scheduling and metrics."""
+
+        with self._lock:
+            path = self._ledger_path
+            size = 0
+            if path is not None and path.exists():
+                try:
+                    size = int(path.stat().st_size)
+                except OSError:
+                    size = 0
+            return {
+                "records": int(self._ledger_seq),
+                "bytes": size,
+                "full_reloads": int(self._ledger_full_reloads),
+                "tip": str(self._ledger_prev_hash),
+                "compact_skip_reason": str(self._compact_skip_reason),
+            }
+
+    def maybe_compact(
+        self,
+        *,
+        trigger_records: int = 512,
+        trigger_bytes: int = 256 * 1024,
+        trigger_full_reloads: int = 8,
+    ) -> str | None:
+        """Compact when any configured threshold is crossed. Return skip reason via stats."""
+
+        if trigger_records < 1 or trigger_bytes < 1 or trigger_full_reloads < 1:
+            raise ValueError("lease compact triggers must be >= 1")
+        with self._lock, self._ledger_transaction():
+            if self._ledger_path is None:
+                self._compact_skip_reason = "no_ledger_path"
+                return None
+            try:
+                size = int(self._ledger_path.stat().st_size) if self._ledger_path.exists() else 0
+            except OSError:
+                self._compact_skip_reason = "stat_failed"
+                return None
+            if (
+                self._ledger_seq < trigger_records
+                and size < trigger_bytes
+                and self._ledger_full_reloads < trigger_full_reloads
+            ):
+                self._compact_skip_reason = "below_threshold"
+                return None
+            snapshot_hash = self._compact_locked()
+            self._compact_skip_reason = ""
+            return snapshot_hash
+
+    def _snapshot_path(self) -> Path | None:
+        if self._ledger_path is None:
+            return None
+        return self._ledger_path.with_name(self._ledger_path.name + ".snapshot")
+
+    def _build_snapshot(self) -> dict[str, object]:
+        children = {parent: sorted(child_ids) for parent, child_ids in self._children.items()}
+        return {
+            "version": 1,
+            "seq": self._ledger_seq,
+            "prev_hash": self._ledger_prev_hash,
+            "issued": [_lease_to_payload(lease) for lease in self._issued.values()],
+            "nonces": [
+                {
+                    "nonce": nonce,
+                    "lease_id": state.lease_id,
+                    "invocations_remaining": state.invocations_remaining,
+                }
+                for nonce, state in self._nonces.items()
+            ],
+            "revoked": sorted(self._revoked),
+            "parents": dict(self._parents),
+            "children": children,
+        }
+
+    def _apply_snapshot(self, snapshot: dict[str, object]) -> None:
+        issued_rows = snapshot.get("issued")
+        if not isinstance(issued_rows, list):
+            raise ValueError("lease snapshot issued must be a list")
+        issued: dict[str, CapabilityLease] = {}
+        for row in issued_rows:
+            if not isinstance(row, dict):
+                raise ValueError("lease snapshot issued entry must be an object")
+            lease = _lease_from_payload(row)
+            issued[lease.lease_id] = lease
+        self._issued = issued
+        nonce_rows = snapshot.get("nonces")
+        if not isinstance(nonce_rows, list):
+            raise ValueError("lease snapshot nonces must be a list")
+        self._nonces = {}
+        for row in nonce_rows:
+            if not isinstance(row, dict):
+                raise ValueError("lease snapshot nonce must be an object")
+            self._nonces[str(row["nonce"])] = _NonceState(
+                lease_id=str(row["lease_id"]),
+                invocations_remaining=int(row["invocations_remaining"]),
+            )
+        revoked = snapshot.get("revoked")
+        if not isinstance(revoked, list):
+            raise ValueError("lease snapshot revoked must be a list")
+        self._revoked = {str(item) for item in revoked}
+        parents = snapshot.get("parents")
+        if not isinstance(parents, dict):
+            raise ValueError("lease snapshot parents must be an object")
+        self._parents = {
+            str(lease_id): (None if parent is None else str(parent))
+            for lease_id, parent in parents.items()
+        }
+        children = snapshot.get("children")
+        if not isinstance(children, dict):
+            raise ValueError("lease snapshot children must be an object")
+        self._children = {
+            str(parent): {str(child) for child in (child_ids or [])}
+            for parent, child_ids in children.items()
+        }
+        self._ledger_seq = int(str(snapshot["seq"]))
+        self._ledger_prev_hash = str(snapshot["prev_hash"])
+
+    def _load_snapshot(self, path: Path) -> None:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("lease snapshot is not an object")
+        snapshot = raw.get("snapshot")
+        record_hash = raw.get("record_hash")
+        mac = raw.get("mac")
+        if not isinstance(snapshot, dict):
+            raise ValueError("lease snapshot payload missing")
+        expected_hash = _ledger_hash(snapshot)
+        if record_hash != expected_hash:
+            raise ValueError("lease snapshot hash mismatch")
+        expected_mac = _ledger_mac(
+            self._mac_key, {"snapshot": snapshot, "record_hash": record_hash}
+        )
+        if not hmac.compare_digest(str(mac or ""), expected_mac):
+            raise ValueError("lease snapshot MAC mismatch")
+        self._apply_snapshot(snapshot)
+
+    def _write_snapshot(self, snapshot: dict[str, object]) -> str:
+        path = self._snapshot_path()
+        if path is None:
+            raise ValueError("lease compaction requires a ledger_path")
+        record_hash = _ledger_hash(snapshot)
+        record = {
+            "snapshot": snapshot,
+            "record_hash": record_hash,
+            "mac": _ledger_mac(self._mac_key, {"snapshot": snapshot, "record_hash": record_hash}),
+        }
+        encoded = _stable_json(record) + "\n"
+        temp_path = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
+        fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                fd = -1
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, path)
+            os.chmod(path, 0o600)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        return str(record_hash)
+
+    def _compact_locked(self) -> str:
+        if self._ledger_path is None:
+            raise ValueError("lease compaction requires a ledger_path")
+        snapshot = self._build_snapshot()
+        snapshot_hash = self._write_snapshot(snapshot)
+        fd = os.open(self._ledger_path, os.O_WRONLY | os.O_CREAT, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            os.ftruncate(fd, 0)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        self._capture_ledger_fp()
+        from js.echo.ledger.tip_seal import bump_seal, seal_path_for
+
+        bump_seal(
+            seal_path_for(self._ledger_path),
+            self._mac_key,
+            new_tip=self._ledger_prev_hash,
+            lease_snapshot_hash=snapshot_hash,
+        )
+        return snapshot_hash
+
+    def _refresh_local_tip_seal_if_present(self) -> None:
+        if self._ledger_path is None:
+            return
+        from js.echo.ledger.tip_seal import load_seal, refresh_seal_tip, seal_path_for
+
+        path = seal_path_for(self._ledger_path)
+        if load_seal(path, self._mac_key) is None:
+            return
+        snapshot_path = self._snapshot_path()
+        snapshot_hash = ""
+        if snapshot_path is not None and snapshot_path.exists():
+            snapshot_hash = str(
+                json.loads(snapshot_path.read_text(encoding="utf-8")).get("record_hash") or ""
+            )
+        refresh_seal_tip(
+            path,
+            self._mac_key,
+            new_tip=self._ledger_prev_hash,
+            lease_snapshot_hash=snapshot_hash,
+        )
+
+    def _verify_local_tip_seal(self) -> None:
+        if self._ledger_path is None:
+            return
+        from js.echo.ledger.tip_seal import load_seal, seal_path_for, verify_current_tip
+
+        path = seal_path_for(self._ledger_path)
+        sealed = load_seal(path, self._mac_key)
+        if sealed is None:
+            return
+        snapshot_path = self._snapshot_path()
+        snapshot_hash = ""
+        if snapshot_path is not None and snapshot_path.exists():
+            raw = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            snapshot_hash = str(raw.get("record_hash") or "")
+        if sealed.lease_snapshot_hash and snapshot_hash != sealed.lease_snapshot_hash:
+            raise ValueError("local tip seal rejected a lease snapshot mismatch")
+        ancestors = [self._ledger_prev_hash, "sha256:" + "0" * 64]
+        if snapshot_path is not None and snapshot_path.exists():
+            ancestors.append(
+                str(
+                    json.loads(snapshot_path.read_text(encoding="utf-8"))
+                    .get("snapshot", {})
+                    .get("prev_hash")
+                    or ""
+                )
+            )
+        verify_current_tip(
+            sealed=sealed,
+            current_tip=self._ledger_prev_hash,
+            known_tips=tuple(item for item in ancestors if item),
+        )
+
     def _append_ledger_record(self, event_type: str, payload: dict[str, object]) -> str:
         """Append a record and return its ``record_hash``."""
         if self._ledger_path is None:
@@ -1258,6 +1297,8 @@ class LeaseAuthority:
                 os.close(directory_fd)
         self._ledger_prev_hash = record_hash
         self._ledger_seq += 1
+        self._capture_ledger_fp()
+        self._refresh_local_tip_seal_if_present()
         return record_hash
 
     @contextmanager
@@ -1289,9 +1330,39 @@ class LeaseAuthority:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             os.close(lock_fd)
 
+    def _ledger_stat_fp(self) -> tuple[int, int, int] | None:
+        path = self._ledger_path
+        if path is None:
+            return None
+        try:
+            st = os.lstat(path)
+        except OSError:
+            return None
+        return (int(st.st_ino), int(st.st_size), int(st.st_mtime_ns))
+
+    def _capture_ledger_fp(self) -> None:
+        self._ledger_disk_fp = self._ledger_stat_fp()
+
     def _reload_ledger(self) -> None:
         if self._ledger_path is None:
             return
+        current = self._ledger_stat_fp()
+        cached = self._ledger_disk_fp
+        if current is not None and cached is not None and current == cached:
+            return
+        if (
+            current is not None
+            and cached is not None
+            and current[0] == cached[0]
+            and current[1] > cached[1]
+            and self._apply_ledger_tail(start_offset=cached[1])
+        ):
+            self._capture_ledger_fp()
+            return
+        self._full_reload_ledger()
+
+    def _full_reload_ledger(self) -> None:
+        self._ledger_full_reloads += 1
         self._issued.clear()
         self._nonces.clear()
         self._revoked.clear()
@@ -1299,10 +1370,64 @@ class LeaseAuthority:
         self._children.clear()
         self._ledger_prev_hash = "sha256:" + "0" * 64
         self._ledger_seq = 0
+        if self._ledger_path is None:
+            return
         self._load_ledger(self._ledger_path)
+        self._capture_ledger_fp()
+
+    def _apply_ledger_tail(self, *, start_offset: int) -> bool:
+        path = self._ledger_path
+        if path is None or start_offset < 0 or not path.exists():
+            return False
+        try:
+            with path.open("rb") as handle:
+                if start_offset > 0:
+                    handle.seek(start_offset - 1)
+                    if handle.read(1) != b"\n":
+                        return False
+                handle.seek(start_offset)
+                raw = handle.read()
+        except OSError:
+            return False
+        if not raw:
+            return True
+        try:
+            seq, prev = self._ingest_ledger_lines(
+                path,
+                raw.splitlines(keepends=True),
+                expected_seq=self._ledger_seq,
+                expected_prev=self._ledger_prev_hash,
+                start_file_offset=start_offset,
+            )
+        except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        self._ledger_seq = seq
+        self._ledger_prev_hash = prev
+        return True
 
     def _load_ledger(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        snapshot_path = self._snapshot_path()
+        if snapshot_path is not None and snapshot_path.exists():
+            self._load_snapshot(snapshot_path)
+            if not path.exists():
+                fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+                try:
+                    os.fchmod(fd, 0o600)
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                return
+            seq, prev = self._ingest_ledger_lines(
+                path,
+                path.read_bytes().splitlines(keepends=True),
+                expected_seq=self._ledger_seq,
+                expected_prev=self._ledger_prev_hash,
+                start_file_offset=0,
+            )
+            self._ledger_seq = seq
+            self._ledger_prev_hash = prev
+            return
         if not path.exists():
             fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
             try:
@@ -1311,10 +1436,26 @@ class LeaseAuthority:
             finally:
                 os.close(fd)
             return
-        expected_seq = 0
-        expected_prev = "sha256:" + "0" * 64
-        raw_lines = path.read_bytes().splitlines(keepends=True)
-        offset = 0
+        seq, prev = self._ingest_ledger_lines(
+            path,
+            path.read_bytes().splitlines(keepends=True),
+            expected_seq=0,
+            expected_prev="sha256:" + "0" * 64,
+            start_file_offset=0,
+        )
+        self._ledger_seq = seq
+        self._ledger_prev_hash = prev
+
+    def _ingest_ledger_lines(
+        self,
+        path: Path,
+        raw_lines: list[bytes],
+        *,
+        expected_seq: int,
+        expected_prev: str,
+        start_file_offset: int,
+    ) -> tuple[int, str]:
+        offset = start_file_offset
         for index, raw_line in enumerate(raw_lines):
             line_start = offset
             offset += len(raw_line)
@@ -1354,8 +1495,7 @@ class LeaseAuthority:
                 raise
             expected_seq += 1
             expected_prev = record_hash
-        self._ledger_seq = expected_seq
-        self._ledger_prev_hash = expected_prev
+        return expected_seq, expected_prev
 
     @staticmethod
     def _isolate_ledger_tail(path: Path, *, clean_offset: int) -> None:
@@ -1520,12 +1660,20 @@ def _lease_from_payload(payload: dict[str, object]) -> CapabilityLease:
             str(payload["parent_lease_id"]) if payload.get("parent_lease_id") is not None else None
         ),
         mac=bytes.fromhex(str(payload["mac"])),
-        taint_floor=_payload_int(payload, "taint_floor") if "taint_floor" in payload else DEFAULT_TAINT_FLOOR,
-        taint_sink=_payload_int(payload, "taint_sink") if "taint_sink" in payload else DEFAULT_TAINT_SINK,
+        taint_floor=_payload_int(payload, "taint_floor")
+        if "taint_floor" in payload
+        else DEFAULT_TAINT_FLOOR,
+        taint_sink=_payload_int(payload, "taint_sink")
+        if "taint_sink" in payload
+        else DEFAULT_TAINT_SINK,
         sandbox_profile=(
-            _payload_int(payload, "sandbox_profile") if "sandbox_profile" in payload else DEFAULT_SANDBOX_PROFILE
+            _payload_int(payload, "sandbox_profile")
+            if "sandbox_profile" in payload
+            else DEFAULT_SANDBOX_PROFILE
         ),
-        clearance=_payload_int(payload, "clearance") if "clearance" in payload else DEFAULT_CLEARANCE,
+        clearance=_payload_int(payload, "clearance")
+        if "clearance" in payload
+        else DEFAULT_CLEARANCE,
     )
 
 
@@ -1543,6 +1691,7 @@ __all__ = [
     "LeaseParentMissing",
     "LeaseContextMismatch",
     "LeaseBindingMismatch",
+    "LeaseConsumeReceipt",
     "LeaseAuthority",
     "is_lease_authority_handle",
     "compute_lease_mac",

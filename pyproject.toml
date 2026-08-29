@@ -130,7 +130,7 @@ warn_unused_ignores = false
 exclude = []
 
 [[tool.mypy.overrides]]
-module = ["docx.*", "pypdf.*", "pdfplumber.*", "pandas.*", "openpyxl.*", "rfc8785.*", "tiktoken", "xlrd.*"]
+module = ["docx.*", "pypdf.*", "pdfplumber.*", "pandas.*", "openpyxl.*", "rfc8785.*", "tiktoken"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

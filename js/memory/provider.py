@@ -79,7 +79,10 @@ class BuiltinMemoryProvider(MemoryProvider):
     async def prefetch(self, query: str) -> list[MemoryQueryResult]:
         """Search episodic + semantic memory for relevant context."""
         from js.echo.turn_context import current_owner_key_hash
+        from js.orin.stage_c import ambient_memory_blocked
 
+        if ambient_memory_blocked():
+            raise RuntimeError("ambient MemoryStore is unavailable under orin.enforce")
         owner = current_owner_key_hash()
         results: list[MemoryQueryResult] = []
         try:
@@ -125,7 +128,10 @@ class BuiltinMemoryProvider(MemoryProvider):
         import asyncio
 
         from js.echo.turn_context import current_owner_key_hash
+        from js.orin.stage_c import ambient_memory_blocked
 
+        if ambient_memory_blocked():
+            raise RuntimeError("ambient MemoryStore is unavailable under orin.enforce")
         owner = current_owner_key_hash()
         await asyncio.to_thread(
             self._store.store_messages,

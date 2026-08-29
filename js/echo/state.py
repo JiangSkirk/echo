@@ -20,6 +20,18 @@ class AgentState:
     tool_results: list[ToolResult] = field(default_factory=list)
     total_tokens: dict[str, int] = field(default_factory=lambda: {"input": 0, "output": 0})
     cached_tokens: int = 0
+    usage_buckets: dict[str, int] = field(
+        default_factory=lambda: {
+            "uncached_input": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "output": 0,
+            "reasoning": 0,
+            "input_total": 0,
+        }
+    )
+    usage_source: str = "unavailable"
+    prefix_id: str = ""
     cost_estimate: float = 0.0
     status: str = "running"
     error_message: str = ""
@@ -48,6 +60,9 @@ class AgentState:
             ],
             "total_tokens": self.total_tokens,
             "cached_tokens": self.cached_tokens,
+            "usage_buckets": self.usage_buckets,
+            "usage_source": self.usage_source,
+            "prefix_id": self.prefix_id,
             "cost_estimate": self.cost_estimate,
             "status": self.status,
             "error_message": self.error_message,

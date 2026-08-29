@@ -53,8 +53,15 @@ class AuditFinding:
 
 def _read(root: Path, relative: str) -> str:
     path = root / relative
+    if not path.exists() and relative.endswith(".py"):
+        path = root / relative[:-3]
     if not path.exists():
         return ""
+    if path.is_dir():
+        return "\n".join(
+            child.read_text(encoding="utf-8", errors="replace")
+            for child in sorted(path.rglob("*.py"))
+        )
     return path.read_text(encoding="utf-8", errors="replace")
 
 

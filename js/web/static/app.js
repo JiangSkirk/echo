@@ -38,8 +38,11 @@ import {
 import {
   initShell, applyProductMode, refreshModelHint, refreshChatEmptyState,
   setStreaming, openPalette, closePalette,
+  writeSwitchHandoff, showModeSwitchOverlay, hideModeSwitchOverlay,
+  finishSwitchHandoff, clearSwitchHandoff,
 } from './js/shell.js';
 import { initWorkContext } from './js/work_context.js';
+import { enterBotsSurface, exitBotsSurface, initBotsSurface, isBotsSurface } from './js/bots.js';
 
 let wizardStep = state.wizardStep;
 let wizardSelectedModel = state.wizardSelectedModel;
@@ -73,7 +76,7 @@ async function saveApiKey(key) {
     } catch (e) { /* best effort */ }
     if (input) input.value = '';
     showToast('API Key 已清除');
-    return;
+    return true;
   }
   try {
     // AppShell exchanges once at the parent. A 404 means this is a standalone
@@ -94,8 +97,10 @@ async function saveApiKey(key) {
     if (input) input.value = '';
     await applyCapabilityManifest();
     showToast('API Key 已保存');
+    return true;
   } catch (e) {
     showToast('API Key 登录失败: ' + e.message, 'error');
+    return false;
   }
 }
 
@@ -226,6 +231,8 @@ function _setWizardStepFocus(step) {
 }
 
 function showWizard(serverDriven = false) {
+  hideModeSwitchOverlay({ immediate: true });
+  clearSwitchHandoff();
   if (!serverDriven) _wizardManuallyOpened = true;
   wizardStep = 1;
   wizardSelectedModel = '';
@@ -1957,22 +1964,25 @@ async function deleteSession(sid) {
 
 async function applyCapabilityManifest() {
   try {
+    let manifest = null;
     const res = await fetch('/api/capabilities');
-    if (!res.ok) return;
-    const manifest = await res.json();
-    state.capabilities = manifest;
+    if (res.ok) {
+      manifest = await res.json();
+      state.capabilities = manifest;
+    }
     const appshellRes = await fetch('/api/appshell/capabilities');
     if (appshellRes.ok) {
       state.appShellCapabilities = await appshellRes.json();
       state.activeProduct = state.appShellCapabilities.active_mode === 'work'
         ? 'js-work'
         : 'js-agent';
-    } else if (manifest.product_id) {
+    } else if (manifest && manifest.product_id) {
       // Standalone compatibility only; this value never selects a parent child.
       state.activeProduct = manifest.product_id;
     }
     updateProductSwitcherUI();
     applyProductMode(state.activeProduct);
+    if (!manifest) return;
     const enabled = new Set(manifest.enabled_tabs || []);
     document.querySelectorAll('nav button[id^="nav-"]').forEach((btn) => {
       const tabId = btn.id.slice(4);
@@ -2002,9 +2012,59 @@ function _availableAppShellModes(appshell = state.appShellCapabilities) {
   return modes;
 }
 
+let _workPrewarmArmed = false;
+
+function _productModeLabel(product) {
+  return product === 'js-work' ? 'Work' : 'Personal';
+}
+
+function _setSwitcherBusy(busy, targetProduct) {
+  const group = document.getElementById('product-switcher');
+  const personalBtn = document.getElementById('product-personal-btn');
+  const workBtn = document.getElementById('product-work-btn');
+  if (group) group.setAttribute('aria-busy', busy ? 'true' : 'false');
+  [personalBtn, workBtn].forEach((btn) => {
+    if (!btn) return;
+    const isTarget = (targetProduct === 'js-work' && btn.id === 'product-work-btn')
+      || (targetProduct === 'js-agent' && btn.id === 'product-personal-btn');
+    btn.classList.toggle('seg-loading', Boolean(busy && isTarget));
+    if (busy) {
+      btn.disabled = true;
+    }
+  });
+}
+
+function _beginSwitchChrome(toProduct) {
+  _setSwitcherBusy(true, toProduct);
+  showModeSwitchOverlay(_productModeLabel(toProduct));
+}
+
+function _restoreSwitchChrome() {
+  _setSwitcherBusy(false);
+  hideModeSwitchOverlay({ immediate: true });
+  updateProductSwitcherUI();
+}
+
+async function prewarmWorkRuntime() {
+  try {
+    await fetch('/api/appshell/prewarm', { method: 'POST' });
+  } catch (_) { /* hover hint; switch still boots inline */ }
+}
+
+function armWorkPrewarm() {
+  if (_workPrewarmArmed) return;
+  const workBtn = document.getElementById('product-work-btn');
+  if (!workBtn || workBtn.hidden) return;
+  _workPrewarmArmed = true;
+  const fire = () => { prewarmWorkRuntime(); };
+  workBtn.addEventListener('pointerenter', fire, { once: true });
+  workBtn.addEventListener('focus', fire, { once: true });
+}
+
 function updateProductSwitcherUI() {
   const personalBtn = document.getElementById('product-personal-btn');
   const workBtn = document.getElementById('product-work-btn');
+  const botsBtn = document.getElementById('product-bots-btn');
   if (!personalBtn || !workBtn) return;
   const active = state.activeProduct || (state.capabilities && state.capabilities.product_id) || 'js-agent';
   const mark = (btn, on) => {
@@ -2014,8 +2074,17 @@ function updateProductSwitcherUI() {
   workBtn.hidden = !workAllowed;
   workBtn.disabled = !workAllowed;
   workBtn.setAttribute('aria-hidden', workAllowed ? 'false' : 'true');
-  mark(personalBtn, active === 'js-agent');
+  const botsAllowed = active !== 'js-work' && !(state.capabilities && state.capabilities.tabs && state.capabilities.tabs.bots && state.capabilities.tabs.bots.enabled === false);
+  if (botsBtn) {
+    botsBtn.hidden = !botsAllowed;
+    botsBtn.setAttribute('aria-hidden', botsAllowed ? 'false' : 'true');
+    if (!botsAllowed && isBotsSurface()) exitBotsSurface();
+  }
+  const botsOn = isBotsSurface();
+  mark(personalBtn, active === 'js-agent' && !botsOn);
   mark(workBtn, active === 'js-work');
+  if (botsBtn) mark(botsBtn, botsOn);
+  if (workAllowed) armWorkPrewarm();
 }
 
 const APP_SHELL_SWITCH_ERRORS = Object.freeze({
@@ -2081,11 +2150,26 @@ function clearAppShellUiCache(keys) {
   });
 }
 
+function switchBotsSurface() {
+  if (state.activeProduct === 'js-work' || (state.capabilities && state.capabilities.product_id === 'js-work')) {
+    showToast('Work 模式不提供 Bots 表面', 'error');
+    return;
+  }
+  if (isBotsSurface()) return;
+  enterBotsSurface();
+  updateProductSwitcherUI();
+}
+
 async function switchProductWorkspace(toProduct) {
+  if (toProduct === 'js-agent' && isBotsSurface()) {
+    exitBotsSurface();
+    updateProductSwitcherUI();
+    return;
+  }
   const appshell = state.appShellCapabilities;
   const currentMode = appshell && appshell.active_mode;
   const current = currentMode === 'work' ? 'js-work' : 'js-agent';
-  if (toProduct === current) return;
+  if (toProduct === current && !isBotsSurface()) return;
   if (toProduct !== 'js-agent' && toProduct !== 'js-work') {
     showToast('不支持的 JS Agent 模式', 'error');
     return;
@@ -2103,6 +2187,7 @@ async function switchProductWorkspace(toProduct) {
   const workspaceHandle = toMode === 'work'
     ? appshell.workspace_handles.work
     : null;
+  _beginSwitchChrome(toProduct);
   let switchBody;
   try {
     const res = await fetch('/api/appshell/switch', {
@@ -2123,18 +2208,18 @@ async function switchProductWorkspace(toProduct) {
     }
     if (!res.ok) {
       showToast('工作区切换失败：' + _safeSwitchError(switchBody, res.status), 'error');
-      updateProductSwitcherUI();
+      _restoreSwitchChrome();
       return;
     }
   } catch (err) {
     showToast('工作区切换请求失败，请登录当前模式后重试', 'error');
-    updateProductSwitcherUI();
+    _restoreSwitchChrome();
     return;
   }
 
   if (!switchBody || switchBody.ok !== true) {
     showToast('工作区切换失败: 服务器未确认切换', 'error');
-    updateProductSwitcherUI();
+    _restoreSwitchChrome();
     return;
   }
   const rawTarget = switchBody.target_path;
@@ -2149,7 +2234,7 @@ async function switchProductWorkspace(toProduct) {
     }
   } catch (err) {
     showToast('工作区切换失败: 服务器目标地址无效', 'error');
-    updateProductSwitcherUI();
+    _restoreSwitchChrome();
     return;
   }
 
@@ -2160,6 +2245,7 @@ async function switchProductWorkspace(toProduct) {
     active_mode: toMode,
     workspace: workspaceHandle,
   };
+  writeSwitchHandoff(toProduct);
   // Re-enter the same root; the parent principal selects the child runtime.
   window.location.href = targetUrl.toString();
 }
@@ -2179,7 +2265,7 @@ function switchTab(tab) {
   const target = document.getElementById(`tab-${tab}`);
   if (target) {
     target.classList.remove('hidden');
-    if (tab === 'chat') {
+    if (tab === 'chat' || tab === 'bots') {
       target.classList.add('flex');
     }
   }
@@ -3073,6 +3159,7 @@ const _windowFuncs = {
   openCommandPalette: openPalette,
   updateProviderKey, hideProviderKeyModal, submitProviderKeyUpdate,
   switchProductWorkspace, updateProductSwitcherUI, clearAppShellUiCache,
+  switchBotsSurface,
 };
 Object.entries(_windowFuncs).forEach(([k, v]) => { if (typeof v === 'function') window[k] = v; });
 
@@ -3083,12 +3170,17 @@ window.switchTab = function(tab) {
   if (tab === 'cron') {
     refreshCronJobs();
   }
+  if (tab === 'bots' && !isBotsSurface()) {
+    enterBotsSurface();
+    updateProductSwitcherUI();
+  }
 };
 
 // ---- Bootstrap: initialize on page load ----
 restoreApiKey();
-// ``js open`` places the local bootstrap key in the URL fragment. Fragments
-// never enter the HTTP request or proxy logs; remove it immediately after use.
+// Headless/e2e Hosts may place the local bootstrap key in #bootstrap-api-key=.
+// The desktop app uses #bootstrap= via the Tauri sidecar. Fragments never enter
+// HTTP request or proxy logs; remove them immediately after use.
 const bootstrapParams = new URLSearchParams(window.location.hash.slice(1));
 const bootstrapKey = bootstrapParams.get('bootstrap-api-key');
 const desktopBootstrapToken = bootstrapParams.get('bootstrap');
@@ -3119,7 +3211,7 @@ function clearBootstrapFragment(name) {
   );
 }
 
-function renderDesktopBootstrapFailure() {
+function renderDesktopBootstrapFailure(kind) {
   const shell = document.getElementById('app-shell');
   const failure = document.getElementById('bootstrap-failure');
   if (shell) {
@@ -3127,6 +3219,19 @@ function renderDesktopBootstrapFailure() {
     shell.setAttribute('aria-hidden', 'true');
   }
   if (!failure) return;
+  const isKey = kind === 'key';
+  const desktopDesc = document.getElementById('bootstrap-failure-description-desktop');
+  const keyDesc = document.getElementById('bootstrap-failure-description-key');
+  const desktopGuide = document.getElementById('bootstrap-recovery-guidance-desktop');
+  const keyGuide = document.getElementById('bootstrap-recovery-guidance-key');
+  if (desktopDesc) desktopDesc.classList.toggle('hidden', isKey);
+  if (keyDesc) keyDesc.classList.toggle('hidden', !isKey);
+  if (desktopGuide) desktopGuide.classList.toggle('hidden', isKey);
+  if (keyGuide) keyGuide.classList.toggle('hidden', !isKey);
+  failure.setAttribute(
+    'aria-describedby',
+    isKey ? 'bootstrap-failure-description-key' : 'bootstrap-failure-description-desktop'
+  );
   failure.classList.remove('hidden');
   failure.focus();
 }
@@ -3156,7 +3261,9 @@ async function initApp() {
   } else if (bootstrapKey) {
     // Exchange the target bootstrap key for an HttpOnly session cookie
     // BEFORE opening the WebSocket, which authenticates via that cookie.
-    await saveApiKey(bootstrapKey);
+    // On failure keep the fragment so reload can retry this reusable key.
+    const exchanged = await saveApiKey(bootstrapKey);
+    if (!exchanged) throw new Error('bootstrap key exchange failed');
     clearBootstrapFragment('bootstrap-api-key');
   } else if (hasDesktopBootstrapFailure()) {
     throw new Error('native desktop bootstrap requires a fresh app launch');
@@ -3174,6 +3281,7 @@ async function initApp() {
   await applyCapabilityManifest();
   initShell();
   initWorkContext();
+  initBotsSurface();
   refreshModelHint();
   loadSessions();
   loadApprovals();
@@ -3181,11 +3289,13 @@ async function initApp() {
   // Load model list eagerly so the top-bar dropdown is usable immediately
   // without requiring the user to visit the Models tab first.
   loadModels();
+  finishSwitchHandoff();
 }
-initApp().catch((error) => {
+initApp().catch(() => {
   // Never surface the token, filesystem paths, response body or raw exception.
-  console.error('[bootstrap] local desktop exchange failed');
-  renderDesktopBootstrapFailure();
+  console.error('[bootstrap] local identity exchange failed');
+  const kind = (desktopBootstrapToken || hasDesktopBootstrapFailure()) ? 'desktop' : 'key';
+  renderDesktopBootstrapFailure(kind);
 });
 
 // Bind Enter key on chat input

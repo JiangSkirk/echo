@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from js.utils.db import PRODUCT_STATE_DB_NAMES
 from js.utils.log import get_logger
 
 logger = get_logger("js.runtime.governor")
@@ -81,11 +82,12 @@ class ResourceGovernor:
         self._lock = asyncio.Lock()
 
         # Timing
-        self._interval_seconds = 30.0
+        self._interval_seconds = 60.0
         self._last_reap_time = 0.0
         self._reap_interval = 300.0  # 5 minutes
         self._last_session_maintenance_time = 0.0
         self._session_maintenance_interval = 60.0  # 1 minute
+        self._wal_truncate_min_bytes = 8 * 1024 * 1024
         self._last_prune_time = 0.0
         self._prune_interval = 21_600.0  # 6 hours
         self._stale_session_threshold_seconds = 300.0
@@ -239,7 +241,7 @@ class ResourceGovernor:
             proc = psutil.Process(os.getpid())
             mem_info = proc.memory_info()
             sys_mem = psutil.virtual_memory()
-            cpu = proc.cpu_percent(interval=0.1)
+            cpu = proc.cpu_percent(interval=None)
 
             state_dir_free = float("inf")
             root_free = float("inf")
@@ -471,13 +473,82 @@ class ResourceGovernor:
                 )
 
             try:
-                await self._checkpoint_wal()
+                await self._checkpoint_wal(force=False)
             except Exception as error:
                 logger.warning(
                     "Bounded-state WAL checkpoint failed: %s",
                     error,
                     exc_info=True,
                 )
+
+        await self._compact_lease_ledgers()
+
+    async def _compact_lease_ledgers(self) -> None:
+        """Compact the Echo lease JSONL when governor thresholds are crossed.
+
+        The lease ledger is not a PRODUCT_STATE SQLite WAL. This path must
+        not call sqlite checkpoint helpers.
+        """
+        getter = getattr(self._agent, "_get_echo_tool_lease_authority", None)
+        if not callable(getter):
+            return
+        try:
+            authority = getter()
+        except Exception as error:
+            logger.warning("Lease authority lookup failed: %s", error, exc_info=True)
+            return
+        compact = getattr(authority, "maybe_compact", None)
+        stats_fn = getattr(authority, "ledger_stats", None)
+        if not callable(compact):
+            return
+        settings = getattr(self._agent, "settings", None)
+        ledger_cfg = getattr(settings, "echo_ledger", None)
+        trigger_records = int(getattr(ledger_cfg, "lease_compact_trigger_records", 512))
+        trigger_bytes = int(getattr(ledger_cfg, "lease_compact_trigger_bytes", 256 * 1024))
+        trigger_reloads = int(getattr(ledger_cfg, "lease_compact_trigger_full_reloads", 8))
+        try:
+            snapshot_hash = await _run_blocking(
+                compact,
+                trigger_records=trigger_records,
+                trigger_bytes=trigger_bytes,
+                trigger_full_reloads=trigger_reloads,
+            )
+        except Exception as error:
+            logger.warning("Lease ledger compaction failed: %s", error, exc_info=True)
+            return
+        stats: dict[str, int | str] = {}
+        if callable(stats_fn):
+            try:
+                raw_stats = stats_fn()
+                if isinstance(raw_stats, dict):
+                    stats = raw_stats
+            except Exception:
+                stats = {}
+        try:
+            from js.utils.metrics import get_metrics
+
+            metrics = get_metrics()
+            records = stats.get("records", 0)
+            size = stats.get("bytes", 0)
+            reloads = stats.get("full_reloads", 0)
+            if isinstance(records, int):
+                metrics.lease_ledger_records.set(records)
+            if isinstance(size, int):
+                metrics.lease_ledger_bytes.set(size)
+            if isinstance(reloads, int):
+                metrics.lease_ledger_full_reloads.set(reloads)
+            tip = stats.get("tip")
+            if isinstance(tip, str) and tip:
+                metrics.lease_tip_present.set(1)
+            skip = stats.get("compact_skip_reason")
+            reason = str(skip or ("compacted" if snapshot_hash else "unknown"))
+            metrics.lease_compact_skip_total.labels(reason=reason).inc()
+            if snapshot_hash:
+                metrics.lease_compact_total.inc()
+        except Exception:
+            pass
+        if snapshot_hash:
+            logger.info("Compacted lease ledger snapshot %s", snapshot_hash)
 
     async def _prune_databases(self) -> None:
         pruned_total = 0
@@ -509,21 +580,9 @@ class ResourceGovernor:
         except Exception as e:
             logger.warning("Checkpoint prune failed: %s", e, exc_info=True)
 
-        # 2. AgentStore
-        fleet = self._get_fleet()
-        if fleet is not None:
-            try:
-                agent_store = getattr(fleet, "_agent_store", None)
-                if agent_store is not None and hasattr(agent_store, "prune"):
-                    pruned = await _run_blocking(agent_store.prune, keep=500)
-                    if pruned:
-                        logger.info("Pruned %d old agent records", pruned)
-                        pruned_total += pruned
-            except Exception as e:
-                logger.warning("AgentStore prune failed: %s", e, exc_info=True)
-
-        # 3. EventStore: the primary store lives on the agent. Retain fleet
+        # 2. EventStore: the primary store lives on the agent. Retain fleet
         # compatibility for older integrations, but never prune one instance twice.
+        fleet = self._get_fleet()
         event_stores: list[tuple[str, Any]] = [
             ("agent", getattr(self._agent, "event_store", None)),
         ]
@@ -644,17 +703,17 @@ class ResourceGovernor:
         # 9. SQLite WAL checkpoint
         if self._state_dir is not None:
             try:
-                await self._checkpoint_wal()
+                await self._checkpoint_wal(force=True)
             except Exception as e:
                 logger.warning("WAL checkpoint failed: %s", e, exc_info=True)
 
         if pruned_total:
             logger.info("Database maintenance complete. Total pruned: %d", pruned_total)
 
-    async def _checkpoint_wal(self) -> None:
-        await _run_blocking(self._checkpoint_wal_sync)
+    async def _checkpoint_wal(self, *, force: bool = False) -> None:
+        await _run_blocking(lambda: self._checkpoint_wal_sync(force=force))
 
-    def _checkpoint_wal_sync(self) -> None:
+    def _checkpoint_wal_sync(self, *, force: bool = False) -> None:
         import sqlite3
         import stat
 
@@ -664,10 +723,12 @@ class ResourceGovernor:
             state_root = self._state_dir.resolve(strict=True)
         except OSError:
             return
-        db_paths = list(self._state_dir.rglob("*.db"))
+        db_paths = [self._state_dir / name for name in PRODUCT_STATE_DB_NAMES]
 
         checked: set[Path] = set()
         for path in db_paths:
+            if not path.is_file():
+                continue
             db = path.with_suffix(".db") if path.suffix != ".db" else path
             try:
                 relative = db.relative_to(self._state_dir)
@@ -690,9 +751,20 @@ class ResourceGovernor:
             if resolved in checked:
                 continue
             checked.add(resolved)
+            wal_path = Path(str(resolved) + "-wal")
+            try:
+                wal_size = wal_path.stat().st_size if wal_path.is_file() else 0
+            except OSError:
+                wal_size = 0
+            if force:
+                mode = "TRUNCATE"
+            elif wal_size < self._wal_truncate_min_bytes:
+                continue
+            else:
+                mode = "PASSIVE"
             try:
                 with sqlite3.connect(str(resolved), timeout=5.0) as conn:
-                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    conn.execute(f"PRAGMA wal_checkpoint({mode})")
             except Exception:
                 pass  # Not WAL or locked — safe to ignore
 

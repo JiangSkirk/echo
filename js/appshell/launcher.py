@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 from js.appshell.global_prefs import (
@@ -49,14 +48,24 @@ def launch_appshell(
     work_config: str | None = None,
     personal_base_url: str = DEFAULT_PERSONAL_BASE_URL,
     work_base_url: str = DEFAULT_WORK_BASE_URL,
-    open_browser: bool = True,
+    open_browser: bool = False,
     prefs_path: Path | None = None,
+    echo_minimal_os: bool = False,
 ) -> int:
     """Serve both isolated runtimes behind one uvicorn process and one port.
 
     ``work_base_url`` remains accepted only so older invocations parse; it is
     persisted for rollback metadata but never bound or contacted.
+    ``open_browser`` is ignored: AppShell never opens a system browser.
+    ``echo_minimal_os`` is off by default.  When requested, the Darwin
+    deny-default carrier must exist or launch fails closed; this host still
+    serves AppShell in-process, so AppShell/Echo separation stays unobserved.
     """
+    del open_browser
+    if echo_minimal_os:
+        from js.orin.echo_os import require_echo_minimal_os_carrier
+
+        require_echo_minimal_os_carrier()
     prefs = load_global_prefs(prefs_path)
     host_base_url = personal_base_url or prefs.host_base_url
     prefs = GlobalPrefs(
@@ -69,8 +78,7 @@ def launch_appshell(
         work_path=prefs.work_path,
         personal_base_url=host_base_url,
         work_base_url=work_base_url or prefs.work_base_url,
-        personal_state_dir=_state_dir_from_config(personal_config)
-        or prefs.personal_state_dir,
+        personal_state_dir=_state_dir_from_config(personal_config) or prefs.personal_state_dir,
         work_state_dir=_state_dir_from_config(work_config) or prefs.work_state_dir,
         credential_refs=prefs.credential_refs,
     )
@@ -78,26 +86,28 @@ def launch_appshell(
 
     host, port = _parse_host_port(host_base_url)
     from js.appshell.server import create_appshell_app
+    from js.web.local_host import run_local_host
 
     app = create_appshell_app(
         personal_config=personal_config,
         work_config=work_config,
         host=host,
         port=port,
+        manage_orind=True,
     )
-    if open_browser:
-        import threading
-        import webbrowser
+    personal = getattr(app.state, "personal_app", None)
+    runtime_settings = getattr(getattr(personal, "state", None), "runtime_settings", None)
+    if runtime_settings is not None:
+        from js.appshell.echo_process_split import maybe_enable_product_process_split
 
-        def _open() -> None:
-            time.sleep(1.5)
-            webbrowser.open(host_base_url)
-
-        threading.Thread(target=_open, daemon=True).start()
-
-    import uvicorn
-
-    print(f"AppShell: {host_base_url}")
-    print("Personal and Work are isolated runtimes behind this one trusted host.")
-    uvicorn.run(app, host=host, port=port)
+        maybe_enable_product_process_split(runtime_settings)
+    run_local_host(
+        app,
+        host=host,
+        port=port,
+        notes=(
+            f"AppShell: {host_base_url}",
+            "Personal and Work are isolated runtimes behind this one trusted host.",
+        ),
+    )
     return 0

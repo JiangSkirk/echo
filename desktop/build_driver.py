@@ -59,9 +59,7 @@ _FAT_MACH_O_MAGICS = {
 }
 _NON_EXECUTABLE_RESOURCE_SUFFIXES = frozenset({".class", ".jar", ".zip"})
 _PYTHON_BUILD_REQUIREMENTS = frozenset({"pyinstaller", "pyinstaller-hooks-contrib"})
-_ARTIFACT_KEYS = frozenset(
-    {"rust_main", "sidecar", "sidecar_standalone", "app_tree", "zip"}
-)
+_ARTIFACT_KEYS = frozenset({"rust_main", "sidecar", "sidecar_standalone", "app_tree", "zip"})
 _BUILD_INPUT_PATHS = {
     "cargo_lock": "desktop/src-tauri/Cargo.lock",
     "pnpm_lock": "desktop/pnpm-lock.yaml",
@@ -189,10 +187,11 @@ def _read_single_link_file(path: Path, label: str) -> bytes:
         after = os.fstat(descriptor)
         path_after = _single_link_file_stat(path, label)
         expected = (before.st_dev, before.st_ino, before.st_size)
-        if (
-            (after.st_dev, after.st_ino, after.st_size) != expected
-            or (path_after.st_dev, path_after.st_ino, path_after.st_size) != expected
-        ):
+        if (after.st_dev, after.st_ino, after.st_size) != expected or (
+            path_after.st_dev,
+            path_after.st_ino,
+            path_after.st_size,
+        ) != expected:
             raise RuntimeError(f"{label} identity changed during read")
         return b"".join(chunks)
     except OSError as exc:
@@ -228,8 +227,7 @@ def _replace_single_link_file(path: Path, payload: bytes, label: str) -> None:
         path_after = _single_link_file_stat(path, label)
         if (
             (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
-            or (path_after.st_dev, path_after.st_ino)
-            != (before.st_dev, before.st_ino)
+            or (path_after.st_dev, path_after.st_ino) != (before.st_dev, before.st_ino)
             or after.st_size != len(payload)
             or path_after.st_size != len(payload)
         ):
@@ -276,8 +274,7 @@ def _run_is_owned(run: BuildRun) -> bool:
         if (
             root != run.root
             or root_info.st_uid != os.getuid()
-            or (root_info.st_dev, root_info.st_ino)
-            != (run._root_device, run._root_inode)
+            or (root_info.st_dev, root_info.st_ino) != (run._root_device, run._root_inode)
         ):
             return False
         marker_path = root / OWNER_MARKER_NAME
@@ -370,9 +367,7 @@ def prepare_build_run(
     resolved_repo = repo_root.resolve(strict=False)
     if output_dir is None:
         requested_parent = (
-            temporary_parent
-            if temporary_parent is not None
-            else Path(tempfile.gettempdir())
+            temporary_parent if temporary_parent is not None else Path(tempfile.gettempdir())
         )
         lexical_parent, resolved_parent, parent_info = _canonical_parent_snapshot(
             requested_parent,
@@ -404,14 +399,13 @@ def prepare_build_run(
     try:
         parent_descriptor = os.open(resolved_parent, _directory_open_flags())
         opened_parent = os.fstat(parent_descriptor)
-        if (
-            (opened_parent.st_dev, opened_parent.st_ino)
-            != (parent_info.st_dev, parent_info.st_ino)
-            or not _parent_matches_snapshot(
-                lexical_parent,
-                resolved_parent,
-                parent_info,
-            )
+        if (opened_parent.st_dev, opened_parent.st_ino) != (
+            parent_info.st_dev,
+            parent_info.st_ino,
+        ) or not _parent_matches_snapshot(
+            lexical_parent,
+            resolved_parent,
+            parent_info,
         ):
             raise RuntimeError("build output parent identity changed before creation")
         try:
@@ -419,9 +413,7 @@ def prepare_build_run(
         except FileNotFoundError:
             pass
         else:
-            raise RuntimeError(
-                "explicit build output already exists and is not owned by this run"
-            )
+            raise RuntimeError("explicit build output already exists and is not owned by this run")
         os.mkdir(output_name, mode=0o700, dir_fd=parent_descriptor)
         created = True
         root_descriptor = os.open(
@@ -481,8 +473,7 @@ def prepare_build_run(
         )
         if (
             not stat.S_ISDIR(final_entry.st_mode)
-            or (final_entry.st_dev, final_entry.st_ino)
-            != (root_info.st_dev, root_info.st_ino)
+            or (final_entry.st_dev, final_entry.st_ino) != (root_info.st_dev, root_info.st_ino)
             or not stat.S_ISREG(marker_info.st_mode)
             or marker_info.st_nlink != 1
         ):
@@ -525,9 +516,9 @@ def _mark_run_invalid(run: BuildRun) -> None:
     try:
         descriptor = os.open(run.root, _directory_open_flags())
         info = os.fstat(descriptor)
-        if (
-            not stat.S_ISDIR(info.st_mode)
-            or (info.st_dev, info.st_ino) != (run._root_device, run._root_inode)
+        if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != (
+            run._root_device,
+            run._root_inode,
         ):
             return
         _write_invalid_marker_fd(descriptor)
@@ -563,8 +554,7 @@ def _pristine_run_can_be_removed(run: BuildRun) -> bool:
         )
         if (
             not stat.S_ISDIR(parent_entry.st_mode)
-            or (parent_entry.st_dev, parent_entry.st_ino)
-            != (run._root_device, run._root_inode)
+            or (parent_entry.st_dev, parent_entry.st_ino) != (run._root_device, run._root_inode)
             or (parent_entry.st_ctime_ns, parent_entry.st_mtime_ns)
             != (run._root_ctime_ns, run._root_mtime_ns)
         ):
@@ -576,8 +566,7 @@ def _pristine_run_can_be_removed(run: BuildRun) -> bool:
         )
         root_info = os.fstat(root_descriptor)
         if (
-            (root_info.st_dev, root_info.st_ino)
-            != (run._root_device, run._root_inode)
+            (root_info.st_dev, root_info.st_ino) != (run._root_device, run._root_inode)
             or (root_info.st_ctime_ns, root_info.st_mtime_ns)
             != (run._root_ctime_ns, run._root_mtime_ns)
             or os.listdir(root_descriptor) != [OWNER_MARKER_NAME]
@@ -591,17 +580,14 @@ def _pristine_run_can_be_removed(run: BuildRun) -> bool:
         if (
             not stat.S_ISREG(marker_info.st_mode)
             or marker_info.st_nlink != 1
-            or (marker_info.st_dev, marker_info.st_ino)
-            != (run._marker_device, run._marker_inode)
+            or (marker_info.st_dev, marker_info.st_ino) != (run._marker_device, run._marker_inode)
             or (marker_info.st_ctime_ns, marker_info.st_mtime_ns)
             != (run._marker_ctime_ns, run._marker_mtime_ns)
         ):
             return False
         marker_descriptor = os.open(
             OWNER_MARKER_NAME,
-            os.O_RDONLY
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
             dir_fd=root_descriptor,
         )
         marker_payload = os.read(marker_descriptor, 65)
@@ -613,12 +599,10 @@ def _pristine_run_can_be_removed(run: BuildRun) -> bool:
         marker_after = os.fstat(marker_descriptor)
         root_after = os.fstat(root_descriptor)
         if (
-            (marker_after.st_dev, marker_after.st_ino)
-            != (run._marker_device, run._marker_inode)
+            (marker_after.st_dev, marker_after.st_ino) != (run._marker_device, run._marker_inode)
             or (marker_after.st_ctime_ns, marker_after.st_mtime_ns)
             != (run._marker_ctime_ns, run._marker_mtime_ns)
-            or (root_after.st_dev, root_after.st_ino)
-            != (run._root_device, run._root_inode)
+            or (root_after.st_dev, root_after.st_ino) != (run._root_device, run._root_inode)
             or (root_after.st_ctime_ns, root_after.st_mtime_ns)
             != (run._root_ctime_ns, run._root_mtime_ns)
             or os.listdir(root_descriptor) != [OWNER_MARKER_NAME]
@@ -751,9 +735,11 @@ def verify_python_build_requirements(
     version_resolver: Callable[[str], str] = importlib.metadata.version,
 ) -> None:
     try:
-        lines = _read_single_link_file(
-            requirements_path, "Python build requirements"
-        ).decode("utf-8").splitlines()
+        lines = (
+            _read_single_link_file(requirements_path, "Python build requirements")
+            .decode("utf-8")
+            .splitlines()
+        )
     except UnicodeDecodeError as exc:
         raise RuntimeError("Python build requirements are not UTF-8") from exc
     pins: dict[str, str] = {}
@@ -835,9 +821,9 @@ def build_sidecar(
 ) -> Path:
     embedded = stage_root / "desktop/.embedded_source_digest"
     try:
-        embedded_value = _read_single_link_file(
-            embedded, "staged embedded source digest"
-        ).decode("ascii")
+        embedded_value = _read_single_link_file(embedded, "staged embedded source digest").decode(
+            "ascii"
+        )
     except UnicodeDecodeError as exc:
         raise RuntimeError("staged embedded source digest is not ASCII") from exc
     if embedded_value != source_digest or _LOWER_SHA256.fullmatch(source_digest) is None:
@@ -865,7 +851,7 @@ def build_sidecar(
         "--clean",
         "--add-data",
         f"{embedded}:desktop",
-        # Web UI assets must live beside the frozen js.web package path.
+        # Host UI assets must live beside the frozen js.web package path.
         "--add-data",
         f"{stage_root / 'js' / 'web' / 'static'}:js/web/static",
         "--add-data",
@@ -963,9 +949,7 @@ def _verify_bundle_versions(app_path: Path, build_number: str) -> None:
     validated = validate_build_number(build_number)
     _info_path, info = _bundle_info(app_path)
     if info.get("CFBundleShortVersionString") != PRODUCT_VERSION:
-        raise RuntimeError(
-            f"app CFBundleShortVersionString must equal {PRODUCT_VERSION}"
-        )
+        raise RuntimeError(f"app CFBundleShortVersionString must equal {PRODUCT_VERSION}")
     if info.get("CFBundleVersion") != validated:
         raise RuntimeError("app CFBundleVersion does not match manifest build number")
 
@@ -978,8 +962,8 @@ def _is_thin_mach_o(payload: bytes) -> bool:
     if len(payload) < header_size:
         return False
     try:
-        cpu_type, _cpu_subtype, file_type, commands, commands_size, _flags = (
-            struct.unpack_from(f"{endian}IIIIII", payload, 4)
+        cpu_type, _cpu_subtype, file_type, commands, commands_size, _flags = struct.unpack_from(
+            f"{endian}IIIIII", payload, 4
         )
     except struct.error:
         return False
@@ -1010,8 +994,8 @@ def _is_fat_mach_o(payload: bytes) -> bool:
                     struct.unpack_from(f"{endian}IIQQII", payload, offset)
                 )
             else:
-                _cpu_type, _cpu_subtype, slice_offset, slice_size, _align = (
-                    struct.unpack_from(f"{endian}IIIII", payload, offset)
+                _cpu_type, _cpu_subtype, slice_offset, slice_size, _align = struct.unpack_from(
+                    f"{endian}IIIII", payload, offset
                 )
         except struct.error:
             return False
@@ -1032,8 +1016,7 @@ def _is_mach_o(payload: bytes) -> bool:
 def _app_file_expected_mode(relative: PurePosixPath, payload: bytes) -> int:
     parts = relative.parts
     in_macos_directory = any(
-        parts[index : index + 2] == ("Contents", "MacOS")
-        for index in range(max(0, len(parts) - 1))
+        parts[index : index + 2] == ("Contents", "MacOS") for index in range(max(0, len(parts) - 1))
     )
     if in_macos_directory or payload.startswith(b"#!"):
         return 0o755
@@ -1061,10 +1044,9 @@ def _set_regular_file_mode(path: Path, mode: int, label: str) -> None:
             raise RuntimeError(f"{label} identity changed before chmod")
         os.fchmod(descriptor, mode)
         after = os.fstat(descriptor)
-        if (
-            (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
-            or stat.S_IMODE(after.st_mode) != mode
-        ):
+        if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino) or stat.S_IMODE(
+            after.st_mode
+        ) != mode:
             raise RuntimeError(f"{label} identity changed during chmod")
     except OSError as exc:
         raise RuntimeError(f"{label} permissions could not be normalized") from exc
@@ -1082,10 +1064,9 @@ def _set_directory_mode(path: Path, mode: int, label: str) -> None:
             raise RuntimeError(f"{label} must be a directory")
         os.fchmod(descriptor, mode)
         after = os.fstat(descriptor)
-        if (
-            (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
-            or stat.S_IMODE(after.st_mode) != mode
-        ):
+        if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino) or stat.S_IMODE(
+            after.st_mode
+        ) != mode:
             raise RuntimeError(f"{label} identity changed during chmod")
     except OSError as exc:
         raise RuntimeError(f"{label} permissions could not be normalized") from exc
@@ -1164,9 +1145,7 @@ def build_tauri_app(
         raise RuntimeError("source digest must be lowercase 64-hex")
     validated_build_number = validate_build_number(build_number)
     inputs = _validated_offline_inputs(offline_inputs)
-    tauri = _resolved_executable(
-        stage_root / "desktop/node_modules/.bin/tauri", "Tauri"
-    )
+    tauri = _resolved_executable(stage_root / "desktop/node_modules/.bin/tauri", "Tauri")
     target_dir = run.root / "stage/cargo-target"
     env = controlled_build_environment(run, inputs)
     env.update(
@@ -1294,8 +1273,7 @@ def _adhoc_sign_app(app_path: Path, *, runner: Runner = _run) -> None:
     )
     if verify_code != 0:
         raise RuntimeError(
-            f"codesign verify failed after ad-hoc signing (exit {verify_code}): "
-            f"{verify_stderr}"
+            f"codesign verify failed after ad-hoc signing (exit {verify_code}): {verify_stderr}"
         )
 
 
@@ -1345,8 +1323,7 @@ def create_zip(
     forbidden = _zip_forbidden_members(zip_path)
     if forbidden:
         raise RuntimeError(
-            "zip contains AppleDouble/resource-fork/junk members: "
-            + ", ".join(forbidden[:12])
+            "zip contains AppleDouble/resource-fork/junk members: " + ", ".join(forbidden[:12])
         )
     return zip_path
 
@@ -1379,9 +1356,7 @@ def _zip_forbidden_members(zip_path: Path) -> list[str]:
 
 def _tree_entries(directory: Path, label: str = "artifact tree") -> dict[str, TreeEntry]:
     root = _safe_directory(directory, label)
-    entries: dict[str, TreeEntry] = {
-        "": TreeEntry("directory", stat.S_IMODE(root.stat().st_mode))
-    }
+    entries: dict[str, TreeEntry] = {"": TreeEntry("directory", stat.S_IMODE(root.stat().st_mode))}
 
     def walk(current: Path) -> None:
         try:
@@ -1519,9 +1494,7 @@ def _zip_app_entries(zip_path: Path, app_name: str) -> dict[str, TreeEntry]:
                     if member.file_size != 0:
                         raise RuntimeError("zip directory contains data")
                     if permissions != 0o755:
-                        raise RuntimeError(
-                            f"zip directory permission mismatch: {canonical_name}"
-                        )
+                        raise RuntimeError(f"zip directory permission mismatch: {canonical_name}")
                     entries[relative] = TreeEntry("directory", permissions)
                     continue
                 content = archive.read(member)
@@ -1553,9 +1526,11 @@ def _artifact_paths(source_digest: str) -> dict[str, str]:
 
 
 def _file_binding(path: Path, label: str) -> dict[str, str]:
-    resolved = _resolved_executable(path, label) if label in {
-        "Python", "pnpm", "Cargo", "Node", "ditto"
-    } else path.resolve(strict=True)
+    resolved = (
+        _resolved_executable(path, label)
+        if label in {"Python", "pnpm", "Cargo", "Node", "ditto"}
+        else path.resolve(strict=True)
+    )
     return {"path": str(resolved), "sha256": _sha256_file(resolved, label)}
 
 
@@ -1568,9 +1543,7 @@ def build_environment_binding(
     inputs = _validated_offline_inputs(offline_inputs)
     return {
         "schema": BUILD_ENVIRONMENT_SCHEMA,
-        "run_owner_marker_sha256": _sha256_file(
-            run.root / OWNER_MARKER_NAME, "build owner marker"
-        ),
+        "run_owner_marker_sha256": _sha256_file(run.root / OWNER_MARKER_NAME, "build owner marker"),
         "python": _file_binding(Path(sys.executable).resolve(strict=True), "Python"),
         "pnpm": _file_binding(inputs.pnpm_executable, "pnpm"),
         "cargo": _file_binding(inputs.cargo_executable, "Cargo"),
@@ -1695,14 +1668,14 @@ def _verify_build_environment(output_root: Path, value: object) -> list[str]:
     if not isinstance(value, dict) or set(value) != expected_keys:
         return ["manifest build environment schema is not closed"]
     marker_digest = value.get("run_owner_marker_sha256")
-    if value.get("schema") != BUILD_ENVIRONMENT_SCHEMA or not isinstance(
-        marker_digest, str
-    ) or _LOWER_SHA256.fullmatch(marker_digest) is None:
+    if (
+        value.get("schema") != BUILD_ENVIRONMENT_SCHEMA
+        or not isinstance(marker_digest, str)
+        or _LOWER_SHA256.fullmatch(marker_digest) is None
+    ):
         return ["manifest build environment identity is invalid"]
     try:
-        actual_marker = _sha256_file(
-            output_root / OWNER_MARKER_NAME, "build owner marker"
-        )
+        actual_marker = _sha256_file(output_root / OWNER_MARKER_NAME, "build owner marker")
         if not hmac.compare_digest(actual_marker, marker_digest):
             errors.append("build owner marker digest mismatch")
     except RuntimeError as exc:
@@ -1746,9 +1719,7 @@ def _verify_build_environment(output_root: Path, value: object) -> list[str]:
             errors.append(f"build environment tree entry is invalid: {name}")
             continue
         try:
-            actual = _sha256_content_tree(
-                Path(path_value), f"build environment {name}"
-            )
+            actual = _sha256_content_tree(Path(path_value), f"build environment {name}")
             if not hmac.compare_digest(actual, digest_value):
                 errors.append(f"build environment tree digest mismatch: {name}")
         except RuntimeError as exc:
@@ -1781,7 +1752,9 @@ def verify_manifest(
         "build_environment",
     }:
         return ["manifest top-level schema is not closed"]
-    errors = _verify_build_environment(manifest_path.parent.resolve(), manifest["build_environment"])
+    errors = _verify_build_environment(
+        manifest_path.parent.resolve(), manifest["build_environment"]
+    )
     source_digest = manifest.get("source_digest")
     build_number = manifest.get("build_number")
     try:
@@ -1908,9 +1881,7 @@ def build_desktop(
         source_digest = compute_source_digest(repo_root)
         if repo_root.resolve() == REPO_ROOT.resolve():
             validate_release_source_integrity(repo_root)
-        stage_root = stage_release_sources(
-            source_digest, run=run, repo_root=repo_root
-        )
+        stage_root = stage_release_sources(source_digest, run=run, repo_root=repo_root)
         verify_python_build_requirements(stage_root / "desktop/requirements-build.txt")
         install_desktop_dependencies(
             stage_root,

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from js.models.providers import ChatMessage, ChatResponse
+from js.models.usage import map_anthropic_usage, map_bedrock_usage, map_openai_usage
 from js.utils.log import get_logger
 
 logger = get_logger("js.models.transports")
@@ -83,28 +84,26 @@ class ChatCompletionsTransport(BaseTransport):
         tool_calls: list[dict[str, Any]] = []
         if msg.tool_calls:
             for tc in msg.tool_calls:
-                tool_calls.append({
-                    "id": tc.id,
-                    "type": tc.type,
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                })
+                tool_calls.append(
+                    {
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                )
         usage = raw.usage
+        buckets = map_openai_usage(usage, source="provider_actual" if usage else "unavailable")
         return ChatResponse(
             content=msg.content or "",
             tool_calls=tool_calls,
             model=raw.model,
-            usage={
-                "prompt_tokens": usage.prompt_tokens if usage else 0,
-                "completion_tokens": usage.completion_tokens if usage else 0,
-                "total_tokens": usage.total_tokens if usage else 0,
-                "cached_tokens": _extract_cached_tokens(usage),
-            },
+            usage=buckets.to_usage_dict(),
             finish_reason=choice.finish_reason or "stop",
             reasoning_content=getattr(msg, "reasoning_content", "") or "",
-            usage_source="provider_actual" if usage else "unavailable",
+            usage_source=buckets.usage_source,
         )
 
     def parse_stream_chunk(self, chunk: Any) -> str | None:
@@ -115,14 +114,7 @@ class ChatCompletionsTransport(BaseTransport):
 
     def extract_usage(self, raw: Any) -> dict[str, int]:
         usage = getattr(raw, "usage", None)
-        if not usage:
-            return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cached_tokens": 0}
-        return {
-            "prompt_tokens": usage.prompt_tokens or 0,
-            "completion_tokens": usage.completion_tokens or 0,
-            "total_tokens": usage.total_tokens or 0,
-            "cached_tokens": _extract_cached_tokens(usage),
-        }
+        return map_openai_usage(usage).to_usage_dict()
 
 
 class AnthropicTransport(BaseTransport):
@@ -138,6 +130,7 @@ class AnthropicTransport(BaseTransport):
         self.api_key = api_key
         try:
             import anthropic as _anthropic  # type: ignore[import-not-found]
+
             self._client_cls = _anthropic.AsyncAnthropic
         except ImportError:
             self._client_cls = None  # type: ignore[assignment]
@@ -173,31 +166,28 @@ class AnthropicTransport(BaseTransport):
             if btype == "text":
                 content_text += getattr(block, "text", "")
             elif btype == "tool_use":
-                tool_calls.append({
-                    "id": getattr(block, "id", ""),
-                    "type": "function",
-                    "function": {
-                        "name": getattr(block, "name", ""),
-                        "arguments": json.dumps(getattr(block, "input", {})),
-                    },
-                })
+                tool_calls.append(
+                    {
+                        "id": getattr(block, "id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": getattr(block, "name", ""),
+                            "arguments": json.dumps(getattr(block, "input", {})),
+                        },
+                    }
+                )
             elif btype == "thinking":
                 reasoning += getattr(block, "thinking", "")
         usage = raw.usage
-        cached = getattr(usage, "cache_read_input_tokens", 0) if usage else 0
+        buckets = map_anthropic_usage(usage, source="provider_actual" if usage else "unavailable")
         return ChatResponse(
             content=content_text,
             tool_calls=tool_calls,
             model=raw.model,
-            usage={
-                "prompt_tokens": usage.input_tokens if usage else 0,
-                "completion_tokens": usage.output_tokens if usage else 0,
-                "total_tokens": (usage.input_tokens + usage.output_tokens) if usage else 0,
-                "cached_tokens": cached,
-            },
+            usage=buckets.to_usage_dict(),
             finish_reason="stop",
             reasoning_content=reasoning,
-            usage_source="provider_actual" if usage else "unavailable",
+            usage_source=buckets.usage_source,
         )
 
     def parse_stream_chunk(self, chunk: Any) -> str | None:
@@ -210,15 +200,7 @@ class AnthropicTransport(BaseTransport):
 
     def extract_usage(self, raw: Any) -> dict[str, int]:
         usage = getattr(raw, "usage", None)
-        if not usage:
-            return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "cached_tokens": 0}
-        cached = getattr(usage, "cache_read_input_tokens", 0) or 0
-        return {
-            "prompt_tokens": usage.input_tokens or 0,
-            "completion_tokens": usage.output_tokens or 0,
-            "total_tokens": (usage.input_tokens + usage.output_tokens) if usage else 0,
-            "cached_tokens": cached,
-        }
+        return map_anthropic_usage(usage).to_usage_dict()
 
 
 class BedrockTransport(BaseTransport):
@@ -234,6 +216,7 @@ class BedrockTransport(BaseTransport):
         self.region = region
         try:
             import boto3  # type: ignore[import-not-found]
+
             self._boto3 = boto3
         except ImportError:
             self._boto3 = None  # type: ignore[assignment]
@@ -244,7 +227,9 @@ class BedrockTransport(BaseTransport):
         native_messages: list[dict[str, Any]] = []
         for m in req.messages:
             if m.role == "system":
-                system_texts.append({"text": m.content if isinstance(m.content, str) else str(m.content)})
+                system_texts.append(
+                    {"text": m.content if isinstance(m.content, str) else str(m.content)}
+                )
                 continue
             native_messages.append(_openai_msg_to_bedrock(m))
         payload: dict[str, Any] = {
@@ -272,28 +257,26 @@ class BedrockTransport(BaseTransport):
                 content_text += block["text"]
             elif "toolUse" in block:
                 tu = block["toolUse"]
-                tool_calls.append({
-                    "id": tu.get("toolUseId", ""),
-                    "type": "function",
-                    "function": {
-                        "name": tu.get("name", ""),
-                        "arguments": json.dumps(tu.get("input", {})),
-                    },
-                })
+                tool_calls.append(
+                    {
+                        "id": tu.get("toolUseId", ""),
+                        "type": "function",
+                        "function": {
+                            "name": tu.get("name", ""),
+                            "arguments": json.dumps(tu.get("input", {})),
+                        },
+                    }
+                )
         usage = raw.get("usage", {})
+        buckets = map_bedrock_usage(usage, source="provider_actual" if usage else "unavailable")
         return ChatResponse(
             content=content_text,
             tool_calls=tool_calls,
             model="",
-            usage={
-                "prompt_tokens": usage.get("inputTokens", 0),
-                "completion_tokens": usage.get("outputTokens", 0),
-                "total_tokens": usage.get("totalTokens", 0),
-                "cached_tokens": 0,
-            },
+            usage=buckets.to_usage_dict(),
             finish_reason="stop",
             reasoning_content="",
-            usage_source="provider_actual" if usage else "unavailable",
+            usage_source=buckets.usage_source,
         )
 
     def parse_stream_chunk(self, chunk: Any) -> str | None:
@@ -301,18 +284,13 @@ class BedrockTransport(BaseTransport):
         return delta.get("text") or None
 
     def extract_usage(self, raw: Any) -> dict[str, int]:
-        usage = raw.get("usage", {})
-        return {
-            "prompt_tokens": usage.get("inputTokens", 0),
-            "completion_tokens": usage.get("outputTokens", 0),
-            "total_tokens": usage.get("totalTokens", 0),
-            "cached_tokens": 0,
-        }
+        return map_bedrock_usage(raw.get("usage", {})).to_usage_dict()
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _messages_to_openai(messages: list[ChatMessage]) -> list[dict[str, Any]]:
     """Serialise ChatMessage list to OpenAI native dicts."""
@@ -364,12 +342,14 @@ def _openai_msg_to_anthropic(m: ChatMessage) -> dict[str, Any]:
         if m.content:
             content.append({"type": "text", "text": m.content})
         for tc in m.tool_calls:
-            content.append({
-                "type": "tool_use",
-                "id": tc.get("id", ""),
-                "name": tc.get("function", {}).get("name", ""),
-                "input": json.loads(tc.get("function", {}).get("arguments", "{}")),
-            })
+            content.append(
+                {
+                    "type": "tool_use",
+                    "id": tc.get("id", ""),
+                    "name": tc.get("function", {}).get("name", ""),
+                    "input": json.loads(tc.get("function", {}).get("arguments", "{}")),
+                }
+            )
     return {"role": role, "content": content}
 
 
@@ -388,23 +368,29 @@ def _openai_msg_to_bedrock(m: ChatMessage) -> dict[str, Any]:
     role = "user" if m.role in ("user", "tool") else "assistant"
     content: list[dict[str, Any]] = []
     if m.role == "tool":
-        content.append({
-            "toolResult": {
-                "toolUseId": m.tool_call_id or "",
-                "content": [{"text": m.content if isinstance(m.content, str) else str(m.content)}],
+        content.append(
+            {
+                "toolResult": {
+                    "toolUseId": m.tool_call_id or "",
+                    "content": [
+                        {"text": m.content if isinstance(m.content, str) else str(m.content)}
+                    ],
+                }
             }
-        })
+        )
     elif m.tool_calls:
         if m.content:
             content.append({"text": m.content})
         for tc in m.tool_calls:
-            content.append({
-                "toolUse": {
-                    "toolUseId": tc.get("id", ""),
-                    "name": tc.get("function", {}).get("name", ""),
-                    "input": json.loads(tc.get("function", {}).get("arguments", "{}")),
+            content.append(
+                {
+                    "toolUse": {
+                        "toolUseId": tc.get("id", ""),
+                        "name": tc.get("function", {}).get("name", ""),
+                        "input": json.loads(tc.get("function", {}).get("arguments", "{}")),
+                    }
                 }
-            })
+            )
     else:
         content.append({"text": m.content if isinstance(m.content, str) else str(m.content)})
     return {"role": role, "content": content}
@@ -437,7 +423,9 @@ def get_transport(name: str, **kwargs: Any) -> BaseTransport:
     """Factory: instantiate a transport by name."""
     cls = _TRANSPORT_REGISTRY.get(name)
     if cls is None:
-        raise ValueError(f"Unknown transport '{name}'. Available: {list(_TRANSPORT_REGISTRY.keys())}")
+        raise ValueError(
+            f"Unknown transport '{name}'. Available: {list(_TRANSPORT_REGISTRY.keys())}"
+        )
     return cls(**kwargs)
 
 

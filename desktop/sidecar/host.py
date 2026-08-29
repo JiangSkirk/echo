@@ -283,7 +283,7 @@ def create_desktop_host_app(
 ) -> tuple[FastAPI, EphemeralDesktopIdentity]:
     from js.appshell.server import create_appshell_app
 
-    app = create_appshell_app(host="127.0.0.1", port=port)
+    app = create_appshell_app(host="127.0.0.1", port=port, manage_orind=True)
     bootstrap = OneTimeBootstrapToken(token, ttl_seconds=ttl_seconds)
     identity = EphemeralDesktopIdentity(app)
     child_lifespan = app.router.lifespan_context

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import unicodedata
 from dataclasses import dataclass
@@ -345,11 +346,7 @@ def validate_exact_commit_approval_dict(data: Any) -> None:
     }
     for name, prefix in identifiers.items():
         value = data.get(name)
-        if (
-            not isinstance(value, str)
-            or not value.startswith(prefix)
-            or len(value) > 512
-        ):
+        if not isinstance(value, str) or not value.startswith(prefix) or len(value) > 512:
             raise ProtocolError(f"exact approval {name} must be a bounded {prefix!r} id")
     digest = data.get("canonical_effect_hash")
     if (
@@ -792,7 +789,18 @@ class CellPackage:
             elif key.endswith("_handles") and isinstance(value, list):
                 referenced_handles.update(item for item in value if isinstance(item, str))
         resolved_handle_ids = {handle.handle_id for handle in self.resolved_handles}
-        if resolved_handle_ids != referenced_handles:
+        application_ids = {
+            handle.handle_id
+            for handle in self.resolved_handles
+            if handle.kind == "ApplicationHandle"
+        }
+        # Owner-issued ApplicationHandles are attached by orind from the
+        # Intent; desktop observe/action drafts do not name them.  Every other
+        # resolved handle must still exactly match the draft references.
+        if (
+            not referenced_handles.issubset(resolved_handle_ids)
+            or (resolved_handle_ids - application_ids) - referenced_handles
+        ):
             raise ProtocolError("cell package resolved handles do not exactly match draft")
         witness = self.state_witness
         if require_witness and witness is None:
@@ -998,6 +1006,112 @@ def validate_receipt_dict(data: Any) -> None:
             raise ProtocolError(f"receipt field {key!r} must be a u64 integer")
 
 
+SIGNED_RECEIPT_SCHEMA: Final[str] = "receipt.signed.v1"
+_SIGNED_SEAL_PREFIX: Final[str] = "orin-hmac-sha256:"
+
+
+@dataclass(frozen=True, slots=True)
+class SignedEffectReceiptV1:
+    """HMAC-sealed Cell outcome.  DecisionReceipt is not a substitute."""
+
+    schema: str
+    receipt: EffectReceipt
+    signature: str
+
+    def payload(self) -> str:
+        return canonical_json(
+            {
+                "schema": self.schema,
+                "receipt": self.receipt.to_dict(),
+            }
+        )
+
+    def sealed_by(self, mac_key: bytes) -> SignedEffectReceiptV1:
+        if not isinstance(mac_key, bytes) or len(mac_key) != 32:
+            raise ProtocolError("signed receipt mac key must be 32 bytes")
+        digest = hmac.new(
+            mac_key,
+            self.payload().encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return SignedEffectReceiptV1(
+            schema=SIGNED_RECEIPT_SCHEMA,
+            receipt=self.receipt,
+            signature=_SIGNED_SEAL_PREFIX + digest,
+        )
+
+    def verify_seal(self, mac_key: bytes) -> bool:
+        if self.schema != SIGNED_RECEIPT_SCHEMA:
+            return False
+        if not self.signature.startswith(_SIGNED_SEAL_PREFIX):
+            return False
+        expected = self.sealed_by(mac_key).signature
+        return hmac.compare_digest(self.signature, expected)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "receipt": self.receipt.to_dict(),
+            "signature": self.signature,
+        }
+
+
+def signed_receipt_from_dict(data: Any, *, mac_key: bytes | None = None) -> SignedEffectReceiptV1:
+    if not isinstance(data, dict):
+        raise ProtocolError("signed receipt must be an object")
+    if data.get("kind") is not None and data.get("verdict") is not None:
+        raise ProtocolError("DecisionReceipt is not a Cell EffectReceipt")
+    if data.get("schema") != SIGNED_RECEIPT_SCHEMA:
+        raise ProtocolError("signed receipt schema must be receipt.signed.v1")
+    raw_receipt = data.get("receipt")
+    if not isinstance(raw_receipt, dict):
+        raise ProtocolError("signed receipt payload is invalid")
+    receipt = receipt_from_dict(raw_receipt)
+    signed = SignedEffectReceiptV1(
+        schema=SIGNED_RECEIPT_SCHEMA,
+        receipt=receipt,
+        signature=str(data.get("signature") or ""),
+    )
+    if mac_key is not None and not signed.verify_seal(mac_key):
+        raise ProtocolError("signed receipt seal is invalid")
+    return signed
+
+
+def seal_signed_effect_receipt(
+    *,
+    mac_key: bytes,
+    permit_id: str,
+    executor_id: str,
+    status: str,
+    canonical_effect_hash: str,
+    result_digest: str,
+    started_at_ms: int,
+    finished_at_ms: int,
+    receipt_id: str,
+    remote_operation_id: str = "",
+    previous_receipt_hash: str = "",
+) -> str:
+    """Return canonical JSON for one HMAC-sealed Cell EffectReceipt."""
+
+    signed = SignedEffectReceiptV1(
+        schema=SIGNED_RECEIPT_SCHEMA,
+        receipt=EffectReceipt(
+            receipt_id=receipt_id,
+            permit_id=permit_id,
+            executor_id=executor_id,
+            status=status,
+            remote_operation_id=remote_operation_id,
+            committed_effect_hash=canonical_effect_hash,
+            result_digest=result_digest,
+            started_at_ms=started_at_ms,
+            finished_at_ms=finished_at_ms,
+            previous_receipt_hash=previous_receipt_hash,
+        ),
+        signature="",
+    ).sealed_by(mac_key)
+    return canonical_json(signed.to_dict())
+
+
 def receipt_from_dict(data: dict[str, Any]) -> EffectReceipt:
     validate_receipt_dict(data)
     return EffectReceipt(
@@ -1030,6 +1144,8 @@ __all__ = [
     "Impact",
     "PERMIT_ID_PREFIX",
     "RECEIPT_STATUSES",
+    "SIGNED_RECEIPT_SCHEMA",
+    "SignedEffectReceiptV1",
     "StateWitness",
     "VISIBILITY_MODES",
     "canonical_destination_handles",
@@ -1040,6 +1156,8 @@ __all__ = [
     "file_commit_preview_from_dict",
     "permit_from_dict",
     "receipt_from_dict",
+    "seal_signed_effect_receipt",
+    "signed_receipt_from_dict",
     "validate_draft_dict",
     "validate_cell_package_dict",
     "validate_export_pass_dict",

@@ -37,6 +37,10 @@ def hydrate_static_provider_api_keys(
     secret_manager: SecretManager,
 ) -> None:
     """Restore locally encrypted UI credentials before router construction."""
+    from js.orin.stage_c import in_process_provider_tokens_blocked
+
+    if in_process_provider_tokens_blocked():
+        raise RuntimeError("Echo must not hold provider tokens under orin.enforce")
     for provider in providers:
         if provider.api_key:
             continue

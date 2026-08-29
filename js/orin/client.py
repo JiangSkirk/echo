@@ -34,12 +34,14 @@ from typing import Any, TypeVar, cast
 
 from js.echo.capability import (
     LeaseAuthority,
-    LeaseConsumeReceipt,
     LeaseContextMismatch,
     LeaseDenied,
     LeaseMacInvalid,
     _lease_from_payload,
     _lease_to_payload,
+)
+from js.echo.capability import (
+    LeaseConsumeReceipt as LeaseConsumeReceipt,
 )
 from js.echo.types import CapabilityLease
 from js.orin.hooks import install_canary_sink, installed_canary_sink
@@ -47,6 +49,7 @@ from js.orin.protocol import (
     CLIENT_CAPS,
     HEARTBEAT_INTERVAL_S,
     MAX_FRAME_BYTES,
+    REQUEST_TIMEOUT_S,
     STAGE_B_CLIENT_CAPS,
     EchoContextPayload,
     ProtocolError,
@@ -57,7 +60,6 @@ from js.orin.protocol import (
 )
 from js.orind.canary import FREEZE_TEXT, REFUSAL_TEXT
 
-REQUEST_TIMEOUT_S = 10.0
 CONNECT_TIMEOUT_S = 5.0
 
 _T = TypeVar("_T")
@@ -87,8 +89,6 @@ _DESKTOP_OBSERVE_FIELDS = frozenset(
         "target_kind",
         "target_label",
         "display_id",
-        "window_number",
-        "owner_pid",
         "width",
         "height",
         "scale",
@@ -274,6 +274,17 @@ class _OrinConnection:
         self._closed = False
 
     async def connect(self) -> None:
+        from js.orin.supervisor import (
+            OrindSupervisorError,
+            orind_owned_starting,
+            wait_orind_socket,
+        )
+
+        if orind_owned_starting(self._socket_path):
+            try:
+                await asyncio.to_thread(wait_orind_socket, self._socket_path)
+            except OrindSupervisorError as exc:
+                raise OrinUnavailable(str(exc)) from exc
         try:
             self._reader, self._writer = await asyncio.wait_for(
                 asyncio.open_unix_connection(path=str(self._socket_path)),
@@ -566,12 +577,27 @@ class OrinLeaseClientAdapter:
         finally:
             self._loop.close()
 
+    def _wait_owned_orind(self) -> None:
+        from js.orin.supervisor import (
+            OrindSupervisorError,
+            orind_owned_starting,
+            wait_orind_socket,
+        )
+
+        if not orind_owned_starting(self._socket_path):
+            return
+        try:
+            wait_orind_socket(self._socket_path)
+        except OrindSupervisorError as exc:
+            raise OrinUnavailable(str(exc)) from exc
+
     def _call(
         self,
         coro_factory: Callable[[], Coroutine[Any, Any, _T]],
         *,
         timeout: float = REQUEST_TIMEOUT_S,
     ) -> _T:
+        self._wait_owned_orind()
         loop = self._ensure_loop()
         future = asyncio.run_coroutine_threadsafe(coro_factory(), loop)
         try:
@@ -1011,9 +1037,7 @@ class OrinLeaseClientAdapter:
             workspace_root=root_nfc,
         )
         directory_handles = tuple(
-            handle
-            for handle in intent.allowed_resource_handles
-            if handle.startswith("dirh:")
+            handle for handle in intent.allowed_resource_handles if handle.startswith("dirh:")
         )
         if directory_handles != (expected_handle_id,):
             raise LeaseDenied("signed intent does not contain the exact AppShell file binding")
@@ -1064,6 +1088,66 @@ class OrinLeaseClientAdapter:
             self._file_bindings[key] = binding
             self._pending_file_approvals.pop(key, None)
         return {"ok": True, "directory_handle_id": expected_handle_id}
+
+    def register_desktop_app_binding(
+        self,
+        intent_data: dict[str, Any],
+        *,
+        appshell_owner: str,
+        appshell_session: str,
+        appshell_epoch: int,
+        bundle_id: str,
+    ) -> dict[str, Any]:
+        """Register one AppShell-confirmed ApplicationHandle for a task."""
+
+        from js.orin.handles import (
+            AppShellDesktopAppBindingV1,
+            canonical_bundle_id,
+            derive_appshell_application_handle_id,
+        )
+        from js.orin.intent import intent_from_dict
+
+        self._require_stage_b()
+        intent = intent_from_dict(intent_data, verify_signature=True)
+        if intent.profile not in {"personal", "work"}:
+            raise LeaseDenied("Orin desktop app binding requires a Personal or Work intent")
+        if "desktop.observe" not in intent.allowed_effect_classes:
+            raise LeaseDenied("Orin desktop app binding intent does not authorize observe")
+        if "desktop.action" not in intent.allowed_effect_classes:
+            raise LeaseDenied("Orin desktop app binding intent does not authorize action")
+        if intent.expires_at_ms <= self._now():
+            raise LeaseDenied("Orin desktop app binding intent is expired")
+        expected_bundle = canonical_bundle_id(bundle_id)
+        expected_handle_id = derive_appshell_application_handle_id(
+            installation_owner_hash=intent.owner_key_hash,
+            product_id=intent.product_id,
+            task_id=intent.task_id,
+            profile=intent.profile,
+            principal_owner=appshell_owner,
+            principal_session=appshell_session,
+            principal_epoch=appshell_epoch,
+            bundle_id=expected_bundle,
+        )
+        if expected_handle_id not in intent.allowed_resource_handles:
+            raise LeaseDenied("signed intent does not contain the exact ApplicationHandle")
+        grant = AppShellDesktopAppBindingV1(
+            principal_owner=appshell_owner,
+            principal_epoch=appshell_epoch,
+            product_id=intent.product_id,
+            bundle_id=expected_bundle,
+        ).to_dict()
+        response = self._call(
+            lambda: self._request(
+                "intent",
+                op="register",
+                intent=intent.to_dict(),
+                grant=grant,
+                session_id=appshell_session,
+            )
+        )
+        if response.get("ok") is not True:
+            raise OrinUnavailable("orind returned an invalid AppShell desktop app binding ack")
+        return {"ok": True, "application_handle_id": expected_handle_id}
 
     def run_file_change(self, change: dict[str, Any]) -> dict[str, Any]:
         """Commit one exact workspace change through the strict draft chain."""
@@ -1206,9 +1290,7 @@ class OrinLeaseClientAdapter:
             draft.to_dict(),
             context_taint=int(taint_fields.get("context_taint", 0)),
             arg_taint=arg_taint,
-            clearance=int(
-                taint_fields.get("clearance", orin_taint.CLEARANCE_INTERNAL)
-            ),
+            clearance=int(taint_fields.get("clearance", orin_taint.CLEARANCE_INTERNAL)),
         )
         if (
             proposed.get("ok") is not True
@@ -1222,9 +1304,7 @@ class OrinLeaseClientAdapter:
         if binding.profile == "personal":
             raw_witness = preflight.get("witness")
             try:
-                witness = witness_from_dict(
-                    raw_witness if isinstance(raw_witness, dict) else {}
-                )
+                witness = witness_from_dict(raw_witness if isinstance(raw_witness, dict) else {})
             except ProtocolError as exc:
                 raise OrinUnavailable("orind returned an invalid File Cell preflight") from exc
             effect_hash = canonical_effect_hash_of(draft)
@@ -1418,11 +1498,19 @@ class OrinLeaseClientAdapter:
                 self._pending_file_approvals.pop(key, None)
         return {key: result[key] for key in _FILE_RESULT_FIELDS if key in result}
 
-    def register_intent(self, intent_data: dict[str, Any]) -> dict[str, Any]:
+    def register_intent(
+        self,
+        intent_data: dict[str, Any],
+        *,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         """Submit a signed IntentEnvelope for verification + registration."""
 
         self._require_stage_b()
-        return self._call(lambda: self._request("intent", op="register", intent=intent_data))
+        fields: dict[str, Any] = {"op": "register", "intent": intent_data}
+        if session_id is not None:
+            fields["session_id"] = session_id
+        return self._call(lambda: self._request("intent", **fields))
 
     def active_intent(self, task_id: str) -> dict[str, Any] | None:
         """Return the currently trusted intent for a task, or ``None``."""
@@ -1468,6 +1556,8 @@ class OrinLeaseClientAdapter:
         self,
         draft_id: str,
         executor_id: str | None = None,
+        *,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """Request a read-only Cell preflight for a registered draft.
 
@@ -1482,9 +1572,16 @@ class OrinLeaseClientAdapter:
         fields: dict[str, Any] = {"draft_id": draft_id}
         if executor_id is not None:
             fields["executor_id"] = executor_id
+        if session_id is not None:
+            fields["session_id"] = session_id
         return self._call(lambda: self._request("preflight", **fields))
 
-    def consume_draft(self, draft_id: str) -> dict[str, Any]:
+    def consume_draft(
+        self,
+        draft_id: str,
+        *,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         """Commit a registered draft through its unique ``draft_id`` path.
 
         No effect bytes, handles, clearance, or capability can be supplied
@@ -1495,13 +1592,13 @@ class OrinLeaseClientAdapter:
         self._require_stage_b()
         if not draft_id.startswith("draft:") or len(draft_id) > 256:
             raise ValueError("draft_id must be a bounded 'draft:' id")
-        response = self._call(
-            lambda: self._request(
-                "consume",
-                mode="cell",
-                payload={"draft_id": draft_id},
-            )
-        )
+        fields: dict[str, Any] = {
+            "mode": "cell",
+            "payload": {"draft_id": draft_id},
+        }
+        if session_id is not None:
+            fields["session_id"] = session_id
+        response = self._call(lambda: self._request("consume", **fields))
         return dict(response.get("cell") or {})
 
     def observe_desktop(
@@ -1574,9 +1671,7 @@ class OrinLeaseClientAdapter:
                 effect_type="desktop.observe",
             )
         except ProtocolError as exc:
-            raise OrinUnavailable(
-                "orind returned an invalid Desktop Cell projection"
-            ) from exc
+            raise OrinUnavailable("orind returned an invalid Desktop Cell projection") from exc
         handle_id = raw_result.get("desktop_target_handle_id")
         if (
             witness.draft_id != draft.draft_id
@@ -1586,11 +1681,7 @@ class OrinLeaseClientAdapter:
             or not handle_id.startswith("desktop:")
         ):
             raise OrinUnavailable("Desktop Cell target binding is invalid")
-        result = {
-            key: raw_result[key]
-            for key in _DESKTOP_OBSERVE_FIELDS
-            if key in raw_result
-        }
+        result = {key: raw_result[key] for key in _DESKTOP_OBSERVE_FIELDS if key in raw_result}
         result["status"] = "OBSERVED"
         result["witness_id"] = witness.witness_id
         result["target_version"] = witness.target_version
@@ -1659,16 +1750,109 @@ class OrinLeaseClientAdapter:
             )
         except ProtocolError as exc:
             raise OrinUnavailable("orind returned an invalid Desktop Cell result") from exc
-        return {
-            key: result[key]
-            for key in _DESKTOP_ACTION_FIELDS
-            if key in result
-        }
+        return {key: result[key] for key in _DESKTOP_ACTION_FIELDS if key in result}
+
+    def read_memory(
+        self,
+        task_id: str,
+        *,
+        owner_key_hash: str,
+        profile: str,
+        session_id: str,
+        key: str,
+        clearance: int = 1,
+    ) -> dict[str, Any]:
+        """Read one owner-scoped Memory Cell record through draft/preflight."""
+
+        from js.orin.draft import EffectDraft
+
+        self._require_stage_b()
+        draft = EffectDraft(
+            draft_id=f"draft:{secrets.token_hex(16)}",
+            task_id=task_id,
+            effect_type="memory.read",
+            arguments={
+                "owner_key_hash": owner_key_hash,
+                "profile": profile,
+                "session_id": session_id,
+                "key": key,
+            },
+            declared_expectation={
+                "external_visibility": "private",
+                "reversibility": "reversible_until_stage",
+            },
+        )
+        proposed = self.submit_draft(draft.to_dict(), clearance=clearance)
+        if proposed.get("ok") is not True or proposed.get("verdict") != "allow_read":
+            raise LeaseDenied("Orin Memory Cell read was not authorized")
+        preflight = self.preflight_draft(draft.draft_id, "cell.memory", session_id=session_id)
+        if preflight.get("ok") is not True:
+            raise LeaseDenied("Orin Memory Cell read failed")
+        result = preflight.get("result")
+        if not isinstance(result, dict):
+            raise OrinUnavailable("orind returned an invalid Memory Cell projection")
+        return result
+
+    def write_memory(
+        self,
+        task_id: str,
+        *,
+        owner_key_hash: str,
+        profile: str,
+        session_id: str,
+        key: str,
+        value: str,
+        source: str,
+        taint: int = 0,
+        clearance: int = 1,
+        effect_type: str = "memory.write",
+    ) -> dict[str, Any]:
+        """Commit one Memory Cell write or mutate through draft/preflight/consume."""
+
+        from js.orin.draft import EffectDraft
+
+        self._require_stage_b()
+        if effect_type not in {"memory.write", "memory.mutate"}:
+            raise ValueError("effect_type must be memory.write or memory.mutate")
+        draft = EffectDraft(
+            draft_id=f"draft:{secrets.token_hex(16)}",
+            task_id=task_id,
+            effect_type=effect_type,
+            arguments={
+                "owner_key_hash": owner_key_hash,
+                "profile": profile,
+                "session_id": session_id,
+                "key": key,
+                "value": value,
+                "source": source,
+                "taint": taint,
+                "clearance": clearance,
+            },
+            declared_expectation={
+                "external_visibility": "private",
+                "reversibility": "irreversible_after_provider_accept",
+            },
+        )
+        proposed = self.submit_draft(draft.to_dict(), clearance=clearance)
+        if proposed.get("ok") is not True:
+            raise LeaseDenied("Orin Memory Cell write was not accepted")
+        preflight = self.preflight_draft(draft.draft_id, "cell.memory", session_id=session_id)
+        if preflight.get("ok") is not True:
+            raise LeaseDenied("Orin Memory Cell write preflight failed")
+        result = self.consume_draft(draft.draft_id, session_id=session_id)
+        if type(result) is not dict or result.get("status") != "COMMITTED":
+            raise LeaseDenied("Orin Memory Cell write was not committed")
+        return result
 
     def desktop_cell_backend(self, task_id: str) -> OrinDesktopCellBackend:
         """Build an explicit harness-only DesktopTools backend."""
 
         return OrinDesktopCellBackend(self, task_id=task_id)
+
+    def memory_cell_backend(self, task_id: str) -> OrinMemoryCellBackend:
+        """Build the Memory Cell adapter used when enforce ∧ cell_memory."""
+
+        return OrinMemoryCellBackend(self, task_id=task_id)
 
     def seed_handles(self, kind: str | None = None) -> list[dict[str, Any]]:
         """List pre-registered candidate objects Echo may select (M§3.2-2)."""
@@ -1768,7 +1952,7 @@ class OrinLeaseClientAdapter:
         try:
             self._call(
                 lambda: self._request("heartbeat"),
-                timeout=HEARTBEAT_INTERVAL_S * 2,
+                timeout=REQUEST_TIMEOUT_S,
             )
             return True
         except (OrinUnavailable, concurrent.futures.TimeoutError):
@@ -1862,8 +2046,7 @@ class OrinDesktopCellBackend:
         if exact_arguments is None or set(arguments) != exact_arguments:
             raise LeaseDenied("Desktop Cell tool arguments are invalid")
         observe = tool in self._OBSERVE_TOOLS or (
-            tool in {"desktop_app", "desktop_window"}
-            and arguments.get("action") == "list"
+            tool in {"desktop_app", "desktop_window"} and arguments.get("action") == "list"
         )
         if observe:
             if tool == "desktop_app":
@@ -1898,9 +2081,12 @@ class OrinDesktopCellBackend:
             }
 
         action = self._action_from_tool(tool, arguments)
+        from js.orin.desktop import desktop_target_selector_for_action
+
+        target_selector = desktop_target_selector_for_action(action)
         observation = self._authority.observe_desktop(
             self._task_id,
-            {"kind": "screen"},
+            target_selector,
             request={
                 "tool": "desktop_screenshot",
                 "arguments": {
@@ -1923,8 +2109,7 @@ class OrinDesktopCellBackend:
         projection = {
             key: value
             for key, value in committed.items()
-            if key in _DESKTOP_ACTION_FIELDS
-            and key not in {"status", "commit_guarantee"}
+            if key in _DESKTOP_ACTION_FIELDS and key not in {"status", "commit_guarantee"}
         }
         return {
             "status": "COMMITTED",
@@ -2001,11 +2186,66 @@ class OrinDesktopCellBackend:
         raise LeaseDenied("Desktop Cell tool is not part of the C2 harness vocabulary")
 
 
+class OrinMemoryCellBackend:
+    """Callable adapter for Memory Cell reads/writes. No ambient SQLite."""
+
+    def __init__(self, authority: OrinLeaseClientAdapter, *, task_id: str) -> None:
+        if type(task_id) is not str or not task_id.startswith("task:"):
+            raise ValueError("Memory Cell backend requires a task id")
+        self._authority = authority
+        self._task_id = task_id
+
+    def write(
+        self,
+        *,
+        owner_key_hash: str,
+        profile: str,
+        session_id: str,
+        key: str,
+        value: str,
+        source: str,
+        taint: int = 0,
+        clearance: int = 1,
+        effect_type: str = "memory.write",
+    ) -> dict[str, Any]:
+        return self._authority.write_memory(
+            self._task_id,
+            owner_key_hash=owner_key_hash,
+            profile=profile,
+            session_id=session_id,
+            key=key,
+            value=value,
+            source=source,
+            taint=taint,
+            clearance=clearance,
+            effect_type=effect_type,
+        )
+
+    def read(
+        self,
+        *,
+        owner_key_hash: str,
+        profile: str,
+        session_id: str,
+        key: str,
+        clearance: int = 1,
+    ) -> dict[str, Any]:
+        return self._authority.read_memory(
+            self._task_id,
+            owner_key_hash=owner_key_hash,
+            profile=profile,
+            session_id=session_id,
+            key=key,
+            clearance=clearance,
+        )
+
+
 __all__ = [
     "CODE_TO_EXC",
     "EchoContextPayload",
     "OrinDesktopCellBackend",
     "OrinLeaseClientAdapter",
+    "OrinMemoryCellBackend",
     "OrinRateLimited",
     "OrinUnavailable",
 ]

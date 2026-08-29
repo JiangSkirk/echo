@@ -135,6 +135,9 @@ class EchoHealth:
     active_session_partition_count: int = 0
     retired_session_partition_count: int = 0
     partition_retention_error: str | None = None
+    journal_tip: str = ""
+    lease_tip: str = ""
+    lease_compact_skip_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -193,9 +196,7 @@ class ArtifactVisibilityQueryV1:
             not isinstance(self.session, str) or not self.session.strip()
         ):
             raise ValueError("artifact visibility session is invalid")
-        if self.run is not None and (
-            not isinstance(self.run, str) or not self.run.strip()
-        ):
+        if self.run is not None and (not isinstance(self.run, str) or not self.run.strip()):
             raise ValueError("artifact visibility run is invalid")
 
 
@@ -402,10 +403,13 @@ class EchoSafetyService:
         session_id: str,
     ) -> Path:
         """Return the physically isolated runtime journal for one exact scope."""
-        with self._state_lock, self._partition_operation_guard(
-            tenant_id=tenant_id,
-            product_id=product_id,
-            session_id=session_id,
+        with (
+            self._state_lock,
+            self._partition_operation_guard(
+                tenant_id=tenant_id,
+                product_id=product_id,
+                session_id=session_id,
+            ),
         ):
             return self._partition_state_locked(
                 tenant_id=tenant_id,
@@ -421,10 +425,13 @@ class EchoSafetyService:
         session_id: str,
     ) -> bytes:
         """Return the per-scope journal MAC key without exposing raw identifiers in paths."""
-        with self._state_lock, self._partition_operation_guard(
-            tenant_id=tenant_id,
-            product_id=product_id,
-            session_id=session_id,
+        with (
+            self._state_lock,
+            self._partition_operation_guard(
+                tenant_id=tenant_id,
+                product_id=product_id,
+                session_id=session_id,
+            ),
         ):
             return self._partition_state_locked(
                 tenant_id=tenant_id,
@@ -952,6 +959,21 @@ class EchoSafetyService:
             if self._tenant_scan_truncated
             else None
         )
+        journal_tip = ""
+        for state, report in reports:
+            if report.ok:
+                journal_tip = str(state.journal._local_tip_hash())
+                break
+        try:
+            from js.utils.metrics import get_metrics
+
+            metrics = get_metrics()
+            metrics.echo_outbox_pending.set(pending_effect_count)
+            metrics.echo_outbox_claimed.set(claimed_effect_count)
+            metrics.echo_outbox_manual_review.set(manual_review_effect_count)
+            metrics.journal_tip_present.set(1 if journal_tip else 0)
+        except Exception:
+            pass
         return EchoHealth(
             mode="on",
             ok=(
@@ -987,6 +1009,7 @@ class EchoSafetyService:
             active_session_partition_count=active_session_partition_count,
             retired_session_partition_count=retired_session_partition_count,
             partition_retention_error=retention_error,
+            journal_tip=journal_tip,
         )
 
     def record_chat_turn(
@@ -1044,10 +1067,13 @@ class EchoSafetyService:
             lease_id=lease_id,
             replay_class=replay_class,
         )
-        with self._state_lock, self._partition_operation_guard(
-            tenant_id=tenant_id,
-            product_id=product_id,
-            session_id=session_id,
+        with (
+            self._state_lock,
+            self._partition_operation_guard(
+                tenant_id=tenant_id,
+                product_id=product_id,
+                session_id=session_id,
+            ),
         ):
             tenant_state = self._partition_state_locked(
                 tenant_id=tenant_id,
@@ -1268,10 +1294,13 @@ class EchoSafetyService:
         """
         if event_type not in self._APPROVAL_EVENT_TYPES:
             raise ValueError(f"unknown approval event type: {event_type}")
-        with self._state_lock, self._partition_operation_guard(
-            tenant_id=tenant_id,
-            product_id=product_id,
-            session_id=session_id,
+        with (
+            self._state_lock,
+            self._partition_operation_guard(
+                tenant_id=tenant_id,
+                product_id=product_id,
+                session_id=session_id,
+            ),
         ):
             tenant_state = self._partition_state_locked(
                 tenant_id=tenant_id,
@@ -1330,9 +1359,7 @@ class EchoSafetyService:
         The binding hash serves as ``args_hash``.
         """
         action_kind = f"connector.{connector_type}.{operation}"
-        replay_class: ReplayClass = (
-            "idempotent" if operation == "read" else "non_idempotent"
-        )
+        replay_class: ReplayClass = "idempotent" if operation == "read" else "non_idempotent"
         tool_ctx = self.begin_tool_effect(
             tenant_id=tenant_id,
             product_id=product_id,
@@ -1362,9 +1389,7 @@ class EchoSafetyService:
             vault_ref_hash=vault_ref_hash,
             approval_id=approval_id,
             lease_id=lease_id,
-            replay_class=cast(
-                "Literal['idempotent', 'non_idempotent']", replay_class
-            ),
+            replay_class=cast("Literal['idempotent', 'non_idempotent']", replay_class),
             effect_id=tool_ctx.effect_id,
             outbox_id=tool_ctx.outbox_id,
             record_start=tool_ctx.record_start,
@@ -1412,10 +1437,13 @@ class EchoSafetyService:
         reason: str,
     ) -> None:
         """Mark a connector effect as manual_review (unknown outcome)."""
-        with self._state_lock, self._partition_operation_guard(
-            tenant_id=context.tenant_id,
-            product_id=context.product_id,
-            session_id=context.session_id,
+        with (
+            self._state_lock,
+            self._partition_operation_guard(
+                tenant_id=context.tenant_id,
+                product_id=context.product_id,
+                session_id=context.session_id,
+            ),
         ):
             tenant_state = self._partition_state_locked(
                 tenant_id=context.tenant_id,
@@ -1500,10 +1528,13 @@ class EchoSafetyService:
             arguments_hash=arguments_hash,
             approval_mode=approval_mode,
         )
-        with self._state_lock, self._partition_operation_guard(
-            tenant_id=tenant_id,
-            product_id=product_id,
-            session_id=session_id,
+        with (
+            self._state_lock,
+            self._partition_operation_guard(
+                tenant_id=tenant_id,
+                product_id=product_id,
+                session_id=session_id,
+            ),
         ):
             tenant_state = self._partition_state_locked(
                 tenant_id=tenant_id,
@@ -1634,10 +1665,13 @@ class EchoSafetyService:
         local mirror (e.g. mirror truncation).
         """
 
-        with self._state_lock, self._partition_operation_guard(
-            tenant_id=tenant_id,
-            product_id=product_id,
-            session_id=session_id,
+        with (
+            self._state_lock,
+            self._partition_operation_guard(
+                tenant_id=tenant_id,
+                product_id=product_id,
+                session_id=session_id,
+            ),
         ):
             tenant_state = self._partition_state_locked(
                 tenant_id=tenant_id,
@@ -1686,9 +1720,7 @@ class EchoSafetyService:
         )
         return (
             "sha256:"
-            + _hl.sha256(
-                b"js-agent:approval-binding:v1\0" + payload.encode("utf-8")
-            ).hexdigest()
+            + _hl.sha256(b"js-agent:approval-binding:v1\0" + payload.encode("utf-8")).hexdigest()
         )
 
     # ------------------------------------------------------------------
@@ -1776,10 +1808,13 @@ class EchoSafetyService:
         to detect valid-prefix rollback of the lease ledger.
         """
 
-        with self._state_lock, self._partition_operation_guard(
-            tenant_id=tenant_id,
-            product_id=product_id,
-            session_id=session_id,
+        with (
+            self._state_lock,
+            self._partition_operation_guard(
+                tenant_id=tenant_id,
+                product_id=product_id,
+                session_id=session_id,
+            ),
         ):
             tenant_state = self._partition_state_locked(
                 tenant_id=tenant_id,
@@ -1820,10 +1855,13 @@ class EchoSafetyService:
         the existing record hash without appending a duplicate.
         """
 
-        with self._state_lock, self._partition_operation_guard(
-            tenant_id=tenant_id,
-            product_id=product_id,
-            session_id=session_id,
+        with (
+            self._state_lock,
+            self._partition_operation_guard(
+                tenant_id=tenant_id,
+                product_id=product_id,
+                session_id=session_id,
+            ),
         ):
             tenant_state = self._partition_state_locked(
                 tenant_id=tenant_id,
@@ -1918,10 +1956,13 @@ class EchoSafetyService:
         """
         if event_type not in self._DAEMON_EVENT_TYPES:
             raise ValueError(f"unknown daemon event type: {event_type}")
-        with self._state_lock, self._partition_operation_guard(
-            tenant_id=tenant_id,
-            product_id=product_id,
-            session_id=session_id,
+        with (
+            self._state_lock,
+            self._partition_operation_guard(
+                tenant_id=tenant_id,
+                product_id=product_id,
+                session_id=session_id,
+            ),
         ):
             tenant_state = self._partition_state_locked(
                 tenant_id=tenant_id,
@@ -2129,10 +2170,13 @@ class EchoSafetyService:
         if (metadata_product is None) != (metadata_session is None):
             raise ValueError("Echo model partition requires both product_id and session_id")
         if metadata_product is not None and metadata_session is not None:
-            with self._state_lock, self._partition_operation_guard(
-                tenant_id=tenant_id,
-                product_id=str(metadata_product),
-                session_id=str(metadata_session),
+            with (
+                self._state_lock,
+                self._partition_operation_guard(
+                    tenant_id=tenant_id,
+                    product_id=str(metadata_product),
+                    session_id=str(metadata_session),
+                ),
             ):
                 return self._begin_chat_turn_locked(
                     tenant_id=tenant_id,
@@ -2416,10 +2460,13 @@ class EchoSafetyService:
         if not resolved_provider_id:
             raise ValueError("model provider_id must not be empty")
         normalized_attachments = _normalize_attachment_manifest(attachments_manifest)
-        with self._state_lock, self._partition_operation_guard(
-            tenant_id=tenant_id,
-            product_id=resolved_product_id,
-            session_id=resolved_session_id,
+        with (
+            self._state_lock,
+            self._partition_operation_guard(
+                tenant_id=tenant_id,
+                product_id=resolved_product_id,
+                session_id=resolved_session_id,
+            ),
         ):
             return self._authorize_model_call_locked(
                 tenant_id=tenant_id,
@@ -2739,8 +2786,7 @@ class EchoSafetyService:
                 )
                 if not archive_report.ok:
                     raise ValueError(
-                        "invalid required journal archive: "
-                        + ",".join(archive_report.errors)
+                        "invalid required journal archive: " + ",".join(archive_report.errors)
                     )
                 self._recover_abandoned_claims(tenant_state, refresh=False)
                 bindings = _verified_effect_bindings(tenant_state.journal.records)
@@ -2794,9 +2840,7 @@ class EchoSafetyService:
                         or bindings[row.seal.effect_id].product_id == product_id
                     )
                 )
-            return tuple(
-                sorted(reviews, key=lambda review: (review.effect_id, review.outbox_id))
-            )
+            return tuple(sorted(reviews, key=lambda review: (review.effect_id, review.outbox_id)))
 
     def project_verified_artifacts(
         self,
@@ -2861,11 +2905,9 @@ class EchoSafetyService:
                     refs = tuple(
                         ref
                         for ref in active_receipt.artifact_refs
-                        if ref.mode is mode and ref.workspace == workspace
-                        and (
-                            visibility is None
-                            or artifact_ref_visible(ref, visibility)
-                        )
+                        if ref.mode is mode
+                        and ref.workspace == workspace
+                        and (visibility is None or artifact_ref_visible(ref, visibility))
                     )
                     if not refs:
                         continue
@@ -3014,9 +3056,7 @@ class EchoSafetyService:
             owner_partition=owner_slug,
             max_receipts=self._ledger_config.max_retired_session_receipts_per_owner,
             max_artifact_refs=self._ledger_config.max_retired_artifact_refs_per_owner,
-            max_artifact_bytes=(
-                self._ledger_config.max_retired_artifact_bytes_per_owner
-            ),
+            max_artifact_bytes=(self._ledger_config.max_retired_artifact_bytes_per_owner),
         )
 
     def _resolve_manual_review_locked(
@@ -3151,9 +3191,7 @@ class EchoSafetyService:
         cache_key = f"partitions/{product_slug}/{owner_slug}/{session_slug}"
         state = self._tenant_states.get(cache_key)
         if state is None:
-            partition_root = (
-                self._root / "partitions" / product_slug / owner_slug / session_slug
-            )
+            partition_root = self._root / "partitions" / product_slug / owner_slug / session_slug
             _ensure_private_directory(partition_root)
             try:
                 state = _load_journal_state(partition_root)
@@ -3364,9 +3402,7 @@ class EchoSafetyService:
                 try:
                     remaining = self._retire_owner_partitions_locked(
                         owner_root,
-                        target_count=(
-                            self._ledger_config.max_session_partitions_per_owner - 1
-                        ),
+                        target_count=(self._ledger_config.max_session_partitions_per_owner - 1),
                         protected_session_slug=session_slug,
                     )
                 except (OSError, ValueError, PartitionRetentionError) as exc:
@@ -3444,9 +3480,7 @@ class EchoSafetyService:
             owner_partition=owner_slug,
             max_receipts=self._ledger_config.max_retired_session_receipts_per_owner,
             max_artifact_refs=self._ledger_config.max_retired_artifact_refs_per_owner,
-            max_artifact_bytes=(
-                self._ledger_config.max_retired_artifact_bytes_per_owner
-            ),
+            max_artifact_bytes=(self._ledger_config.max_retired_artifact_bytes_per_owner),
         )
         prior_session_receipt = next(
             (
@@ -3488,13 +3522,9 @@ class EchoSafetyService:
                         retiring_root = owner_root / ".retiring"
                         if retiring_root.exists() or retiring_root.is_symlink():
                             raise
-                        self._partition_retention_error = (
-                            f"{exc.__class__.__name__}: {exc}"
-                        )
+                        self._partition_retention_error = f"{exc.__class__.__name__}: {exc}"
         except (OSError, ValueError, PartitionRetentionError) as exc:
-            raise EchoUnavailableError(
-                f"Echo partition retirement recovery failed: {exc}"
-            ) from exc
+            raise EchoUnavailableError(f"Echo partition retirement recovery failed: {exc}") from exc
 
     def _retire_owner_partitions_locked(
         self,
@@ -3513,11 +3543,7 @@ class EchoSafetyService:
         session_roots = _session_partition_roots(owner_root)
         while len(session_roots) > target_count:
             candidates = sorted(
-                (
-                    root
-                    for root in session_roots
-                    if root.name != protected_session_slug
-                ),
+                (root for root in session_roots if root.name != protected_session_slug),
                 key=_partition_retirement_order,
             )
             retired = False
@@ -3578,15 +3604,9 @@ class EchoSafetyService:
                 mac_key=retention_key,
                 product_partition=product_slug,
                 owner_partition=owner_slug,
-                max_receipts=(
-                    self._ledger_config.max_retired_session_receipts_per_owner
-                ),
-                max_artifact_refs=(
-                    self._ledger_config.max_retired_artifact_refs_per_owner
-                ),
-                max_artifact_bytes=(
-                    self._ledger_config.max_retired_artifact_bytes_per_owner
-                ),
+                max_receipts=(self._ledger_config.max_retired_session_receipts_per_owner),
+                max_artifact_refs=(self._ledger_config.max_retired_artifact_refs_per_owner),
+                max_artifact_bytes=(self._ledger_config.max_retired_artifact_bytes_per_owner),
                 receipt=RetentionReceiptInput(
                     session_partition=session_root.name,
                     source_files_hash=evidence.source_files_hash,
@@ -3613,9 +3633,7 @@ class EchoSafetyService:
             raise
         except (OSError, ValueError, PartitionRetentionError) as exc:
             self._partition_retention_error = f"{exc.__class__.__name__}: {exc}"
-            raise PartitionRetentionError(
-                f"session partition retirement failed: {exc}"
-            ) from exc
+            raise PartitionRetentionError(f"session partition retirement failed: {exc}") from exc
 
     def _finish_interrupted_retirement_locked(self, owner_root: Path) -> None:
         retiring_root = owner_root / ".retiring"
@@ -3635,9 +3653,7 @@ class EchoSafetyService:
             owner_partition=owner_root.name,
             max_receipts=self._ledger_config.max_retired_session_receipts_per_owner,
             max_artifact_refs=self._ledger_config.max_retired_artifact_refs_per_owner,
-            max_artifact_bytes=(
-                self._ledger_config.max_retired_artifact_bytes_per_owner
-            ),
+            max_artifact_bytes=(self._ledger_config.max_retired_artifact_bytes_per_owner),
         )
         pending = checkpoint.get("pending_retirement")
         if pending is not None:
@@ -3658,9 +3674,7 @@ class EchoSafetyService:
                 _fsync_directory(owner_root)
             if retiring_root.exists():
                 if not retiring_root.is_dir():
-                    raise PartitionRetentionError(
-                        "retiring partition is not a private directory"
-                    )
+                    raise PartitionRetentionError("retiring partition is not a private directory")
                 evidence = _partition_source_evidence(retiring_root)
                 if evidence.source_files_hash != pending["source_files_hash"]:
                     raise PartitionRetentionError(
@@ -3673,15 +3687,9 @@ class EchoSafetyService:
                 mac_key=retention_key,
                 product_partition=owner_root.parent.name,
                 owner_partition=owner_root.name,
-                max_receipts=(
-                    self._ledger_config.max_retired_session_receipts_per_owner
-                ),
-                max_artifact_refs=(
-                    self._ledger_config.max_retired_artifact_refs_per_owner
-                ),
-                max_artifact_bytes=(
-                    self._ledger_config.max_retired_artifact_bytes_per_owner
-                ),
+                max_receipts=(self._ledger_config.max_retired_session_receipts_per_owner),
+                max_artifact_refs=(self._ledger_config.max_retired_artifact_refs_per_owner),
+                max_artifact_bytes=(self._ledger_config.max_retired_artifact_bytes_per_owner),
                 session_partition=pending["session_partition"],
                 source_files_hash=pending["source_files_hash"],
             )
@@ -3710,9 +3718,7 @@ class EchoSafetyService:
             for owner_root in sorted(partitions_root.glob("*/*")):
                 if owner_root.is_symlink() or not owner_root.is_dir():
                     raise PartitionRetentionError("partition owner root is invalid")
-                if (owner_root / ".retiring").exists() or (
-                    owner_root / ".retiring"
-                ).is_symlink():
+                if (owner_root / ".retiring").exists() or (owner_root / ".retiring").is_symlink():
                     raise PartitionRetentionError("partition retirement is incomplete")
                 owner_sessions = _session_partition_roots(owner_root)
                 active_count += len(owner_sessions)
@@ -3727,15 +3733,9 @@ class EchoSafetyService:
                     mac_key=retention_key,
                     product_partition=owner_root.parent.name,
                     owner_partition=owner_root.name,
-                    max_receipts=(
-                        self._ledger_config.max_retired_session_receipts_per_owner
-                    ),
-                    max_artifact_refs=(
-                        self._ledger_config.max_retired_artifact_refs_per_owner
-                    ),
-                    max_artifact_bytes=(
-                        self._ledger_config.max_retired_artifact_bytes_per_owner
-                    ),
+                    max_receipts=(self._ledger_config.max_retired_session_receipts_per_owner),
+                    max_artifact_refs=(self._ledger_config.max_retired_artifact_refs_per_owner),
+                    max_artifact_bytes=(self._ledger_config.max_retired_artifact_bytes_per_owner),
                 )
                 if checkpoint.get("pending_retirement") is not None:
                     raise PartitionRetentionError("partition retirement is incomplete")
@@ -3891,7 +3891,7 @@ def _load_journal_state(root: Path) -> _TenantJournalState:
     journal_path = root / "chat.jsonl"
     journal_key = _load_or_create_key(root / "journal.key")
     permit_key = _load_or_create_key(root / "permit.key")
-    journal = FileEchoLedger(journal_path, mac_key=journal_key)
+    journal = FileEchoLedger(journal_path, mac_key=journal_key, local_tip_seal=True)
     effects = _replay_effects(
         journal.records,
         completed_effect_lookup=journal.contains_archived_effect,
@@ -3951,9 +3951,7 @@ def _validate_artifact_refs_for_context(
         raise ValueError("artifact refs count limit exceeded")
     if any(type(ref) is not ArtifactRefV1 for ref in artifact_refs):
         raise TypeError("artifact_refs must contain exact ArtifactRefV1 values")
-    serialized_bytes = len(
-        canonical_json([ref.to_dict() for ref in artifact_refs]).encode("utf-8")
-    )
+    serialized_bytes = len(canonical_json([ref.to_dict() for ref in artifact_refs]).encode("utf-8"))
     if serialized_bytes > _MAX_TOOL_ARTIFACT_BYTES:
         raise ValueError("artifact refs byte limit exceeded")
     binding = _VerifiedEffectBinding(
@@ -4208,9 +4206,7 @@ def _replay_effects(
                 raw_artifact_refs = payload.get("artifact_refs", [])
                 if not isinstance(raw_artifact_refs, list):
                     raise ValueError("receipt artifact_refs must be a list")
-                artifact_refs = tuple(
-                    ArtifactRefV1.from_dict(item) for item in raw_artifact_refs
-                )
+                artifact_refs = tuple(ArtifactRefV1.from_dict(item) for item in raw_artifact_refs)
                 receipt_status = _receipt_status(str(payload.get("status", "")))
                 if artifact_refs and receipt_status != "ok":
                     raise ValueError("failed receipt cannot contain artifact refs")
@@ -4492,12 +4488,9 @@ def _scope_partition_slugs(
         if not value:
             raise ValueError(f"Echo partition {name}_id must not be empty")
     return (
-        "product_"
-        + stable_hash({"product_id": values["product"]}).removeprefix("sha256:")[:32],
-        "owner_"
-        + stable_hash({"owner_id": values["owner"]}).removeprefix("sha256:")[:32],
-        "session_"
-        + stable_hash({"session_id": values["session"]}).removeprefix("sha256:")[:32],
+        "product_" + stable_hash({"product_id": values["product"]}).removeprefix("sha256:")[:32],
+        "owner_" + stable_hash({"owner_id": values["owner"]}).removeprefix("sha256:")[:32],
+        "session_" + stable_hash({"session_id": values["session"]}).removeprefix("sha256:")[:32],
     )
 
 
@@ -4537,9 +4530,7 @@ def _partition_source_evidence(root: Path) -> _PartitionSourceEvidence:
                 )
             continue
         if not stat.S_ISREG(metadata.st_mode) or not _is_retirable_partition_file(relative):
-            raise PartitionRetentionError(
-                f"session partition contains unexpected file: {relative}"
-            )
+            raise PartitionRetentionError(f"session partition contains unexpected file: {relative}")
         digest, size = _hash_regular_file_no_follow(candidate)
         entries.append(
             {
@@ -4630,6 +4621,7 @@ def _is_retirable_partition_file(relative: Path) -> bool:
         "chat.jsonl.archive.sqlite3-wal",
         "chat.jsonl.archive.sqlite3-shm",
         "chat.jsonl.archive.sqlite3-journal",
+        "echo_tip_seal.json",
     }:
         return True
     return bool(re.fullmatch(r"chat\.jsonl\.archive\.[0-9]+\.gz", value))

@@ -1,0 +1,447 @@
+/* Memory tab — scoped to #tab-memory. Uses design tokens only. */
+#tab-memory.tab-content:not(.hidden) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#tab-memory .mem-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 24px 16px;
+  gap: 12px;
+}
+
+#tab-memory .mem-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+#tab-memory .mem-toolbar-copy h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+  color: var(--color-text);
+}
+
+#tab-memory .mem-toolbar-hint {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+#tab-memory .mem-toolbar-actions,
+#tab-memory .mem-search-row,
+#tab-memory .mem-panel-head,
+#tab-memory .mem-card-actions,
+#tab-memory .mem-form-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+#tab-memory .mem-subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 3px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+#tab-memory .mem-subnav-item {
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+#tab-memory .mem-subnav-item.is-active {
+  background: var(--color-selected);
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+#tab-memory .mem-count {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+#tab-memory .mem-admin-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+#tab-memory .mem-admin-hint.hidden { display: none; }
+
+#tab-memory .mem-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+#tab-memory .mem-view.hidden { display: none; }
+
+#tab-memory #memory-view-knowledge {
+  display: flex;
+  gap: 16px;
+}
+
+#tab-memory #memory-view-knowledge.hidden { display: none; }
+
+#tab-memory .mem-sidebar {
+  width: 208px;
+  flex-shrink: 0;
+  padding: 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  align-self: flex-start;
+  position: sticky;
+  top: 0;
+}
+
+#tab-memory .mem-sidebar h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+#tab-memory .mem-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#tab-memory .mem-search-row input,
+#tab-memory .mem-form input,
+#tab-memory .mem-form textarea,
+#tab-memory .mem-form select {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font-size: 13px;
+  padding: 7px 10px;
+}
+
+#tab-memory .mem-search-row input {
+  flex: 1;
+  min-width: 10rem;
+}
+
+#tab-memory .mem-search-row input:focus,
+#tab-memory .mem-form input:focus,
+#tab-memory .mem-form textarea:focus,
+#tab-memory .mem-form select:focus {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
+
+#tab-memory .mem-btn {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+#tab-memory .mem-btn:hover { background: var(--color-hover); }
+
+#tab-memory .mem-btn-primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-on-primary);
+}
+
+#tab-memory .mem-btn-primary:hover { background: var(--color-primary-hover); }
+
+#tab-memory .mem-btn-ok {
+  background: color-mix(in srgb, var(--color-success) 14%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-success) 35%, var(--color-border));
+  color: var(--color-success);
+}
+
+#tab-memory .mem-btn-danger {
+  background: color-mix(in srgb, var(--color-danger) 12%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-danger) 32%, var(--color-border));
+  color: var(--color-danger);
+}
+
+#tab-memory .mem-btn:disabled { opacity: 0.6; cursor: progress; }
+
+#tab-memory .mem-btn.is-active {
+  background: var(--color-selected);
+  border-color: var(--color-border-strong);
+}
+
+#tab-memory .mem-load-more { align-self: center; }
+#tab-memory .mem-load-more.hidden { display: none; }
+
+#tab-memory .mem-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#tab-memory .mem-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+}
+
+#tab-memory .mem-card-head,
+#tab-memory .mem-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+#tab-memory .mem-card-title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-pine);
+}
+
+#tab-memory .mem-card-body {
+  margin-top: 6px;
+  font-size: 14px;
+  color: var(--color-text);
+  line-height: 1.5;
+}
+
+#tab-memory .mem-card-path,
+#tab-memory .mem-muted,
+#tab-memory .mem-status {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+#tab-memory .mem-chip,
+#tab-memory .mem-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--color-surface-2);
+  color: var(--color-text-secondary);
+}
+
+#tab-memory .mem-chip-ok,
+#tab-memory .mem-tone-ok {
+  background: color-mix(in srgb, var(--color-success) 14%, var(--color-surface-2));
+  color: var(--color-success);
+}
+
+#tab-memory .mem-chip-warn,
+#tab-memory .mem-tone-warn {
+  background: color-mix(in srgb, var(--color-warning) 16%, var(--color-surface-2));
+  color: var(--color-warning);
+}
+
+#tab-memory .mem-chip-bad,
+#tab-memory .mem-tone-bad {
+  background: color-mix(in srgb, var(--color-danger) 14%, var(--color-surface-2));
+  color: var(--color-danger);
+}
+
+#tab-memory .mem-tone-pine {
+  background: color-mix(in srgb, var(--color-pine) 14%, var(--color-surface-2));
+  color: var(--color-pine);
+}
+
+#tab-memory .mem-tone-celadon {
+  background: color-mix(in srgb, var(--color-celadon) 18%, var(--color-surface-2));
+  color: var(--color-celadon);
+}
+
+#tab-memory .mem-tone-cinnabar {
+  background: color-mix(in srgb, var(--color-cinnabar) 14%, var(--color-surface-2));
+  color: var(--color-cinnabar);
+}
+
+#tab-memory .mem-tone-neutral {
+  background: var(--color-surface-2);
+  color: var(--color-text-secondary);
+}
+
+#tab-memory .mem-conf {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+#tab-memory .mem-conf-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+}
+
+#tab-memory .mem-conf-ok { color: var(--color-success); }
+#tab-memory .mem-conf-ok .mem-conf-dot { background: var(--color-success); }
+#tab-memory .mem-conf-warn { color: var(--color-warning); }
+#tab-memory .mem-conf-warn .mem-conf-dot { background: var(--color-warning); }
+#tab-memory .mem-conf-bad { color: var(--color-danger); }
+#tab-memory .mem-conf-bad .mem-conf-dot { background: var(--color-danger); }
+
+#tab-memory .mem-icon-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+#tab-memory .mem-icon-btn:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+#tab-memory .mem-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+  padding: 36px 16px;
+  color: var(--color-text-secondary);
+}
+
+#tab-memory .mem-empty-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+#tab-memory .mem-empty-hint { font-size: 13px; max-width: 28rem; }
+
+#tab-memory .mem-tree-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+#tab-memory .mem-tree-row:hover,
+#tab-memory .mem-tree-row.is-active {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+#tab-memory .mem-tree-label {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#tab-memory .mem-tree-count {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+#tab-memory .mem-tree-tools {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#tab-memory .mem-tree-tools button {
+  text-align: left;
+}
+
+#tab-memory .mem-file-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+#tab-memory .mem-file-card {
+  cursor: pointer;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 12px;
+}
+
+#tab-memory .mem-file-card:hover { background: var(--color-hover); }
+
+#tab-memory .mem-context {
+  margin: 0;
+  min-height: 8rem;
+  padding: 14px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  white-space: pre-wrap;
+  color: var(--color-text);
+}
+
+#tab-memory .mem-audit {
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--color-surface-2);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+#tab-memory .mem-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#tab-memory .mem-form textarea { resize: vertical; min-height: 4rem; }
+
+#tab-memory .mem-inbox-card {
+  border-left: 3px solid var(--color-warning);
+}
+
+@media (max-width: 840px) {
+  #tab-memory #memory-view-knowledge { flex-direction: column; }
+  #tab-memory .mem-sidebar {
+    width: 100%;
+    position: static;
+  }
+}

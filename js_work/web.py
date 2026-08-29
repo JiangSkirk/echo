@@ -1,20 +1,14 @@
-"""Web entry point for JS Agent Work."""
+"""Local AppShell Host entry for JS Agent Work."""
 
 from __future__ import annotations
 
 import asyncio
-import threading
-import time
-import webbrowser
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from rich.console import Console
-
 from js.product_storage import StorageRoots
-from js.ui.cli import _bootstrap_browser_url
 from js.web import model_refresh
 from js.web import server as web_server
 from js.web.deps import AgentConfigState, set_active_model
@@ -34,8 +28,6 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 WORK_WEB_CHANNEL_PREFIX = "js_work_web"
-
-console = Console()
 
 
 def _tag_work_web_settings(
@@ -57,11 +49,16 @@ def create_work_lifespan(
     *,
     settings: WorkSettings,
     profile: WorkToolProfile,
+    manage_orind: bool = False,
 ) -> Any:
     """Create the FastAPI lifespan that boots the Work product line."""
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+        if manage_orind or bool(getattr(app.state, "manage_orind", False)):
+            from js.orin.supervisor import prepare_product_orin
+
+            prepare_product_orin(settings)
         if not hasattr(app.state, "agent_config_state"):
             app.state.agent_config_state = AgentConfigState()
         if not hasattr(app.state, "model_refresh_state"):
@@ -137,14 +134,20 @@ def create_work_web_app(
     profile: WorkToolProfile = WorkToolProfile.EXECUTE,
     host: str = "127.0.0.1",
     port: int = 8000,
+    manage_orind: bool = False,
 ) -> FastAPI:
-    """Build the Work Web app without loading the regular JS Agent state."""
+    """Build the Work Host app without loading the regular JS Agent state."""
     settings = load_work_settings(config, home=home, personal_roots=personal_roots)
     _tag_work_web_settings(settings, profile=profile, host=host, port=port)
     app = web_server.create_app(
-        lifespan_context=create_work_lifespan(settings=settings, profile=profile),
-        title="JS Agent Work Web",
+        lifespan_context=create_work_lifespan(
+            settings=settings,
+            profile=profile,
+            manage_orind=manage_orind,
+        ),
+        title="JS Agent Work",
         runtime_settings=settings,
+        manage_orind=manage_orind,
     )
     install_web_runtime_context(app)
     from js_work.routines.web import router as routines_router
@@ -164,8 +167,9 @@ def serve_work_web(
     reload: bool = False,
     open_browser: bool = False,
 ) -> None:
-    """Start the JS Agent Work Web server."""
-    import uvicorn
+    """Start the JS Agent Work local Host. Never opens a browser."""
+    del open_browser
+    from js.web.local_host import run_local_host
 
     app = create_work_web_app(
         config=config,
@@ -174,18 +178,13 @@ def serve_work_web(
         profile=profile,
         host=host,
         port=port,
+        manage_orind=True,
     )
-    url = f"http://{host}:{port}"
-    console.print(f"[green]Starting JS Agent Work Web at {url}[/green]")
-    console.print(f"[dim]Profile: {profile.value} | State: ~/.js-work[/dim]")
-
-    if open_browser:
-
-        def _open() -> None:
-            time.sleep(1.5)
-            runtime_settings = cast("WorkSettings", app.state.runtime_settings)
-            webbrowser.open(_bootstrap_browser_url(url, runtime_settings.state_dir))
-
-        threading.Thread(target=_open, daemon=True).start()
-
-    uvicorn.run(app, host=host, port=port, reload=reload)
+    run_local_host(
+        app,
+        host=host,
+        port=port,
+        reload=reload,
+        title="JS Agent Work Host",
+        notes=(f"Profile: {profile.value} | State: ~/.js-work",),
+    )

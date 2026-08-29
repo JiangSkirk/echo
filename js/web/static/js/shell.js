@@ -12,6 +12,7 @@ import { toggleTheme, initThemeListener } from './theme.js';
    route; only the discovery surface changes (rail / more menu / ⌘K). */
 export const TAB_REGISTRY = [
   { id: 'chat', label: '对话', icon: 'message-circle' },
+  { id: 'bots', label: 'Bots', icon: 'users' },
   { id: 'memory', label: '记忆', icon: 'brain' },
   { id: 'files', label: '文件', icon: 'folder' },
   { id: 'tasks', label: '任务', icon: 'list-checks' },
@@ -60,10 +61,92 @@ function enabledTabs() {
   return TAB_REGISTRY.map((t) => t.id);
 }
 
+const SWITCH_HANDOFF_KEY = 'js:switching-to';
+const SWITCH_HANDOFF_TIMEOUT_MS = 4000;
+
+export function peekSwitchHandoffProduct() {
+  try {
+    const product = window.sessionStorage.getItem(SWITCH_HANDOFF_KEY);
+    if (product === 'js-work' || product === 'js-agent') return product;
+  } catch (e) { /* storage unavailable */ }
+  return null;
+}
+
+export function writeSwitchHandoff(product) {
+  if (product !== 'js-work' && product !== 'js-agent') return;
+  try { window.sessionStorage.setItem(SWITCH_HANDOFF_KEY, product); } catch (e) { /* ignore */ }
+}
+
+export function clearSwitchHandoff() {
+  try { window.sessionStorage.removeItem(SWITCH_HANDOFF_KEY); } catch (e) { /* ignore */ }
+  document.documentElement.removeAttribute('data-switch-handoff');
+}
+
+export function showModeSwitchOverlay(toLabel) {
+  const overlay = document.getElementById('mode-switch-overlay');
+  const text = document.getElementById('mode-switch-overlay-text');
+  if (text) text.textContent = toLabel ? `正在切换到 ${toLabel} 模式…` : '正在切换模式…';
+  if (!overlay) return;
+  overlay.classList.remove('mode-switch-overlay-fade');
+  overlay.hidden = false;
+}
+
+export function hideModeSwitchOverlay({ immediate = false } = {}) {
+  const overlay = document.getElementById('mode-switch-overlay');
+  if (!overlay) return;
+  const finish = () => {
+    overlay.hidden = true;
+    overlay.classList.remove('mode-switch-overlay-fade');
+  };
+  if (overlay.hidden && !document.documentElement.hasAttribute('data-switch-handoff')) {
+    return;
+  }
+  if (immediate || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    finish();
+    return;
+  }
+  overlay.classList.add('mode-switch-overlay-fade');
+  window.setTimeout(finish, 180);
+}
+
+export function finishSwitchHandoff() {
+  hideModeSwitchOverlay();
+  clearSwitchHandoff();
+}
+
+function applyEarlySwitchHandoff() {
+  const product = peekSwitchHandoffProduct();
+  if (!product) return;
+  const label = product === 'js-work' ? 'Work' : 'Personal';
+  showModeSwitchOverlay(label);
+  applyProductMode(product);
+  const personalBtn = document.getElementById('product-personal-btn');
+  const workBtn = document.getElementById('product-work-btn');
+  if (personalBtn) personalBtn.classList.toggle('seg-active', product === 'js-agent');
+  if (workBtn) {
+    workBtn.hidden = false;
+    workBtn.setAttribute('aria-hidden', 'false');
+    workBtn.classList.toggle('seg-active', product === 'js-work');
+  }
+  window.setTimeout(() => {
+    if (peekSwitchHandoffProduct()) finishSwitchHandoff();
+  }, SWITCH_HANDOFF_TIMEOUT_MS);
+}
+
 /* ── Product mode layout ─────────────────────────────────── */
 export function applyProductMode(product) {
   const isWork = product === 'js-work';
   document.body.dataset.product = product || 'js-agent';
+  const botsBtn = document.getElementById('product-bots-btn');
+  if (botsBtn) {
+    botsBtn.hidden = isWork;
+    botsBtn.setAttribute('aria-hidden', isWork ? 'true' : 'false');
+  }
+  if (isWork) {
+    delete document.body.dataset.surface;
+    const botsBand = document.getElementById('bots-context-band');
+    if (botsBand) botsBand.hidden = true;
+  }
   const band = document.getElementById('work-context-band');
   const panel = document.getElementById('work-context-panel');
   const wsLabel = document.getElementById('workspace-label');
@@ -548,5 +631,7 @@ export function initShell() {
 
   window.__shellReady = true;
 }
+
+applyEarlySwitchHandoff();
 
 export { tabLabel, tabIcon };

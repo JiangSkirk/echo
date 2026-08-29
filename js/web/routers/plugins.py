@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from js.web.auth import require_admin, require_auth_dep
 from js.web.deps import get_agent
+from js.web.schemas import PluginInstallRequest
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"])
 _PLUGIN_MUTATION_DISABLED = (
@@ -40,7 +41,7 @@ async def disable_plugin(
 
 @router.post("/install")
 async def install_plugin(
-    body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)
+    body: PluginInstallRequest, auth: dict[str, Any] = Depends(require_admin)
 ) -> dict[str, Any]:
     """Fail closed until an Echo-wrapped, sandboxed plugin runtime exists."""
     del body, auth

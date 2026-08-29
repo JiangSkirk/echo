@@ -11,15 +11,15 @@ from typing import Any
 
 
 class SkillType(StrEnum):
-    CODE = "code"       # Executable Python/Shell (JS Agent original)
-    PROMPT = "prompt"   # LLM instruction doc (Hermes-style)
+    CODE = "code"  # Executable Python/Shell (JS Agent original)
+    PROMPT = "prompt"  # LLM instruction doc (Hermes-style)
     WORKFLOW = "workflow"  # Lightweight automation chain
-    META = "meta"       # Composed of sub-skills (dependency DAG)
+    META = "meta"  # Composed of sub-skills (dependency DAG)
 
 
 class TrustLevel(StrEnum):
-    BUILTIN = "builtin"      # Shipped with JS Agent, signed
-    TRUSTED = "trusted"      # Installed from trusted source, scanned
+    BUILTIN = "builtin"  # Shipped with JS Agent, signed
+    TRUSTED = "trusted"  # Installed from trusted source, scanned
     COMMUNITY = "community"  # User-installed, scanned
     QUARANTINE = "quarantine"  # Pending security review
 
@@ -57,11 +57,13 @@ class Prerequisites:
         missing: list[str] = []
 
         import shutil
+
         for cmd in self.commands:
             if shutil.which(cmd) is None:
                 missing.append(f"command: {cmd}")
 
         import os
+
         for env in self.env_vars:
             if not os.getenv(env):
                 missing.append(f"env_var: {env}")
@@ -210,18 +212,20 @@ class SkillSpec:
     def to_detail_dict(self) -> dict[str, Any]:
         """Return full metadata for view_skill()."""
         data = self.to_summary_dict()
-        data.update({
-            "license": self.license,
-            "entry": self.entry,
-            "content_length": len(self.full_content),
-            "metadata": self.metadata,
-            "has_references": self.references_dir is not None and self.references_dir.exists(),
-            "has_templates": self.templates_dir is not None and self.templates_dir.exists(),
-            "has_assets": self.assets_dir is not None and self.assets_dir.exists(),
-            "timeout_seconds": self.timeout_seconds,
-            "network_allowed": self.network_allowed,
-            "dependencies": self.dependencies,
-        })
+        data.update(
+            {
+                "license": self.license,
+                "entry": self.entry,
+                "content_length": len(self.full_content),
+                "metadata": self.metadata,
+                "has_references": self.references_dir is not None and self.references_dir.exists(),
+                "has_templates": self.templates_dir is not None and self.templates_dir.exists(),
+                "has_assets": self.assets_dir is not None and self.assets_dir.exists(),
+                "timeout_seconds": self.timeout_seconds,
+                "network_allowed": self.network_allowed,
+                "dependencies": self.dependencies,
+            }
+        )
         return data
 
 
@@ -317,6 +321,8 @@ def parse_skill_manifest(path: Path) -> SkillSpec:
         full_content=body,
         metadata=frontmatter.get("metadata", {}),
         path=path.parent,
+        signature=str(frontmatter.get("signature") or ""),
+        public_key=str(frontmatter.get("public_key") or ""),
     )
 
     # Set sub-directories (Hermes style)

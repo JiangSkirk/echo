@@ -1151,6 +1151,45 @@ def main() -> None:  # pragma: no cover - subprocess entry
             cell.stop()
 
 
+def relay_model_chat(
+    *,
+    state_dir: Path,
+    destination: str,
+    secret_handle: str,
+    body: dict[str, Any],
+    allowlist: frozenset[str] = frozenset(),
+    timeout_s: float = 30.0,
+) -> dict[str, Any]:
+    """Services-Cell model connector. Token never appears in the result."""
+
+    from js.models.cell_transport import destination_is_allowed
+
+    if not destination_is_allowed(destination, allowlist=tuple(allowlist)):
+        raise ProtocolError("model connector destination is not allowed")
+    store = SecretStore(state_dir)
+    token = store.get(secret_handle)
+    if not token:
+        raise ProtocolError("model connector secret handle is unknown")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    try:
+        with httpx.Client(timeout=timeout_s) as client:
+            response = client.post(destination, json=body, headers=headers)
+    except httpx.HTTPError as exc:
+        raise ProtocolError(f"model connector transport failed: {exc}") from exc
+    payload = (
+        response.json()
+        if response.headers.get("content-type", "").startswith("application/json")
+        else {"text": response.text}
+    )
+    if isinstance(payload, dict):
+        for key in ("token", "api_key", "authorization", "secret"):
+            payload.pop(key, None)
+    return {"status": "COMMITTED", "http_status": response.status_code, "body": payload}
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()
 
@@ -1162,5 +1201,6 @@ __all__ = [
     "SecretStore",
     "l2_keychain_probe_commands",
     "provision_secret",
+    "relay_model_chat",
     "run_optional_l2_keychain_smoke",
 ]

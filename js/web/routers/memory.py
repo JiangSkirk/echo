@@ -1,11 +1,15 @@
-"""Memory API router — CRUD, audit, conflicts, metrics, embedder recovery."""
+"""Memory API router — CRUD, audit, conflicts, metrics, embedder recovery.
+
+Unknown/forbidden client fields (owner, mode, workspace, role) are rejected
+with HTTP 422 via the strict request models.
+"""
 
 from __future__ import annotations
 
 import asyncio
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from js.agent.tool_executor import CONTROL_MEMORY_MUTATE_TOOL
 from js.echo.effect_interpreter import ToolEffect
@@ -20,9 +24,30 @@ from js.web.auth import (
 )
 from js.web.deps import get_agent, optional_query_session_id, require_path_session_id
 from js.web.runtime_context import web_channel
+from js.web.schemas import (
+    MemoryBlockRequest,
+    MemoryCompressionProposalRequest,
+    MemoryFilePutRequest,
+    MemoryProposalApproveRequest,
+    MemorySemanticCreateRequest,
+    MemorySemanticUpdateRequest,
+)
 
 logger = get_logger("js.web.memory")
-router = APIRouter(tags=["memory"])
+
+
+def _refuse_ambient_memory_under_enforce() -> None:
+    from js.orin.stage_c import product_memory_cell_required
+
+    agent = get_agent()
+    if product_memory_cell_required(getattr(agent.settings, "orin", None)):
+        raise HTTPException(503, "ambient Memory API is closed under orin.enforce")
+
+
+router = APIRouter(
+    tags=["memory"],
+    dependencies=[Depends(_refuse_ambient_memory_under_enforce)],
+)
 
 
 async def _mutate_memory(
@@ -34,6 +59,10 @@ async def _mutate_memory(
 ) -> dict[str, Any]:
     """Execute a private memory mutation through an opaque Echo payload."""
     agent = get_agent()
+    from js.orin.stage_c import product_memory_cell_required
+
+    if product_memory_cell_required(getattr(agent.settings, "orin", None)):
+        raise HTTPException(503, "ambient Memory API is closed under orin.enforce")
     owner = runtime_owner(auth)
     runtime = agent.echo_runtime
     context = runtime.build_context(
@@ -98,6 +127,7 @@ async def memory(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, 
 @router.get("/api/memory/enhanced")
 async def memory_enhanced(
     session_id: str | None = Depends(optional_query_session_id),
+    limit: int = Query(default=20, ge=1, le=100),
     auth: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, Any]:
     agent = get_agent()
@@ -115,11 +145,11 @@ async def memory_enhanced(
                 "created_at": e.created_at,
                 "importance": e.importance,
             }
-            for e in agent.memory.get_episodes(limit=20, owner_key_hash=owner)
+            for e in agent.memory.get_episodes(limit=limit, owner_key_hash=owner)
         ],
-        "dream_logs": agent.memory.get_dream_logs(limit=10, owner_key_hash=owner),
-        "semantic_memories": agent.memory.get_all_semantic(limit=20, owner_key_hash=owner),
-        "working_memories": agent.memory.get_all_working(limit=20, owner_key_hash=owner),
+        "dream_logs": agent.memory.get_dream_logs(limit=limit, owner_key_hash=owner),
+        "semantic_memories": agent.memory.get_all_semantic(limit=limit, owner_key_hash=owner),
+        "working_memories": agent.memory.get_all_working(limit=limit, owner_key_hash=owner),
         "memory_files": agent.memory.list_memory_files(owner_key_hash=owner),
     }
     if session_id:
@@ -149,11 +179,9 @@ async def memory_file_get(
 
 @router.put("/api/memory/files/{name}")
 async def memory_file_put(
-    name: str, body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin_write)
+    name: str, body: MemoryFilePutRequest, auth: dict[str, Any] = Depends(require_admin_write)
 ) -> dict[str, Any]:
-    content = body.get("content", "")
-    if not isinstance(content, str):
-        raise HTTPException(400, "content must be a string")
+    content = body.content
     return await _mutate_memory(
         "file_put",
         {"name": name, "content": content},
@@ -163,12 +191,10 @@ async def memory_file_put(
 
 @router.post("/api/memory/semantic")
 async def memory_semantic_post(
-    body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin_write)
+    body: MemorySemanticCreateRequest, auth: dict[str, Any] = Depends(require_admin_write)
 ) -> dict[str, Any]:
-    key = (body.get("key") or "").strip()
-    value = (body.get("value") or "").strip()
-    category = (body.get("category") or "fact").strip()
-    source = (body.get("source") or "user").strip()
+    key = body.key.strip()
+    value = body.value.strip()
     if not key or not value:
         raise HTTPException(400, "key and value are required")
     return await _mutate_memory(
@@ -176,14 +202,14 @@ async def memory_semantic_post(
         {
             "key": key,
             "value": value,
-            "category": category,
-            "source": source,
-            "memory_path": body.get("memory_path"),
-            "entity_type": body.get("entity_type"),
-            "entity_name": body.get("entity_name"),
-            "parent_id": body.get("parent_id"),
-            "relation_type": body.get("relation_type"),
-            "evidence": body.get("evidence") or "",
+            "category": body.category.strip(),
+            "source": body.source.strip(),
+            "memory_path": body.memory_path,
+            "entity_type": body.entity_type,
+            "entity_name": body.entity_name,
+            "parent_id": body.parent_id,
+            "relation_type": body.relation_type,
+            "evidence": body.evidence,
         },
         auth,
     )
@@ -202,10 +228,11 @@ async def memory_semantic_delete(
 
 @router.put("/api/memory/semantic/{memory_id}")
 async def memory_semantic_put(
-    memory_id: int, body: dict[str, Any], auth: dict[str, Any] = Depends(require_admin_write)
+    memory_id: int,
+    body: MemorySemanticUpdateRequest,
+    auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
-    value = (body.get("value") or "").strip()
-    category = body.get("category")
+    value = body.value.strip()
     if not value:
         raise HTTPException(400, "value is required")
     return await _mutate_memory(
@@ -213,12 +240,12 @@ async def memory_semantic_put(
         {
             "memory_id": memory_id,
             "value": value,
-            "category": category,
-            "memory_path": body.get("memory_path"),
-            "entity_type": body.get("entity_type"),
-            "entity_name": body.get("entity_name"),
-            "parent_id": body.get("parent_id"),
-            "relation_type": body.get("relation_type"),
+            "category": body.category,
+            "memory_path": body.memory_path,
+            "entity_type": body.entity_type,
+            "entity_name": body.entity_name,
+            "parent_id": body.parent_id,
+            "relation_type": body.relation_type,
         },
         auth,
     )
@@ -328,7 +355,7 @@ async def memory_proposals(
 @router.post("/api/memory/proposals/{proposal_id}/approve")
 async def memory_proposal_approve(
     proposal_id: int,
-    body: dict[str, Any] | None = Body(default=None),
+    body: MemoryProposalApproveRequest | None = None,
     auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Approve a pending proposal, committing it to the memory library.
@@ -336,7 +363,7 @@ async def memory_proposal_approve(
     An optional JSON body acts as edit-before-confirm overrides, e.g.
     ``{"value": "...", "memory_path": "/people/family", "category": "fact"}``.
     """
-    overrides = body if isinstance(body, dict) and body else None
+    overrides = body.model_dump(exclude_none=True) if body is not None else None
     return await _mutate_memory(
         "proposal_approve",
         {"proposal_id": proposal_id, "overrides": overrides},
@@ -375,12 +402,12 @@ async def memory_organize(
 
 @router.post("/api/memory/blocks/move")
 async def memory_block_move(
-    body: dict[str, Any],
+    body: MemoryBlockRequest,
     auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Re-path every memory under one block prefix to another."""
-    src = (body.get("src") or "").strip()
-    dst = (body.get("dst") or "").strip()
+    src = body.src.strip()
+    dst = body.dst.strip()
     if not src or not dst:
         raise HTTPException(400, "src and dst are required")
     return await _mutate_memory(
@@ -392,12 +419,12 @@ async def memory_block_move(
 
 @router.post("/api/memory/blocks/merge")
 async def memory_block_merge(
-    body: dict[str, Any],
+    body: MemoryBlockRequest,
     auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Merge one block into another (all memories adopt the target prefix)."""
-    src = (body.get("src") or "").strip()
-    dst = (body.get("dst") or "").strip()
+    src = body.src.strip()
+    dst = body.dst.strip()
     if not src or not dst:
         raise HTTPException(400, "src and dst are required")
     return await _mutate_memory(
@@ -648,27 +675,15 @@ async def delete_session_capsule(
 
 @router.post("/api/memory/compression/proposals")
 async def compression_create_proposal(
-    body: dict[str, Any] = Body(...),
+    body: MemoryCompressionProposalRequest,
     auth: dict[str, Any] = Depends(require_admin_write),
 ) -> dict[str, Any]:
     """Create a compression proposal from source refs and a summary."""
-    forbidden = {
-        "owner",
-        "mode",
-        "workspace",
-        "session",
-        "run",
-        "role",
-        "approved_by",
-        "edits",
-        "status",
-        "tokenizer_id",
-        "token_count",
-    }
-    extra = set(body.keys()) - {"source_refs", "proposed_summary"}
-    if extra & forbidden:
-        raise HTTPException(422, f"Forbidden fields: {extra & forbidden}")
-    return await _mutate_memory("compression_create", body, auth)
+    return await _mutate_memory(
+        "compression_create",
+        body.model_dump(),
+        auth,
+    )
 
 
 @router.post("/api/memory/compression/proposals/{proposal_id}/approve")

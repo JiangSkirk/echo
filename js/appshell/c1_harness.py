@@ -71,9 +71,7 @@ _AUTHORITY_KEYS: Final[frozenset[str]] = frozenset(
         "workspaceroot",
     }
 )
-_REQUEST_KEYS: Final[frozenset[str]] = frozenset(
-    {"schema", "seq", "nonce", "payload", "mac"}
-)
+_REQUEST_KEYS: Final[frozenset[str]] = frozenset({"schema", "seq", "nonce", "payload", "mac"})
 _RESPONSE_KEYS: Final[frozenset[str]] = frozenset(
     {"schema", "seq", "nonce", "ok", "code", "evidence", "mac"}
 )
@@ -148,7 +146,13 @@ _RUNTIME_HASH_PATHS: Final[tuple[str, ...]] = (
     "agent/runner.py",
     "echo/c1_worker.py",
     "echo/turn_runtime.py",
-    "echo/turn_loop.py",
+    "echo/turn_loop/__init__.py",
+    "echo/turn_loop/helpers.py",
+    "echo/turn_loop/loop.py",
+    "echo/turn_loop/model_gate.py",
+    "echo/turn_loop/schema.py",
+    "echo/turn_loop/stream_tools.py",
+    "echo/turn_loop/telemetry.py",
 )
 
 type JsonValue = None | bool | int | str | list[JsonValue] | dict[str, JsonValue]
@@ -252,11 +256,7 @@ def _normalize_model_context(value: object) -> dict[str, JsonValue]:
 
 
 def _normalize_safe_projection(value: object) -> dict[str, JsonValue]:
-    if (
-        not isinstance(value, dict)
-        or not value
-        or not set(value).issubset(_SAFE_PROJECTION_KEYS)
-    ):
+    if not isinstance(value, dict) or not value or not set(value).issubset(_SAFE_PROJECTION_KEYS):
         raise C1HarnessDeniedError("safe_projection fields are not on the C1 allowlist")
     normalized = _normalize_json_object(value, path="safe_projection")
     if any(isinstance(item, (dict, list)) for item in normalized.values()):
@@ -559,14 +559,14 @@ def _build_read_only_runtime_image(resolved_root: Path) -> tuple[Path, bool]:
         ignored = {
             name
             for name in names
-            if name == "__pycache__"
-            or name.endswith((".pyc", ".pyo"))
-            or name == ".DS_Store"
+            if name == "__pycache__" or name.endswith((".pyc", ".pyo")) or name == ".DS_Store"
         }
         if relative == Path("appshell"):
             ignored.update(name for name in names if name not in {"__init__.py", "principal.py"})
         elif relative == Path("orin"):
-            ignored.update(name for name in names if name in {"client.py", "testing.py", "witness.py"})
+            ignored.update(
+                name for name in names if name in {"client.py", "testing.py", "witness.py"}
+            )
         elif relative == Path("orind"):
             ignored.update(name for name in names if name not in {"__init__.py", "canary.py"})
         return ignored
@@ -782,9 +782,7 @@ async def run_c1_worker_frames_for_test(
         trusted_executables=[Path(sys.executable)],
     )
     if not executor.filesystem_isolation_available():
-        raise C1HarnessUnavailableError(
-            "C1 requires enforced deny-default filesystem isolation"
-        )
+        raise C1HarnessUnavailableError("C1 requires enforced deny-default filesystem isolation")
     input_lines = [_canonical_json(_bootstrap(session_key, nonce))]
     for frame in frames:
         encoded = _canonical_json(frame)
@@ -914,12 +912,13 @@ def _parse_real_echo_response(
     if evidence["response_digest"] != _sha256_text(_DETERMINISTIC_RESPONSE):
         raise C1HarnessDeniedError("real Echo worker response digest mismatch")
     for field in ("projection_digest", "response_digest"):
-        if not isinstance(evidence[field], str) or _SHA256_VALUE_RE.fullmatch(evidence[field]) is None:
+        if (
+            not isinstance(evidence[field], str)
+            or _SHA256_VALUE_RE.fullmatch(evidence[field]) is None
+        ):
             raise C1HarnessDeniedError(f"real Echo evidence {field} was malformed")
     environment_keys = evidence["environment_keys"]
-    if not isinstance(environment_keys, list) or environment_keys != sorted(
-        set(environment_keys)
-    ):
+    if not isinstance(environment_keys, list) or environment_keys != sorted(set(environment_keys)):
         raise C1HarnessDeniedError("real Echo worker environment keys were not canonical")
     if any(not isinstance(key, str) or len(key) > 128 for key in environment_keys):
         raise C1HarnessDeniedError("real Echo worker environment key was invalid")
@@ -1002,9 +1001,7 @@ async def run_c1_real_echo_frame_for_test(
     encoded_frame = _canonical_json(frame)
     if len(encoded_frame.encode("utf-8")) > _MAX_WIRE_BYTES:
         raise C1HarnessDeniedError("real Echo request frame exceeds 64 KiB")
-    input_text = "\n".join(
-        (_canonical_json(_bootstrap(session_key, nonce)), encoded_frame, "")
-    )
+    input_text = "\n".join((_canonical_json(_bootstrap(session_key, nonce)), encoded_frame, ""))
     result = await executor.execute(
         [sys.executable, "-m", "js.echo.c1_worker"],
         cwd=os.fspath(runtime_image),
@@ -1126,9 +1123,7 @@ async def run_c1_real_echo_process_harness(
         trusted_executables=[Path(sys.executable)],
     )
     if not executor.filesystem_isolation_available():
-        raise C1HarnessUnavailableError(
-            "C1 requires enforced deny-default filesystem isolation"
-        )
+        raise C1HarnessUnavailableError("C1 requires enforced deny-default filesystem isolation")
 
     session_key = secrets.token_bytes(32)
     nonce = secrets.token_hex(16)
@@ -1210,9 +1205,7 @@ async def run_c1_real_echo_process_harness(
         unfreeze_signature_valid=host_authority.unfreeze_signature_valid,
         worker_forgery_trusted=forgery_trusted,
     )
-    client_source = (runtime_image / "js" / "orin" / "client.py").read_text(
-        encoding="utf-8"
-    )
+    client_source = (runtime_image / "js" / "orin" / "client.py").read_text(encoding="utf-8")
     client_has_signing_surface = any(
         marker in client_source
         for marker in ("approved=True", "grant_exact", "grant_export", "admin_unfreeze")
@@ -1251,7 +1244,7 @@ async def run_c1_real_echo_process_harness(
 # Parent-selected escape attempts.  This fixed program is not the Echo worker
 # and is never accepted as runtime evidence; it only asks the OS sandbox to
 # deny concrete reads/imports/socket access under the identical launch policy.
-_AUTHORITY_ATTACK_PROGRAM: Final[str] = r'''
+_AUTHORITY_ATTACK_PROGRAM: Final[str] = r"""
 import importlib.util
 import json
 import socket
@@ -1323,13 +1316,13 @@ evidence = {
     "missing_authority_modules": missing,
 }
 print(json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-'''
+"""
 
 
 # The worker uses stdlib only.  Keeping it in ``python -c`` means the
 # deny-default sandbox need not read the application checkout or AppShell state.
 # The only IPC transport is the child process's inherited anonymous stdin/stdout.
-_WORKER_PROGRAM: Final[str] = r'''
+_WORKER_PROGRAM: Final[str] = r"""
 import base64
 import hashlib
 import hmac
@@ -1554,7 +1547,7 @@ for line in __import__("sys").stdin:
         "privileged_surface": [],
     }
     send(session_key, session_nonce, seq, True, "", evidence)
-'''
+"""
 
 
 __all__ = [

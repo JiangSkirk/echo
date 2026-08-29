@@ -13,6 +13,7 @@ from js.config import AgentFeatureConfig, JSSettings
 
 NAV_TAB_IDS: tuple[str, ...] = (
     "chat",
+    "bots",
     "memory",
     "files",
     "models",
@@ -66,6 +67,7 @@ def build_capability_manifest(settings: JSSettings) -> dict[str, Any]:
         # that conflict with the professional office profile.
         if product_id == "js-work" and tab_id in {
             "agents",
+            "bots",
             "scenarios",
             "search",
             "cron",

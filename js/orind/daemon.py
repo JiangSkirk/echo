@@ -48,6 +48,7 @@ from js.orin.draft import (
     draft_from_dict,
     exact_commit_approval_from_dict,
     export_pass_from_dict,
+    signed_receipt_from_dict,
     witness_from_dict,
 )
 from js.orin.handles import (
@@ -57,14 +58,18 @@ from js.orin.handles import (
     derive_appshell_directory_handle_id,
     handle_from_dict,
 )
+from js.orin.handles import (
+    appshell_desktop_app_binding_from_dict as appshell_desktop_app_binding_from_dict,
+)
+from js.orin.handles import (
+    derive_appshell_application_handle_id as derive_appshell_application_handle_id,
+)
 from js.orin.intent import intent_from_dict
 from js.orin.protocol import (
     CELL_CONNECT_CAPS,
     HEARTBEAT_INTERVAL_S,
     MAX_FRAME_BYTES,
     PROTOCOL_VERSION,
-    RATE_LIMIT_BURST,
-    RATE_LIMIT_PER_SECOND,
     REQUIRED_CAP,
     SERVER_CAPS,
     SERVER_QUEUE_DEPTH,
@@ -79,6 +84,10 @@ from js.orin.protocol import (
 from js.orin.taint import CLEARANCE_INTERNAL, CLEARANCE_SECRET
 from js.orind.broker import HandleBroker
 from js.orind.cell_identity import CELL_IDENTITY_ENV, LAUNCH_TICKETS_ENV, ORIND_PID_ENV
+from js.orind.daemon_net import (
+    _TokenBucket,
+    peer_credentials,
+)
 from js.orind.gatekeeper import GateKeeper
 from js.orind.intent_store import IntentStore
 from js.orind.kernel import (
@@ -114,90 +123,12 @@ from js.orind.private_paths import (
 )
 from js.orind.store import OrinStore
 
-SOL_LOCAL = 0
-LOCAL_PEERCRED = 1
-LOCAL_PEERTOKEN = 2
-
 WRITE_BUFFER_HIGH_WATER = MAX_FRAME_BYTES * 128
 """Disconnect clients that let our response backlog grow past this."""
 
 
 class OrinDaemonError(Exception):
     """Daemon failed to start."""
-
-
-def peer_credentials(sock: socket.socket) -> tuple[int, int] | None:
-    """Return ``(euid, pid)`` for the connected peer, or ``None``.
-
-    macOS empirics (verified on this platform): ``LOCAL_PEERTOKEN`` may
-    return a 4-byte pid-only value or the full 32-byte audit_token_t
-    (euid at val[1], pid at val[5]); ``LOCAL_PEERCRED`` returns
-    ``struct ucred`` whose pid is often 0 but whose uid is reliable.
-    Linux: ``SO_PEERCRED`` (pid, uid, gid). The caller treats ``None``
-    as a validation failure (fail closed); a zero pid means "unknown"
-    and callers fall back to the client-declared pid.
-    """
-
-    system = sys.platform
-    if system == "darwin":
-        euid: int | None = None
-        pid: int | None = None
-        with contextlib.suppress(OSError):
-            token = sock.getsockopt(SOL_LOCAL, LOCAL_PEERTOKEN, 32)
-            if len(token) >= 32:
-                values = [int.from_bytes(token[i : i + 4], "little") for i in range(0, 32, 4)]
-                euid = values[1]
-                pid = values[5]
-            elif len(token) >= 4:
-                pid = int.from_bytes(token[:4], "little")
-        with contextlib.suppress(OSError):
-            cred = sock.getsockopt(SOL_LOCAL, LOCAL_PEERCRED, 12)
-            if len(cred) >= 12:
-                _cpid, uid, _gid = struct_unpack("iii", cred)
-                if euid is None:
-                    euid = int(uid)
-                if not pid:
-                    pid = int(_cpid) or pid
-        if euid is None:
-            return None
-        return (euid, pid or 0)
-    if system.startswith("linux"):
-        with contextlib.suppress(OSError):
-            cred = sock.getsockopt(socket.SOL_SOCKET, LOCAL_PEERCRED, 12)
-            if len(cred) >= 12:
-                cpid, uid, _gid = struct_unpack("iii", cred)
-                return (int(uid), int(cpid))
-        return None
-    return None
-
-
-def struct_unpack(fmt: str, data: bytes) -> tuple[int, ...]:
-    import struct
-
-    return struct.unpack(fmt, data)
-
-
-class _TokenBucket:
-    """Classic token bucket: ``rate`` tokens/s, capacity ``burst``."""
-
-    __slots__ = ("_rate", "_burst", "_tokens", "_last")
-
-    def __init__(
-        self, rate: float = RATE_LIMIT_PER_SECOND, burst: float = RATE_LIMIT_BURST
-    ) -> None:
-        self._rate = float(rate)
-        self._burst = float(burst)
-        self._tokens = float(burst)
-        self._last = time.monotonic()
-
-    def allow(self) -> bool:
-        now = time.monotonic()
-        self._tokens = min(self._burst, self._tokens + (now - self._last) * self._rate)
-        self._last = now
-        if self._tokens >= 1.0:
-            self._tokens -= 1.0
-            return True
-        return False
 
 
 class _Session:
@@ -222,9 +153,7 @@ class _Session:
         self.created_at = time.monotonic()
         self.audit: deque[dict[str, Any]] = deque(maxlen=256)
         # server→client outstanding commands (stage-B cells): seq → future
-        self.pending_server: dict[
-            int, tuple[str, asyncio.Future[dict[str, Any]]]
-        ] = {}
+        self.pending_server: dict[int, tuple[str, asyncio.Future[dict[str, Any]]]] = {}
 
     def next_server_seq(self) -> int:
         self.last_server_seq += 1
@@ -256,6 +185,7 @@ class OrinDaemon:
         cell_secret: bool = False,
         cell_file: bool = False,
         cell_desktop: bool = False,
+        cell_memory: bool = False,
         commit_membrane: bool = False,
         orin_enforce: bool = False,
         cell_identity_enforce: bool = False,
@@ -266,18 +196,37 @@ class OrinDaemon:
         now_fn: Any = None,
     ) -> None:
 
-        # WP-C1 is not a production Stage-C release.  Refuse the master switch
-        # before creating directories, keys, sockets, or databases.  The
-        # identity path below is reachable only from the explicit test helper.
+        # Refuse enforce before creating directories, keys, sockets, or
+        # databases unless the §6.1 conjunction is fully observed.
         if orin_enforce:
-            raise OrinDaemonError(
-                "orin.enforce is unavailable until Stage C C2-C7 are complete"
+            from types import SimpleNamespace
+
+            from js.orin.stage_c import evaluate_stage_c_conjunction
+
+            report = evaluate_stage_c_conjunction(
+                SimpleNamespace(
+                    enabled=True,
+                    stage_b=stage_b,
+                    cell_build=cell_build,
+                    cell_secret=cell_secret,
+                    cell_net=cell_net,
+                    cell_file=cell_file,
+                    commit_membrane=commit_membrane,
+                    cell_desktop=cell_desktop,
+                    cell_memory=cell_memory,
+                    cell_identity_enforce=cell_identity_enforce,
+                    echo_minimal_os=False,
+                )
             )
-        self._cell_identity_enforce = bool(cell_identity_enforce and c1_test_harness)
+            if not report.ok:
+                raise OrinDaemonError(report.reject_message())
+        self._c1_test_harness = bool(c1_test_harness)
+        self._orin_enforce = bool(orin_enforce)
+        self._cell_identity_enforce = bool(cell_identity_enforce)
 
         self._state_dir = state_dir
         self._socket_path = socket_path or (state_dir / "orin" / "orind.sock")
-        self._orin_dir = orin_dir or self._socket_path.parent
+        self._orin_dir = orin_dir or (Path(state_dir) / "orin")
         if self._cell_identity_enforce:
             try:
                 ensure_private_dir(self._state_dir)
@@ -319,10 +268,16 @@ class OrinDaemon:
         self._cell_net_enabled = bool(cell_net) and stage_b
         self._cell_secret_enabled = bool(cell_secret) and stage_b
         self._cell_file_enabled = bool(cell_file) and stage_b
-        # WP-C2 remains a construction harness.  A product caller setting the
-        # leaf flag without the C1 identity harness gets no new process or
-        # route at all.
-        self._cell_desktop_enabled = bool(cell_desktop) and stage_b and self._cell_identity_enforce
+        from js.orin.stage_c import desktop_memory_cells_allowed
+
+        allow_desktop_memory = desktop_memory_cells_allowed(
+            identity=self._cell_identity_enforce,
+            harness=self._c1_test_harness,
+            enforce=self._orin_enforce,
+        )
+        self._cells_kept_resident = True
+        self._cell_desktop_enabled = bool(cell_desktop) and stage_b and allow_desktop_memory
+        self._cell_memory_enabled = bool(cell_memory) and stage_b and allow_desktop_memory
         self._desktop_script_path = desktop_script_path
         desired_service_caps: set[str] = set()
         if self._cell_net_enabled:
@@ -351,6 +306,8 @@ class OrinDaemon:
         self._services_proc: subprocess.Popen[bytes] | None = None
         self._file_proc: subprocess.Popen[bytes] | None = None
         self._desktop_proc: subprocess.Popen[bytes] | None = None
+        self._memory_proc: subprocess.Popen[bytes] | None = None
+        self._parent_sessions: dict[str, str] = {}
         self._cell_reconcile_tasks: set[asyncio.Task[None]] = set()
         self._spawn_build_cells = bool(cell_build)
         self._shutting_down = False
@@ -373,6 +330,7 @@ class OrinDaemon:
             self._manifest = builtin_manifest(
                 self._keybox.key,
                 include_desktop=self._cell_desktop_enabled,
+                include_memory=self._cell_memory_enabled,
             )
             self._kernel = GateKernel(
                 secret_taint_bit=SECRET,
@@ -567,6 +525,8 @@ class OrinDaemon:
                 self._spawn_file_cell()
             if self._cell_desktop_enabled:
                 self._spawn_desktop_cell()
+            if self._cell_memory_enabled:
+                self._spawn_memory_cell()
 
     async def stop(self) -> None:
         if self._server is not None:
@@ -626,6 +586,7 @@ class OrinDaemon:
         self._services_proc = None
         self._file_proc = None
         self._desktop_proc = None
+        self._memory_proc = None
         if self._cell_identity_enforce:
             self._unlink_strict_socket(self._socket_path)
             self._unlink_strict_socket(self._cell_socket_path)
@@ -678,9 +639,8 @@ class OrinDaemon:
         if task is not None:
             self._handler_tasks.add(task)
         try:
-            if (
-                self._cell_identity_enforce
-                and not self._strict_socket_is_current(self._socket_path)
+            if self._cell_identity_enforce and not self._strict_socket_is_current(
+                self._socket_path
             ):
                 self._audit("peer_rejected", reason="orind socket path replaced")
                 writer.close()
@@ -834,9 +794,7 @@ class OrinDaemon:
             self._audit("handshake_rejected", reason="cell peer pid unavailable")
             return None
         try:
-            envelope = await asyncio.wait_for(
-                self._read_frame(reader), timeout=5.0
-            )
+            envelope = await asyncio.wait_for(self._read_frame(reader), timeout=5.0)
         except (ProtocolError, asyncio.IncompleteReadError, ConnectionError, TimeoutError):
             return None
         if envelope is None or envelope.get("type") != "hello" or envelope.get("seq") != 1:
@@ -1016,11 +974,12 @@ class OrinDaemon:
         message_type = envelope["type"]
         if message_type == "heartbeat":
             return {"ok": True, "healthy": True}
-        if (
-            message_type == "consume"
-            and str(envelope.get("mode") or "") == "cell"
-        ):
-            return await self._dispatch_cell(envelope, session_id=session.session_nonce)
+        if message_type == "consume" and str(envelope.get("mode") or "") == "cell":
+            return await self._dispatch_cell(
+                envelope,
+                session_id=session.session_nonce,
+                parent_session=str(envelope.get("session_id") or ""),
+            )
         if message_type == "preflight":
             return await self._on_preflight(envelope)
         if message_type == "issue":
@@ -1075,13 +1034,18 @@ class OrinDaemon:
                 # Generic signed intent registration remains a valid, non-issuing
                 # operation.  Only the AppShell binding grant below may mint a
                 # DirectoryHandle.
-                return intents.register(data, now_ms=self._now_ms())
+                registered = intents.register(data, now_ms=self._now_ms())
+                if registered.get("ok"):
+                    self._remember_parent_session(data, str(envelope.get("session_id") or ""))
+                return registered
             if not isinstance(raw_grant, dict):
                 return {
                     "ok": False,
                     "code": "bad_message",
                     "reason": "register grant must be an object",
                 }
+            if raw_grant.get("schema") == "AppShellDesktopAppBindingV1":
+                return self._register_desktop_app_binding(envelope, data, raw_grant)
             session_id = str(envelope.get("session_id") or "")
             if not session_id:
                 return {
@@ -1157,6 +1121,7 @@ class OrinDaemon:
                 return issued
             # Never return the sealed handle or its root over the Echo-facing
             # connection.  The AppShell adapter already knows the committed id.
+            self._remember_parent_session(data, session_id)
             return {"ok": True}
         if op == "active":
             task_id = str(envelope.get("task_id") or "")
@@ -1177,21 +1142,18 @@ class OrinDaemon:
             if str(envelope.get("task_id") or "") != export_pass.task_id:
                 return {"ok": False, "code": "denied", "reason": "task binding mismatch"}
             now = self._now_ms()
-            raw_witness = self._store.state_witness_by_id(
-                export_pass.witness_id, now_ms=now
-            )
+            raw_witness = self._store.state_witness_by_id(export_pass.witness_id, now_ms=now)
             if not isinstance(raw_witness, dict):
                 return {"ok": False, "code": "stale_state", "reason": "unknown witness"}
             try:
                 witness = witness_from_dict(raw_witness)
             except Exception as exc:
                 return {"ok": False, "code": "stale_state", "reason": str(exc)}
-            current_witness = self._store.current_state_witness(
-                witness.draft_id, now_ms=now
-            )
-            if not isinstance(current_witness, dict) or str(
-                current_witness.get("witness_id") or ""
-            ) != witness.witness_id:
+            current_witness = self._store.current_state_witness(witness.draft_id, now_ms=now)
+            if (
+                not isinstance(current_witness, dict)
+                or str(current_witness.get("witness_id") or "") != witness.witness_id
+            ):
                 return {"ok": False, "code": "stale_state", "reason": "witness superseded"}
             record = self._store.get_effect_draft(witness.draft_id, now_ms=now)
             if not isinstance(record, dict):
@@ -1361,6 +1323,85 @@ class OrinDaemon:
         self._audit("admin_unfreeze", sessions=frozen, intent_id=admin_intent.intent_id)
         return {"ok": True, "unfrozen": list(frozen)}
 
+    def _register_desktop_app_binding(
+        self,
+        envelope: dict[str, Any],
+        data: dict[str, Any],
+        raw_grant: dict[str, Any],
+    ) -> dict[str, Any]:
+        intents = self._intents
+        if intents is None:  # pragma: no cover - caller already checked
+            return {"ok": False, "code": "unsupported", "reason": "stage B disabled"}
+        session_id = str(envelope.get("session_id") or "")
+        if not session_id:
+            return {
+                "ok": False,
+                "code": "bad_message",
+                "reason": "AppShell desktop app binding requires parent session",
+            }
+        try:
+            binding = appshell_desktop_app_binding_from_dict(raw_grant)
+            intent = intent_from_dict(data)
+        except Exception as exc:
+            return {"ok": False, "code": "bad_message", "reason": str(exc)}
+        if (
+            intent.issued_by != "appshell:owner-witness"
+            or intent.profile not in {"personal", "work"}
+            or "desktop.observe" not in intent.allowed_effect_classes
+            or "desktop.action" not in intent.allowed_effect_classes
+            or binding.product_id != intent.product_id
+        ):
+            return {
+                "ok": False,
+                "code": "denied",
+                "reason": "intent is not an AppShell desktop app binding",
+            }
+        try:
+            expected_handle_id = derive_appshell_application_handle_id(
+                installation_owner_hash=intent.owner_key_hash,
+                product_id=intent.product_id,
+                task_id=intent.task_id,
+                profile=intent.profile,
+                principal_owner=binding.principal_owner,
+                principal_session=session_id,
+                principal_epoch=binding.principal_epoch,
+                bundle_id=binding.bundle_id,
+            )
+        except Exception as exc:
+            return {"ok": False, "code": "bad_message", "reason": str(exc)}
+        application_handles = tuple(
+            handle_id
+            for handle_id in intent.allowed_resource_handles
+            if handle_id.startswith("app:")
+        )
+        if expected_handle_id not in application_handles:
+            return {
+                "ok": False,
+                "code": "denied",
+                "reason": "signed ApplicationHandle commitment mismatch",
+            }
+        registered = intents.register(data, now_ms=self._now_ms())
+        if not registered.get("ok"):
+            return registered
+        broker = self._broker
+        if broker is None:  # pragma: no cover - stage_b initializes it
+            return {"ok": False, "code": "unsupported", "reason": "handle broker unavailable"}
+        issued = broker.issue(
+            kind="ApplicationHandle",
+            token=expected_handle_id.partition(":")[2],
+            owner_key_hash=intent.owner_key_hash,
+            tenant=intent.profile,
+            object_digest=binding.bundle_id,
+            capabilities=("read", "use"),
+            expires_at_ms=intent.expires_at_ms,
+            approved=True,
+            now_ms=self._now_ms(),
+        )
+        if not issued.get("ok"):
+            return issued
+        self._parent_sessions[intent.task_id] = session_id
+        return {"ok": True}
+
     def _on_handle(self, envelope: dict[str, Any]) -> dict[str, Any]:
         broker = self._broker
         if broker is None:  # pragma: no cover - cap gating prevents this
@@ -1431,6 +1472,67 @@ class OrinDaemon:
         if draft.effect_type == "file.commit":
             return intents.effective_grant(draft.task_id, now_ms=now_ms)
         return intents.active_envelope(draft.task_id, now_ms=now_ms)
+
+    def _application_handles_for_intent(self, intent: Any) -> dict[str, OriginHandle]:
+        broker = self._broker
+        if broker is None:
+            return {}
+        now = self._now_ms()
+        resolved: dict[str, OriginHandle] = {}
+        for handle_id in intent.allowed_resource_handles:
+            if not isinstance(handle_id, str) or not handle_id.startswith("app:"):
+                continue
+            handle = broker.valid_handle(handle_id, now_ms=now)
+            if (
+                handle is None
+                or handle.kind != "ApplicationHandle"
+                or handle.owner_key_hash != intent.owner_key_hash
+                or handle.tenant != intent.profile
+                or "use" not in handle.capabilities
+            ):
+                continue
+            resolved[handle_id] = handle
+        return resolved
+
+    def _memory_scope_error(
+        self,
+        draft: EffectDraft,
+        *,
+        intent: Any,
+        session_id: str = "",
+    ) -> str | None:
+        if not draft.effect_type.startswith("memory."):
+            return None
+        if intent is None:
+            return "memory effect has no active owner intent"
+        args = draft.arguments
+        if args.get("owner_key_hash") != intent.owner_key_hash:
+            return "memory owner mismatch"
+        if args.get("profile") != intent.profile:
+            return "memory profile mismatch"
+        if args.get("task_id") not in {None, draft.task_id}:
+            return "memory task mismatch"
+        claimed_session = args.get("session_id")
+        if type(claimed_session) is not str or not claimed_session or len(claimed_session) > 256:
+            return "memory session is required"
+        bound = self._parent_sessions.get(draft.task_id, "")
+        if bound and session_id and bound != session_id:
+            return "memory session mismatch"
+        parent = session_id or bound
+        if not parent:
+            return "memory parent session is required"
+        if claimed_session != parent:
+            return "memory session mismatch"
+        return None
+
+    def _remember_parent_session(self, intent_data: dict[str, Any], session_id: str) -> None:
+        if not session_id:
+            return
+        try:
+            intent = intent_from_dict(intent_data)
+        except Exception:
+            return
+        self._parent_sessions[intent.task_id] = session_id
 
     def _active_personal_file_approvals(
         self,
@@ -1733,7 +1835,9 @@ class OrinDaemon:
             if gate_inputs is None:
                 return {"ok": False, "code": "denied", "reason": str(gate_error)}
             active = gate_inputs.intent
-            handles = gate_inputs.handles_by_id
+            handles = dict(gate_inputs.handles_by_id)
+            if active is not None:
+                handles.update(self._application_handles_for_intent(active))
             handle_error = None
         else:
             active = self._authority_for_draft(draft, now_ms=now)
@@ -1745,6 +1849,14 @@ class OrinDaemon:
             )
         if handle_error is not None:
             return {"ok": False, "code": "unknown_handle", "reason": handle_error}
+        if executor_id == "cell.memory":
+            scope_error = self._memory_scope_error(
+                draft,
+                intent=active,
+                session_id=str(envelope.get("session_id") or ""),
+            )
+            if scope_error is not None:
+                return {"ok": False, "code": "denied", "reason": scope_error}
         package = CellPackage(
             draft=draft,
             executor_id=executor_id,
@@ -1757,9 +1869,7 @@ class OrinDaemon:
         except Exception as exc:
             return {"ok": False, "code": "bad_message", "reason": str(exc)}
         desktop_session = (
-            self._cell_session_by_cap("cell.desktop")
-            if executor_id == "cell.desktop"
-            else None
+            self._cell_session_by_cap("cell.desktop") if executor_id == "cell.desktop" else None
         )
         response = await self._request_cell(
             executor_id,
@@ -1818,12 +1928,10 @@ class OrinDaemon:
                     "desktop_target_handle_id",
                     "display_id",
                     "height",
-                    "owner_pid",
                     "pixel_hash",
                     "scale",
                     "target_kind",
                     "width",
-                    "window_number",
                 }
                 if draft.effect_type == "desktop.observe"
                 else {"action", "before_digest"}
@@ -1836,8 +1944,7 @@ class OrinDaemon:
                 }
             if (
                 draft.effect_type == "desktop.observe"
-                and desktop_projection["desktop_target_handle_id"]
-                != witness.target_version
+                and desktop_projection["desktop_target_handle_id"] != witness.target_version
             ):
                 return {
                     "ok": False,
@@ -1847,6 +1954,23 @@ class OrinDaemon:
         stored = self._store.record_state_witness(witness.to_dict())
         if stored in {"conflict", "stale"}:
             return {"ok": False, "code": "stale_state", "reason": "witness rejected"}
+        if executor_id == "cell.memory":
+            raw_memory = response.get("result")
+            memory_projection = {
+                key: raw_memory[key]
+                for key in (
+                    "status",
+                    "record_id",
+                    "value",
+                    "source",
+                    "taint",
+                    "clearance",
+                    "key",
+                    "effect",
+                )
+                if isinstance(raw_memory, dict) and key in raw_memory
+            }
+            return {"ok": True, "witness": witness.to_dict(), "result": memory_projection}
         if executor_id != "cell.desktop":
             return {"ok": True, "witness": witness.to_dict()}
         if draft.effect_type != "desktop.observe":
@@ -1944,6 +2068,7 @@ class OrinDaemon:
         envelope: dict[str, Any],
         *,
         session_id: str = "",
+        parent_session: str = "",
     ) -> dict[str, Any]:
         payload = envelope.get("payload")
         if not isinstance(payload, dict):  # parse_frame already enforced this
@@ -1952,6 +2077,7 @@ class OrinDaemon:
             return await self._consume_draft(
                 str(payload["draft_id"]),
                 session_id=session_id,
+                parent_session=parent_session,
             )
         cap = str(payload.get("cell") or "")
         if cap == "cell.net":
@@ -2192,8 +2318,18 @@ class OrinDaemon:
                 }
             )
         elif effect_type == "desktop.action":
+            allowed.update({"action", "after_digest", "before_digest", "receipt_id"})
+        elif effect_type in {"memory.read", "memory.write", "memory.mutate"}:
             allowed.update(
-                {"action", "after_digest", "before_digest", "receipt_id"}
+                {
+                    "clearance",
+                    "effect",
+                    "key",
+                    "record_id",
+                    "source",
+                    "taint",
+                    "value",
+                }
             )
         projection = {key: result[key] for key in allowed if key in result}
         if effect_type in {"desktop.observe", "desktop.action"}:
@@ -2269,8 +2405,7 @@ class OrinDaemon:
             draft.task_id != operation.task_id
             or draft.effect_type != operation.effect_type
             or str(record.get("executor_id") or "") != operation.executor_id
-            or str(record.get("canonical_effect_hash") or "")
-            != operation.canonical_effect_hash
+            or str(record.get("canonical_effect_hash") or "") != operation.canonical_effect_hash
             or self._file_directory_handle_id(draft) != operation.directory_handle_id
         ):
             raise OperationConflict("durable operation draft authority changed")
@@ -2295,6 +2430,15 @@ class OrinDaemon:
             if handle.owner_key_hash != operation.owner_key_hash:
                 raise OperationConflict("durable operation handle owner changed")
             handles.append(handle)
+        if operation.executor_id == "cell.desktop" and self._intents is not None:
+            active = self._intents.active_envelope(operation.task_id, now_ms=self._now_ms())
+            if active is not None:
+                seen = {item.handle_id for item in handles}
+                for handle in self._application_handles_for_intent(active).values():
+                    if handle.handle_id in seen:
+                        continue
+                    handles.append(handle)
+                    seen.add(handle.handle_id)
         package = CellPackage(
             draft=draft,
             executor_id=operation.executor_id,
@@ -2354,10 +2498,8 @@ class OrinDaemon:
             or draft.task_id != operation.task_id
             or draft.effect_type != operation.effect_type
             or str(getattr(entry, "executor_id", "")) != operation.executor_id
-            or str(getattr(entry, "side_effect_class", ""))
-            != operation.side_effect_class
-            or str(record.get("canonical_effect_hash") or "")
-            != operation.canonical_effect_hash
+            or str(getattr(entry, "side_effect_class", "")) != operation.side_effect_class
+            or str(record.get("canonical_effect_hash") or "") != operation.canonical_effect_hash
             or self._file_directory_handle_id(draft) != operation.directory_handle_id
         ):
             return "prepared operation identity changed"
@@ -2416,8 +2558,7 @@ class OrinDaemon:
                     with contextlib.suppress(Exception):
                         parsed_passes.append(export_pass_from_dict(row))
                 if not any(
-                    export_pass.pass_id == operation.export_pass_id
-                    for export_pass in parsed_passes
+                    export_pass.pass_id == operation.export_pass_id for export_pass in parsed_passes
                 ):
                     return "prepared Work export authority is no longer active"
             else:
@@ -2559,10 +2700,13 @@ class OrinDaemon:
             )
         if operation.state is not CommitState.UNKNOWN_COMMIT:
             return operation
-        if self._cell_writer_by_cap(
-            operation.executor_id,
-            allow_unready=allow_unready_cell,
-        ) is None:
+        if (
+            self._cell_writer_by_cap(
+                operation.executor_id,
+                allow_unready=allow_unready_cell,
+            )
+            is None
+        ):
             return operation
         if operation.executor_id == "cell.connector":
             probe: dict[str, Any] = {
@@ -2733,8 +2877,7 @@ class OrinDaemon:
                 max_bytes_out=active.budgets.max_bytes_out,
                 export_pass_id=pass_id,
                 require_personal_pass=(
-                    active.profile == "personal"
-                    and draft.effect_type in EXPORT_EFFECTS
+                    active.profile == "personal" and draft.effect_type in EXPORT_EFFECTS
                 ),
                 exact_approval_id=exact_approval_id,
                 require_personal_exact=(
@@ -2859,12 +3002,11 @@ class OrinDaemon:
         if not canary.get("ok"):
             return canary
         effect_hash = str(record.get("canonical_effect_hash") or "")
-        idem_material = "|".join(
-            (draft.task_id, draft.draft_id, witness.witness_id, effect_hash)
+        idem_material = "|".join((draft.task_id, draft.draft_id, witness.witness_id, effect_hash))
+        operation_id = (
+            "operation:"
+            + hashlib.sha256(("orin-operation-v1\x00" + draft.draft_id).encode()).hexdigest()
         )
-        operation_id = "operation:" + hashlib.sha256(
-            ("orin-operation-v1\x00" + draft.draft_id).encode()
-        ).hexdigest()
         spec = OperationSpec(
             operation_id=operation_id,
             draft_id=draft.draft_id,
@@ -2899,8 +3041,7 @@ class OrinDaemon:
                 max_bytes_out=active.budgets.max_bytes_out,
                 export_pass_id=pass_id,
                 require_personal_pass=(
-                    active.profile == "personal"
-                    and draft.effect_type in EXPORT_EFFECTS
+                    active.profile == "personal" and draft.effect_type in EXPORT_EFFECTS
                 ),
                 exact_approval_id=exact_approval_id,
                 require_personal_exact=(
@@ -2922,6 +3063,7 @@ class OrinDaemon:
         draft_id: str,
         *,
         session_id: str = "",
+        parent_session: str = "",
     ) -> dict[str, Any]:
         if self._membrane is not None:
             return await self._consume_draft_membrane(draft_id, session_id=session_id)
@@ -2961,6 +3103,16 @@ class OrinDaemon:
         )
         if handle_error is not None:
             return {"ok": False, "code": "unknown_handle", "reason": handle_error}
+        if str(getattr(entry, "executor_id", "")) == "cell.desktop":
+            handles.update(self._application_handles_for_intent(active))
+        if str(getattr(entry, "executor_id", "")) == "cell.memory":
+            scope_error = self._memory_scope_error(
+                draft,
+                intent=active,
+                session_id=parent_session,
+            )
+            if scope_error is not None:
+                return {"ok": False, "code": "denied", "reason": scope_error}
         destinations = self._destination_handles(draft, entry)
         directory_handle_id = self._file_directory_handle_id(draft)
         exact_rows: list[dict[str, Any]] = []
@@ -3044,9 +3196,7 @@ class OrinDaemon:
         if sequence is None:
             return {"ok": False, "code": "denied", "reason": "effect budget exhausted"}
         effect_hash = str(record.get("canonical_effect_hash") or "")
-        idem_material = "|".join(
-            (draft.task_id, draft.draft_id, witness.witness_id, effect_hash)
-        )
+        idem_material = "|".join((draft.task_id, draft.draft_id, witness.witness_id, effect_hash))
         permit = CommitPermit(
             permit_id=f"permit:{secrets.token_hex(16)}",
             intent_id=active.intent_id,
@@ -3086,9 +3236,16 @@ class OrinDaemon:
                 "reason": str(response.get("reason") or "cell commit failed"),
             }
         raw_result = response.get("result")
-        safe = self._safe_cell_projection(
-            draft.effect_type, dict(raw_result) if isinstance(raw_result, dict) else {}
-        )
+        raw_dict = dict(raw_result) if isinstance(raw_result, dict) else {}
+        if executor_id in {"cell.desktop", "cell.memory"}:
+            receipt_error = self._verify_signed_cell_receipt(
+                raw_dict,
+                permit=permit,
+                executor_id=executor_id,
+            )
+            if receipt_error is not None:
+                return {"ok": False, "code": "denied", "reason": receipt_error}
+        safe = self._safe_cell_projection(draft.effect_type, raw_dict)
         if executor_id in {"cell.connector", "cell.desktop", "cell.file"}:
             safe["commit_guarantee"] = "best_effort"
             self._audit(
@@ -3097,7 +3254,124 @@ class OrinDaemon:
                 effect_type=draft.effect_type,
                 executor_id=executor_id,
             )
+        if draft.effect_type == "desktop.action":
+            self._persist_desktop_action_receipt(
+                permit_id=permit.permit_id,
+                draft_id=draft.draft_id,
+                before_digest=str(raw_dict.get("before_digest") or safe.get("before_digest") or ""),
+                after_digest=str(raw_dict.get("after_digest") or safe.get("after_digest") or ""),
+                target_digest=str(raw_dict.get("target_digest") or ""),
+                state="committed" if safe.get("status") == "COMMITTED" else "unknown",
+                created_at_ms=now,
+            )
         return {"ok": True, "verdict": "allow", "cell": safe}
+
+    def _verify_signed_cell_receipt(
+        self,
+        raw: dict[str, Any],
+        *,
+        permit: CommitPermit,
+        executor_id: str,
+    ) -> str | None:
+        if raw.get("status") != "COMMITTED" or raw.get("duplicate") is True:
+            return None
+        blob = raw.get("signed_receipt")
+        if type(blob) is not str or not blob:
+            return "signed cell receipt is required"
+        try:
+            payload = json.loads(blob)
+        except json.JSONDecodeError:
+            return "signed cell receipt is invalid"
+        try:
+            signed = signed_receipt_from_dict(payload, mac_key=self._keybox.key)
+        except ProtocolError:
+            return "signed cell receipt seal is invalid"
+        receipt = signed.receipt
+        if (
+            receipt.permit_id != permit.permit_id
+            or receipt.executor_id != executor_id
+            or receipt.status != "COMMITTED"
+        ):
+            return "signed cell receipt binding is invalid"
+        return None
+
+    def _persist_desktop_action_receipt(
+        self,
+        *,
+        permit_id: str,
+        draft_id: str,
+        before_digest: str,
+        after_digest: str,
+        target_digest: str,
+        state: str,
+        created_at_ms: int,
+    ) -> None:
+        """Durably record a desktop.action outcome; never a consume decision."""
+
+        self._store.record_desktop_action_receipt(
+            permit_id=permit_id,
+            draft_id=draft_id,
+            before_digest=before_digest,
+            after_digest=after_digest,
+            target_digest=target_digest,
+            state=state,
+            created_at_ms=created_at_ms,
+        )
+
+    async def _reconcile_desktop_action(
+        self,
+        *,
+        permit_id: str = "",
+        draft_id: str = "",
+    ) -> dict[str, str]:
+        """Answer committed|absent|unknown without replaying the OS action."""
+
+        stored = self._store.desktop_action_receipt(
+            permit_id=permit_id or None,
+            draft_id=draft_id or None,
+        )
+        if stored is not None and stored.get("state") == "committed" and stored.get("after_digest"):
+            return {"state": "committed"}
+        response = await self._request_cell(
+            "cell.desktop",
+            "reconcile",
+            effect_id=draft_id or permit_id or "desktop-reconcile",
+            probe={"permit_id": permit_id, "draft_id": draft_id},
+        )
+        if response is None or not response.get("ok"):
+            return {"state": "unknown"}
+        outcome = str(response.get("state") or "unknown")
+        if outcome not in {"committed", "absent", "unknown"}:
+            outcome = "unknown"
+        if outcome == "committed":
+            self._persist_desktop_action_receipt(
+                permit_id=permit_id
+                or str(stored.get("permit_id") if stored else "")
+                or f"permit:reconciled-{draft_id}",
+                draft_id=draft_id or str(stored.get("draft_id") if stored else ""),
+                before_digest=str(
+                    response.get("before_digest") or (stored or {}).get("before_digest") or ""
+                ),
+                after_digest=str(
+                    response.get("after_digest") or (stored or {}).get("after_digest") or ""
+                ),
+                target_digest=str(
+                    response.get("target_digest") or (stored or {}).get("target_digest") or ""
+                ),
+                state="committed",
+                created_at_ms=self._now_ms(),
+            )
+        elif outcome == "unknown" and stored is None and (permit_id or draft_id):
+            self._persist_desktop_action_receipt(
+                permit_id=permit_id or f"permit:unknown-{draft_id}",
+                draft_id=draft_id,
+                before_digest="",
+                after_digest="",
+                target_digest="",
+                state="unknown",
+                created_at_ms=self._now_ms(),
+            )
+        return {"state": outcome}
 
     def _cell_writer_by_cap(
         self,
@@ -3206,9 +3480,7 @@ class OrinDaemon:
         """Serve Cell acks while hiding the Cell until recovery is stable."""
 
         serve_task = asyncio.create_task(self._serve_cells(reader, writer, session))
-        reconcile_task = asyncio.create_task(
-            self._reconcile_membrane_for_caps(session.caps)
-        )
+        reconcile_task = asyncio.create_task(self._reconcile_membrane_for_caps(session.caps))
         self._cell_reconcile_tasks.add(reconcile_task)
         try:
             done, _pending = await asyncio.wait(
@@ -3383,6 +3655,40 @@ class OrinDaemon:
         self._cell_runtime_roots[proc.pid] = runtime_root
         self._audit("desktop_cell_spawned", pid=proc.pid)
 
+    def _spawn_memory_cell(self) -> None:
+        """Launch the WP-C3 Memory Cell only for the explicit harness or enforce."""
+
+        if not self._cell_memory_enabled or not self._cell_identity_enforce:
+            return
+        caps = frozenset({"cell.memory"})
+        tickets, runtime_root = self._new_cell_launch("memory", caps)
+        env = self._cell_environment(
+            kind="memory",
+            caps=caps,
+            tickets=tickets,
+            runtime_root=runtime_root,
+        )
+        try:
+            proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+                [sys.executable, "-m", "js.orind.cells.memory"],
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError:
+            self._discard_cell_runtime_root(runtime_root)
+            self._audit("memory_cell_spawn_failed")
+            return
+        self._cell_procs.add(proc)
+        self._memory_proc = proc
+        self._expected_cell_caps_by_pid[proc.pid] = caps
+        assert runtime_root is not None
+        self._expected_cell_launch_by_pid[proc.pid] = tickets
+        self._cell_runtime_roots[proc.pid] = runtime_root
+        self._audit("memory_cell_spawned", pid=proc.pid)
+
     def _new_cell_launch(
         self,
         kind: str,
@@ -3444,9 +3750,7 @@ class OrinDaemon:
             "LC_ALL": "C",
             "ORIN_CELLS_SOCKET": str(self._cell_socket_path),
             "ORIN_CELL_IDENTITY_ENFORCE": "1",
-            "ORIN_CELL_LAUNCH_TICKETS": json.dumps(
-                tickets, sort_keys=True, separators=(",", ":")
-            ),
+            "ORIN_CELL_LAUNCH_TICKETS": json.dumps(tickets, sort_keys=True, separators=(",", ":")),
             "ORIN_ORIND_PID": str(os.getpid()),
             "ORIN_STATE_DIR": str(self._state_dir),
             "PATH": trusted_path,
@@ -3469,6 +3773,12 @@ class OrinDaemon:
             env["ORIN_KEYBOX_TIER"] = self._keybox.active_tier
             if self._desktop_script_path is not None:
                 env["ORIN_DESKTOP_SCRIPT_PATH"] = str(self._desktop_script_path)
+        elif kind == "memory":
+            env["ORIN_KEYBOX_TIER"] = self._keybox.active_tier
+            private_state = runtime_root / "state"
+            private_state.mkdir(mode=0o700)
+            os.chmod(private_state, 0o700)
+            env["ORIN_CELL_PRIVATE_STATE"] = str(private_state)
         else:  # pragma: no cover - all callers use a closed internal enum
             raise OrinDaemonError("unknown C1 Cell kind")
         return env
@@ -3479,7 +3789,12 @@ class OrinDaemon:
             return
         # Spawn failure happens before the Cell can create arbitrary content;
         # remove only the exact private directories this function created.
-        for child in (runtime_root / "build-workspace", runtime_root / "tmp", runtime_root / "home"):
+        for child in (
+            runtime_root / "build-workspace",
+            runtime_root / "tmp",
+            runtime_root / "home",
+            runtime_root / "state",
+        ):
             with contextlib.suppress(OSError):
                 child.rmdir()
         with contextlib.suppress(OSError):
@@ -3503,6 +3818,8 @@ class OrinDaemon:
             self._file_proc = None
         if self._desktop_proc is not None and self._desktop_proc.poll() is not None:
             self._desktop_proc = None
+        if self._memory_proc is not None and self._memory_proc.poll() is not None:
+            self._memory_proc = None
         connected_caps = {
             cap for writer in self._cell_sessions for cap in self._cell_sessions[writer].caps
         }
@@ -3531,6 +3848,12 @@ class OrinDaemon:
             and self._desktop_proc is None
         ):
             self._spawn_desktop_cell()
+        if (
+            self._cell_memory_enabled
+            and "cell.memory" not in connected_caps
+            and self._memory_proc is None
+        ):
+            self._spawn_memory_cell()
 
     async def _handle_cell_connection(
         self,
@@ -3541,9 +3864,8 @@ class OrinDaemon:
         if task is not None:
             self._cell_tasks.add(task)
         try:
-            if (
-                self._cell_identity_enforce
-                and not self._strict_socket_is_current(self._cell_socket_path)
+            if self._cell_identity_enforce and not self._strict_socket_is_current(
+                self._cell_socket_path
             ):
                 self._audit("peer_rejected", reason="Cell socket path replaced")
                 writer.close()
@@ -3602,11 +3924,7 @@ class OrinDaemon:
                     if not future.done():
                         future.set_result({"ok": False, "code": "internal", "reason": "cell lost"})
                 loop = self._loop
-                if (
-                    self._stage_b
-                    and not self._shutting_down
-                    and loop is not None
-                ):
+                if self._stage_b and not self._shutting_down and loop is not None:
                     loop.call_later(1.0, self._respawn_watchdog)
             writer.close()
 
@@ -3627,10 +3945,7 @@ class OrinDaemon:
             if not verify_mac(session.session_key, envelope):
                 self._audit("protocol_violation", reason="bad mac from cell")
                 return
-            if (
-                self._cell_identity_enforce
-                and envelope.get("nonce") != session.session_nonce
-            ):
+            if self._cell_identity_enforce and envelope.get("nonce") != session.session_nonce:
                 self._audit("protocol_violation", reason="cell session nonce mismatch")
                 return
             if envelope["seq"] <= session.last_client_seq:
@@ -3731,6 +4046,7 @@ async def run_daemon(
     cell_net: bool = False,
     cell_file: bool = False,
     commit_membrane: bool = False,
+    cell_identity_enforce: bool = False,
 ) -> None:
     """Foreground entry (``--dev`` mode); launchd manages restarts in prod."""
 
@@ -3744,6 +4060,7 @@ async def run_daemon(
         cell_net=cell_net,
         cell_file=cell_file,
         commit_membrane=commit_membrane,
+        cell_identity_enforce=cell_identity_enforce,
     )
     await daemon.start()
     print(f"orind listening on {daemon.socket_path} (keybox tier: {daemon.keybox_tier})")

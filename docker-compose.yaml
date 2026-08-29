@@ -12,15 +12,17 @@ services:
     volumes:
       - ./workspace:/app/workspace
       - ./state:/app/state
+      # Work home is independent of JS_STATE_DIR; without this mount, a
+      # container recreate wipes Work credentials, memory, and ledger.
+      - ./state-work:/home/appuser/.js-work
     environment:
       - JS_LOG_LEVEL=INFO
       - JS_STATE_DIR=/app/state
+      - JS_APPSHELL_PROVISION_KEY=1
     restart: unless-stopped
     healthcheck:
       # Probe the unauthenticated static index route. /api/status and
-      # /api/health require credentials and would always answer 401 here, and
-      # /api/appshell/health only exists on the AppShell parent app, not on
-      # the plain `js web` server this container runs.
+      # /api/health require credentials and would always answer 401 here.
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
       interval: 30s
       timeout: 10s
@@ -41,9 +43,12 @@ services:
       - ./workspace:/app/workspace
       - ./state:/app/state
       - .:/app
+      # Separate from prod: this profile runs as root, so Work home is /root.
+      - ./state-work-dev:/root/.js-work
     environment:
       - JS_LOG_LEVEL=DEBUG
       - JS_STATE_DIR=/app/state
+      - JS_APPSHELL_PROVISION_KEY=1
     # Run as root in dev so the mounted host volumes are writable
     user: root
-    command: ["js", "web", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    command: ["js", "appshell", "--host", "0.0.0.0", "--port", "8000", "--no-browser"]

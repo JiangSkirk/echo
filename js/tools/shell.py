@@ -80,6 +80,7 @@ _GIT_DENIED_LONG_FLAGS = (
     # ``--pretty=format:`` this plants workspace ``.git`` metadata that
     # Linux bwrap cannot regex-deny at wrap time (TECH_DEBT #6 / H1).
     "--output",
+    "--output-directory",
     # ``git grep -O`` / ``--open-files-in-pager`` runs the configured pager.
     "--open-files-in-pager",
     # External diff drivers execute repo-configured commands.
@@ -185,48 +186,57 @@ def _token_has_git_metadata_component(token: str) -> bool:
     return any(part.casefold() == ".git" for part in normalized.split("/"))
 
 
-def _git_metadata_write_arg_error(name: str, args: list[str]) -> str | None:
-    """Reject write-command path args that name a ``.git`` component.
+def _arg_has_var(arg_vars: list[bool], index: int) -> bool:
+    """True when argv slot ``index`` expands, or the parallel vector is short."""
+    return True if index >= len(arg_vars) else arg_vars[index]
 
-    Also reject ``$`` expansions: the AST drops ``has_var``, so a token like
-    ``nested/$x`` would otherwise pass the lexical ``.git`` check and expand
-    at runtime.
+
+def _write_path_expansion_error(name: str, args: list[str], arg_vars: list[bool]) -> str | None:
+    """Deny ``$`` expansions on commands that write workspace paths.
+
+    Read-only tools (``echo $HOME``) stay allowed; write argv must be
+    statically inspectable because execution still goes through ``sh -c``.
     """
+    if name not in _GIT_METADATA_WRITE_COMMANDS:
+        return None
+    for index, token in enumerate(args[1:], start=1):
+        if token == "--" or token.startswith("-"):
+            continue
+        if _arg_has_var(arg_vars, index):
+            return f"{name} path denied (non-static expansion): {token}"
+    return None
+
+
+def _git_metadata_write_arg_error(name: str, args: list[str]) -> str | None:
+    """Reject write-command path args that name a ``.git`` component."""
     if name not in _GIT_METADATA_WRITE_COMMANDS:
         return None
     for token in args[1:]:
         if token == "--" or token.startswith("-"):
             continue
-        if "$" in token:
-            return f"{name} path denied (non-static expansion): {token}"
         if _token_has_git_metadata_component(token):
             return f"{name} path denied (workspace .git metadata write vector): {token}"
     return None
 
 
 def _runtime_tcb_write_arg_error(name: str, args: list[str], *, workspace: Path) -> str | None:
-    """Reject write-command path args that name an installed runtime TCB path.
-
-    ``$`` expansions are denied the same way as git metadata writes: the AST
-    drops ``has_var``, so a token like ``js/$x`` must not pass lexical TCB.
-    """
+    """Reject write-command path args that name an installed runtime TCB path."""
     if name not in _GIT_METADATA_WRITE_COMMANDS:
         return None
     for token in args[1:]:
         if token == "--" or token.startswith("-"):
             continue
-        if "$" in token:
-            return f"{name} path denied (non-static expansion): {token}"
         if token_is_runtime_tcb_write(token, workspace=workspace):
             return f"{name} path denied (runtime TCB write vector): {token}"
     return None
 
 
-def _git_arg_error(args: list[str]) -> str | None:
+def _git_arg_error(args: list[str], arg_vars: list[bool] | None = None) -> str | None:
     subcommand: str | None = None
     skip_next = False  # value of a separate-form option (-C/--git-dir/...)
-    write_positionals: list[str] = []
-    for token in args[1:]:
+    write_positionals: list[tuple[int, str]] = []
+    vars_ = arg_vars if arg_vars is not None else []
+    for index, token in enumerate(args[1:], start=1):
         if token.startswith("-c"):
             return f"git inline config denied (alias/pager RCE vector): {token}"
         if token == "-O" or token.startswith("-O="):
@@ -242,7 +252,7 @@ def _git_arg_error(args: list[str]) -> str | None:
             continue
         if subcommand is not None:
             if not token.startswith("-"):
-                write_positionals.append(token)
+                write_positionals.append((index, token))
             continue
         if token == "-C":
             skip_next = True
@@ -255,8 +265,8 @@ def _git_arg_error(args: list[str]) -> str | None:
     if subcommand is not None and subcommand not in _GIT_ALLOWED_SUBCOMMANDS:
         return f"git subcommand denied (not in allowlist): {subcommand}"
     if subcommand in _GIT_PATH_WRITE_SUBCOMMANDS:
-        for token in write_positionals:
-            if "$" in token:
+        for index, token in write_positionals:
+            if _arg_has_var(vars_, index):
                 return f"git {subcommand} path denied (non-static expansion): {token}"
             if _token_has_git_metadata_component(token):
                 return (
@@ -467,9 +477,7 @@ class ShellTool:
         if path_decision.decision == SecurityDecisionType.BLOCK:
             return ToolResult(success=False, error=path_decision.reason)
 
-        effective_timeout = min(
-            timeout or self.limits.shell_timeout, self.limits.shell_timeout
-        )
+        effective_timeout = min(timeout or self.limits.shell_timeout, self.limits.shell_timeout)
         cell_backend = getattr(self, "cell_backend", None)
         if cell_backend is not None:
             return await self._execute_via_build_cell(
@@ -568,6 +576,11 @@ class ShellTool:
         glob characters (``*``/``?``/``[``) — a runtime glob expansion could
         otherwise smuggle option-injection files (e.g. ``tar cf x.tar *``)
         past the literal argv inspection below.
+
+        Write-path commands also reject ``CommandNode.arg_vars``: execution
+        still goes through ``sh -c``, so a runtime-expanded path is not the
+        argv the allowlist inspected.  Read-only expansions (``echo $HOME``)
+        stay allowed.
         """
 
         try:
@@ -595,6 +608,9 @@ class ShellTool:
             raw_name = args[0]
             if "/" in raw_name or "\\" in raw_name or raw_name not in allowed:
                 return f"Shell command allowlist denied executable: {raw_name}"
+            write_var_error = _write_path_expansion_error(raw_name, args, node.arg_vars)
+            if write_var_error is not None:
+                return f"Shell command allowlist denied: {write_var_error}"
             if raw_name == "git" and not self.executor._git_sandbox_env_overrides():
                 return (
                     "Shell command allowlist denied: git requires sandbox "
@@ -618,7 +634,7 @@ class ShellTool:
                         "Shell command allowlist denied: unquoted glob character "
                         f"in {raw_name} arguments (option-injection vector)"
                     )
-                arg_error = rule(args)
+                arg_error = _git_arg_error(args, node.arg_vars) if raw_name == "git" else rule(args)
                 if arg_error is not None:
                     return f"Shell command allowlist denied: {arg_error}"
         return None

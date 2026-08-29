@@ -26,16 +26,20 @@ class SetupWizard:
 
     def __init__(self) -> None:
         self.settings = JSSettings()
-        self.config_path = Path(os.getenv("JS_CONFIG_PATH", "~/.config/js/config.yaml")).expanduser()
+        self.config_path = Path(
+            os.getenv("JS_CONFIG_PATH", "~/.config/js/config.yaml")
+        ).expanduser()
 
     async def run(self, non_interactive: bool = False) -> None:
         """Run the complete setup flow."""
-        console.print(Panel.fit(
-            "[bold cyan]JS Agent Setup Wizard[/bold cyan]\n"
-            "We'll automatically detect your local models and configure everything.",
-            title="Welcome",
-            border_style="cyan",
-        ))
+        console.print(
+            Panel.fit(
+                "[bold cyan]JS Agent Setup Wizard[/bold cyan]\n"
+                "We'll automatically detect your local models and configure everything.",
+                title="Welcome",
+                border_style="cyan",
+            )
+        )
 
         steps = [
             ("Creating directories", self._setup_directories),
@@ -63,24 +67,29 @@ class SetupWizard:
                     failed_steps.append(desc)
 
         if failed_steps:
-            console.print(Panel(
-                f"[red]Setup failed: {', '.join(failed_steps)}[/red]\n\n"
-                "Configuration may be incomplete. Re-run setup after fixing "
-                "the errors above.",
-                title="Setup Failed",
-                border_style="red",
-            ))
+            console.print(
+                Panel(
+                    f"[red]Setup failed: {', '.join(failed_steps)}[/red]\n\n"
+                    "Configuration may be incomplete. Re-run setup after fixing "
+                    "the errors above.",
+                    title="Setup Failed",
+                    border_style="red",
+                )
+            )
             raise SystemExit(1)
 
-        console.print(Panel(
-            "[green]Setup complete![/green]\n\n"
-            f"Config saved to: [cyan]{self.config_path}[/cyan]\n\n"
-            "Next steps:\n"
-            "  [bold]js[/bold]          - Start CLI chat\n"
-            "  [bold]js web[/bold]      - Launch Web UI\n"
-            "  [bold]js status[/bold]   - Check system status",
-            border_style="green",
-        ))
+        console.print(
+            Panel(
+                "[green]Setup complete![/green]\n\n"
+                f"Config saved to: [cyan]{self.config_path}[/cyan]\n\n"
+                "Next steps:\n"
+                "  Open the [bold]JS Agent desktop app[/bold]\n"
+                "  [bold]js[/bold]          - Start CLI chat\n"
+                "  [bold]js appshell[/bold] - Local Host (does not open a browser)\n"
+                "  [bold]js status[/bold]   - Check system status",
+                border_style="green",
+            )
+        )
 
     async def _setup_directories(self, **_kwargs: Any) -> None:
         self.settings.workspace.mkdir(parents=True, exist_ok=True)
@@ -135,8 +144,7 @@ class SetupWizard:
                             "control_provider_discover",
                             arguments,
                             user_input=(
-                                "Setup wizard exact local provider discovery: "
-                                f"{provider_type}"
+                                f"Setup wizard exact local provider discovery: {provider_type}"
                             ),
                             allowed_tools=("control_provider_discover",),
                         ),
@@ -159,9 +167,7 @@ class SetupWizard:
                         and bool(model["id"].strip())
                     ]
                     if valid_models:
-                        discovered.append(
-                            (provider_type, base_url, api_key, valid_models)
-                        )
+                        discovered.append((provider_type, base_url, api_key, valid_models))
         finally:
             await agent.close()
 
@@ -236,6 +242,7 @@ class SetupWizard:
             search_manager.register(TavilyEngine(tavily_key))
             # Store in secrets
             from js.security.secrets import SecretManager
+
             secrets = SecretManager(self.settings.state_dir)
             secrets.store("tavily_api_key", tavily_key)
 
@@ -246,6 +253,7 @@ class SetupWizard:
 
     async def _health_checks(self, **_kwargs: Any) -> None:
         from js.models.router import ModelRouter
+
         router = ModelRouter(self.settings)
         health = await router.health_check()
         for name, status in health.items():

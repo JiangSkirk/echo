@@ -278,9 +278,11 @@ export async function loadApprovals() {
 }
 
 function shouldPollApprovals() {
-  const approvalsActive = state.currentTab === 'approvals' && document.visibilityState === 'visible';
-  const chatRunning = Boolean(state.currentBubble);
-  return approvalsActive || chatRunning;
+  if (document.visibilityState !== 'visible') return false;
+  const approvalsActive = state.currentTab === 'approvals';
+  const badge = document.getElementById('approvals-pending-count');
+  const hasPending = Boolean(badge && !badge.classList.contains('hidden'));
+  return approvalsActive || hasPending;
 }
 
 export function startApprovalsPolling() {

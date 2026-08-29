@@ -23,6 +23,9 @@ from js.appshell.principal import (
     reset_current_appshell_epoch_binding,
     set_current_appshell_epoch_binding,
 )
+from js.utils.log import get_logger
+
+logger = get_logger("js.appshell.routing")
 
 
 @dataclass(eq=False)
@@ -37,9 +40,7 @@ class _WebSocketBinding:
 
     async def send_close(self) -> bool:
         if self.accepted and not self.close_sent:
-            await self.send(
-                {"type": "websocket.close", "code": 1012, "reason": "mode switched"}
-            )
+            await self.send({"type": "websocket.close", "code": 1012, "reason": "mode switched"})
             self.close_sent = True
             return True
         return False
@@ -164,9 +165,7 @@ class AppShellModeGate:
                     operation_kind=operation_kind,
                 )
             except PermissionError as exc:
-                raise AppShellEpochClosedError(
-                    "AppShell request epoch is closed or stale"
-                ) from exc
+                raise AppShellEpochClosedError("AppShell request epoch is closed or stale") from exc
             if binding.session in self._switches:
                 self._store.release_operation(operation)
                 raise AppShellEpochClosedError("AppShell request epoch is closed or stale")
@@ -298,7 +297,42 @@ class AppShellRoutingMiddleware:
             await self.app(routed_scope, receive, send)
             return
 
-        target = self.work_app if principal and principal.active_mode == "work" else self.personal_app
+        target = (
+            self.work_app if principal and principal.active_mode == "work" else self.personal_app
+        )
+        if target is self.work_app and not getattr(
+            self.owner_app.state, "work_runtime_ready", False
+        ):
+            ensure = getattr(self.owner_app.state, "ensure_work_runtime", None)
+            ready = False
+            if callable(ensure):
+                try:
+                    await ensure()
+                    ready = bool(getattr(self.owner_app.state, "work_runtime_ready", False))
+                except Exception:
+                    logger.exception("Work runtime bootstrap failed")
+                    ready = False
+            if not ready:
+                if scope.get("type") == "http":
+                    response = JSONResponse(
+                        {
+                            "detail": {
+                                "code": "work_runtime_starting",
+                                "message": "正在启动 Work",
+                            }
+                        },
+                        status_code=503,
+                    )
+                    await response(routed_scope, receive, send)
+                else:
+                    await send(
+                        {
+                            "type": "websocket.close",
+                            "code": 1013,
+                            "reason": "正在启动 Work",
+                        }
+                    )
+                return
         if principal is None:
             await target(routed_scope, receive, send)
             return

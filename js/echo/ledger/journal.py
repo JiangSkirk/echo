@@ -149,9 +149,10 @@ class EchoJournal:
 
 
 class FileEchoLedger:
-    def __init__(self, path: Path, *, mac_key: bytes) -> None:
+    def __init__(self, path: Path, *, mac_key: bytes, local_tip_seal: bool = False) -> None:
         self._path = path
         self._mac_key = mac_key
+        self._local_tip_seal = bool(local_tip_seal)
         self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self._path.parent, 0o700)
         lock_path = _journal_lock_path(self._path)
@@ -193,6 +194,8 @@ class FileEchoLedger:
         self._archive_store_cache: tuple[bytes, str, ArchiveStore] | None = None
         self._offset = offset
         self._active_fingerprint = _active_journal_fingerprint(self._path)
+        if self._local_tip_seal:
+            self._sync_local_tip_seal(bump=False)
 
     @property
     def records(self) -> tuple[CommitRecord, ...]:
@@ -205,6 +208,28 @@ class FileEchoLedger:
     @property
     def tip(self) -> CommitRecord | None:
         return self._records[-1] if self._records else None
+
+    def _local_tip_hash(self) -> str:
+        tip = self.tip
+        return tip.record_hash if tip is not None else GENESIS_HASH
+
+    def _local_known_tips(self) -> tuple[str, ...]:
+        return (GENESIS_HASH, *(record.record_hash for record in self._records))
+
+    def _sync_local_tip_seal(self, *, bump: bool) -> None:
+        from js.echo.ledger.tip_seal import bump_seal, ensure_seal, seal_path_for
+
+        path = seal_path_for(self._path)
+        tip = self._local_tip_hash()
+        if bump:
+            bump_seal(path, self._mac_key, new_tip=tip)
+            return
+        ensure_seal(
+            path,
+            self._mac_key,
+            current_tip=tip,
+            known_tips=self._local_known_tips(),
+        )
 
     def append(
         self,
@@ -283,6 +308,14 @@ class FileEchoLedger:
                     )
                     self._offset = handle.tell()
                     self._active_fingerprint = _active_journal_fingerprint_from_handle(handle)
+                    if self._local_tip_seal:
+                        from js.echo.ledger.tip_seal import refresh_seal_tip, seal_path_for
+
+                        refresh_seal_tip(
+                            seal_path_for(self._path),
+                            self._mac_key,
+                            new_tip=self._local_tip_hash(),
+                        )
                     return tuple(appended)
             finally:
                 _unlock_file(lock_handle)
@@ -337,16 +370,12 @@ class FileEchoLedger:
                     self._sync_from_disk_locked(handle)
                 report = self._verify_required_archives_locked()
                 if not report.ok:
-                    raise ValueError(
-                        "invalid required journal archive: " + ",".join(report.errors)
-                    )
+                    raise ValueError("invalid required journal archive: " + ",".join(report.errors))
                 anchors = tuple(self._archive_anchors)
                 if not anchors:
                     return tuple(self._records)
                 if len(anchors) != 1 or anchors[0] != self._records[0]:
-                    raise ValueError(
-                        "invalid journal archive chain: ambiguous_snapshot_anchor"
-                    )
+                    raise ValueError("invalid journal archive chain: ambiguous_snapshot_anchor")
                 anchor = anchors[0]
                 if not _is_sqlite_archive_anchor(anchor.payload):
                     return tuple(
@@ -366,9 +395,7 @@ class FileEchoLedger:
                 archived = tuple(store.iter_records(ref))
                 retained_count = anchor.payload.get("retained_record_count")
                 current = tuple(
-                    record
-                    for record in self._records
-                    if record.record_type != "snapshot_anchor"
+                    record for record in self._records if record.record_type != "snapshot_anchor"
                 )
                 if (
                     not isinstance(retained_count, int)
@@ -376,9 +403,7 @@ class FileEchoLedger:
                     or retained_count < 0
                     or retained_count > len(current)
                 ):
-                    raise ValueError(
-                        "invalid journal archive chain: retained_record_count"
-                    )
+                    raise ValueError("invalid journal archive chain: retained_record_count")
                 return archived + current[retained_count:]
             finally:
                 _unlock_file(lock_handle)
@@ -489,8 +514,7 @@ class FileEchoLedger:
                         report = verify_records(tuple(self._records), mac_key=self._mac_key)
                         if not report.ok:
                             raise ValueError(
-                                "invalid in-memory journal snapshot: "
-                                + ",".join(report.errors)
+                                "invalid in-memory journal snapshot: " + ",".join(report.errors)
                             )
                         records = self._records
                         offset = self._offset
@@ -713,6 +737,8 @@ class FileEchoLedger:
                     else:
                         self._archive_store_cache = None
                         self._required_archives_cache = None
+                    if self._local_tip_seal:
+                        self._sync_local_tip_seal(bump=True)
                     return True
                 raise ValueError("journal changed during compaction")
             finally:

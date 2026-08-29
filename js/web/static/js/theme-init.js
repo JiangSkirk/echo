@@ -31,4 +31,10 @@
   root.setAttribute('data-theme', resolved);
   root.setAttribute('data-theme-pref', stored);
   root.style.colorScheme = resolved;
+  try {
+    var switching = window.sessionStorage.getItem('js:switching-to');
+    if (switching === 'js-work' || switching === 'js-agent') {
+      root.setAttribute('data-switch-handoff', switching);
+    }
+  } catch (e) { /* storage unavailable */ }
 })();

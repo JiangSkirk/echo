@@ -69,6 +69,7 @@ class RuntimeContext:
     authority_mac: str = ""
     task_ref: TaskRef | None = None
     appshell_epoch_binding: AppShellEpochBindingV1 | None = None
+    surface: str = ""
 
 
 def runtime_context_error(context: RuntimeContext) -> str | None:
@@ -157,6 +158,10 @@ def runtime_context_error(context: RuntimeContext) -> str | None:
         return "Echo runtime context cancel token is required"
     if bool(token.is_set()):
         return "Echo runtime context is cancelled"
+    if not isinstance(context.surface, str):
+        return "Echo runtime context surface must be text"
+    if len(context.surface) > 32:
+        return "Echo runtime context surface exceeds limit"
     return None
 
 

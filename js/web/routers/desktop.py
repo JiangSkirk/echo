@@ -21,6 +21,7 @@ from js.echo.effect_interpreter import ToolEffect
 from js.web.auth import require_admin, require_auth_dep, runtime_owner
 from js.web.deps import get_agent, get_settings
 from js.web.runtime_context import web_channel
+from js.web.schemas import DesktopWizardActionRequest
 
 router = APIRouter(tags=["desktop"])
 
@@ -68,14 +69,14 @@ async def desktop_status(auth: dict[str, Any] = Depends(require_auth_dep)) -> di
     _forbid_work_desktop_endpoint()
     agent = get_agent()
     from js.tools.desktop.permissions import PermissionChecker
+
     is_macos = PermissionChecker.is_macos()
-    has_tools = (
-        agent._desktop_tools is not None
-        and getattr(agent._desktop_tools, 'available', False)
+    has_tools = agent._desktop_tools is not None and getattr(
+        agent._desktop_tools, "available", False
     )
     init_error = ""
     if agent._desktop_tools is not None:
-        init_error = getattr(agent._desktop_tools, 'init_error', '')
+        init_error = getattr(agent._desktop_tools, "init_error", "")
     return {
         "enabled": agent.settings.desktop_control_enabled,
         "available": is_macos,
@@ -103,14 +104,26 @@ async def desktop_wizard(auth: dict[str, Any] = Depends(require_auth_dep)) -> di
     _forbid_work_desktop_endpoint()
     try:
         from js.tools.desktop.wizard import run_wizard
+
         state = run_wizard()
     except Exception as e:
         return {
-            "ready": False, "overall_status": "error",
-            "steps": [{"name": "error", "title": "向导引擎故障", "status": "error",
-                       "detail": str(e)[:200], "action_label": "", "action_type": "none"}],
-            "enabled": False, "write_tools_enabled": False,
-            "can_install_cliclick": False, "install_summary": "",
+            "ready": False,
+            "overall_status": "error",
+            "steps": [
+                {
+                    "name": "error",
+                    "title": "向导引擎故障",
+                    "status": "error",
+                    "detail": str(e)[:200],
+                    "action_label": "",
+                    "action_type": "none",
+                }
+            ],
+            "enabled": False,
+            "write_tools_enabled": False,
+            "can_install_cliclick": False,
+            "install_summary": "",
         }
 
     try:
@@ -129,8 +142,14 @@ async def desktop_wizard(auth: dict[str, Any] = Depends(require_auth_dep)) -> di
         "ready": state.ready,
         "overall_status": state.overall_status,
         "steps": [
-            {"name": s.name, "title": s.title, "status": s.status, "detail": s.detail,
-             "action_label": s.action_label, "action_type": s.action_type}
+            {
+                "name": s.name,
+                "title": s.title,
+                "status": s.status,
+                "detail": s.detail,
+                "action_label": s.action_label,
+                "action_type": s.action_type,
+            }
             for s in state.steps
         ],
         "enabled": enabled,
@@ -141,14 +160,16 @@ async def desktop_wizard(auth: dict[str, Any] = Depends(require_auth_dep)) -> di
 
 
 @router.post("/api/desktop/wizard/action")
-async def desktop_wizard_action(payload: dict[str, Any], auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+async def desktop_wizard_action(
+    payload: DesktopWizardActionRequest, auth: dict[str, Any] = Depends(require_admin)
+) -> dict[str, Any]:
     """Execute an admin-confirmed wizard action through the Echo tool boundary."""
     _forbid_work_desktop_endpoint()
     from js.tools.desktop.wizard import run_wizard
 
     agent = get_agent()
-    action_type = payload.get("action_type", "")
-    if not isinstance(action_type, str) or action_type not in DESKTOP_WIZARD_ACTIONS:
+    action_type = payload.action_type
+    if action_type not in DESKTOP_WIZARD_ACTIONS:
         return {"success": False, "error": "Unsupported desktop wizard action"}
 
     runtime = agent.echo_runtime
@@ -182,10 +203,7 @@ async def desktop_wizard_action(payload: dict[str, Any], auth: dict[str, Any] = 
     result["wizard"] = {
         "ready": state.ready,
         "overall_status": state.overall_status,
-        "steps": [
-            {"name": s.name, "status": s.status}
-            for s in state.steps
-        ],
+        "steps": [{"name": s.name, "status": s.status} for s in state.steps],
     }
     return result
 
@@ -208,7 +226,9 @@ async def desktop_wizard_enable(auth: dict[str, Any] = Depends(require_admin)) -
 
 
 @router.post("/api/desktop/wizard/enable-writes")
-async def desktop_wizard_enable_writes(auth: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+async def desktop_wizard_enable_writes(
+    auth: dict[str, Any] = Depends(require_admin),
+) -> dict[str, Any]:
     """Explicit secondary confirmation to enable desktop write tools."""
     _forbid_work_desktop_endpoint()
     metadata = await _mutate_desktop_state("enable_writes", auth)
@@ -238,9 +258,17 @@ async def desktop_wizard_status(auth: dict[str, Any] = Depends(require_auth_dep)
     return {
         "ready": state.ready,
         "overall_status": state.overall_status,
-        "steps": [{"name": s.name, "title": s.title, "status": s.status, "detail": s.detail,
-                   "action_label": s.action_label, "action_type": s.action_type}
-                  for s in state.steps],
+        "steps": [
+            {
+                "name": s.name,
+                "title": s.title,
+                "status": s.status,
+                "detail": s.detail,
+                "action_label": s.action_label,
+                "action_type": s.action_type,
+            }
+            for s in state.steps
+        ],
         "enabled": agent.settings.desktop_control_enabled if has_tools else False,
         "write_tools_enabled": write_enabled,
         "can_install_cliclick": state.can_install_cliclick,

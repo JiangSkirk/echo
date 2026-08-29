@@ -1170,7 +1170,7 @@ class ApprovalQueue:
             return False
 
     def resolve(self, request_id: str, approved: bool) -> bool:
-        """Resolve a pending approval request (e.g., from Web UI)."""
+        """Resolve a pending approval request (e.g., from the desktop Host)."""
         decision = self.decide(
             request_id,
             ApprovalDecisionType.APPROVE if approved else ApprovalDecisionType.REJECT,

@@ -188,6 +188,7 @@ class OrinStore:
         self._ensure_canary_columns()
         self._ensure_export_pass_columns()
         self._ensure_task_intent_signers()
+        self._ensure_desktop_action_receipts()
         self._conn.execute(
             "INSERT INTO meta(key, value) VALUES ('schema_version', ?)"
             " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -221,6 +222,96 @@ class OrinStore:
             " (task_id, payload_hash, destinations_json, witness_id, revoked, expires_at_ms)"
         )
 
+    def _ensure_desktop_action_receipts(self) -> None:
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS desktop_action_receipts (
+                permit_id TEXT PRIMARY KEY,
+                draft_id TEXT NOT NULL,
+                before_digest TEXT NOT NULL,
+                after_digest TEXT NOT NULL DEFAULT '',
+                target_digest TEXT NOT NULL DEFAULT '',
+                state TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL
+            )
+            """
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_desktop_action_draft "
+            "ON desktop_action_receipts(draft_id)"
+        )
+
+    def record_desktop_action_receipt(
+        self,
+        *,
+        permit_id: str,
+        draft_id: str,
+        before_digest: str,
+        after_digest: str,
+        target_digest: str,
+        state: str,
+        created_at_ms: int,
+    ) -> None:
+        if state not in {"committed", "unknown"}:
+            raise ValueError("desktop action receipt state is invalid")
+        self._conn.execute(
+            """
+            INSERT INTO desktop_action_receipts(
+                permit_id, draft_id, before_digest, after_digest,
+                target_digest, state, created_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(permit_id) DO UPDATE SET
+                before_digest = excluded.before_digest,
+                after_digest = excluded.after_digest,
+                target_digest = excluded.target_digest,
+                state = excluded.state
+            """,
+            (
+                permit_id,
+                draft_id,
+                before_digest,
+                after_digest,
+                target_digest,
+                state,
+                created_at_ms,
+            ),
+        )
+        self._conn.commit()
+
+    def desktop_action_receipt(
+        self,
+        *,
+        permit_id: str | None = None,
+        draft_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        if permit_id:
+            row = self._conn.execute(
+                "SELECT permit_id, draft_id, before_digest, after_digest, "
+                "target_digest, state, created_at_ms FROM desktop_action_receipts "
+                "WHERE permit_id = ?",
+                (permit_id,),
+            ).fetchone()
+        elif draft_id:
+            row = self._conn.execute(
+                "SELECT permit_id, draft_id, before_digest, after_digest, "
+                "target_digest, state, created_at_ms FROM desktop_action_receipts "
+                "WHERE draft_id = ? ORDER BY created_at_ms DESC LIMIT 1",
+                (draft_id,),
+            ).fetchone()
+        else:
+            return None
+        if row is None:
+            return None
+        return {
+            "permit_id": str(row[0]),
+            "draft_id": str(row[1]),
+            "before_digest": str(row[2]),
+            "after_digest": str(row[3]),
+            "target_digest": str(row[4]),
+            "state": str(row[5]),
+            "created_at_ms": int(row[6]),
+        }
+
     def _ensure_task_intent_signers(self) -> None:
         """Backfill only unambiguous historical task signers.
 
@@ -237,8 +328,7 @@ class OrinStore:
             if int(count) != 1 or not key:
                 continue
             self._conn.execute(
-                "INSERT OR IGNORE INTO task_intent_signers(task_id, public_key)"
-                " VALUES (?, ?)",
+                "INSERT OR IGNORE INTO task_intent_signers(task_id, public_key) VALUES (?, ?)",
                 (str(task_id), key),
             )
 
@@ -552,8 +642,7 @@ class OrinStore:
         if cursor.rowcount > 0:
             return "inserted"
         row = self._conn.execute(
-            "SELECT payload_json, public_key FROM exact_commit_approvals"
-            " WHERE approval_id = ?",
+            "SELECT payload_json, public_key FROM exact_commit_approvals WHERE approval_id = ?",
             (approval.approval_id,),
         ).fetchone()
         if row is not None and (str(row[0]), str(row[1])) == (payload_json, public_key):
@@ -865,8 +954,7 @@ class OrinStore:
                 return "task_key_conflict"
 
             self._conn.execute(
-                "INSERT OR IGNORE INTO task_intent_signers(task_id, public_key)"
-                " VALUES (?, ?)",
+                "INSERT OR IGNORE INTO task_intent_signers(task_id, public_key) VALUES (?, ?)",
                 (task_id, public_key),
             )
             signer = self._conn.execute(
