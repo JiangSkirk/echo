@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
+import sys
 import time
 import uuid
 from collections.abc import Callable
@@ -196,9 +198,14 @@ class EvolutionCycle:
             raise ValueError("proposal is not open")
         self._set_status(proposal_id, owner, STATUS_APPROVED, decided_by=decided_by)
         applied_path = self._write_applied(proposal)
-        score = 1.0 if benchmark is None else float(benchmark())
-        threshold = load_baseline_score() if baseline_score is None else float(baseline_score)
-        if score < threshold:
+        score: float | None = None
+        try:
+            score = 1.0 if benchmark is None else float(benchmark())
+            threshold = load_baseline_score() if baseline_score is None else float(baseline_score)
+            passed = score >= threshold
+        except Exception:
+            passed = False
+        if not passed:
             self._rollback_file(applied_path)
             self._set_status(
                 proposal_id,
@@ -310,9 +317,6 @@ def load_baseline_score(path: Path | None = None) -> float:
 def run_mock_benchmark() -> float:
     """Run the deterministic mock benchmark and return the overall score."""
 
-    import subprocess
-    import sys
-
     result = subprocess.run(
         [sys.executable, "-m", "benchmarks.runner", "--mock"],
         check=False,
@@ -321,9 +325,8 @@ def run_mock_benchmark() -> float:
         encoding="utf-8",
         errors="replace",
     )
-    if result.returncode != 0:
-        raise RuntimeError(f"mock benchmark failed: {result.stderr[-400:]}")
     for line in reversed(result.stdout.splitlines()):
         if "Overall score:" in line:
             return float(line.split(":", 1)[1].strip().split()[0])
-    raise RuntimeError("mock benchmark did not report an overall score")
+    detail = (result.stderr or result.stdout)[-400:]
+    raise RuntimeError(f"mock benchmark did not report an overall score: {detail}")
