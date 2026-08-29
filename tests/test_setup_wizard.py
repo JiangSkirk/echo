@@ -205,7 +205,7 @@ class TestSetupTestModel:
 
     def test_requires_model_id(self, client: TestClient) -> None:
         res = client.post("/api/setup/test-model", json={})
-        assert res.status_code == 400
+        assert res.status_code == 422
         assert "model_id" in res.text.lower() or "required" in res.text.lower()
 
     def _get_router(self, client: TestClient):

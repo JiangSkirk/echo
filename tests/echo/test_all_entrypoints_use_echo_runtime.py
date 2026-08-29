@@ -10,8 +10,13 @@ PRODUCTION_ROOTS = (
     ROOT / "js" / "orchestration",
     ROOT / "js" / "daemon",
     ROOT / "js" / "web",
+    ROOT / "js" / "bots",
+    ROOT / "js" / "appshell",
     ROOT / "js_work",
 )
+# js/agent is intentionally omitted: RunnerMixin.run is an Echo facade and
+# contains the token "self.run(". AppShell mounts Host and does not start turns,
+# so it is scanned for forbidden calls only — no channel string required.
 FORBIDDEN_CALLS = (
     "agent.run(",
     "worker.agent.run(",
@@ -36,8 +41,9 @@ def test_every_user_surface_names_its_echo_channel() -> None:
         "js/ui/cli.py": "cli",
         "js/tui/app.py": "tui",
         "js/integrations/telegram_bot.py": "telegram",
-        "js/orchestration/fleet.py": "fleet",
+        "js/orchestration/fleet/agent_fleet.py": "fleet",
         "js/daemon/core.py": "cron",
+        "js/bots/service.py": "bots",
         "js_work/cli.py": "js_work_cli",
         "js_work/web.py": "js_work_web",
     }

@@ -110,13 +110,20 @@ class TestSSRFCanaries:
 
 class TestDiscoverPolicy:
     def test_loopback_allowed_for_local_models(self) -> None:
-        ips = resolve_and_validate("http://127.0.0.1:1234/v1", allow_loopback=True, allow_private=False)
+        ips = resolve_and_validate(
+            "http://127.0.0.1:1234/v1", allow_loopback=True, allow_private=False
+        )
         assert ips == ["127.0.0.1"]
 
     def test_private_blocked_by_default(self) -> None:
         resolver = _fixed_resolver({"gpu.lan": ["192.168.1.50"]})
         with pytest.raises(OutboundURLError):
-            resolve_and_validate("http://gpu.lan:1234/v1", allow_loopback=True, allow_private=False, resolver=resolver)
+            resolve_and_validate(
+                "http://gpu.lan:1234/v1",
+                allow_loopback=True,
+                allow_private=False,
+                resolver=resolver,
+            )
 
     def test_private_allowed_when_opted_in(self) -> None:
         resolver = _fixed_resolver({"gpu.lan": ["192.168.1.50"]})
@@ -144,9 +151,9 @@ class TestDiscoverPolicy:
     @pytest.mark.parametrize(
         "target_url",
         [
-            "http://127.0.0.1.nip.io/v1",   # domain resolving to loopback
-            "http://127.1/v1",              # short-form loopback
-            "http://2130706433/v1",         # decimal-encoded loopback
+            "http://127.0.0.1.nip.io/v1",  # domain resolving to loopback
+            "http://127.1/v1",  # short-form loopback
+            "http://2130706433/v1",  # decimal-encoded loopback
             "http://169.254.169.254.nip.io/v1",  # domain resolving to metadata
         ],
     )
@@ -156,7 +163,9 @@ class TestDiscoverPolicy:
         result = await ProviderManager.discover_models(target_url)
         assert "error" in result, f"{target_url} should be rejected"
         assert "models" not in result
-        assert "安全策略" in result["error"], f"{target_url} must be blocked by policy, not connection"
+        assert "安全策略" in result["error"], (
+            f"{target_url} must be blocked by policy, not connection"
+        )
 
     @pytest.mark.asyncio
     async def test_discover_models_allows_local_literal(self) -> None:
@@ -224,15 +233,20 @@ class TestOriginCheck:
 
         from js.web.auth import check_origin
 
-        with pytest.raises(HTTPException):
+        with pytest.raises(HTTPException) as exc:
             check_origin(_FakeRequest({"host": "localhost:8000"}))
-        # With an API key, the no-Origin (CLI) path is allowed.
-        check_origin(_FakeRequest({"host": "localhost:8000", "x-api-key": "k"}))
+        assert exc.value.status_code == 403
+        # A present but unverified key must not skip Origin (CSRF).
+        with pytest.raises(HTTPException) as exc:
+            check_origin(_FakeRequest({"host": "localhost:8000", "x-api-key": "k"}))
+        assert exc.value.status_code == 403
 
     def test_referer_with_path_normalized(self) -> None:
         from js.web.auth import check_origin
 
-        req = _FakeRequest({"host": "127.0.0.1:8000", "referer": "http://127.0.0.1:8000/app/index.html"})
+        req = _FakeRequest(
+            {"host": "127.0.0.1:8000", "referer": "http://127.0.0.1:8000/app/index.html"}
+        )
         check_origin(req)  # should not raise
 
     @pytest.mark.asyncio
@@ -268,7 +282,9 @@ def test_cancel_route_not_in_system_router() -> None:
     """
     from js.web.routers import system
 
-    cancel_routes = [r for r in system.router.routes if getattr(r, "path", "") == "/api/cancel/{session_id}"]
+    cancel_routes = [
+        r for r in system.router.routes if getattr(r, "path", "") == "/api/cancel/{session_id}"
+    ]
     assert cancel_routes == []
 
 
@@ -323,7 +339,9 @@ class TestWebBridgeToken:
         assert tool._is_auth_rejection(httpx.Response(401, request=req)) is True
         assert tool._is_auth_rejection(httpx.Response(403, request=req)) is True
         assert (
-            tool._is_auth_rejection(httpx.Response(200, json={"ok": False, "error": "invalid token"}, request=req))
+            tool._is_auth_rejection(
+                httpx.Response(200, json={"ok": False, "error": "invalid token"}, request=req)
+            )
             is True
         )
         assert tool._is_auth_rejection(httpx.Response(200, json={"ok": True}, request=req)) is False

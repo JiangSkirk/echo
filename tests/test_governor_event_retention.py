@@ -11,6 +11,7 @@ import pytest
 
 from js.events.store import EventStore
 from js.runtime.governor import ResourceGovernor
+from js.utils.db import PRODUCT_STATE_DB_NAMES
 
 
 def _agent(event_store: object, *, audit: object | None = None) -> SimpleNamespace:
@@ -93,3 +94,29 @@ async def test_governor_continues_after_compatible_fleet_event_store_prune_fails
     primary_store.prune.assert_called_once_with()
     fleet_store.prune.assert_called_once_with()
     audit.prune.assert_called_once_with()
+
+
+def test_governor_wal_checkpoint_only_touches_known_state_dbs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sqlite3
+
+    state = tmp_path / "state"
+    nested = state / "nested"
+    nested.mkdir(parents=True)
+    (state / "memory.db").write_bytes(b"not-sqlite")
+    (nested / "secret.db").write_bytes(b"not-sqlite")
+    connected: list[str] = []
+
+    def _spy(path: object, *args: object, **kwargs: object) -> object:
+        connected.append(str(path))
+        raise sqlite3.OperationalError("not a database")
+
+    monkeypatch.setattr(sqlite3, "connect", _spy)
+    governor = ResourceGovernor(_agent(MagicMock()), state_dir=state)
+    governor._checkpoint_wal_sync(force=True)
+
+    assert connected
+    assert all(Path(path).name in PRODUCT_STATE_DB_NAMES for path in connected)
+    assert not any("secret.db" in path for path in connected)

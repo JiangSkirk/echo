@@ -73,13 +73,13 @@ class TestScenarioRegistry:
 
 
 @pytest.fixture
-def client() -> TestClient:
+def client(tmp_path: Path) -> TestClient:
     from js.web import server as web_server
     from js.web.deps import set_globals
 
     mock_agent = MagicMock()
-    mock_agent.settings.workspace = Path("/tmp")
-    mock_agent.settings.state_dir = Path("/tmp")
+    mock_agent.settings.workspace = tmp_path / "workspace"
+    mock_agent.settings.state_dir = tmp_path / "state"
     mock_agent.settings.security.api_key_required = False
     mock_agent.skills.get.return_value = None
 
@@ -111,13 +111,24 @@ class TestScenarioAPI:
         res = client.get("/api/scenarios/nonexistent")
         assert res.status_code == 404
 
-    def test_start_scenario(self, client: TestClient) -> None:
-        # Same-origin browser headers: state-changing endpoints now require the
-        # Origin/Host check even for the anonymous guest (anti-CSRF).
-        res = client.post(
-            "/api/scenarios/code-review/start",
-            headers={"Host": "localhost", "Origin": "http://localhost"},
+    def test_start_scenario(self, tmp_path: Path) -> None:
+        from js.config import JSSettings
+        from js.web.auth import AuthManager
+
+        settings = JSSettings(
+            workspace=tmp_path / "workspace",
+            state_dir=tmp_path / "state",
+            first_run_completed=True,
+            providers=[],
+            models=[],
         )
+        key = AuthManager(settings.state_dir).create_key("scenario-user", role="user")
+        app = create_app(runtime_settings=settings)
+        with TestClient(
+            app,
+            headers={"Host": "localhost", "Origin": "http://localhost", "X-API-Key": key},
+        ) as client:
+            res = client.post("/api/scenarios/code-review/start")
         assert res.status_code == 200
         data = res.json()
         assert data["success"] is True

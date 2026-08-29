@@ -698,6 +698,7 @@ def test_js_work_web_cli_builds_work_web_app(monkeypatch: Any, tmp_path: Path) -
         profile: WorkToolProfile,
         host: str,
         port: int,
+        manage_orind: bool = False,
     ) -> MagicMock:
         captured["config"] = config or ""
         captured["home"] = str(home)
@@ -705,6 +706,7 @@ def test_js_work_web_cli_builds_work_web_app(monkeypatch: Any, tmp_path: Path) -
         captured["profile"] = profile.value
         captured["host"] = host
         captured["port"] = port
+        captured["manage_orind"] = manage_orind
         return fake_app
 
     def fake_uvicorn_run(app: Any, *, host: str, port: int, reload: bool) -> None:
@@ -739,6 +741,7 @@ def test_js_work_web_cli_builds_work_web_app(monkeypatch: Any, tmp_path: Path) -
         "profile": "office",
         "host": "127.0.0.1",
         "port": 8765,
+        "manage_orind": True,
         "app": fake_app,
         "uvicorn_host": "127.0.0.1",
         "uvicorn_port": 8765,

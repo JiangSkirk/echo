@@ -43,6 +43,7 @@ def test_work_manifest_hides_skills_evolution_and_personal_extras(tmp_path: Path
     assert manifest["tabs"]["skills"]["enabled"] is False
     assert manifest["tabs"]["evolution"]["enabled"] is False
     assert manifest["tabs"]["agents"]["enabled"] is False
+    assert manifest["tabs"]["bots"]["enabled"] is False
     assert "skills" not in manifest["enabled_tabs"]
     assert manifest["api"]["skills_mutations"] is False
     assert manifest["api"]["evolution_actions"] is False

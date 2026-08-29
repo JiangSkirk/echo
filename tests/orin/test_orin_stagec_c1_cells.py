@@ -140,8 +140,12 @@ def test_cell_identity_switch_is_lazy_outside_explicit_c1_harness(tmp_path: Path
         c1_test_harness=False,
     )
 
-    assert daemon._cell_identity_enforce is False  # noqa: SLF001
-    daemon._store.close()  # noqa: SLF001 - no daemon loop was started
+    try:
+        assert daemon._cell_identity_enforce is True  # noqa: SLF001
+        assert daemon._cell_desktop_enabled is False  # noqa: SLF001
+        assert daemon._cell_memory_enabled is False  # noqa: SLF001
+    finally:
+        daemon._store.close()  # noqa: SLF001 - no daemon loop was started
 
 
 def test_default_cell_spawns_strip_c1_private_environment(
@@ -462,9 +466,7 @@ async def test_authenticated_cell_sequence_replay_is_rejected(tmp_path: Path) ->
         )
         ack = await asyncio.wait_for(_read_frame(reader), timeout=1.0)
         session_nonce = client_nonce + str(ack["server_nonce"])
-        session_key = read_session_key_once(
-            _session_key_path(daemon)
-        )
+        session_key = read_session_key_once(_session_key_path(daemon))
         heartbeat = make_envelope(
             "heartbeat",
             seq=2,
@@ -484,8 +486,7 @@ async def test_authenticated_cell_sequence_replay_is_rejected(tmp_path: Path) ->
             await writer.wait_closed()
 
 
-async def _fake_orind_server(
-) -> tuple[
+async def _fake_orind_server() -> tuple[
     asyncio.AbstractServer,
     asyncio.Future[tuple[asyncio.StreamReader, asyncio.StreamWriter]],
     Path,

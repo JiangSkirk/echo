@@ -152,9 +152,7 @@ async def test_echo_records_context_metrics_without_changing_provider_payload(
 ) -> None:
     monkeypatch.setenv("JS_ECHO_ENGINE", "on")
     provider_live = RecordingProvider()
-    agent_live = JSAgent(
-        JSSettings(workspace=tmp_path / "workspace", state_dir=tmp_path / "state")
-    )
+    agent_live = JSAgent(JSSettings(workspace=tmp_path / "workspace", state_dir=tmp_path / "state"))
     agent_live.router = RecordingRouter(
         provider_live,
         permit_verifier=agent_live._model_permit_issuer,
@@ -222,7 +220,7 @@ async def test_echo_context_runtime_failure_falls_back_to_legacy_provider(
     def boom(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("runtime adapter exploded")
 
-    monkeypatch.setattr("js.echo.turn_loop.observe_prompt_context", boom)
+    monkeypatch.setattr("js.echo.turn_loop.loop.observe_prompt_context", boom)
 
     state = await agent.run("Say hello", session_id="echo-context-unavailable-session")
 

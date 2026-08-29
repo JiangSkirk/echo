@@ -52,11 +52,87 @@ def _context(
         state_dir=tmp_path / "state",
         fs_roots=(tmp_path / "workspace",),
         deadline_ms=(
-            deadline_ms
-            if deadline_ms is not None
-            else int(time.monotonic() * 1000) + 900_000
+            deadline_ms if deadline_ms is not None else int(time.monotonic() * 1000) + 900_000
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_model_effect_rejects_unsigned_context_on_real_echo_runtime(
+    tmp_path: Path,
+) -> None:
+    from js.config import JSSettings
+    from js.echo.turn_runtime import EchoRuntime
+
+    async def authorized_model_chat(**_kwargs: Any) -> ChatResponse:
+        return ChatResponse(
+            content="ok",
+            tool_calls=[],
+            model="mock",
+            usage={},
+            finish_reason="stop",
+        )
+
+    settings = JSSettings(workspace=tmp_path / "workspace", state_dir=tmp_path / "state")
+    agent = SimpleNamespace(
+        settings=settings,
+        authorized_model_chat=authorized_model_chat,
+        _current_allowed_tools=set(),
+        registry=None,
+    )
+    runtime = EchoRuntime(agent)
+    agent.echo_runtime = runtime
+    interpreter = EffectInterpreter(agent, runtime_authority=runtime)
+    unsigned = _context(tmp_path)
+    with pytest.raises(PermissionError, match="authority signature"):
+        await interpreter.execute_model(
+            ModelEffect(messages=(ChatMessage(role="user", content="hello"),)),
+            unsigned,
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_effect_accepts_signed_real_echo_runtime_context(tmp_path: Path) -> None:
+    from js.config import JSSettings
+    from js.echo.turn_runtime import EchoRuntime
+
+    observed: dict[str, Any] = {}
+
+    async def authorized_model_chat(**kwargs: Any) -> ChatResponse:
+        observed.update(kwargs)
+        return ChatResponse(
+            content="ok",
+            tool_calls=[],
+            model="mock",
+            usage={},
+            finish_reason="stop",
+        )
+
+    settings = JSSettings(workspace=tmp_path / "workspace", state_dir=tmp_path / "state")
+    agent = SimpleNamespace(
+        settings=settings,
+        authorized_model_chat=authorized_model_chat,
+        _current_allowed_tools=set(),
+        registry=None,
+    )
+    runtime = EchoRuntime(agent)
+    agent.echo_runtime = runtime
+    interpreter = EffectInterpreter(agent, runtime_authority=runtime)
+    context = runtime.build_context(
+        channel="test",
+        owner_key_hash="owner-a",
+        session_id="session-a",
+        run_id="run-a",
+        role="user",
+        profile="default",
+        capabilities=(),
+    )
+    response = await interpreter.execute_model(
+        ModelEffect(messages=(ChatMessage(role="user", content="hello"),)),
+        context,
+    )
+    assert response.content == "ok"
+    assert observed["run_id"] == "run-a"
 
 
 @pytest.mark.asyncio

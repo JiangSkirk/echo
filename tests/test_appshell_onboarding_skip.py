@@ -98,9 +98,10 @@ class TestAppShellBootstrapOnboardingE2E:
         app = fresh_appshell
 
         with _loopback_client(app) as client:
-            # Live settings exist only after child lifespans run (TestClient enter).
+            # Personal boots immediately; Work stays lazy until switch / Work API.
             personal = app.state.personal_app.state.web_runtime.settings
-            work = app.state.work_app.state.web_runtime.settings
+            work = app.state.work_app.state.runtime_settings
+            assert getattr(app.state.work_app.state, "web_runtime", None) is None
             assert personal.state_dir != work.state_dir
             assert personal.workspace != work.workspace
             assert getattr(personal, "_appshell_peer_settings", None) is work
@@ -161,6 +162,8 @@ class TestAppShellBootstrapOnboardingE2E:
             assert to_work.status_code == 200, to_work.text
             assert to_work.json()["ok"] is True
             assert to_work.json()["to_mode"] == "work"
+            assert app.state.work_runtime_ready is True
+            assert app.state.work_app.state.web_runtime.agent is not None
 
             # Work mode also sees non-blocking onboarding (shared entry).
             work_first = client.get("/api/setup/first-start")
@@ -187,9 +190,7 @@ class TestAppShellBootstrapOnboardingE2E:
             assert to_personal.json()["to_mode"] == "personal"
             assert client.get("/api/setup/first-start").json()["wizard_blocking"] is False
 
-    def test_skip_does_not_create_approvals_or_leases(
-        self, fresh_appshell: Any
-    ) -> None:
+    def test_skip_does_not_create_approvals_or_leases(self, fresh_appshell: Any) -> None:
         app = fresh_appshell
         with _loopback_client(app) as client:
             assert client.post("/api/appshell/bootstrap").status_code == 200
@@ -209,29 +210,20 @@ class TestAppShellBootstrapOnboardingE2E:
                 return pending, leases
 
             personal_agent = app.state.personal_app.state.web_runtime.agent
-            work_agent = app.state.work_app.state.web_runtime.agent
-            before = {
-                "personal": _pending_and_leases(personal_agent),
-                "work": _pending_and_leases(work_agent),
-            }
+            assert getattr(app.state.work_app.state, "web_runtime", None) is None
+            before = _pending_and_leases(personal_agent)
             assert client.post("/api/setup/skip").status_code == 200
-            after = {
-                "personal": _pending_and_leases(personal_agent),
-                "work": _pending_and_leases(work_agent),
-            }
-            # Skip must not mint new approvals or tool leases.
-            assert after["personal"][0] == before["personal"][0]
-            assert after["work"][0] == before["work"][0]
-            assert len(after["personal"][1]) == len(before["personal"][1])
-            assert len(after["work"][1]) == len(before["work"][1])
+            after = _pending_and_leases(personal_agent)
+            # Skip must not mint new approvals or tool leases, and must not boot Work.
+            assert after[0] == before[0]
+            assert len(after[1]) == len(before[1])
+            assert getattr(app.state.work_app.state, "web_runtime", None) is None
             assert personal_agent.settings.providers == []
-            assert work_agent.settings.providers == []
+            assert app.state.work_app.state.runtime_settings.providers == []
 
 
 class TestAppShellRestartPersistence:
-    def test_sidecar_restart_keeps_skipped_and_no_wizard_block(
-        self, tmp_path: Path
-    ) -> None:
+    def test_sidecar_restart_keeps_skipped_and_no_wizard_block(self, tmp_path: Path) -> None:
         """Simulate full process restart by rebuilding AppShell from saved configs."""
         app1 = _build_appshell(tmp_path, first_run=False)
         personal_cfg = tmp_path / "personal.yaml"
@@ -293,7 +285,7 @@ class TestSkipWriteFailureNoFakeDismiss:
 
         with _loopback_client(app) as client:
             personal = app.state.personal_app.state.web_runtime.settings
-            work = app.state.work_app.state.web_runtime.settings
+            work = app.state.work_app.state.runtime_settings
             assert client.post("/api/appshell/bootstrap").status_code == 200
 
             # Force in-memory pending before failed skip.
@@ -328,14 +320,12 @@ class TestSkipWriteFailureNoFakeDismiss:
 
 
 class TestOwnerSessionIsolation:
-    def test_skip_is_install_wide_but_runtimes_stay_isolated(
-        self, tmp_path: Path
-    ) -> None:
+    def test_skip_is_install_wide_but_runtimes_stay_isolated(self, tmp_path: Path) -> None:
         app = _build_appshell(tmp_path, first_run=False)
 
         with _loopback_client(app) as client:
             personal = app.state.personal_app.state.web_runtime.settings
-            work = app.state.work_app.state.web_runtime.settings
+            work = app.state.work_app.state.runtime_settings
             personal_ws = personal.workspace.resolve()
             work_ws = work.workspace.resolve()
 

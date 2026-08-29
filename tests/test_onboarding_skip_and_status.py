@@ -203,6 +203,14 @@ class TestOnboardingSkip:
         assert res.status_code == 403
         assert settings.onboarding_status == "pending"
 
+    def test_user_cannot_reopen_onboarding(self, setup_env) -> None:
+        client, settings, _ = setup_env
+        skip = client.post("/api/setup/skip")
+        assert skip.status_code == 200
+        res = client.post("/api/setup/reopen")
+        assert res.status_code == 403
+        assert settings.onboarding_status == "skipped"
+
 
 class TestOnboardingStartAndComplete:
     def test_start_marks_in_progress(self, setup_env) -> None:

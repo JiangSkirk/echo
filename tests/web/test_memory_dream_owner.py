@@ -65,7 +65,17 @@ def test_memory_enhanced_dream_logs_are_owner_scoped(tmp_path: Path) -> None:
     client, agent, owner = _client(tmp_path)
     response = client.get("/api/memory/enhanced")
     assert response.status_code == 200
-    agent.memory.get_dream_logs.assert_called_with(limit=10, owner_key_hash=owner)
+    agent.memory.get_dream_logs.assert_called_with(limit=20, owner_key_hash=owner)
+
+
+def test_memory_enhanced_honors_limit_and_rejects_oversize(tmp_path: Path) -> None:
+    client, agent, owner = _client(tmp_path)
+    ok = client.get("/api/memory/enhanced?limit=50")
+    assert ok.status_code == 200
+    agent.memory.get_all_semantic.assert_called_with(limit=50, owner_key_hash=owner)
+    agent.memory.get_episodes.assert_called_with(limit=50, owner_key_hash=owner)
+    rejected = client.get("/api/memory/enhanced?limit=101")
+    assert rejected.status_code == 422
 
 
 def test_memory_metrics_dream_logs_are_owner_scoped(tmp_path: Path) -> None:

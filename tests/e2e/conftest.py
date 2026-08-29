@@ -36,6 +36,32 @@ def _stop_process(process: subprocess.Popen[str]) -> None:
         process.wait(timeout=10)
 
 
+def _write_work_yaml(
+    path: Path,
+    *,
+    work_home: Path,
+    api_key_required: bool,
+) -> Path:
+    work_home.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            (
+                f'work_home: "{work_home}"',
+                f'workspace: "{work_home / "workspace"}"',
+                f'state_dir: "{work_home / "state"}"',
+                "first_run_completed: true",
+                "providers: []",
+                "models: []",
+                "security:",
+                f"  api_key_required: {'true' if api_key_required else 'false'}",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 @pytest.fixture(scope="session")
 def live_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
     """Start an isolated local server; startup failures fail the gate."""
@@ -66,69 +92,18 @@ def live_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
         ),
         encoding="utf-8",
     )
-    port = _free_port()
-    base_url = f"http://127.0.0.1:{port}"
     from js.web.auth import AuthManager
 
     global _LIVE_SERVER_API_KEY
     _LIVE_SERVER_API_KEY = AuthManager(state_dir).create_key("e2e-admin", role="admin")
-    env = os.environ.copy()
-    env.update(
-        {
-            "JS_CONFIG_PATH": str(config_path),
-            "JS_STATE_DIR": str(state_dir),
-            "JS_API_KEY_REQUIRED": "false",
-            "NO_PROXY": "127.0.0.1,localhost",
-            "no_proxy": "127.0.0.1,localhost",
-            "PYTHONUNBUFFERED": "1",
-        }
+    work_config = _write_work_yaml(
+        base / "work.yaml",
+        work_home=base / "work-home" / ".js-work",
+        api_key_required=False,
     )
-    env.pop("JS_WARM_START", None)
-    env.pop("JS_ECHO_ENGINE", None)
-    env.pop("JS_ALLOWED_ORIGINS", None)
-    log_path = base / "server.log"
-    with log_path.open("w", encoding="utf-8") as log:
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "js",
-                "web",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                str(port),
-            ],
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-        )
-        try:
-            deadline = time.monotonic() + 45
-            last_error = "server did not respond"
-            while time.monotonic() < deadline:
-                if process.poll() is not None:
-                    break
-                try:
-                    with _LOCAL_OPENER.open(f"{base_url}/", timeout=1) as response:
-                        if response.status == 200:
-                            yield base_url
-                            return
-                except Exception as exc:
-                    last_error = f"{type(exc).__name__}: {exc}"
-                time.sleep(0.2)
-            log.flush()
-            server_log = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
-            pytest.fail(
-                f"Browser gate server failed to start: {last_error}\n"
-                f"exit={process.poll()}\n{server_log}",
-                pytrace=False,
-            )
-        finally:
-            _stop_process(process)
+    yield from _launch_appshell(
+        config_path, work_config, base / "server.log", "Browser gate server"
+    )
 
 
 @pytest.fixture(scope="session")
@@ -138,10 +113,6 @@ def live_server_api_key(live_server: str) -> str:
     return _LIVE_SERVER_API_KEY
 
 
-_LIVE_SERVER_API_KEY = ""
-_APPSHELL_ADMIN_KEY = ""
-
-
 def _write_appshell_configs(base: Path) -> tuple[Path, Path, Path, Path]:
     personal_workspace = base / "personal-workspace"
     personal_state = base / "personal-state"
@@ -149,7 +120,6 @@ def _write_appshell_configs(base: Path) -> tuple[Path, Path, Path, Path]:
     work_state = work_home / "state"
     personal_workspace.mkdir(parents=True, exist_ok=True)
     personal_state.mkdir(parents=True, exist_ok=True)
-    work_home.mkdir(parents=True, exist_ok=True)
     personal_config = base / "personal.yaml"
     personal_config.write_text(
         "\n".join(
@@ -166,23 +136,7 @@ def _write_appshell_configs(base: Path) -> tuple[Path, Path, Path, Path]:
         ),
         encoding="utf-8",
     )
-    work_config = base / "work.yaml"
-    work_config.write_text(
-        "\n".join(
-            (
-                f'work_home: "{work_home}"',
-                f'workspace: "{work_home / "workspace"}"',
-                f'state_dir: "{work_home / "state"}"',
-                "first_run_completed: true",
-                "providers: []",
-                "models: []",
-                "security:",
-                "  api_key_required: true",
-                "",
-            )
-        ),
-        encoding="utf-8",
-    )
+    work_config = _write_work_yaml(base / "work.yaml", work_home=work_home, api_key_required=True)
     return personal_config, work_config, personal_state, work_state
 
 
@@ -211,6 +165,7 @@ def _launch_appshell(
         "JS_WORK_ECHO_ENGINE",
         "JS_WARM_START",
         "JS_ALLOWED_ORIGINS",
+        "JS_API_KEY_REQUIRED",
     ):
         env.pop(name, None)
     with log_path.open("w", encoding="utf-8") as log:
@@ -254,8 +209,7 @@ def _launch_appshell(
             log.flush()
             server_log = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
             pytest.fail(
-                f"{label} failed to start: {last_error}\n"
-                f"exit={process.poll()}\n{server_log}",
+                f"{label} failed to start: {last_error}\nexit={process.poll()}\n{server_log}",
                 pytrace=False,
             )
         finally:
@@ -306,118 +260,14 @@ def appshell_legacy_key_server(
     tmp_path: Path,
 ) -> Iterator[tuple[str, Path, str]]:
     """Fresh AppShell with a Personal-only admin for legacy-key leak regression."""
-    personal_workspace = tmp_path / "personal-workspace"
-    personal_state = tmp_path / "personal-state"
-    work_home = tmp_path / "work-home" / ".js-work"
-    personal_workspace.mkdir()
-    personal_state.mkdir()
-    work_home.mkdir(parents=True)
-    personal_config = tmp_path / "personal.yaml"
-    personal_config.write_text(
-        "\n".join(
-            (
-                f'workspace: "{personal_workspace}"',
-                f'state_dir: "{personal_state}"',
-                "first_run_completed: true",
-                "providers: []",
-                "models: []",
-                "security:",
-                "  api_key_required: true",
-                "",
-            )
-        ),
-        encoding="utf-8",
-    )
-    work_state = work_home / "state"
-    work_config = tmp_path / "work.yaml"
-    work_config.write_text(
-        "\n".join(
-            (
-                f'work_home: "{work_home}"',
-                f'workspace: "{work_home / "workspace"}"',
-                f'state_dir: "{work_state}"',
-                "first_run_completed: true",
-                "providers: []",
-                "models: []",
-                "security:",
-                "  api_key_required: true",
-                "",
-            )
-        ),
-        encoding="utf-8",
-    )
+    personal_config, work_config, personal_state, work_state = _write_appshell_configs(tmp_path)
     from js.web.auth import AuthManager
 
     legacy_key = AuthManager(personal_state).create_key("legacy-browser-admin", role="admin")
-    port = _free_port()
-    base_url = f"http://127.0.0.1:{port}"
-    env = os.environ.copy()
-    env.update(
-        {
-            "NO_PROXY": "127.0.0.1,localhost",
-            "no_proxy": "127.0.0.1,localhost",
-            "PYTHONUNBUFFERED": "1",
-        }
-    )
-    for name in (
-        "JS_CONFIG_PATH",
-        "JS_WORK_CONFIG_PATH",
-        "JS_STATE_DIR",
-        "JS_WORK_STATE_DIR",
-        "JS_ECHO_ENGINE",
-        "JS_WORK_ECHO_ENGINE",
-        "JS_WARM_START",
-        "JS_ALLOWED_ORIGINS",
+    for base_url in _launch_appshell(
+        personal_config, work_config, tmp_path / "legacy-key-server.log", "Legacy-key AppShell"
     ):
-        env.pop(name, None)
-    log_path = tmp_path / "legacy-key-server.log"
-    with log_path.open("w", encoding="utf-8") as log:
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "js",
-                "appshell",
-                "--personal-config",
-                str(personal_config),
-                "--work-config",
-                str(work_config),
-                "--host",
-                "127.0.0.1",
-                "--port",
-                str(port),
-                "--no-browser",
-            ],
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-        )
-        try:
-            deadline = time.monotonic() + 45
-            last_error = "AppShell did not respond"
-            while time.monotonic() < deadline:
-                if process.poll() is not None:
-                    break
-                try:
-                    with _LOCAL_OPENER.open(f"{base_url}/", timeout=1) as response:
-                        if response.status == 200:
-                            yield base_url, work_state, legacy_key
-                            return
-                except Exception as exc:
-                    last_error = f"{type(exc).__name__}: {exc}"
-                time.sleep(0.2)
-            log.flush()
-            server_log = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
-            pytest.fail(
-                f"Legacy-key AppShell failed to start: {last_error}\n"
-                f"exit={process.poll()}\n{server_log}",
-                pytrace=False,
-            )
-        finally:
-            _stop_process(process)
+        yield base_url, work_state, legacy_key
 
 
 @pytest.fixture(scope="session")

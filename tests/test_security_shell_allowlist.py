@@ -81,6 +81,8 @@ class TestGitArgumentRules:
         assert _denied(shell_tool, "git log --output=out.txt")
         assert _denied(shell_tool, "git show --output=out.txt HEAD")
         assert _denied(shell_tool, "git log --output out.txt")
+        assert _denied(shell_tool, "git format-patch --output-directory /tmp HEAD")
+        assert _denied(shell_tool, "git format-patch --output-directory=/tmp HEAD")
 
     def test_git_pager_and_extdiff_flags_denied(self, shell_tool: ShellTool) -> None:
         assert _denied(shell_tool, "git grep -O foo")
@@ -410,10 +412,30 @@ class TestParserSeparators:
             "grep foo < bar.txt 2>&1",
             "git log --oneline -5",
             "echo $HOME",
+            "echo '$HOME'",
             "echo hi > out.txt",
         ):
             assert parse(command) is not None, command
             assert not _denied(shell_tool, command), command
+
+    def test_parser_exposes_arg_vars_on_expansions(self) -> None:
+        """``has_var`` is on the AST so write-path allowlist can reject it."""
+        for command in ("echo $HOME", 'echo "$HOME"', "echo ${HOME}", "mkdir nested/$x"):
+            ast = parse(command)
+            assert ast is not None, command
+            node = ast.commands[0]
+            assert isinstance(node, CommandNode)
+            assert any(node.arg_vars), command
+        literal = parse("echo '$HOME'")
+        assert literal is not None
+        lit_node = literal.commands[0]
+        assert isinstance(lit_node, CommandNode)
+        assert not any(lit_node.arg_vars)
+
+    def test_read_command_variable_expansion_still_allowed(self, shell_tool: ShellTool) -> None:
+        for command in ("echo $HOME", 'echo "$HOME"', "echo ${HOME}", "ls $PWD"):
+            assert not _denied(shell_tool, command), command
+        assert not _denied(shell_tool, "echo '$HOME'")
 
 
 class TestBypassRejectedEndToEnd:
@@ -490,7 +512,7 @@ class TestGitMetadataShellWriteDenied:
         assert not _denied(shell_tool, "git --git-dir nested/.git status")
 
     def test_write_command_dollar_expansion_denied(self, shell_tool: ShellTool) -> None:
-        # Parser drops has_var from the AST; write argv must still fail closed.
+        # Write-path ``arg_vars`` fail closed; read-only expansions stay allowed.
         for command in (
             "mkdir nested/$x",
             "mkdir nested/${x}",

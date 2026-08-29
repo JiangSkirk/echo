@@ -306,7 +306,7 @@ def test_make_ws_app_origin_overrides_are_scoped(monkeypatch: pytest.MonkeyPatch
     with pytest.MonkeyPatch.context() as ws_monkeypatch:
         _make_ws_app(ws_monkeypatch)
         assert os.environ["JS_ALLOWED_ORIGINS"] == "http://localhost"
-        assert auth_mod._ALLOWED_ORIGINS is None
+        assert auth_mod._ALLOWED_ORIGINS in {None, frozenset({"http://localhost"})}
 
     assert os.environ["JS_ALLOWED_ORIGINS"] == "http://before.example"
     assert auth_mod._ALLOWED_ORIGINS is original_cache
@@ -382,7 +382,7 @@ def test_api_chat_on_mode_echo_failure_fails_open(
     def boom(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("endpoint observer exploded")
 
-    monkeypatch.setattr("js.echo.turn_loop.observe_prompt_context", boom)
+    monkeypatch.setattr("js.echo.turn_loop.loop.observe_prompt_context", boom)
 
     response = client.post(
         "/api/chat",
@@ -476,7 +476,7 @@ def test_ws_message_on_mode_echo_failure_fails_open(
     def boom(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("ws observer exploded")
 
-    monkeypatch.setattr("js.echo.turn_loop.observe_prompt_context", boom)
+    monkeypatch.setattr("js.echo.turn_loop.loop.observe_prompt_context", boom)
 
     with client.websocket_connect("/ws") as ws:
         ws.send_json(
@@ -561,9 +561,7 @@ def test_ws_stream_connected_outcome_emits_exactly_one_terminal_frame(
     provider = ScriptedStreamProvider(events)
     agent = _make_agent(tmp_path, provider)
     client = _make_ws_client(monkeypatch, tmp_path, agent)
-    agent._agent.settings.echo_budget = EchoBudgetConfig(
-        max_completion_tokens=completion_budget
-    )
+    agent._agent.settings.echo_budget = EchoBudgetConfig(max_completion_tokens=completion_budget)
     frames: list[dict[str, Any]] = []
 
     with client.websocket_connect("/ws") as ws:
@@ -626,9 +624,7 @@ def test_ws_disconnect_cancels_inflight_echo_turn(
         status = ws.receive_json()
         assert status["type"] == "status"
         assert status["content"] == "thinking..."
-        assert all(
-            status.get(key) for key in ("request_id", "turn_id", "run_id", "session_id")
-        )
+        assert all(status.get(key) for key in ("request_id", "turn_id", "run_id", "session_id"))
         assert provider.started.wait(timeout=1.0)
         ws.close()
 

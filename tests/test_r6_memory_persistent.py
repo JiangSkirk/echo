@@ -44,8 +44,12 @@ def _auth(
 ) -> MemoryCompressionAuthorityV1:
     return MemoryCompressionAuthorityV1(
         task_ref_hash="sha256:" + "a" * 64,
-        owner=owner, mode=mode, workspace=workspace, role=role,
-        session=session, run=run,
+        owner=owner,
+        mode=mode,
+        workspace=workspace,
+        role=role,
+        session=session,
+        run=run,
     )
 
 
@@ -87,7 +91,9 @@ class TestCreateSchemaIdentityToken:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         proposal = pipeline.create_proposal(
-            authority=_auth(), source_refs=_claim_ref(), proposed_summary="用户询问天气",
+            authority=_auth(),
+            source_refs=_claim_ref(),
+            proposed_summary="用户询问天气",
         )
         assert proposal.status == "pending"
         with sqlite3.connect(str(db)) as conn:
@@ -109,7 +115,9 @@ class TestCreateSchemaIdentityToken:
         pipeline = CompressionPipeline(db)
         auth = _auth(mode="work", workspace=_WORKSPACE_X)
         proposal = pipeline.create_proposal(
-            authority=auth, source_refs=_claim_ref(), proposed_summary="工作摘要",
+            authority=auth,
+            source_refs=_claim_ref(),
+            proposed_summary="工作摘要",
         )
         assert proposal.mode == "work"
         assert proposal.workspace == _WORKSPACE_X
@@ -119,8 +127,12 @@ class TestCreateSchemaIdentityToken:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         auth = _auth()
-        p1 = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="摘要A")
-        p2 = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="摘要B")
+        p1 = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="摘要A"
+        )
+        p2 = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="摘要B"
+        )
         assert p1.proposal_id != p2.proposal_id
 
     def test_04_来源内容哈希变化产生新提案标识(self, tmp_path: Path) -> None:
@@ -128,11 +140,15 @@ class TestCreateSchemaIdentityToken:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         auth = _auth()
-        p1 = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="摘要")
+        p1 = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="摘要"
+        )
         with sqlite3.connect(str(db)) as conn:
             conn.execute("UPDATE mem_claims SET typed_value='新值' WHERE id='clm-1'")
             conn.commit()
-        p2 = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="摘要")
+        p2 = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="摘要"
+        )
         assert p1.proposal_id != p2.proposal_id
 
     def test_05_完全相同中文提案重试幂等且不重置终态(self, tmp_path: Path) -> None:
@@ -140,8 +156,12 @@ class TestCreateSchemaIdentityToken:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         auth = _auth()
-        p1 = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="相同摘要")
-        p2 = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="相同摘要")
+        p1 = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="相同摘要"
+        )
+        p2 = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="相同摘要"
+        )
         assert p1.proposal_id == p2.proposal_id
 
     def test_06_提案标识为带域规范JSON的sha256且不使用Python哈希(self, tmp_path: Path) -> None:
@@ -149,7 +169,9 @@ class TestCreateSchemaIdentityToken:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         proposal = pipeline.create_proposal(
-            authority=_auth(), source_refs=_claim_ref(), proposed_summary="测试哈希",
+            authority=_auth(),
+            source_refs=_claim_ref(),
+            proposed_summary="测试哈希",
         )
         assert len(proposal.proposal_id) == 64
         assert all(c in "0123456789abcdef" for c in proposal.proposal_id)
@@ -160,7 +182,9 @@ class TestCreateSchemaIdentityToken:
         pipeline = CompressionPipeline(db)
         summary = "这是一段没有空格的中文摘要用于测试真实分词器"
         proposal = pipeline.create_proposal(
-            authority=_auth(), source_refs=_claim_ref(), proposed_summary=summary,
+            authority=_auth(),
+            source_refs=_claim_ref(),
+            proposed_summary=summary,
         )
         assert proposal.summary_token_count > 1
 
@@ -170,10 +194,13 @@ class TestCreateSchemaIdentityToken:
 
         def bad_factory() -> object:
             raise RuntimeError("tokenizer unavailable")
+
         pipeline = CompressionPipeline(db, token_counter_factory=bad_factory)
         with pytest.raises(RuntimeError):
             pipeline.create_proposal(
-                authority=_auth(), source_refs=_claim_ref(), proposed_summary="摘要",
+                authority=_auth(),
+                source_refs=_claim_ref(),
+                proposed_summary="摘要",
             )
         with sqlite3.connect(str(db)) as conn:
             count = conn.execute("SELECT COUNT(*) FROM compression_proposals").fetchone()
@@ -184,7 +211,9 @@ class TestCreateSchemaIdentityToken:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         proposal = pipeline.create_proposal(
-            authority=_auth(), source_refs=_claim_ref(), proposed_summary="覆盖率测试",
+            authority=_auth(),
+            source_refs=_claim_ref(),
+            proposed_summary="覆盖率测试",
         )
         assert proposal.coverage_denominator > 0
         assert proposal.coverage_numerator <= proposal.coverage_denominator
@@ -197,7 +226,9 @@ class TestCreateSchemaIdentityToken:
         pipeline = CompressionPipeline(db)
         with pytest.raises(ValueError, match="summary"):
             pipeline.create_proposal(
-                authority=_auth(), source_refs=_claim_ref(), proposed_summary="",
+                authority=_auth(),
+                source_refs=_claim_ref(),
+                proposed_summary="",
             )
 
 
@@ -213,7 +244,9 @@ class TestApproveAuthorityCAS:
         pipeline = CompressionPipeline(db)
         auth = _auth()
         proposal = pipeline.create_proposal(
-            authority=auth, source_refs=_claim_ref(), proposed_summary="批准测试",
+            authority=auth,
+            source_refs=_claim_ref(),
+            proposed_summary="批准测试",
         )
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth)
         assert result.success
@@ -226,7 +259,9 @@ class TestApproveAuthorityCAS:
         pipeline = CompressionPipeline(db)
         auth_admin = _auth(role="admin")
         proposal = pipeline.create_proposal(
-            authority=auth_admin, source_refs=_claim_ref(), proposed_summary="摘要",
+            authority=auth_admin,
+            source_refs=_claim_ref(),
+            proposed_summary="摘要",
         )
         auth_user = _auth(role="user")
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth_user)
@@ -238,7 +273,9 @@ class TestApproveAuthorityCAS:
         pipeline = CompressionPipeline(db)
         auth_a = _auth(owner=_OWNER_A)
         proposal = pipeline.create_proposal(
-            authority=auth_a, source_refs=_claim_ref(), proposed_summary="摘要",
+            authority=auth_a,
+            source_refs=_claim_ref(),
+            proposed_summary="摘要",
         )
         auth_b = _auth(owner=_OWNER_B)
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth_b)
@@ -251,7 +288,9 @@ class TestApproveAuthorityCAS:
         pipeline = CompressionPipeline(db)
         auth_work = _auth(mode="work", workspace=_WORKSPACE_X)
         proposal = pipeline.create_proposal(
-            authority=auth_work, source_refs=_claim_ref(), proposed_summary="工作摘要",
+            authority=auth_work,
+            source_refs=_claim_ref(),
+            proposed_summary="工作摘要",
         )
         auth_personal = _auth(mode="personal")
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth_personal)
@@ -263,7 +302,9 @@ class TestApproveAuthorityCAS:
         pipeline = CompressionPipeline(db)
         auth_x = _auth(mode="work", workspace=_WORKSPACE_X)
         proposal = pipeline.create_proposal(
-            authority=auth_x, source_refs=_claim_ref(), proposed_summary="X摘要",
+            authority=auth_x,
+            source_refs=_claim_ref(),
+            proposed_summary="X摘要",
         )
         auth_y = _auth(mode="work", workspace=_WORKSPACE_Y)
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth_y)
@@ -275,11 +316,15 @@ class TestApproveAuthorityCAS:
         pipeline = CompressionPipeline(db)
         auth = _auth()
         proposal = pipeline.create_proposal(
-            authority=auth, source_refs=_claim_ref(), proposed_summary="摘要",
+            authority=auth,
+            source_refs=_claim_ref(),
+            proposed_summary="摘要",
         )
         with pytest.raises(TypeError):
             pipeline.approve_proposal(
-                proposal.proposal_id, authority=auth, approved_by="attacker",  # type: ignore[call-arg]
+                proposal.proposal_id,
+                authority=auth,
+                approved_by="attacker",  # type: ignore[call-arg]
             )
 
     def test_17_两个并发批准只有一次状态转换和一个胶囊(self, tmp_path: Path) -> None:
@@ -288,7 +333,9 @@ class TestApproveAuthorityCAS:
         pipeline = CompressionPipeline(db)
         auth = _auth()
         proposal = pipeline.create_proposal(
-            authority=auth, source_refs=_claim_ref(), proposed_summary="并发批准",
+            authority=auth,
+            source_refs=_claim_ref(),
+            proposed_summary="并发批准",
         )
         r1 = pipeline.approve_proposal(proposal.proposal_id, authority=auth)
         r2 = pipeline.approve_proposal(proposal.proposal_id, authority=auth)
@@ -302,7 +349,9 @@ class TestApproveAuthorityCAS:
         pipeline = CompressionPipeline(db)
         auth = _auth()
         proposal = pipeline.create_proposal(
-            authority=auth, source_refs=_claim_ref(), proposed_summary="重试测试",
+            authority=auth,
+            source_refs=_claim_ref(),
+            proposed_summary="重试测试",
         )
         r1 = pipeline.approve_proposal(proposal.proposal_id, authority=auth)
         del pipeline
@@ -317,7 +366,9 @@ class TestApproveAuthorityCAS:
         pipeline = CompressionPipeline(db)
         auth = _auth()
         proposal = pipeline.create_proposal(
-            authority=auth, source_refs=_claim_ref(), proposed_summary="拒绝测试",
+            authority=auth,
+            source_refs=_claim_ref(),
+            proposed_summary="拒绝测试",
         )
         pipeline.reject_proposal(proposal.proposal_id, authority=auth)
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth)
@@ -328,8 +379,12 @@ class TestApproveAuthorityCAS:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         auth = _auth()
-        p1 = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="旧摘要")
-        p2 = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="新摘要")
+        p1 = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="旧摘要"
+        )
+        p2 = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="新摘要"
+        )
         assert p1.proposal_id != p2.proposal_id
 
 
@@ -370,7 +425,9 @@ class TestConflictRevisionNoDelete:
             MemorySourceRefV1(kind=MemoryRecordKind.CLAIM, record_id="clm-1"),
             MemorySourceRefV1(kind=MemoryRecordKind.CLAIM, record_id="clm-2"),
         )
-        proposal = pipeline.create_proposal(authority=_auth(), source_refs=refs, proposed_summary="重复内容")
+        proposal = pipeline.create_proposal(
+            authority=_auth(), source_refs=refs, proposed_summary="重复内容"
+        )
         # Two claims with same typed_value but different id have different snapshot hashes
         # so duplicate_content is only when snapshot hash matches
         result = pipeline.approve_proposal(proposal.proposal_id, authority=_auth())
@@ -397,10 +454,14 @@ class TestConflictRevisionNoDelete:
             MemorySourceRefV1(kind=MemoryRecordKind.CLAIM, record_id="clm-1"),
             MemorySourceRefV1(kind=MemoryRecordKind.CLAIM, record_id="clm-2"),
         )
-        proposal = pipeline.create_proposal(authority=_auth(), source_refs=refs, proposed_summary="冲突摘要")
+        proposal = pipeline.create_proposal(
+            authority=_auth(), source_refs=refs, proposed_summary="冲突摘要"
+        )
         assert any("disputed" in f for f in proposal.conflict_flags)
 
-    def test_24_用户明确纠正中文事实时旧值superseded新值active并有墓碑(self, tmp_path: Path) -> None:
+    def test_24_用户明确纠正中文事实时旧值superseded新值active并有墓碑(
+        self, tmp_path: Path
+    ) -> None:
         db = tmp_path / "memory.db"
         _setup_db(db)
         with sqlite3.connect(str(db)) as conn:
@@ -416,7 +477,9 @@ class TestConflictRevisionNoDelete:
             )
             conn.commit()
         pipeline = CompressionPipeline(db)
-        proposal = pipeline.create_proposal(authority=_auth(), source_refs=_claim_ref(), proposed_summary="纠正后摘要")
+        proposal = pipeline.create_proposal(
+            authority=_auth(), source_refs=_claim_ref(), proposed_summary="纠正后摘要"
+        )
         assert any("superseded" in f for f in proposal.conflict_flags)
 
     def test_25_disputed来源的提案可查看冲突但不能批准(self, tmp_path: Path) -> None:
@@ -426,7 +489,9 @@ class TestConflictRevisionNoDelete:
             conn.execute("UPDATE mem_claims SET status='disputed' WHERE id='clm-1'")
             conn.commit()
         pipeline = CompressionPipeline(db)
-        proposal = pipeline.create_proposal(authority=_auth(), source_refs=_claim_ref(), proposed_summary="争议摘要")
+        proposal = pipeline.create_proposal(
+            authority=_auth(), source_refs=_claim_ref(), proposed_summary="争议摘要"
+        )
         assert any("disputed" in f for f in proposal.conflict_flags)
         result = pipeline.approve_proposal(proposal.proposal_id, authority=_auth())
         assert not result.success
@@ -435,7 +500,9 @@ class TestConflictRevisionNoDelete:
         db = tmp_path / "memory.db"
         _setup_db(db)
         pipeline = CompressionPipeline(db)
-        proposal = pipeline.create_proposal(authority=_auth(), source_refs=_claim_ref(), proposed_summary="受限摘要")
+        proposal = pipeline.create_proposal(
+            authority=_auth(), source_refs=_claim_ref(), proposed_summary="受限摘要"
+        )
         result = pipeline.approve_proposal(proposal.proposal_id, authority=_auth())
         # 没有restricted conflict时应该能批准；这个测试验证不回显原文
         if result.success:
@@ -458,17 +525,23 @@ class TestConflictRevisionNoDelete:
         pipeline = CompressionPipeline(db)
         refs = (MemorySourceRefV1(kind=MemoryRecordKind.EPISODE, record_id="ep-1"),)
         with pytest.raises((ValueError, UnsupportedSourceKindError)):
-            pipeline.create_proposal(authority=_auth(), source_refs=refs, proposed_summary="临时摘要")
+            pipeline.create_proposal(
+                authority=_auth(), source_refs=refs, proposed_summary="临时摘要"
+            )
 
     def test_28_压缩完整生命周期从不DELETE或UPDATE任何来源表内容(self, tmp_path: Path) -> None:
         db = tmp_path / "memory.db"
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         auth = _auth()
-        proposal = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="生命周期")
+        proposal = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="生命周期"
+        )
         pipeline.approve_proposal(proposal.proposal_id, authority=auth)
         with sqlite3.connect(str(db)) as conn:
-            claim = conn.execute("SELECT typed_value, status FROM mem_claims WHERE id='clm-1'").fetchone()
+            claim = conn.execute(
+                "SELECT typed_value, status FROM mem_claims WHERE id='clm-1'"
+            ).fetchone()
             assert claim[0] == "测试值"
             assert claim[1] == "active"
 
@@ -477,7 +550,9 @@ class TestConflictRevisionNoDelete:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         auth = _auth()
-        proposal = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="保留测试")
+        proposal = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="保留测试"
+        )
         pipeline.approve_proposal(proposal.proposal_id, authority=auth)
         scope = CompressionScopeV1(owner=_OWNER_A, mode="personal", workspace=None)
         proposals = pipeline.list_proposals(scope=scope, status="approved")
@@ -492,7 +567,9 @@ class TestConflictRevisionNoDelete:
         auth = _auth()
         for i in range(5):
             pipeline.create_proposal(
-                authority=auth, source_refs=_claim_ref(), proposed_summary=f"摘要{i}",
+                authority=auth,
+                source_refs=_claim_ref(),
+                proposed_summary=f"摘要{i}",
             )
         scope = CompressionScopeV1(owner=_OWNER_A, mode="personal", workspace=None)
         proposals = pipeline.list_proposals(scope=scope, status="pending")
@@ -510,7 +587,9 @@ class TestRehydrateTamperCrash:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         auth = _auth()
-        proposal = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="重启摘要")
+        proposal = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="重启摘要"
+        )
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth)
         capsule_id = result.capsule.capsule_id
         del pipeline
@@ -526,7 +605,9 @@ class TestRehydrateTamperCrash:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         auth = _auth()
-        proposal = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="旧快照")
+        proposal = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="旧快照"
+        )
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth)
         capsule_id = result.capsule.capsule_id
         with sqlite3.connect(str(db)) as conn:
@@ -541,7 +622,9 @@ class TestRehydrateTamperCrash:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         auth = _auth()
-        proposal = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="索引测试")
+        proposal = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="索引测试"
+        )
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth)
         rehydrated = pipeline.rehydrate_capsule(result.capsule.capsule_id, authority=auth)
         assert rehydrated is not None
@@ -555,9 +638,14 @@ class TestRehydrateTamperCrash:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         auth = _auth()
-        proposal = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="原始摘要")
+        proposal = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="原始摘要"
+        )
         with sqlite3.connect(str(db)) as conn:
-            conn.execute("UPDATE compression_proposals SET proposed_summary='篡改' WHERE proposal_id=?", (proposal.proposal_id,))
+            conn.execute(
+                "UPDATE compression_proposals SET proposed_summary='篡改' WHERE proposal_id=?",
+                (proposal.proposal_id,),
+            )
             conn.commit()
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth)
         assert not result.success
@@ -567,9 +655,14 @@ class TestRehydrateTamperCrash:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         auth = _auth()
-        proposal = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="摘要")
+        proposal = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="摘要"
+        )
         with sqlite3.connect(str(db)) as conn:
-            conn.execute("UPDATE compression_proposal_sources SET source_hash='sha256:fake' WHERE proposal_id=?", (proposal.proposal_id,))
+            conn.execute(
+                "UPDATE compression_proposal_sources SET source_hash='sha256:fake' WHERE proposal_id=?",
+                (proposal.proposal_id,),
+            )
             conn.commit()
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth)
         assert not result.success
@@ -579,9 +672,14 @@ class TestRehydrateTamperCrash:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         auth = _auth()
-        proposal = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="摘要")
+        proposal = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="摘要"
+        )
         with sqlite3.connect(str(db)) as conn:
-            conn.execute("UPDATE compression_proposals SET tokenizer_id='fake' WHERE proposal_id=?", (proposal.proposal_id,))
+            conn.execute(
+                "UPDATE compression_proposals SET tokenizer_id='fake' WHERE proposal_id=?",
+                (proposal.proposal_id,),
+            )
             conn.commit()
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth)
         assert not result.success
@@ -591,10 +689,15 @@ class TestRehydrateTamperCrash:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         auth = _auth()
-        proposal = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="快照篡改")
+        proposal = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="快照篡改"
+        )
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth)
         with sqlite3.connect(str(db)) as conn:
-            conn.execute("UPDATE compression_capsules SET summary_text='篡改' WHERE capsule_id=?", (result.capsule.capsule_id,))
+            conn.execute(
+                "UPDATE compression_capsules SET summary_text='篡改' WHERE capsule_id=?",
+                (result.capsule.capsule_id,),
+            )
             conn.commit()
         with pytest.raises(ValueError, match="corrupt"):
             pipeline.rehydrate_capsule(result.capsule.capsule_id, authority=auth)
@@ -604,10 +707,15 @@ class TestRehydrateTamperCrash:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         auth = _auth()
-        proposal = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="索引篡改")
+        proposal = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="索引篡改"
+        )
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth)
         with sqlite3.connect(str(db)) as conn:
-            conn.execute("UPDATE compression_capsules SET capsule_digest='sha256:fake' WHERE capsule_id=?", (result.capsule.capsule_id,))
+            conn.execute(
+                "UPDATE compression_capsules SET capsule_digest='sha256:fake' WHERE capsule_id=?",
+                (result.capsule.capsule_id,),
+            )
             conn.commit()
         with pytest.raises(ValueError, match="corrupt"):
             pipeline.rehydrate_capsule(result.capsule.capsule_id, authority=auth)
@@ -617,7 +725,9 @@ class TestRehydrateTamperCrash:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         auth = _auth()
-        proposal = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="崩溃测试")
+        proposal = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="崩溃测试"
+        )
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth)
         assert result.success
         del pipeline
@@ -635,7 +745,9 @@ class TestRehydrateTamperCrash:
         db = tmp_path / "memory.db"
         pipeline = CompressionPipeline(db)
         auth = _auth()
-        proposal = pipeline.create_proposal(authority=auth, source_refs=_claim_ref(), proposed_summary="迁移测试")
+        proposal = pipeline.create_proposal(
+            authority=auth, source_refs=_claim_ref(), proposed_summary="迁移测试"
+        )
         assert proposal.status == "pending"
 
 
@@ -645,9 +757,12 @@ class TestRehydrateTamperCrash:
 class TestProductionScopeIsolation:
     """E组: 生产接线、scope isolation。"""
 
-    def test_41_真实MemoryStore持有唯一R6管线并使用memory_enhanced数据库(self, tmp_path: Path) -> None:
+    def test_41_真实MemoryStore持有唯一R6管线并使用memory_enhanced数据库(
+        self, tmp_path: Path
+    ) -> None:
         from js.config import MemoryConfig
         from js.memory.store import MemoryStore
+
         store = MemoryStore(tmp_path, MemoryConfig())
         assert hasattr(store, "compression_pipeline")
         assert store.compression_pipeline is not None
@@ -655,22 +770,33 @@ class TestProductionScopeIsolation:
 
     def test_42_生产创建路由通过Echo控制工具且来源范围取自签名TaskRef(self, tmp_path: Path) -> None:
         """验证 tool_executor 中 compression_create action 从 RuntimeContext 派生 authority。"""
-        tool_file = Path(__file__).resolve().parent.parent / "js" / "agent" / "tool_executor.py"
-        content = tool_file.read_text(encoding="utf-8")
+        agent_dir = Path(__file__).resolve().parent.parent / "js" / "agent"
+        content = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (
+                agent_dir / "tool_executor.py",
+                agent_dir / "tool_executor_control_plane.py",
+            )
+            if path.is_file()
+        )
         assert "compression_create" in content
         assert "context.task_ref" in content
         assert "MemoryCompressionAuthorityV1" in content
 
     def test_43_生产批准路由在Task3A嵌套echo_tool操作内完成(self, tmp_path: Path) -> None:
         """验证 compression_approve 走 _mutate_memory -> execute_tool_effect 路径。"""
-        router_file = Path(__file__).resolve().parent.parent / "js" / "web" / "routers" / "memory.py"
+        router_file = (
+            Path(__file__).resolve().parent.parent / "js" / "web" / "routers" / "memory.py"
+        )
         content = router_file.read_text(encoding="utf-8")
         assert "compression_approve" in content
         assert "_mutate_memory" in content
 
     def test_44_客户端提交owner_mode_workspace_role字段被严格拒绝(self, tmp_path: Path) -> None:
         """验证 HTTP route 对 forbidden fields 返回 422。"""
-        router_file = Path(__file__).resolve().parent.parent / "js" / "web" / "routers" / "memory.py"
+        router_file = (
+            Path(__file__).resolve().parent.parent / "js" / "web" / "routers" / "memory.py"
+        )
         content = router_file.read_text(encoding="utf-8")
         assert "422" in content
         assert "forbidden" in content.lower() or "Forbidden" in content
@@ -690,8 +816,12 @@ class TestProductionScopeIsolation:
         pw = CompressionPipeline(db_w)
         auth_p = _auth(mode="personal")
         auth_w = _auth(mode="work", workspace=_WORKSPACE_X)
-        prop_p = pp.create_proposal(authority=auth_p, source_refs=_claim_ref(), proposed_summary="个人摘要")
-        prop_w = pw.create_proposal(authority=auth_w, source_refs=_claim_ref(), proposed_summary="工作摘要")
+        prop_p = pp.create_proposal(
+            authority=auth_p, source_refs=_claim_ref(), proposed_summary="个人摘要"
+        )
+        prop_w = pw.create_proposal(
+            authority=auth_w, source_refs=_claim_ref(), proposed_summary="工作摘要"
+        )
         pp.approve_proposal(prop_p.proposal_id, authority=auth_p)
         pw.approve_proposal(prop_w.proposal_id, authority=auth_w)
         scope_p = CompressionScopeV1(owner=_OWNER_A, mode="personal", workspace=None)
@@ -707,7 +837,9 @@ class TestProductionScopeIsolation:
         _setup_db(db, owner=_OWNER_A)
         pipeline = CompressionPipeline(db)
         auth_a = _auth(owner=_OWNER_A)
-        proposal = pipeline.create_proposal(authority=auth_a, source_refs=_claim_ref(), proposed_summary="A的摘要")
+        proposal = pipeline.create_proposal(
+            authority=auth_a, source_refs=_claim_ref(), proposed_summary="A的摘要"
+        )
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth_a)
         scope_b = CompressionScopeV1(owner=_OWNER_B, mode="personal", workspace=None)
         caps_b = pipeline.list_capsules(scope=scope_b)
@@ -721,7 +853,9 @@ class TestProductionScopeIsolation:
         _setup_db(db)
         pipeline = CompressionPipeline(db)
         auth_x = _auth(mode="work", workspace=_WORKSPACE_X)
-        proposal = pipeline.create_proposal(authority=auth_x, source_refs=_claim_ref(), proposed_summary="X摘要")
+        proposal = pipeline.create_proposal(
+            authority=auth_x, source_refs=_claim_ref(), proposed_summary="X摘要"
+        )
         result = pipeline.approve_proposal(proposal.proposal_id, authority=auth_x)
         _ = result
         scope_y = CompressionScopeV1(owner=_OWNER_A, mode="work", workspace=_WORKSPACE_Y)
@@ -736,7 +870,9 @@ class TestProductionScopeIsolation:
         # 确保不投影 proposed_summary 或 source payload
         batch_start = content.find("def _compression_proposal_batch")
         batch_end = content.find("\ndef ", batch_start + 1)
-        batch_code = content[batch_start:batch_end] if batch_end > batch_start else content[batch_start:]
+        batch_code = (
+            content[batch_start:batch_end] if batch_end > batch_start else content[batch_start:]
+        )
         assert "proposed_summary" not in batch_code
         assert "source_hashes" not in batch_code
 

@@ -82,7 +82,9 @@ def test_manual_review_routes_enforce_admin_tenant_and_resolution_contracts(tmp_
             headers={"X-API-Key": admin_key},
         )
         assert selected_rows.status_code == 200
-        assert [row["effect_id"] for row in selected_rows.json()["manual_reviews"]] == [other_effect]
+        assert [row["effect_id"] for row in selected_rows.json()["manual_reviews"]] == [
+            other_effect
+        ]
 
         cross_origin = client.post(
             f"/api/echo/manual-reviews/{owner_effect}/resolve",
@@ -103,7 +105,7 @@ def test_manual_review_routes_enforce_admin_tenant_and_resolution_contracts(tmp_
             headers={"X-API-Key": admin_key, "Origin": "http://localhost"},
             json={"action": "cancel", "reason": "x" * 1_001},
         )
-        assert oversized_reason.status_code == 400
+        assert oversized_reason.status_code == 422
 
         oversized_tenant = client.post(
             f"/api/echo/manual-reviews/{owner_effect}/resolve?tenant_id={'x' * 257}",
@@ -117,7 +119,7 @@ def test_manual_review_routes_enforce_admin_tenant_and_resolution_contracts(tmp_
             headers={"X-API-Key": admin_key, "Origin": "http://localhost"},
             json={"action": "delete", "reason": "operator verified no dispatch"},
         )
-        assert invalid_action.status_code == 400
+        assert invalid_action.status_code == 422
 
         cross_tenant = client.post(
             f"/api/echo/manual-reviews/{other_effect}/resolve",
@@ -126,13 +128,23 @@ def test_manual_review_routes_enforce_admin_tenant_and_resolution_contracts(tmp_
         )
         assert cross_tenant.status_code == 404
 
-        selected_other_tenant = client.post(
+        caller_controlled_operator = client.post(
             f"/api/echo/manual-reviews/{other_effect}/resolve?tenant_id=other-tenant",
             headers={"X-API-Key": admin_key, "Origin": "http://localhost"},
             json={
                 "action": "resolved",
                 "reason": "global admin verified the external outcome",
                 "operator": "caller-controlled-value",
+            },
+        )
+        assert caller_controlled_operator.status_code == 422
+
+        selected_other_tenant = client.post(
+            f"/api/echo/manual-reviews/{other_effect}/resolve?tenant_id=other-tenant",
+            headers={"X-API-Key": admin_key, "Origin": "http://localhost"},
+            json={
+                "action": "resolved",
+                "reason": "global admin verified the external outcome",
             },
         )
         assert selected_other_tenant.status_code == 200
@@ -143,7 +155,6 @@ def test_manual_review_routes_enforce_admin_tenant_and_resolution_contracts(tmp_
             json={
                 "action": "override",
                 "reason": "operator verified the external outcome",
-                "operator": "caller-controlled-value",
             },
         )
         assert resolved.status_code == 200
@@ -160,7 +171,9 @@ def test_manual_review_routes_enforce_admin_tenant_and_resolution_contracts(tmp_
         service.journal_path_for(owner_tenant),
         mac_key=service.journal_key_for(owner_tenant),
     ).records
-    resolution = next(record for record in records if record.record_type == "manual_review_resolution")
+    resolution = next(
+        record for record in records if record.record_type == "manual_review_resolution"
+    )
     other_records = FileEchoLedger(
         service.journal_path_for("other-tenant"),
         mac_key=service.journal_key_for("other-tenant"),

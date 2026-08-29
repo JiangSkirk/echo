@@ -58,7 +58,10 @@ def test_public_turn_boundary_rejects_runtime_shims_instead_of_replacing_runtime
 
 
 def test_turn_loop_does_not_invoke_model_router_directly() -> None:
-    source = (ROOT / "js" / "echo" / "turn_loop.py").read_text(encoding="utf-8")
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((ROOT / "js" / "echo" / "turn_loop").rglob("*.py"))
+    )
     assert ".router.chat(" not in source
     assert ".router.chat_stream_events(" not in source
     assert ".provider.chat(" not in source

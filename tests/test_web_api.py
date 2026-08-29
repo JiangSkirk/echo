@@ -763,8 +763,7 @@ def test_desktop_wizard_action_rejects_non_string_action(
 
     response = client.post("/api/desktop/wizard/action", json={"action_type": ["install"]})
 
-    assert response.status_code == 200
-    assert response.json()["success"] is False
+    assert response.status_code == 422
     raw_action.assert_not_called()
     agent.echo_runtime.execute_tool_effect.assert_not_called()
 
@@ -1214,9 +1213,7 @@ class TestUploadIsolation:
         assert effect.allowed_tools == ("control_upload_mutate",)
         assert context is runtime_context
 
-    def test_anonymous_upload_is_rejected_for_read_only_guest(
-        self, client: TestClient
-    ) -> None:
+    def test_anonymous_upload_is_rejected_for_read_only_guest(self, client: TestClient) -> None:
         """Guests (no credentials, auth optional) must not mutate state.
 
         Previously the anonymous context was admin and could upload; the

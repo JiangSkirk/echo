@@ -101,16 +101,10 @@ def test_work_echo_runtime_scopes_lease_roots_to_owner(tmp_path: Path) -> None:
 
     assert context.fs_roots == (
         (
-            settings.workspace
-            / "owners"
-            / owner_slug("owner-a")
-            / session_slug("session-a")
+            settings.workspace / "owners" / owner_slug("owner-a") / session_slug("session-a")
         ).resolve(),
         (
-            settings.workspace
-            / "uploads"
-            / owner_slug("owner-a")
-            / session_slug("session-a")
+            settings.workspace / "uploads" / owner_slug("owner-a") / session_slug("session-a")
         ).resolve(),
     )
 
@@ -130,10 +124,7 @@ def test_work_echo_runtime_scopes_local_owner_to_local_root(tmp_path: Path) -> N
     assert context.fs_roots == (
         (settings.workspace / "local" / session_slug("session-a")).resolve(),
         (
-            settings.workspace
-            / "uploads"
-            / owner_slug("js-work-local")
-            / session_slug("session-a")
+            settings.workspace / "uploads" / owner_slug("js-work-local") / session_slug("session-a")
         ).resolve(),
     )
 
@@ -147,12 +138,8 @@ def test_create_work_agent_denies_host_code_tools_unless_explicitly_local(
         allow_host_code_tools=True,
     )
 
-    assert not {"shell", "python"} & {
-        tool.name for tool in safe_default.registry.list_tools()
-    }
-    assert {"shell", "python"} <= {
-        tool.name for tool in local_cli.registry.list_tools()
-    }
+    assert not {"shell", "python"} & {tool.name for tool in safe_default.registry.list_tools()}
+    assert {"shell", "python"} <= {tool.name for tool in local_cli.registry.list_tools()}
 
 
 def test_work_tool_profiles_filter_visible_tools(tmp_path: Path) -> None:
@@ -269,7 +256,7 @@ def test_fleet_can_disable_skill_inheritance(monkeypatch, tmp_path: Path) -> Non
         def get_all(self) -> dict[str, object]:
             return {"demo": "demo-spec"}
 
-    monkeypatch.setattr("js.orchestration.fleet.JSAgent", FakeAgent)
+    monkeypatch.setattr("js.orchestration.fleet.agent_fleet.JSAgent", FakeAgent)
     settings = JSSettings(state_dir=tmp_path / "state", workspace=tmp_path / "workspace")
 
     fleet = AgentFleet(settings, skills=FakeSkillSource(), inherit_skills=False)
@@ -284,7 +271,10 @@ def test_work_intent_router_classifies_core_workflows() -> None:
 
     assert router.classify("搜索并整理一个行业报告") == WorkIntent.RESEARCH
     assert router.classify("把这个项目拆成可执行任务") == WorkIntent.PROJECT_BREAKDOWN
-    assert router.classify("从表格1提取面料信息，按表格2模板生成表格3") == WorkIntent.SPREADSHEET_ROUTINE
+    assert (
+        router.classify("从表格1提取面料信息，按表格2模板生成表格3")
+        == WorkIntent.SPREADSHEET_ROUTINE
+    )
     assert router.classify("帮我写一段说明") == WorkIntent.GENERAL
 
     research_prompt = router.prepare_message("搜索并整理一个行业报告")
@@ -300,7 +290,9 @@ def test_js_work_cli_supports_init_and_no_provider_message(tmp_path: Path) -> No
     runner = CliRunner()
     config_path = tmp_path / "config.yaml"
 
-    init_result = runner.invoke(work_main, ["--home", str(tmp_path), "init", "--path", str(config_path)])
+    init_result = runner.invoke(
+        work_main, ["--home", str(tmp_path), "init", "--path", str(config_path)]
+    )
     assert init_result.exit_code == 0
     assert config_path.exists()
 
@@ -385,7 +377,16 @@ def test_js_work_run_uses_echo_turn_runtime(monkeypatch, tmp_path: Path) -> None
     runner = CliRunner()
     result = runner.invoke(
         work_main,
-        ["--home", str(tmp_path), "--profile", "execute", "run", "搜索并整理资料", "--model", "mock-model"],
+        [
+            "--home",
+            str(tmp_path),
+            "--profile",
+            "execute",
+            "run",
+            "搜索并整理资料",
+            "--model",
+            "mock-model",
+        ],
     )
 
     assert result.exit_code == 0

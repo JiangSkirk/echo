@@ -358,6 +358,7 @@ class TestStreamEventDispatch:
         executor.run_id = "run-1"  # type: ignore[attr-defined]
         executor.owner_key_hash = None  # type: ignore[attr-defined]
         executor.disable_tools = True  # type: ignore[attr-defined]
+        executor.lease_tool_allowlist = None  # type: ignore[attr-defined]
         executor.allowed_tools = {"stale"}  # type: ignore[attr-defined]
 
         tools_schema, messages = await executor._compress()
@@ -783,12 +784,10 @@ class TestStreamEventDispatch:
         assert events_seen[-1]["usage"]["completion_tokens"] == 22
         # And it became the authoritative usage in ChatResponse — not the
         # heuristic fallback that would have produced a much smaller number.
-        assert resp.usage == {
-            "prompt_tokens": 11,
-            "completion_tokens": 22,
-            "total_tokens": 40,
-            "cached_tokens": 5,
-        }
+        assert resp.usage["uncached_input"] == 6
+        assert resp.usage["cache_read"] == 5
+        assert resp.usage["input_total"] == 11
+        assert resp.usage["output"] == 22
         assert resp.usage_source == "provider_actual"
 
     async def test_missing_stream_usage_is_explicitly_estimated(self) -> None:
@@ -806,7 +805,8 @@ class TestStreamEventDispatch:
             tools_schema=None,
         )
 
-        assert resp.usage["total_tokens"] > 0
+        assert resp.usage["input_total"] == 0
+        assert resp.usage["completion_tokens"] > 0
         assert resp.usage_source == "estimated"
 
     async def test_secrets_redaction_runs_on_text_and_thinking(self) -> None:
@@ -899,9 +899,7 @@ class TestStreamEventDispatch:
         )
 
         delivered = "".join(
-            str(event.get("text", ""))
-            for event in events
-            if event.get("kind") == "thinking_delta"
+            str(event.get("text", "")) for event in events if event.get("kind") == "thinking_delta"
         )
         assert secret not in delivered
         assert "[REDACTED:openai_key]" in delivered

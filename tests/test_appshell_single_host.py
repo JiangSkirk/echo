@@ -89,19 +89,139 @@ def test_personal_and_work_runtime_storage_remain_physically_isolated(
     assert personal.bind_port == work.bind_port == 8000
 
 
+def test_personal_cold_start_does_not_construct_work_agent(appshell_app: Any) -> None:
+    with TestClient(appshell_app, base_url="http://localhost"):
+        assert getattr(appshell_app.state.work_app.state, "web_runtime", None) is None
+        assert appshell_app.state.work_runtime_ready is False
+        assert appshell_app.state.personal_app.state.web_runtime.agent is not None
+
+
+def test_admin_unfreeze_does_not_fail_on_parent_web_runtime(appshell_app: Any) -> None:
+    """Parent host has no web_runtime; unfreeze must use the active child."""
+    with TestClient(
+        appshell_app,
+        base_url="http://localhost",
+        headers={"Origin": "http://localhost"},
+        client=("127.0.0.1", 50123),
+    ) as client:
+        boot = client.post("/api/appshell/bootstrap")
+        assert boot.status_code == 200, boot.text
+        assert getattr(appshell_app.state, "web_runtime", None) is None
+        response = client.post(
+            "/api/appshell/admin/unfreeze",
+            json={"session_id": "sess-unfreeze-test"},
+        )
+        detail = response.json().get("detail")
+        code = detail.get("code") if isinstance(detail, dict) else None
+        assert code != "runtime_unavailable", response.text
+
+
+def test_admin_unfreeze_rejects_non_admin(appshell_app: Any) -> None:
+    from js.web.auth import AuthManager
+
+    key = "js_user-unfreeze-key"
+    personal_state = appshell_app.state.personal_app.state.runtime_settings.state_dir
+    work_state = appshell_app.state.work_app.state.runtime_settings.state_dir
+    AuthManager(personal_state).provision_existing_key(key, name="user", role="user")
+    AuthManager(work_state).provision_existing_key(key, name="user", role="user")
+
+    with TestClient(
+        appshell_app,
+        base_url="http://localhost",
+        headers={"Origin": "http://localhost"},
+        client=("127.0.0.1", 50123),
+    ) as client:
+        login = client.post("/api/appshell/session", headers={"X-API-Key": key})
+        assert login.status_code == 200, login.text
+        response = client.post(
+            "/api/appshell/admin/unfreeze",
+            json={"session_id": "sess-unfreeze-user"},
+        )
+        assert response.status_code == 403, response.text
+
+
+def test_appshell_managed_write_rejects_cross_origin(appshell_app: Any) -> None:
+    with TestClient(
+        appshell_app,
+        base_url="http://localhost",
+        headers={"Origin": "http://localhost"},
+        client=("127.0.0.1", 50123),
+    ) as client:
+        boot = client.post("/api/appshell/bootstrap")
+        assert boot.status_code == 200, boot.text
+        response = client.post(
+            "/api/scenarios/code-review/start",
+            headers={"Origin": "https://evil.example"},
+        )
+        assert response.status_code == 403, response.text
+
+
+def test_work_mode_request_awaits_lazy_boot(appshell_app: Any) -> None:
+    """After a persisted Work session, first child request awaits boot (not 503)."""
+    from js.appshell.principal import APPSHELL_SESSION_COOKIE
+    from js.utils.db import db_connection
+    from js.web.auth import AuthManager
+
+    key = "js_lazy-work-boot-key"
+    personal_state = appshell_app.state.personal_app.state.runtime_settings.state_dir
+    work_state = appshell_app.state.work_app.state.runtime_settings.state_dir
+    AuthManager(personal_state).provision_existing_key(key, name="admin", role="admin")
+    AuthManager(work_state).provision_existing_key(key, name="admin", role="admin")
+
+    with TestClient(
+        appshell_app,
+        base_url="http://localhost",
+        headers={"Origin": "http://localhost"},
+        client=("127.0.0.1", 50123),
+    ) as client:
+        assert getattr(appshell_app.state.work_app.state, "web_runtime", None) is None
+        assert appshell_app.state.work_runtime_ready is False
+
+        login = client.post("/api/appshell/session", headers={"X-API-Key": key})
+        assert login.status_code == 200, login.text
+        assert getattr(appshell_app.state.work_app.state, "web_runtime", None) is None
+        assert appshell_app.state.work_runtime_ready is False
+
+        token = client.cookies.get(APPSHELL_SESSION_COOKIE)
+        store = appshell_app.state.appshell_session_store
+        principal = store.resolve(token)
+        assert principal is not None
+        work_handle = appshell_app.state.work_workspace_handle
+        session_db = (
+            appshell_app.state.personal_app.state.runtime_settings.state_dir
+            / "appshell_sessions.db"
+        )
+        with db_connection(session_db) as connection:
+            connection.execute(
+                "UPDATE appshell_sessions SET active_mode = ?, workspace = ? WHERE session = ?",
+                ("work", work_handle, principal.session),
+            )
+            connection.commit()
+
+        assert getattr(appshell_app.state.work_app.state, "web_runtime", None) is None
+        assert appshell_app.state.work_runtime_ready is False
+
+        status = client.get("/api/status")
+        assert status.status_code == 200, status.text
+        assert status.json()["product_id"] == "js-work"
+        assert appshell_app.state.work_runtime_ready is True
+        assert appshell_app.state.work_app.state.web_runtime.agent is not None
+        assert client.get("/").status_code == 200
+
+
 def test_real_appshell_composition_has_separate_local_only_connector_managers(
     appshell_app: Any,
 ) -> None:
+    from js.appshell.server import ensure_work_runtime_blocking
+
     with TestClient(appshell_app, base_url="http://localhost"):
-        personal_runtime = (
-            appshell_app.state.personal_app.state.web_runtime.agent.echo_runtime
-        )
+        ensure_work_runtime_blocking(appshell_app)
+        personal_runtime = appshell_app.state.personal_app.state.web_runtime.agent.echo_runtime
         work_runtime = appshell_app.state.work_app.state.web_runtime.agent.echo_runtime
         assert personal_runtime._connector_manager is not work_runtime._connector_manager
         for runtime in (personal_runtime, work_runtime):
             assert {
-                item["connector_type"]
-                for item in runtime._connector_manager.list_available()
+                item["connector_type"] for item in runtime._connector_manager.list_available()
             } == {"local_import", "local_publish"}
             assert not runtime._connector_manager.is_available("fake")
 

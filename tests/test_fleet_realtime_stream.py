@@ -248,8 +248,7 @@ class TestFleetRealtimeEvents:
             assert frame["task_id"] == "t1"
 
         identities = {
-            (frame["request_id"], frame["turn_id"], frame["session_id"])
-            for frame in received
+            (frame["request_id"], frame["turn_id"], frame["session_id"]) for frame in received
         }
         assert len(identities) == 1
         assert all(identities.pop())
@@ -513,12 +512,10 @@ class TestFleetRealtimeEvents:
             await asyncio.Event().wait()
             raise AssertionError("unreachable")
 
-        monkeypatch.setattr("js.orchestration.fleet.run_echo_turn", block_turn)
+        monkeypatch.setattr("js.orchestration.fleet.agent_fleet.run_echo_turn", block_turn)
         fleet.on_event(collect)
         task = _task("cancelled coroutine task")
-        execution = asyncio.create_task(
-            fleet._execute_single(task, _worker(_ScriptedAgent()))
-        )
+        execution = asyncio.create_task(fleet._execute_single(task, _worker(_ScriptedAgent())))
         await started.wait()
         execution.cancel()
 
@@ -630,7 +627,7 @@ class TestFleetRealtimeEvents:
             await asyncio.Event().wait()  # block forever
             raise AssertionError("unreachable")
 
-        monkeypatch.setattr("js.orchestration.fleet.run_echo_turn", block_turn)
+        monkeypatch.setattr("js.orchestration.fleet.agent_fleet.run_echo_turn", block_turn)
 
         tasks = [_task("t1"), _task("t2")]
         tasks[0].id = "t1"
@@ -640,9 +637,7 @@ class TestFleetRealtimeEvents:
             _worker(_ScriptedAgent(), name="w2"),
         ]
 
-        parallel_exec = asyncio.create_task(
-            fleet._run_parallel(tasks, workers)
-        )
+        parallel_exec = asyncio.create_task(fleet._run_parallel(tasks, workers))
         await started.wait()
 
         # Cancel parent

@@ -30,7 +30,7 @@ def _make_executor(session_id: str = "s-1", run_id: str = "r-1") -> EchoTurnLoop
     return executor
 
 
-@patch("js.echo.turn_loop.get_metrics")
+@patch("js.echo.turn_loop.loop.get_metrics")
 def test_telemetry_logs_batch_details(mock_get_metrics: MagicMock) -> None:
     executor = _make_executor()
     batch = [
@@ -67,7 +67,7 @@ def test_telemetry_logs_batch_details(mock_get_metrics: MagicMock) -> None:
     mock_get_metrics.return_value.tool_batches_total.labels.return_value.inc.assert_called_once()
 
 
-@patch("js.echo.turn_loop.get_metrics")
+@patch("js.echo.turn_loop.loop.get_metrics")
 def test_telemetry_all_failed_true(mock_get_metrics: MagicMock) -> None:
     executor = _make_executor()
     batch = [
@@ -87,7 +87,7 @@ def test_telemetry_all_failed_true(mock_get_metrics: MagicMock) -> None:
     )
 
 
-@patch("js.echo.turn_loop.get_metrics")
+@patch("js.echo.turn_loop.loop.get_metrics")
 def test_telemetry_empty_batch(mock_get_metrics: MagicMock) -> None:
     executor = _make_executor()
     executor._emit_tool_telemetry(executor.state, [], None)

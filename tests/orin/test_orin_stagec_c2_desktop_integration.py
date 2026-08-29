@@ -67,6 +67,7 @@ def _desktop_intent(
     task_id: str,
     profile: str = "work",
     effect_classes: tuple[str, ...] = ("desktop.observe", "desktop.action"),
+    handles: tuple[str, ...] = (),
 ) -> IntentEnvelope:
     now = time.time_ns() // 1_000_000
     return IntentEnvelope(
@@ -77,7 +78,7 @@ def _desktop_intent(
         task_id=task_id,
         raw_request_hash=request_hash_of("observe and click the C2 harness window"),
         allowed_effect_classes=effect_classes,
-        allowed_resource_handles=(),
+        allowed_resource_handles=handles,
         allowed_sink_handles=(),
         budgets=Budgets(
             max_invocations=20,
@@ -86,9 +87,7 @@ def _desktop_intent(
             max_cost_minor_units=0,
         ),
         approval_policy=(
-            "preauthorized_exact_template"
-            if profile == "work"
-            else "exact_commit_required"
+            "preauthorized_exact_template" if profile == "work" else "exact_commit_required"
         ),
         issued_by="appshell:owner-witness",
         issued_at_ms=now - 1_000,
@@ -116,6 +115,7 @@ def _write_desktop_script(path: Path) -> None:
                     "window_id": 0,
                     "owner_pid": 0,
                     "control_id": "screen",
+                    "bundle_id": "com.apple.calculator",
                     "bounds": [0, 0, 80, 60],
                 },
                 "pixel_hash": "sha256:" + "a" * 64,
@@ -199,7 +199,17 @@ def test_work_desktop_action_preflights_but_k4_blocks_commit_without_export_pass
     _write_desktop_script(script_path)
     private_key = ed25519.Ed25519PrivateKey.generate()
     task_id = f"task:{uuid4().hex}"
-    intent = _desktop_intent(private_key, task_id=task_id)
+    owner = "sha256:" + "1" * 64
+    appshell_session = "session:c2-work"
+    handle_id = C2TestOrind.appshell_application_handle(
+        owner_key_hash=owner,
+        task_id=task_id,
+        principal_owner="owner:c2",
+        principal_session=appshell_session,
+        principal_epoch=1,
+        bundle_id="com.apple.calculator",
+    )
+    intent = _desktop_intent(private_key, task_id=task_id, handles=(handle_id,))
 
     with C2TestOrind(
         state_dir=tmp_path / "state",
@@ -228,7 +238,14 @@ def test_work_desktop_action_preflights_but_k4_blocks_commit_without_export_pass
             monkeypatch.setattr(intents, method_name, forbidden_export)
 
         adapter = _adapter(orind)
-        assert adapter.register_intent(intent.to_dict())["ok"] is True
+        bound = adapter.register_desktop_app_binding(
+            intent.to_dict(),
+            appshell_owner="owner:c2",
+            appshell_session=appshell_session,
+            appshell_epoch=1,
+            bundle_id="com.apple.calculator",
+        )
+        assert bound["application_handle_id"] == handle_id
         observed = adapter.observe_desktop(task_id, {"kind": "screen"})
         handle_id = observed["desktop_target_handle_id"]
         assert observed["status"] == "OBSERVED"
@@ -278,8 +295,9 @@ def test_work_desktop_action_preflights_but_k4_blocks_commit_without_export_pass
         def recording_preflight(
             draft_id: str,
             executor_id: str | None = None,
+            **kwargs: Any,
         ) -> dict[str, Any]:
-            result = preflight_draft(draft_id, executor_id)
+            result = preflight_draft(draft_id, executor_id, **kwargs)
             preflighted.append(submitted[draft_id])
             return result
 
@@ -416,9 +434,13 @@ def test_personal_desktop_action_preflights_but_consume_fails_without_export_pas
         preflight_calls: list[tuple[str, str]] = []
         preflight = adapter.preflight_draft
 
-        def recording_preflight(draft_id: str, executor_id: str) -> dict[str, Any]:
-            preflight_calls.append((draft_id, executor_id))
-            return preflight(draft_id, executor_id)
+        def recording_preflight(
+            draft_id: str,
+            executor_id: str | None = None,
+            **kwargs: Any,
+        ) -> dict[str, Any]:
+            preflight_calls.append((draft_id, str(executor_id or "")))
+            return preflight(draft_id, executor_id, **kwargs)
 
         monkeypatch.setattr(adapter, "preflight_draft", recording_preflight)
         with pytest.raises(LeaseDenied):
@@ -583,9 +605,7 @@ def test_cell_observations_are_never_marked_cacheable_but_default_specs_are_unch
     default_read_flags = {
         spec.name: spec.read_only for spec in DesktopTools().get_read_only_specs()
     }
-    backend_read_flags = {
-        spec.name: spec.read_only for spec in backend_tools.get_read_only_specs()
-    }
+    backend_read_flags = {spec.name: spec.read_only for spec in backend_tools.get_read_only_specs()}
 
     observable = {
         "desktop_get_permissions",

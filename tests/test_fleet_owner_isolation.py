@@ -44,7 +44,7 @@ class _FakeAgent:
 
 
 def _fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, max_workers: int = 2) -> AgentFleet:
-    monkeypatch.setattr("js.orchestration.fleet.JSAgent", _FakeAgent)
+    monkeypatch.setattr("js.orchestration.fleet.agent_fleet.JSAgent", _FakeAgent)
     settings = JSSettings(
         state_dir=tmp_path / "state",
         workspace=tmp_path / "workspace",
@@ -209,12 +209,8 @@ async def test_worker_inherits_non_expanding_parent_runtime_envelope(
 
     assert worker.agent._role == "user"
     assert worker.agent._work_profile == "restricted"
-    assert worker.agent._echo_capability_ceiling == frozenset(
-        {"file_read", "file_write"}
-    )
-    assert worker.agent._echo_network_allowlist_ceiling == frozenset(
-        {"allowed.example"}
-    )
+    assert worker.agent._echo_capability_ceiling == frozenset({"file_read", "file_write"})
+    assert worker.agent._echo_network_allowlist_ceiling == frozenset({"allowed.example"})
     assert worker.agent._echo_deadline_ceiling_ms == deadline_ms
     assert worker.agent._echo_cancel_token is cancel_token
     assert worker.capabilities == ["file_read", "file_write"]
@@ -238,9 +234,7 @@ async def test_reused_worker_is_renarrowed_for_each_parent_turn(
         reset_runtime_context(broad_token)
     worker.status = "idle"
 
-    narrow_token = set_runtime_context(
-        _context(tmp_path, "owner-a", capabilities=("file_read",))
-    )
+    narrow_token = set_runtime_context(_context(tmp_path, "owner-a", capabilities=("file_read",)))
     try:
         reused = await fleet._acquire_agent("worker", "group-b")
     finally:
@@ -395,8 +389,7 @@ async def test_internal_collaboration_generates_one_stable_complete_identity(
     result = await fleet.collaborate("task", owner_key_hash="owner-a")
 
     identities = [
-        (event["request_id"], event["turn_id"], event["session_id"])
-        for event in received
+        (event["request_id"], event["turn_id"], event["session_id"]) for event in received
     ]
     assert len(identities) == 2
     assert identities[0] == identities[1]

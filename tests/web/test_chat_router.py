@@ -113,6 +113,21 @@ def test_chat_success() -> None:
     agent.run.assert_awaited_once()
 
 
+@pytest.mark.parametrize("message", [["not", "text"], 123])
+def test_chat_rejects_non_string_message(message: object) -> None:
+    app = _make_app()
+    client = _client(app)
+    resp = client.post("/api/chat", json={"message": message})
+    assert resp.status_code == 422
+
+
+def test_chat_rejects_unknown_fields() -> None:
+    app = _make_app()
+    client = _client(app)
+    resp = client.post("/api/chat", json={"message": "hello", "evil": True})
+    assert resp.status_code == 422
+
+
 @pytest.mark.parametrize(
     "telemetry_error",
     [
@@ -409,9 +424,7 @@ def test_chat_echo_mode_blocks_secret_before_agent_call(tmp_path: Path) -> None:
     agent = _echo_agent()
     agent.settings = settings
     agent.run = AsyncMock(
-        side_effect=EchoBlockedError(
-            "Secret data cannot enter Echo on-mode model path"
-        )
+        side_effect=EchoBlockedError("Secret data cannot enter Echo on-mode model path")
     )
 
     app = _make_app()
@@ -440,9 +453,7 @@ def test_chat_echo_mode_fails_closed_when_begin_errors(
     agent = _echo_agent()
     agent.settings = settings
     agent.run = AsyncMock(
-        side_effect=EchoUnavailableError(
-            "Echo safety layer unavailable before model execution"
-        )
+        side_effect=EchoUnavailableError("Echo safety layer unavailable before model execution")
     )
 
     app = _make_app()

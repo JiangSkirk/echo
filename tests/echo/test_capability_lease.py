@@ -488,6 +488,67 @@ def test_persistent_lease_ledger_allows_exactly_one_cross_process_consume(
     assert sorted(results) == ["ok", "replay"]
 
 
+def test_persistent_lease_ledger_skips_full_reload_when_file_unchanged(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "leases.jsonl"
+    auth = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    lease = _issue_default(auth, max_invocations=2)
+    reloads_after_issue = auth._ledger_full_reloads
+
+    auth.consume(lease, now=0)
+    auth.consume(lease, now=0)
+    assert lease.lease_id in auth.known_lease_ids()
+    assert auth._ledger_full_reloads == reloads_after_issue
+
+
+def test_persistent_lease_ledger_replays_tail_from_other_process(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "leases.jsonl"
+    auth = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    first = _issue_default(auth, run_id="run-parent")
+    reloads_after_issue = auth._ledger_full_reloads
+
+    ctx = multiprocessing.get_context("spawn")
+    start_event = ctx.Event()
+    ready_queue = ctx.Queue()
+    result_queue = ctx.Queue()
+    worker = ctx.Process(
+        target=_issue_persistent_worker,
+        args=(str(ledger_path), start_event, ready_queue, result_queue, 7),
+    )
+    worker.start()
+    assert ready_queue.get(timeout=10) == 7
+    start_event.set()
+    status, child_lease_id = result_queue.get(timeout=10)
+    worker.join(timeout=10)
+    assert worker.exitcode == 0
+    assert status == "ok"
+
+    known = auth.known_lease_ids()
+    assert first.lease_id in known
+    assert child_lease_id in known
+    assert auth._ledger_full_reloads == reloads_after_issue
+
+
+def test_persistent_lease_ledger_truncation_forces_full_replay(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "leases.jsonl"
+    auth = LeaseAuthority(mac_key=_TEST_KEY, now_fn=lambda: 0, ledger_path=ledger_path)
+    first = _issue_default(auth, run_id="run-keep")
+    _issue_default(auth, run_id="run-drop")
+    rows = ledger_path.read_text(encoding="utf-8").splitlines()
+    ledger_path.write_text(rows[0] + "\n", encoding="utf-8")
+    reloads_before = auth._ledger_full_reloads
+
+    known = auth.known_lease_ids()
+    assert first.lease_id in known
+    assert len(known) == 1
+    assert auth._ledger_full_reloads == reloads_before + 1
+
+
 def test_consume_multi_use_exhaustion() -> None:
     """After ``max_invocations`` consumes on a multi-use lease, the
     next call raises :class:`LeaseExhausted`.

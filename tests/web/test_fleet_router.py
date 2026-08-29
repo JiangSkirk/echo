@@ -33,9 +33,7 @@ def _make_client() -> TestClient:
 
     agent = MagicMock()
     agent.settings = _settings
-    agent.echo_runtime.build_context.return_value = MagicMock(
-        capabilities=("fleet_collaborate",)
-    )
+    agent.echo_runtime.build_context.return_value = MagicMock(capabilities=("fleet_collaborate",))
     agent.echo_runtime.execute_tool_effect = AsyncMock(
         return_value=(
             ChatMessage(role="tool", content="done", name="fleet_collaborate"),
@@ -155,7 +153,7 @@ def test_fleet_collaborate_missing_task() -> None:
     with patch("js.web.routers.fleet.get_fleet", return_value=fleet):
         resp = client.post("/api/fleet/collaborate", json={})
 
-    assert resp.status_code == 400
+    assert resp.status_code == 422
 
 
 def test_fleet_continue_executes_hidden_echo_effect() -> None:
@@ -183,9 +181,7 @@ def test_fleet_continue_executes_hidden_echo_effect() -> None:
     effect, _context = agent.echo_runtime.execute_tool_effect.await_args.args
     assert effect.tool_name == "control_fleet_continue"
     assert effect.allowed_tools == ("control_fleet_continue",)
-    assert effect.arguments_json == (
-        '{"follow_up":"Continue safely","session_id":"session-1"}'
-    )
+    assert effect.arguments_json == ('{"follow_up":"Continue safely","session_id":"session-1"}')
 
 
 def test_fleet_delete_executes_hidden_echo_effect() -> None:
@@ -222,7 +218,7 @@ def test_fleet_continue_rejects_non_string_follow_up() -> None:
         json={"follow_up": ["not", "a", "string"]},
     )
 
-    assert resp.status_code == 400
+    assert resp.status_code == 422
     agent.echo_runtime.execute_tool_effect.assert_not_awaited()
 
 

@@ -725,6 +725,57 @@ class TestDesktopBootstrapFailure:
         assert len(bootstrap_requests) == 1
 
 
+class TestHeadlessBootstrapKeyFailure:
+    def test_failed_exchange_keeps_fragment_and_blocks_shell(
+        self, live_server: str, page: Page
+    ) -> None:
+        session_requests: list[str] = []
+        page.on(
+            "request",
+            lambda request: (
+                session_requests.append(request.url)
+                if request.url.endswith("/api/appshell/session")
+                else None
+            ),
+        )
+        page.route(
+            "**/api/appshell/session",
+            lambda route: route.fulfill(
+                status=401,
+                body=json.dumps({"detail": "bad key leaked at /Users/private/config.yaml"}),
+                content_type="application/json",
+            ),
+        )
+
+        page.goto(f"{live_server}/#bootstrap-api-key=bad-key", wait_until="domcontentloaded")
+
+        failure = page.locator("#bootstrap-failure")
+        expect(failure).to_be_visible()
+        expect(failure).to_contain_text("无法完成安全连接")
+        expect(page.locator("#bootstrap-failure-description-key")).to_be_visible()
+        expect(page.locator("#bootstrap-recovery-guidance-key")).to_be_visible()
+        expect(page.locator("#bootstrap-recovery-guidance-key")).to_contain_text("刷新页面可重试")
+        expect(page.locator("#bootstrap-failure-description-desktop")).to_be_hidden()
+        expect(page.locator("#bootstrap-recovery-guidance-desktop")).to_be_hidden()
+        expect(failure.locator("button")).to_have_count(0)
+        assert page.evaluate(
+            "() => { const el = document.getElementById('app-shell');"
+            " return !!(el && el.inert && el.getAttribute('aria-hidden') === 'true'); }"
+        )
+        body_text = failure.inner_text()
+        assert "bad-key" not in body_text
+        assert "/Users/" not in body_text
+        assert "HTTP 401" not in body_text
+        hash_value = page.evaluate("location.hash")
+        assert "bootstrap-api-key" in hash_value
+        assert "bad-key" in hash_value
+
+        page.reload(wait_until="domcontentloaded")
+        expect(page.locator("#bootstrap-failure")).to_be_visible()
+        assert "bootstrap-api-key" in page.evaluate("location.hash")
+        assert len(session_requests) >= 2
+
+
 _XSS_PAYLOAD = "x');alert(1);//"
 
 

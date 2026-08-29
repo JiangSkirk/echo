@@ -113,6 +113,11 @@ class _Harness:
         assert response.status_code == 200, response.text
         return response.json()
 
+    def ensure_work(self) -> None:
+        from js.appshell.server import ensure_work_runtime_blocking
+
+        ensure_work_runtime_blocking(self.app)
+
 
 @pytest.fixture()
 def appshell_harness(tmp_path: Path) -> Any:
@@ -174,6 +179,7 @@ class _RealAuthorities:
 
 @pytest.fixture()
 def r3_real_authorities(authed_harness: _Harness) -> _RealAuthorities:
+    authed_harness.ensure_work()
     personal_agent = authed_harness.app.state.personal_app.state.web_runtime.agent
     work_agent = authed_harness.app.state.work_app.state.web_runtime.agent
 
@@ -189,11 +195,7 @@ def r3_real_authorities(authed_harness: _Harness) -> _RealAuthorities:
         queue_if_unhandled=True,
     )
     assert decision.action is ApprovalDecisionType.PENDING
-    assert len(
-        personal_agent.approvals.get_pending(
-            owner_key_hash=authed_harness.admin_owner
-        )
-    ) == 1
+    assert len(personal_agent.approvals.get_pending(owner_key_hash=authed_harness.admin_owner)) == 1
 
     memory_session = "session-personal-memory"
     proposal = personal_agent.memory.propose_change(
@@ -207,11 +209,7 @@ def r3_real_authorities(authed_harness: _Harness) -> _RealAuthorities:
         auto_apply=False,
     )
     assert proposal["status"] == "pending"
-    assert len(
-        personal_agent.memory.list_proposals(
-            "pending", authed_harness.admin_owner, 50
-        )
-    ) == 1
+    assert len(personal_agent.memory.list_proposals("pending", authed_harness.admin_owner, 50)) == 1
 
     manual_session = "session-work-manual"
     manual_run = "run-work-manual"
@@ -229,9 +227,7 @@ def r3_real_authorities(authed_harness: _Harness) -> _RealAuthorities:
     )
     writer.assert_model_execution_permitted(context)
     writer.close()
-    assert work_agent.echo_safety_service.list_manual_reviews(
-        tenant_id=authed_harness.admin_owner
-    )
+    assert work_agent.echo_safety_service.list_manual_reviews(tenant_id=authed_harness.admin_owner)
 
     return _RealAuthorities(
         harness=authed_harness,
@@ -603,11 +599,7 @@ def test_verified_artifact_ref_round_trips_through_endpoint_and_orphans_never_ap
     assert body["status"] == "ok"
     assert body["count"] == 1
     assert body["items"] == [
-        {
-            key: value
-            for key, value in expected.to_dict().items()
-            if key != "owner"
-        }
+        {key: value for key, value in expected.to_dict().items() if key != "owner"}
         | {"orin_taint": 2048}  # Orin WP2 site 9: INBOX_CONTENT provenance bit
     ]
     assert "orphan.xlsx" not in response.text
@@ -823,6 +815,7 @@ def test_retired_owner_session_and_private_acl_remain_exact(
 def test_retired_work_workspace_ref_stays_in_exact_mode_and_workspace(
     authed_harness: _Harness,
 ) -> None:
+    authed_harness.ensure_work()
     service = authed_harness.app.state.work_app.state.web_runtime.agent.echo_safety_service
     service._ledger_config = EchoLedgerConfig(max_session_partitions_per_owner=2)
     expected = _append_real_artifact(
@@ -854,9 +847,7 @@ def test_retired_work_workspace_ref_stays_in_exact_mode_and_workspace(
     assert not retired_journal.exists()
     assert authed_harness.client.get("/api/appshell/artifacts").json()["items"] == []
     authed_harness.switch_to_work()
-    response = authed_harness.client.get(
-        "/api/appshell/artifacts", params={"mode": "work"}
-    )
+    response = authed_harness.client.get("/api/appshell/artifacts", params={"mode": "work"})
     assert response.status_code == 200, response.text
     assert [item["digest"] for item in response.json()["items"]] == [expected.digest]
     assert response.json()["items"][0]["workspace"] == authed_harness.work_handle
@@ -865,6 +856,7 @@ def test_retired_work_workspace_ref_stays_in_exact_mode_and_workspace(
 def test_work_workspace_artifact_comes_only_from_work_runtime(
     authed_harness: _Harness,
 ) -> None:
+    authed_harness.ensure_work()
     personal_service = (
         authed_harness.app.state.personal_app.state.web_runtime.agent.echo_safety_service
     )
@@ -1034,11 +1026,14 @@ def test_corrupt_retired_catalog_blocks_active_artifacts_and_returns_503(
         digest_char="8",
     )
     assert not retired_journal.exists()
-    checkpoint_path = service.journal_path_for_scope(
-        authed_harness.admin_owner,
-        product_id="js-agent",
-        session_id=active_ref.session,
-    ).parent.parent / "retired-sessions.json"
+    checkpoint_path = (
+        service.journal_path_for_scope(
+            authed_harness.admin_owner,
+            product_id="js-agent",
+            session_id=active_ref.session,
+        ).parent.parent
+        / "retired-sessions.json"
+    )
     row = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     row["mac"] = ("0" if row["mac"][0] != "0" else "1") + row["mac"][1:]
     checkpoint_path.write_text(
@@ -1051,9 +1046,7 @@ def test_corrupt_retired_catalog_blocks_active_artifacts_and_returns_503(
     assert response.status_code == 503
     assert response.json()["status"] == "blocked"
     assert response.json()["items"] == []
-    assert response.json()["access_issues"][0]["safe_detail"] == (
-        "projection source unavailable"
-    )
+    assert response.json()["access_issues"][0]["safe_detail"] == ("projection source unavailable")
     assert active_ref.digest not in response.text
 
 
@@ -1070,9 +1063,7 @@ def test_client_cannot_submit_owner_product_or_workspace_authority(
             params={field: value},
         )
         assert response.status_code == 400
-        assert response.json() == {
-            "detail": {"code": "unsupported_projection_parameter"}
-        }
+        assert response.json() == {"detail": {"code": "unsupported_projection_parameter"}}
         assert response.headers["cache-control"] == "no-store"
 
 
@@ -1143,6 +1134,4 @@ def test_settings_and_deferred_surfaces_keep_existing_parent_contracts(
     ):
         response = authed_harness.client.get(path)
         assert response.status_code == 404
-        assert response.json() == {
-            "detail": {"code": "feature_not_enabled", "feature": feature}
-        }
+        assert response.json() == {"detail": {"code": "feature_not_enabled", "feature": feature}}

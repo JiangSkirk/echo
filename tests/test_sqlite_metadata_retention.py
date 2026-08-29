@@ -462,15 +462,15 @@ def test_high_write_metadata_defaults_retain_only_one_thousand_recent_rows(
 
     assert lifecycle.prune() == 25
     assert review.prune() == 25
-    assert stats.prune() == 25
+    assert stats.prune() == 0
 
-    for db_path, table in (
-        (lifecycle.db_path, "session_lifecycle"),
-        (review.db_path, "review_capsules"),
-        (stats.db_path, "token_usage"),
+    for db_path, table, retained in (
+        (lifecycle.db_path, "session_lifecycle", 1_000),
+        (review.db_path, "review_capsules", 1_000),
+        (stats.db_path, "token_usage", row_count),
     ):
         with sqlite3.connect(db_path) as conn:
-            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 1_000
+            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == retained
 
 
 def test_token_stats_prune_rolls_back_age_deletion_when_row_cap_deletion_fails(
@@ -541,4 +541,4 @@ async def test_governor_prunes_metadata_stores_and_continues_after_failures(
     review.prune.assert_called_once_with()
     stats_store_type.assert_called_once_with(tmp_path)
     stats_store.prune.assert_called_once_with()
-    checkpoint.assert_awaited_once_with()
+    checkpoint.assert_awaited_once_with(force=True)

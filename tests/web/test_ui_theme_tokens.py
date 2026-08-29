@@ -56,6 +56,7 @@ class TestTemplateReferences:
         html = _read(TEMPLATE)
         assert "/static/css/tokens.css" in html
         assert "/static/css/shell.css" in html
+        assert "/static/css/memory.css" in html
 
     def test_template_loads_theme_init_before_app(self) -> None:
         html = _read(TEMPLATE)

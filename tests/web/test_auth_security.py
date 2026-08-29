@@ -11,7 +11,9 @@ Covers:
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import stat
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -21,6 +23,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from js.config import JSSettings, SecurityConfig
+from js.exceptions import AuthRequiredError
 from js.web import server as web_server
 from js.web.auth import AuthManager, authenticate_credentials
 from js.web.server import create_app
@@ -158,7 +161,7 @@ class TestRequireAuthOriginGuard:
             },
         )
 
-        assert resp.status_code == 400  # reached the handler: model_id missing
+        assert resp.status_code == 422  # reached the handler: model_id missing
 
     def test_guest_same_origin_test_model_denied(self, tmp_path: Path) -> None:
         settings = _settings(tmp_path, api_key_required=False)
@@ -184,7 +187,7 @@ class TestRequireAuthOriginGuard:
             headers={"X-API-Key": user_key},
         )
 
-        assert resp.status_code == 400  # reached the handler: model_id missing
+        assert resp.status_code == 422  # reached the handler: model_id missing
 
     def test_check_origin_dummy_key_without_app_scope_is_403(self) -> None:
         """Missing ASGI app must not turn Origin rejection into a 500."""
@@ -398,6 +401,18 @@ class TestSessionCookieLogin:
 
         assert client.get("/api/audit").status_code == 200
 
+    def test_login_deletes_bootstrap_admin_key_file(self, tmp_path: Path) -> None:
+        settings = _settings(tmp_path, api_key_required=True, first_run_completed=True)
+        admin_key = AuthManager(settings.state_dir).create_key("admin", role="admin")
+        key_file = settings.state_dir / "bootstrap_admin_key.txt"
+        key_file.write_text(admin_key + "\n", encoding="utf-8")
+        key_file.chmod(0o600)
+        client = _wire(settings, _agent(settings))
+
+        resp = client.post("/api/auth/session", headers={"X-API-Key": admin_key})
+        assert resp.status_code == 200
+        assert not key_file.exists()
+
     def test_revoked_session_is_rejected(self, tmp_path: Path) -> None:
         client, admin_key = self._client_with_admin_key(tmp_path)
         resp = client.post("/api/auth/session", headers={"X-API-Key": admin_key})
@@ -481,8 +496,6 @@ class TestRevokeKeyExactMatch:
 
         assert mgr.revoke_key(prefix) is True
 
-        from js.exceptions import AuthRequiredError
-
         with pytest.raises(AuthRequiredError):
             mgr.verify(key)
 
@@ -552,7 +565,6 @@ class TestManagedApiKeyProvenance:
         self,
         tmp_path: Path,
     ) -> None:
-        from js.exceptions import AuthRequiredError
 
         mgr = AuthManager(tmp_path)
         key = "js_" + "b" * 43
@@ -702,3 +714,80 @@ class TestVerifyCacheBounds:
         # Expired but under the cap — left alone on the cheap path.
         assert "k" in AuthManager._SHARED_VERIFY_CACHE
         assert "k" in AuthManager._SHARED_LAST_USED
+
+
+class TestRevokeInvalidatesVerifyCacheImmediately:
+    def test_user_key_revoke_is_visible_on_next_verify(self, tmp_path: Path) -> None:
+        mgr = AuthManager(tmp_path)
+        key = mgr.create_key("user", role="user")
+        assert mgr.verify(key)["role"] == "user"
+        prefix = mgr.list_keys()[0]["id"].replace("...", "")
+        assert mgr.revoke_key(prefix) is True
+        with pytest.raises(AuthRequiredError, match="Invalid API key"):
+            mgr.verify(key)
+
+    def test_admin_key_is_never_positively_cached(self, tmp_path: Path) -> None:
+        mgr = AuthManager(tmp_path)
+        key = mgr.create_key("admin", role="admin")
+        assert mgr.verify(key)["role"] == "admin"
+        assert not any(
+            identity.get("role") == "admin"
+            for _, identity in AuthManager._SHARED_VERIFY_CACHE.values()
+        )
+        prefix = mgr.list_keys()[0]["id"].replace("...", "")
+        assert mgr.revoke_key(prefix) is True
+        with pytest.raises(AuthRequiredError, match="Invalid API key"):
+            mgr.verify(key)
+
+    def test_stale_cache_write_after_epoch_bump_is_ignored(self, tmp_path: Path) -> None:
+        mgr = AuthManager(tmp_path)
+        key = mgr.create_key("user", role="user")
+        identity = mgr.verify(key)
+        prefix = mgr.list_keys()[0]["id"].replace("...", "")
+        assert mgr.revoke_key(prefix) is True
+        cache_key = mgr._cache_key(identity["key_hash"])
+        # Plant a positive entry as if a raced writer won after revoke.
+        AuthManager._SHARED_VERIFY_CACHE[cache_key] = (time.time(), identity)
+        AuthManager._SHARED_VERIFY_STAMP[cache_key] = mgr._current_epoch() - 1
+        with pytest.raises(AuthRequiredError, match="Invalid API key"):
+            mgr.verify(key)
+
+
+class TestAuthStorePermissions:
+    def test_api_keys_db_is_owner_only(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        AuthManager(state_dir)
+        db_path = state_dir / "api_keys.db"
+        assert db_path.exists()
+        dir_mode = stat.S_IMODE(os.stat(state_dir).st_mode)
+        db_mode = stat.S_IMODE(os.stat(db_path).st_mode)
+        assert dir_mode == 0o700
+        assert db_mode == 0o600
+
+
+class TestLegacyApiKeyCookieRejected:
+    _WS_ORIGIN = {"Host": "localhost", "Origin": "http://localhost"}
+
+    def test_ws_rejects_x_api_key_cookie(self, tmp_path: Path) -> None:
+        settings = _settings(tmp_path, api_key_required=True, first_run_completed=True)
+        admin_key = AuthManager(settings.state_dir).create_key("admin", role="admin")
+        client = _wire(settings, _agent(settings))
+        client.cookies.set("x-api-key", admin_key)
+
+        with (
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect("/ws", headers=self._WS_ORIGIN),
+        ):
+            pass
+        assert exc_info.value.code == 1008
+
+    def test_ws_still_accepts_x_api_key_header(self, tmp_path: Path) -> None:
+        settings = _settings(tmp_path, api_key_required=True, first_run_completed=True)
+        admin_key = AuthManager(settings.state_dir).create_key("admin", role="admin")
+        client = _wire(settings, _agent(settings))
+
+        with client.websocket_connect(
+            "/ws",
+            headers={**self._WS_ORIGIN, "X-API-Key": admin_key},
+        ):
+            pass

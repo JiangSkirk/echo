@@ -28,6 +28,7 @@ from js.orin.draft import CellPackage, CommitPermit, EffectDraft, StateWitness
 from js.orin.handles import OriginHandle
 from js.orin.protocol import ProtocolError
 from js.orind.broker import HandleBroker
+from js.orind.cells.desktop import MacOSDesktopBackend
 from js.orind.kernel import canonical_effect_hash_of
 from js.orind.store import OrinStore
 
@@ -498,7 +499,7 @@ def test_native_window_actions_fail_closed_without_exact_ax_identity(
             raise AssertionError("legacy first-window authority must not run")
 
     backend = MacOSDesktopBackend.__new__(MacOSDesktopBackend)
-    backend._controller = FakeController()  # noqa: SLF001 - no native authority
+    backend._action_sink = None  # noqa: SLF001 - missing sink must fail closed
     backend._lock = threading.RLock()  # noqa: SLF001 - isolated action seam
     backend._revision = 0  # noqa: SLF001
     backend._operation_count = 0  # noqa: SLF001
@@ -630,7 +631,7 @@ def test_native_backend_hard_rejects_every_os_mutation_without_controller_calls(
         "projection": {},
     }
     backend = MacOSDesktopBackend.__new__(MacOSDesktopBackend)
-    backend._controller = FakeController()  # noqa: SLF001 - controller must stay unused
+    backend._action_sink = None  # noqa: SLF001 - missing sink must fail closed
     backend._lock = threading.RLock()  # noqa: SLF001
     backend._revision = 0  # noqa: SLF001
     backend._operation_count = 0  # noqa: SLF001
@@ -826,6 +827,8 @@ def test_scripted_success_is_exact_observe_act_observe_and_replay_safe(
         "before_digest",
         "after_digest",
         "receipt_id",
+        "target_digest",
+        "signed_receipt",
     }
     after = json.loads(script_path.read_text(encoding="utf-8"))
     assert after["revision"] == 2
@@ -890,17 +893,12 @@ def test_commit_rejects_every_post_preflight_binding_change(tmp_path: Path) -> N
 
 
 def test_private_report_capacity_and_ttl_cleanup_are_bounded(tmp_path: Path) -> None:
-    ttl_cell, _package_, _witness, _permit_, _committed = _preflighted_action(
-        tmp_path / "ttl"
-    )
+    ttl_cell, _package_, _witness, _permit_, _committed = _preflighted_action(tmp_path / "ttl")
     assert len(ttl_cell._reports) == 1  # noqa: SLF001
     assert len(ttl_cell._action_reports) == 1  # noqa: SLF001
     expiry = max(  # noqa: SLF001 - Cell-private lifecycle contract
         [report.witness.expires_at_ms for report in ttl_cell._reports.values()]
-        + [
-            report.witness.expires_at_ms
-            for report in ttl_cell._action_reports.values()
-        ]
+        + [report.witness.expires_at_ms for report in ttl_cell._action_reports.values()]
     )
     ttl_cell._prune_private_reports(now_ms=expiry)  # noqa: SLF001
     assert ttl_cell._reports == {}  # noqa: SLF001
@@ -912,9 +910,7 @@ def test_private_report_capacity_and_ttl_cleanup_are_bounded(tmp_path: Path) -> 
     _script(observe_path)
     observe_cell = _desktop_cell(observe_root, b"b" * 32, observe_path)
     first_observe = observe_cell._preflight_package(  # noqa: SLF001
-        _package(
-            _draft(f"task:{uuid4().hex}", "desktop.observe", _observe_arguments())
-        )
+        _package(_draft(f"task:{uuid4().hex}", "desktop.observe", _observe_arguments()))
     )
     sample_observation = observe_cell._reports[first_observe.witness.target_version]  # noqa: SLF001
     observe_cell._reports = {  # noqa: SLF001
@@ -948,6 +944,100 @@ def test_private_report_capacity_and_ttl_cleanup_are_bounded(tmp_path: Path) -> 
     )
     with pytest.raises(ProtocolError, match="action capacity"):
         action_cell._preflight_package(next_action)  # noqa: SLF001
+
+
+class _IdentityTrackingNativeBackend(MacOSDesktopBackend):
+    """Minimal native-backend double for Cell-private identity lifecycle tests."""
+
+    def __init__(
+        self,
+        *,
+        fail_action: bool = False,
+        observed_display_id: int = 1,
+    ) -> None:
+        self.revision = 0
+        self.fail_action = fail_action
+        self.observed_display_id = observed_display_id
+        self.released_scopes: list[str] = []
+
+    def observe(
+        self,
+        _target: dict[str, Any],
+        _request: dict[str, Any],
+        *,
+        identity_scope: str | None = None,
+    ) -> dict[str, Any]:
+        del identity_scope
+        return {
+            "schema": "DesktopObservationV1",
+            "revision": self.revision,
+            "target": {
+                "kind": "screen",
+                "display_id": self.observed_display_id,
+                "window_id": 0,
+                "owner_pid": 0,
+                "control_id": "screen",
+                "bounds": [0, 0, 80, 60],
+            },
+            "pixel_hash": "sha256:" + str(self.revision) * 64,
+            "width": 80,
+            "height": 60,
+            "projection": {},
+        }
+
+    def act(
+        self,
+        _action: dict[str, Any],
+        *,
+        expected_observation: dict[str, Any],
+        selector: dict[str, Any],
+        request: dict[str, Any],
+        identity_scope: str | None = None,
+    ) -> None:
+        del expected_observation, selector, request, identity_scope
+        self.revision += 1
+        if self.fail_action:
+            raise ProtocolError("native action became ambiguous")
+
+    def release_identity(self, identity_scope: str) -> None:
+        self.released_scopes.append(identity_scope)
+
+
+@pytest.mark.parametrize("fail_action", [False, True])
+def test_native_identity_scope_is_released_after_action_attempt(
+    tmp_path: Path,
+    fail_action: bool,
+) -> None:
+    backend = _IdentityTrackingNativeBackend(fail_action=fail_action)
+    cell, _package_, _witness, permit, committed = _preflighted_action(
+        tmp_path,
+        backend=backend,
+    )
+    observation_scope = next(iter(cell._reports.values())).draft_id  # noqa: SLF001
+
+    if fail_action:
+        with pytest.raises(ProtocolError, match="ambiguous"):
+            cell._commit_package(permit, committed)  # noqa: SLF001
+    else:
+        assert cell._commit_package(permit, committed)["status"] == "COMMITTED"  # noqa: SLF001
+
+    assert backend.released_scopes == [observation_scope]
+    assert cell._action_reports[committed.draft.draft_id].attempted is True  # noqa: SLF001
+
+
+def test_new_native_scope_is_released_when_observation_validation_fails(
+    tmp_path: Path,
+) -> None:
+    backend = _IdentityTrackingNativeBackend(observed_display_id=2)
+    cell = _desktop_cell(tmp_path, b"b" * 32, tmp_path / "unused.json", backend=backend)
+    arguments = _observe_arguments()
+    arguments["target"] = {"kind": "screen", "display_id": 1}
+    draft = _draft(f"task:{uuid4().hex}", "desktop.observe", arguments)
+
+    with pytest.raises(ProtocolError, match="selector|display"):
+        cell._preflight_package(_package(draft))  # noqa: SLF001
+
+    assert backend.released_scopes == [draft.draft_id]
 
 
 @pytest.mark.parametrize("unsafe", ["symlink", "wrong-mode"])

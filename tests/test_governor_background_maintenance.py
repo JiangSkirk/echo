@@ -318,7 +318,7 @@ async def test_hot_state_maintenance_bounds_every_growing_store_and_checkpoints(
     event_store.prune.assert_called_once_with()
     stats_store_type.assert_called_once_with(tmp_path)
     stats_store.prune.assert_called_once_with()
-    checkpoint.assert_awaited_once_with()
+    checkpoint.assert_awaited_once_with(force=False)
 
 
 def test_wal_checkpoint_skips_symlinked_and_hardlinked_databases(
@@ -327,15 +327,16 @@ def test_wal_checkpoint_skips_symlinked_and_hardlinked_databases(
 ) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    real_db = state_dir / "real.db"
+    # Use allowlisted product DB names so the checkpoint actually considers them.
+    real_db = state_dir / "memory.db"
     external_db = tmp_path / "external.db"
     for path in (real_db, external_db):
         with sqlite3.connect(path) as conn:
             conn.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
             conn.execute("INSERT INTO sentinel VALUES ('preserved')")
-    symlink_db = state_dir / "symlink.db"
+    symlink_db = state_dir / "cron.db"
     symlink_db.symlink_to(external_db)
-    hardlink_db = state_dir / "hardlink.db"
+    hardlink_db = state_dir / "audit.db"
     os.link(external_db, hardlink_db)
 
     connected: list[Path] = []
@@ -347,7 +348,7 @@ def test_wal_checkpoint_skips_symlinked_and_hardlinked_databases(
 
     monkeypatch.setattr(sqlite3, "connect", recording_connect)
 
-    ResourceGovernor(SimpleNamespace(), state_dir=state_dir)._checkpoint_wal_sync()
+    ResourceGovernor(SimpleNamespace(), state_dir=state_dir)._checkpoint_wal_sync(force=True)
 
     assert real_db.resolve() in {path.resolve() for path in connected}
     assert symlink_db not in connected
@@ -486,3 +487,44 @@ async def test_session_maintenance_errors_are_logged_and_contained(
         enhanced.maintain_session_bounds.assert_not_called()
     else:
         enhanced.maintain_session_bounds.assert_called_once_with(protected_sessions=set())
+
+
+def test_governor_samples_every_sixty_seconds_and_checkpoints_by_wal_size(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    db_path = state_dir / "memory.db"
+    db_path.write_bytes(b"sqlite")
+    captured: list[str] = []
+
+    class _Conn:
+        def execute(self, sql: str, *args: object, **kwargs: object) -> None:
+            captured.append(sql)
+
+        def __enter__(self) -> _Conn:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr("sqlite3.connect", lambda *args, **kwargs: _Conn())
+    governor = ResourceGovernor(SimpleNamespace(), state_dir=state_dir)
+    assert governor._interval_seconds == 60.0
+    assert governor._wal_truncate_min_bytes == 8 * 1024 * 1024
+
+    governor._checkpoint_wal_sync()
+    assert captured == []
+
+    captured.clear()
+    governor._checkpoint_wal_sync(force=True)
+    assert any("TRUNCATE" in sql for sql in captured)
+    assert not any("PASSIVE" in sql for sql in captured)
+
+    captured.clear()
+    wal_path = Path(str(db_path) + "-wal")
+    wal_path.write_bytes(b"0" * governor._wal_truncate_min_bytes)
+    governor._checkpoint_wal_sync()
+    assert any("PASSIVE" in sql for sql in captured)
+    assert not any("TRUNCATE" in sql for sql in captured)

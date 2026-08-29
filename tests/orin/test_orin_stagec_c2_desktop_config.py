@@ -98,6 +98,7 @@ def test_c2_harness_forces_strict_identity_and_desktop_only(tmp_path: Path) -> N
     assert harness._cell_file is False  # noqa: SLF001
     assert harness._cell_net is False  # noqa: SLF001
     assert harness._cell_secret is False  # noqa: SLF001
+    assert getattr(harness, "_cell_memory", False) is False
 
 
 def test_desktop_cell_environment_is_an_exact_allowlist(
@@ -129,9 +130,7 @@ def test_desktop_cell_environment_is_an_exact_allowlist(
 
         assert set(environment) == _DESKTOP_CELL_ENV
         assert _SENSITIVE_ENV.isdisjoint(environment)
-        assert json.loads(environment["ORIN_CELL_LAUNCH_TICKETS"]) == {
-            "cell.desktop": ticket
-        }
+        assert json.loads(environment["ORIN_CELL_LAUNCH_TICKETS"]) == {"cell.desktop": ticket}
         assert environment["ORIN_CELL_IDENTITY_ENFORCE"] == "1"
         assert environment["ORIN_ORIND_PID"] == str(os.getpid())
         assert environment["ORIN_DESKTOP_SCRIPT_PATH"] == os.fspath(script_path)
@@ -189,15 +188,9 @@ async def test_desktop_cap_rejects_wire_identity_before_publishing_session_key(
             daemon._expected_cell_launch_by_pid[os.getpid()] = {  # noqa: SLF001
                 "cell.desktop": ticket
             }
-            supplied_ticket = (
-                secrets.token_hex(16) if attack == "wrong-ticket" else ticket
-            )
-            supplied_caps = (
-                ["cell.desktop"] if attack == "wrong-ticket" else ["cell.file"]
-            )
-            reader, writer = await asyncio.open_unix_connection(
-                path=str(daemon.cell_socket_path)
-            )
+            supplied_ticket = secrets.token_hex(16) if attack == "wrong-ticket" else ticket
+            supplied_caps = ["cell.desktop"] if attack == "wrong-ticket" else ["cell.file"]
+            reader, writer = await asyncio.open_unix_connection(path=str(daemon.cell_socket_path))
             hello = make_envelope(
                 "hello",
                 seq=1,
@@ -209,9 +202,7 @@ async def test_desktop_cap_rejects_wire_identity_before_publishing_session_key(
             writer.write(encode_frame(hello))
             await writer.drain()
             try:
-                with pytest.raises(
-                    (asyncio.IncompleteReadError, ConnectionError, TimeoutError)
-                ):
+                with pytest.raises((asyncio.IncompleteReadError, ConnectionError, TimeoutError)):
                     await asyncio.wait_for(reader.readexactly(1), timeout=1.0)
             finally:
                 writer.close()

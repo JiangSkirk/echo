@@ -74,7 +74,9 @@ class TestSkillPipeline:
             name="Smoke Skill",
             description="A smoke test skill",
             skill_type=SkillType.CODE,
-            parameters=[{"name": "input", "type": "string", "description": "Input", "required": True}],
+            parameters=[
+                {"name": "input", "type": "string", "description": "Input", "required": True}
+            ],
         )
 
     def test_create_skill(self, skill_dir: Path) -> None:
@@ -160,9 +162,13 @@ class TestWebServer:
         app = web_server.create_app()
 
         transport = ASGITransport(app=app)
-        async with web_server.lifespan(app), AsyncClient(
-            transport=transport, base_url="http://test",
-        ) as client:
+        async with (
+            web_server.lifespan(app),
+            AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client,
+        ):
             response = await client.get("/api/status")
         assert response.status_code == 200
         data = response.json()
@@ -184,7 +190,10 @@ class TestWebServer:
         from httpx import ASGITransport, AsyncClient
 
         transport = ASGITransport(app=app)
-        async with lifespan(app), AsyncClient(transport=transport, base_url="http://test") as client:
+        async with (
+            lifespan(app),
+            AsyncClient(transport=transport, base_url="http://test") as client,
+        ):
             response = await client.post("/api/chat", json={})
         # Empty body should be 422 validation error, not 404
         assert response.status_code != 404
@@ -216,10 +225,13 @@ class TestWebServer:
 
         app = web_server.create_app()
         transport = ASGITransport(app=app)
-        async with web_server.lifespan(app), AsyncClient(
-            transport=transport,
-            base_url="http://test",
-        ) as client:
+        async with (
+            web_server.lifespan(app),
+            AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client,
+        ):
             runtime = app.state.web_runtime
             authoritative = runtime.agent.echo_safety_service
             authoritative.health = MagicMock(wraps=authoritative.health)
@@ -478,18 +490,20 @@ class TestDockerCompose:
         assert prod["ports"] == ["127.0.0.1:8000:8000"]
         assert dev["ports"] == ["127.0.0.1:8000:8000"]
 
-        # Dev command should include --reload and match port 8000
+        # Dev command should start the local Host on port 8000
         cmd = dev.get("command", [])
+        assert "appshell" in cmd
         assert "--port" in cmd
         port_idx = cmd.index("--port")
         assert cmd[port_idx + 1] == "8000"
-        assert "--reload" in cmd
 
         # Both services should set JS_STATE_DIR to the mounted volume
         prod_env = prod.get("environment", [])
         dev_env = dev.get("environment", [])
         assert any("JS_STATE_DIR=/app/state" in str(e) for e in prod_env)
         assert any("JS_STATE_DIR=/app/state" in str(e) for e in dev_env)
+        assert any("JS_APPSHELL_PROVISION_KEY=1" in str(e) for e in prod_env)
+        assert any("JS_APPSHELL_PROVISION_KEY=1" in str(e) for e in dev_env)
 
         # Dev should run as root so mounted volumes are writable
         assert dev.get("user") == "root"
@@ -542,8 +556,18 @@ class TestCompression:
         # Create enough messages to exceed 500 tokens
         messages = [ChatMessage(role="system", content="System prompt here.")]
         for i in range(30):
-            messages.append(ChatMessage(role="user", content=f"This is a moderately long user message number {i} with enough text to consume tokens."))
-            messages.append(ChatMessage(role="assistant", content=f"This is the assistant response number {i} providing a detailed explanation of the concept."))
+            messages.append(
+                ChatMessage(
+                    role="user",
+                    content=f"This is a moderately long user message number {i} with enough text to consume tokens.",
+                )
+            )
+            messages.append(
+                ChatMessage(
+                    role="assistant",
+                    content=f"This is the assistant response number {i} providing a detailed explanation of the concept.",
+                )
+            )
 
         result = compressor.compress_sync(messages)
         assert result.level in (CompressionLevel.GENTLE, CompressionLevel.FULL)
@@ -603,7 +627,9 @@ class TestSkillRealPaths:
         assert (manager.skills_dir / "real" / "main.py").exists()
 
     @pytest.mark.asyncio
-    async def test_execute_code_skill_real_path(self, manager: SkillManager, tmp_path: Path) -> None:
+    async def test_execute_code_skill_real_path(
+        self, manager: SkillManager, tmp_path: Path
+    ) -> None:
         """Executing an installed code skill works end-to-end."""
         src = tmp_path / "adder"
         src.mkdir()
@@ -628,6 +654,7 @@ class TestSkillRealPaths:
 
         # Use async_to_sync helper or just call _record_usage directly
         import asyncio
+
         asyncio.run(manager.install(str(src), "counter"))
         manager._record_usage("counter", "code", True, 50.0)
         stats = manager.get_stats("counter")

@@ -196,6 +196,20 @@ class TestSkillManager:
     def manager(self, tmp_path: Path) -> SkillManager:
         return SkillManager(tmp_path, tmp_path / "workspace")
 
+    def test_user_scan_is_deferred_until_first_access(self, tmp_path: Path) -> None:
+        user_dir = tmp_path / "skills" / "user-skill"
+        user_dir.mkdir(parents=True)
+        (user_dir / "SKILL.md").write_text(
+            "---\nid: user-skill\nname: User\ntype: prompt\n---\n",
+            encoding="utf-8",
+        )
+        manager = SkillManager(tmp_path, tmp_path / "workspace")
+        assert manager._loaded is False
+        assert "user-skill" not in manager._skills
+        assert any(spec.trust_level == TrustLevel.BUILTIN for spec in manager._skills.values())
+        assert manager.get_skill("user-skill") is not None
+        assert manager._loaded is True
+
     def test_builtin_skills_loaded(self, manager: SkillManager) -> None:
         """Builtin skills from js/skills/builtin/ should be auto-loaded."""
         skills = manager.list_skills()
@@ -231,6 +245,7 @@ class TestSkillManager:
         first = SkillSpec(id="first", name="First", trust_level=TrustLevel.BUILTIN)
         second = SkillSpec(id="second", name="Second", trust_level=TrustLevel.BUILTIN)
         manager._skills = {first.id: first}
+        manager._loaded = True
         entered = threading.Event()
         release = threading.Event()
         original = SkillSpec.to_summary_dict
@@ -874,6 +889,8 @@ class TestSkillWebAPI:
         mock_agent = MagicMock()
         mock_agent.settings.workspace = tmp_path / "workspace"
         mock_agent.settings.state_dir = tmp_path / "state"
+        mock_agent.settings.bind_host = "127.0.0.1"
+        mock_agent.settings.bind_port = 8000
         mock_agent.settings.max_turns = 10
         mock_agent.settings.security.defense_mode = DefenseMode.ENFORCE
         mock_agent.settings.security.api_key_required = False

@@ -1,9 +1,8 @@
 """Tests for the macOS one-click start script (``scripts/macos_start.sh``).
 
 Mirrors ``test_install_script.py``: the start script is the README's primary
-entry point for ordinary users, so it must parse, run a side-effect-free
-``DRY_RUN`` check, and keep its Chinese guidance (including the admin-key
-recovery hint) intact.
+prep path for ordinary users, so it must parse, run a side-effect-free
+``DRY_RUN`` check, and point users at the desktop app (not a browser).
 """
 
 from __future__ import annotations
@@ -70,14 +69,12 @@ class TestStartScript:
 class TestStartScriptContent:
     """Static guards on key user-facing guidance (no execution)."""
 
-    def test_keeps_admin_key_recovery_hint(self) -> None:
-        """Ordinary users need a way to recover the admin key in another browser."""
+    def test_points_to_desktop_app(self) -> None:
         text = START_SCRIPT.read_text(encoding="utf-8")
-        assert "bootstrap_admin_key.txt" in text
-
-    def test_launches_via_js_open(self) -> None:
-        text = START_SCRIPT.read_text(encoding="utf-8")
-        assert "js open" in text
+        assert "请打开 JS Agent 桌面应用" in text
+        assert "js open" not in text
+        assert "js web" not in text
+        assert "bootstrap_admin_key.txt" not in text
 
     def test_supports_dry_run_flag(self) -> None:
         text = START_SCRIPT.read_text(encoding="utf-8")

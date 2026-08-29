@@ -188,12 +188,11 @@ class TestParseOpenAIChunk:
         events = parse_openai_chunk(chunk)
         assert len(events) == 1
         assert events[0].kind == "usage"
-        assert events[0].usage == {
-            "prompt_tokens": 12,
-            "completion_tokens": 34,
-            "total_tokens": 46,
-            "cached_tokens": 0,
-        }
+        assert events[0].usage["prompt_tokens"] == 12
+        assert events[0].usage["completion_tokens"] == 34
+        assert events[0].usage["uncached_input"] == 12
+        assert events[0].usage["cache_read"] == 0
+        assert events[0].usage["input_total"] == 12
 
     def test_empty_chunk_returns_no_events(self) -> None:
         # Keepalive / empty deltas must not produce events.
@@ -215,12 +214,10 @@ class TestParseAnthropicEvent:
             }
         )
         assert [e.kind for e in events] == ["usage"]
-        assert events[0].usage == {
-            "prompt_tokens": 7,
-            "completion_tokens": 0,
-            "total_tokens": 7,
-            "cached_tokens": 0,
-        }
+        assert events[0].usage["prompt_tokens"] == 7
+        assert events[0].usage["uncached_input"] == 7
+        assert events[0].usage["cache_read"] == 0
+        assert events[0].usage["input_total"] == 7
 
     def test_text_delta(self) -> None:
         events = parse_anthropic_event(

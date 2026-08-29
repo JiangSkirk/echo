@@ -17,6 +17,7 @@ def test_stage_c_switches_default_off() -> None:
 
     assert config.enforce is False
     assert config.cell_identity_enforce is False
+    assert config.echo_minimal_os is False
 
 
 def test_cell_identity_switch_is_accepted_but_lazy_without_enforce() -> None:
@@ -26,15 +27,15 @@ def test_cell_identity_switch_is_accepted_but_lazy_without_enforce() -> None:
     assert config.cell_identity_enforce is True
 
 
-def test_product_enforce_config_fails_fast_until_c2_through_c7_exist() -> None:
-    with pytest.raises(ValidationError, match="C2-C7"):
+def test_product_enforce_config_fails_fast_until_conjunction_is_observed() -> None:
+    with pytest.raises(ValidationError, match="conjunction incomplete"):
         OrinConfig(enforce=True)
 
 
 def test_daemon_enforce_fails_before_creating_state(tmp_path: Path) -> None:
     state_dir = tmp_path / "must-not-be-created"
 
-    with pytest.raises(OrinDaemonError, match="C2-C7"):
+    with pytest.raises(OrinDaemonError, match="conjunction incomplete"):
         OrinDaemon(state_dir=state_dir, orin_enforce=True)
 
     assert not state_dir.exists()

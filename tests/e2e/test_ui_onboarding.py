@@ -10,28 +10,16 @@ from __future__ import annotations
 
 import json
 import os
-import socket
-import subprocess
-import sys
-import time
-import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from playwright.sync_api import Page, expect
 
+from tests.e2e.conftest import _launch_appshell, _write_work_yaml
 from tests.e2e.test_ui_shell import CONTRAST_JS, _goto_shell, _wait_shell_ready
 
 pytestmark = pytest.mark.playwright
-
-_LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 @pytest.fixture()
@@ -65,57 +53,18 @@ def pending_server(tmp_path: Path) -> Iterator[tuple[str, str]]:
         ),
         encoding="utf-8",
     )
-    port = _free_port()
-    base_url = f"http://127.0.0.1:{port}"
     from js.web.auth import AuthManager
 
     admin_key = AuthManager(state_dir).create_key("onboarding-e2e-admin", role="admin")
-    env = os.environ.copy()
-    env.update(
-        {
-            "JS_CONFIG_PATH": str(config_path),
-            "JS_STATE_DIR": str(state_dir),
-            "JS_API_KEY_REQUIRED": "false",
-            "NO_PROXY": "127.0.0.1,localhost",
-            "no_proxy": "127.0.0.1,localhost",
-            "PYTHONUNBUFFERED": "1",
-        }
+    work_config = _write_work_yaml(
+        base / "work.yaml",
+        work_home=base / "work-home" / ".js-work",
+        api_key_required=False,
     )
-    for name in ("JS_WARM_START", "JS_ECHO_ENGINE", "JS_ALLOWED_ORIGINS"):
-        env.pop(name, None)
-    log_path = base / "server.log"
-    with log_path.open("w", encoding="utf-8") as log:
-        process = subprocess.Popen(
-            [sys.executable, "-m", "js", "web", "--host", "127.0.0.1", "--port", str(port)],
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-        )
-        try:
-            deadline = time.monotonic() + 45
-            while time.monotonic() < deadline:
-                if process.poll() is not None:
-                    break
-                try:
-                    with _LOCAL_OPENER.open(f"{base_url}/", timeout=1) as response:
-                        if response.status == 200:
-                            yield base_url, admin_key
-                            return
-                except Exception:
-                    pass
-                time.sleep(0.2)
-            pytest.fail("pending onboarding server failed to start", pytrace=False)
-        finally:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=10)
+    for base_url in _launch_appshell(
+        config_path, work_config, base / "server.log", "pending onboarding server"
+    ):
+        yield base_url, admin_key
 
 
 _FAKE_MODELS = {
@@ -202,7 +151,9 @@ class TestOnboardingFlow:
             assert ratio is not None
             assert ratio >= 4.5, f"onboarding primary CTA contrast {ratio} < 4.5 in {theme}"
 
-    def test_one_click_skip_enters_main_ui(self, pending_server: tuple[str, str], page: Page) -> None:
+    def test_one_click_skip_enters_main_ui(
+        self, pending_server: tuple[str, str], page: Page
+    ) -> None:
         _goto_shell(page, pending_server)
         wizard = page.locator("#setup-wizard")
         expect(wizard).to_be_visible()
@@ -478,9 +429,7 @@ class TestModelsPage:
             ),
         )
         # Pre-seed localStorage with a stale value to verify it gets cleared.
-        page.add_init_script(
-            "localStorage.setItem('js-selected-model', 'ghost/nonexistent-model')"
-        )
+        page.add_init_script("localStorage.setItem('js-selected-model', 'ghost/nonexistent-model')")
         _goto_shell(page, pending_server)
         page.locator("#wizard-skip-1").click()
         _wait_shell_ready(page)
@@ -628,9 +577,7 @@ class TestModelsPage:
         def _switch_handler(route: object) -> None:
             switch_calls.append(1)
             request = route.request  # type: ignore[attr-defined]
-            assert json.loads(request.post_data or "{}")["model_id"] == (
-                "fakep/dynamic-model"
-            )
+            assert json.loads(request.post_data or "{}")["model_id"] == ("fakep/dynamic-model")
             route.fulfill(  # type: ignore[attr-defined]
                 status=200,
                 body=json.dumps(
@@ -659,9 +606,7 @@ class TestModelsPage:
         expect(page.locator("#active-model-meta")).to_contain_text("32768")
         expect(page.locator("#active-model-badge")).to_be_visible()
         expect(page.locator("#chat-model-name")).to_contain_text("Dynamic Model")
-        assert page.evaluate("localStorage.getItem('js-selected-model')") == (
-            "fakep/dynamic-model"
-        )
+        assert page.evaluate("localStorage.getItem('js-selected-model')") == ("fakep/dynamic-model")
         selected_state = page.evaluate(
             "() => import('/static/state/store.js').then(m => m.state.selectedModel)"
         )

@@ -47,13 +47,17 @@ def store() -> EnhancedMemoryStore:
 #    Hermes has: memory_tool.py (only MEMORY.md + USER.md, flat text entries)
 # ---------------------------------------------------------------------------
 
+
 class TestMultiLayerMemory:
     def test_working_memory_exists(self, store: EnhancedMemoryStore) -> None:
         """JS Agent: working_memories table stores short-term per-session facts.
         Hermes: No equivalent; only persistent MEMORY.md entries."""
         store.store_working(
-            session_id="s1", key="user_name", value="Alice",
-            category="profile", importance=8,
+            session_id="s1",
+            key="user_name",
+            value="Alice",
+            category="profile",
+            importance=8,
         )
         items = store.get_working("s1", limit=10)
         assert len(items) == 1
@@ -81,8 +85,11 @@ class TestMultiLayerMemory:
         """JS Agent: semantic_memories table stores long-term facts with embeddings.
         Hermes: No semantic layer; facts are plain text lines in MEMORY.md."""
         store.store_semantic(
-            key="user_pref_editor", value="VS Code",
-            category="preference", confidence=0.9, source="conversation",
+            key="user_pref_editor",
+            value="VS Code",
+            category="preference",
+            confidence=0.9,
+            source="conversation",
         )
         sem = store.retrieve_semantic("user_pref_editor")
         assert isinstance(sem, SemanticMemory)
@@ -106,6 +113,7 @@ class TestMultiLayerMemory:
 #    Hermes has: NO equivalent. No automatic consolidation whatsoever.
 # ---------------------------------------------------------------------------
 
+
 class TestDreamingConsolidation:
     def test_light_sleep_deduplicates_working(self, store: EnhancedMemoryStore) -> None:
         """Light Sleep removes duplicate working memories.
@@ -127,15 +135,11 @@ class TestDreamingConsolidation:
         Code: js/memory/enhanced_store.py:739 _rem_sleep()
         Hermes has: NO memory link system."""
         # Use longer texts with clear 3+ word overlap
-        store.store_semantic(
-            "py_async", "Python asyncio event loop programming tutorial", "tech"
-        )
+        store.store_semantic("py_async", "Python asyncio event loop programming tutorial", "tech")
         store.store_semantic(
             "py_thread", "Python threading event loop programming tutorial", "tech"
         )
-        store.store_semantic(
-            "cooking", "How to cook pasta carbonara italian", "food"
-        )
+        store.store_semantic("cooking", "How to cook pasta carbonara italian", "food")
 
         report = asyncio.run(store.dream())
         phases = {p["phase"] for p in report["phases"]}
@@ -148,9 +152,7 @@ class TestDreamingConsolidation:
         # py_async and py_thread share "python", "event", "loop", "programming", "tutorial"
         assert len(rows) >= 1
 
-    def test_deep_sleep_promotes_and_generates_insights(
-        self, store: EnhancedMemoryStore
-    ) -> None:
+    def test_deep_sleep_promotes_and_generates_insights(self, store: EnhancedMemoryStore) -> None:
         """Deep Sleep promotes high-importance working memories to semantic,
         and generates LLM-powered insights.
         Code: js/memory/enhanced_store.py:775 _deep_sleep()
@@ -194,6 +196,7 @@ class TestDreamingConsolidation:
 #    Hermes has: NO vector search. Only FTS5 text search in session_search_tool.py
 # ---------------------------------------------------------------------------
 
+
 class TestVectorSemanticSearch:
     def test_search_finds_semantically_similar_entries(self, store: EnhancedMemoryStore) -> None:
         """Vector search finds entries by semantic similarity, not just exact text match.
@@ -236,6 +239,7 @@ class TestVectorSemanticSearch:
 #    Hermes has: NO memory association/link system.
 # ---------------------------------------------------------------------------
 
+
 class TestMemoryLinkNetwork:
     def test_links_connect_related_memories(self, store: EnhancedMemoryStore) -> None:
         """REM Sleep creates explicit links between semantically related memories.
@@ -247,9 +251,7 @@ class TestMemoryLinkNetwork:
         store.store_semantic(
             "k8s", "Kubernetes container orchestration deployment scaling pods", "devops"
         )
-        store.store_semantic(
-            "react", "React frontend framework component virtual DOM", "frontend"
-        )
+        store.store_semantic("react", "React frontend framework component virtual DOM", "frontend")
 
         asyncio.run(store.dream())
 
@@ -266,6 +268,7 @@ class TestMemoryLinkNetwork:
 #    Code: js/memory/scheduler.py
 #    Hermes has: NO automatic memory consolidation scheduler.
 # ---------------------------------------------------------------------------
+
 
 class TestDreamScheduler:
     def test_scheduler_exists_and_has_idle_logic(self) -> None:
@@ -284,6 +287,7 @@ class TestDreamScheduler:
         # Verify scheduler has the expected thresholds
         assert sched._idle_threshold == 30.0
         assert sched._check_interval == 15.0
+        assert sched._idle_sleep == 60.0
         assert sched._max_deferral == 120.0
 
         # Simulate activity and verify buffer recording
@@ -309,6 +313,7 @@ class TestDreamScheduler:
 # ---------------------------------------------------------------------------
 # 6. Hermes comparison assertions (documenting what Hermes lacks)
 # ---------------------------------------------------------------------------
+
 
 class TestHermesComparison:
     def test_hermes_has_no_dreaming_code(self) -> None:

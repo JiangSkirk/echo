@@ -4,6 +4,8 @@ import shlex
 import tomllib
 from pathlib import Path, PurePosixPath
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -39,7 +41,9 @@ def _copy_sources(arguments: str) -> set[PurePosixPath]:
 
 def _is_copied(package: str, sources: set[PurePosixPath]) -> bool:
     package_path = PurePosixPath(package)
-    return any(source == PurePosixPath(".") or package_path.is_relative_to(source) for source in sources)
+    return any(
+        source == PurePosixPath(".") or package_path.is_relative_to(source) for source in sources
+    )
 
 
 def test_docker_copies_declared_runtime_packages_before_install() -> None:
@@ -61,7 +65,9 @@ def test_docker_copies_declared_runtime_packages_before_install() -> None:
         if instruction == "COPY" and "--from=" not in arguments
         for source in _copy_sources(arguments)
     }
-    missing_packages = sorted(package for package in packages if not _is_copied(package, copied_sources))
+    missing_packages = sorted(
+        package for package in packages if not _is_copied(package, copied_sources)
+    )
     assert not missing_packages, (
         "Docker image installs the project before copying declared runtime packages: "
         f"{missing_packages}"
@@ -73,13 +79,10 @@ def test_docker_copies_declared_runtime_packages_before_install() -> None:
         project["tool"]["hatch"]["build"]["targets"]["wheel"].get("force-include", {})
     )
     missing_includes = sorted(
-        source
-        for source in force_includes
-        if not _is_copied(source, copied_sources)
+        source for source in force_includes if not _is_copied(source, copied_sources)
     )
     assert not missing_includes, (
-        "Docker image installs the project before copying force-included paths: "
-        f"{missing_includes}"
+        f"Docker image installs the project before copying force-included paths: {missing_includes}"
     )
 
     entry_module = scripts["js-work"].partition(":")[0]
@@ -88,3 +91,10 @@ def test_docker_copies_declared_runtime_packages_before_install() -> None:
     assert entry_package in packages
     assert _is_copied(entry_package, copied_sources)
     assert entry_path.is_file(), f"js-work entry module is missing: {entry_path}"
+
+
+def test_compose_persists_production_work_home() -> None:
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yaml").read_text(encoding="utf-8"))
+    volumes = compose["services"]["js-agent"]["volumes"]
+    mounts = [str(volume).rsplit(":", 1)[-1] for volume in volumes]
+    assert "/home/appuser/.js-work" in mounts

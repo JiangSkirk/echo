@@ -101,9 +101,7 @@ def client(tmp_path: Path) -> TestClient:
         return dict(entry[3])
 
     mock_agent.stage_memory_mutation_payload = MagicMock(side_effect=stage_memory_payload)
-    mock_agent.discard_memory_mutation_payload = MagicMock(
-        side_effect=discard_memory_payload
-    )
+    mock_agent.discard_memory_mutation_payload = MagicMock(side_effect=discard_memory_payload)
     mock_agent.take_memory_mutation_result = MagicMock(side_effect=take_memory_result)
 
     async def execute_control_effect(effect: Any, context: Any) -> tuple[Any, ToolResult]:
@@ -185,9 +183,7 @@ def client(tmp_path: Path) -> TestClient:
             ),
         )
 
-    mock_agent.echo_runtime.execute_tool_effect = AsyncMock(
-        side_effect=execute_control_effect
-    )
+    mock_agent.echo_runtime.execute_tool_effect = AsyncMock(side_effect=execute_control_effect)
 
     mock_memory = MagicMock()
     mock_memory.get_context_string.return_value = ""
@@ -215,6 +211,7 @@ def client(tmp_path: Path) -> TestClient:
 
     # Create an admin API key so admin-only endpoints work in tests
     from js.web.auth import AuthManager
+
     auth_mgr = AuthManager(mock_agent.settings.state_dir)
     admin_key = auth_mgr.create_key("test-admin", role="admin")
 
@@ -252,9 +249,7 @@ class TestModelSwitch:
         assert "active_model" in data
         assert data["active_model"] == ""
 
-    def test_models_merges_only_configured_router_bindings(
-        self, client: TestClient
-    ) -> None:
+    def test_models_merges_only_configured_router_bindings(self, client: TestClient) -> None:
         """Dynamic router models are listed only for configured providers."""
         agent = web_server._agent
         dynamic = ModelConfig(
@@ -402,16 +397,16 @@ class TestModelSwitch:
         agent.router.preferred_model = ""
         fake_config = ModelConfig(id="dynamic-model", provider="stale")
         agent.router.get_model_config.return_value = fake_config
-        agent.router.get_model_binding = MagicMock(
-            return_value=("stale", fake_config)
-        )
+        agent.router.get_model_binding = MagicMock(return_value=("stale", fake_config))
 
         runtime_context = MagicMock(capabilities=("control_model_switch",))
         agent.echo_runtime.build_context.return_value = runtime_context
         agent.echo_runtime.execute_tool_effect = AsyncMock(
             return_value=(
                 ChatMessage(role="tool", content="switched", name="control_model_switch"),
-                ToolResult(success=True, output="switched", metadata={"model_id": "stale/dynamic-model"}),
+                ToolResult(
+                    success=True, output="switched", metadata={"model_id": "stale/dynamic-model"}
+                ),
             )
         )
         monkeypatch.setattr(
@@ -473,9 +468,7 @@ class TestModelSwitch:
         agent.router.preferred_model = ""
         dynamic_config = ModelConfig(id="dynamic-model", provider="test")
         agent.router.get_model_config.return_value = dynamic_config
-        agent.router.get_model_binding = MagicMock(
-            return_value=("test", dynamic_config)
-        )
+        agent.router.get_model_binding = MagicMock(return_value=("test", dynamic_config))
 
         runtime_context = MagicMock(capabilities=("control_model_switch",))
         agent.echo_runtime.build_context.return_value = runtime_context
@@ -623,14 +616,16 @@ class TestMemorySemantic:
         assert data["success"] is True
 
     def test_update_semantic_memory(self, client: TestClient) -> None:
-        resp = client.put("/api/memory/semantic/1", json={"value": "updated", "category": "insight"})
+        resp = client.put(
+            "/api/memory/semantic/1", json={"value": "updated", "category": "insight"}
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["success"] is True
 
     def test_update_semantic_memory_missing_value(self, client: TestClient) -> None:
         resp = client.put("/api/memory/semantic/1", json={"category": "insight"})
-        assert resp.status_code == 400
+        assert resp.status_code == 422
 
 
 class TestMemoryInbox:
@@ -646,13 +641,23 @@ class TestMemoryInbox:
     def test_organize_runs_extraction_over_buffer(self, client: TestClient) -> None:
         agent = web_server._agent
         agent._dream_scheduler.snapshot_buffer.return_value = [
-            {"user": "我老婆叫小红", "assistant": "好的",
-             "owner_key_hash": None, "session_id": "s1"},
+            {
+                "user": "我老婆叫小红",
+                "assistant": "好的",
+                "owner_key_hash": None,
+                "session_id": "s1",
+            },
         ]
-        agent._extract_memories = AsyncMock(return_value={
-            "ok": True, "skipped": False, "proposed": 1,
-            "auto_applied": 0, "pending": 1, "error": None,
-        })
+        agent._extract_memories = AsyncMock(
+            return_value={
+                "ok": True,
+                "skipped": False,
+                "proposed": 1,
+                "auto_applied": 0,
+                "pending": 1,
+                "error": None,
+            }
+        )
         resp = client.post("/api/memory/organize")
         assert resp.status_code == 200
         data = resp.json()
@@ -663,7 +668,9 @@ class TestMemoryInbox:
     def test_approve_forwards_overrides(self, client: TestClient) -> None:
         agent = web_server._agent
         agent.memory.approve_proposal.return_value = {
-            "success": True, "memory_id": 7, "status": "approved",
+            "success": True,
+            "memory_id": 7,
+            "status": "approved",
         }
         resp = client.post(
             "/api/memory/proposals/3/approve",
@@ -676,7 +683,9 @@ class TestMemoryInbox:
     def test_approve_without_body_has_no_overrides(self, client: TestClient) -> None:
         agent = web_server._agent
         agent.memory.approve_proposal.return_value = {
-            "success": True, "memory_id": 7, "status": "approved",
+            "success": True,
+            "memory_id": 7,
+            "status": "approved",
         }
         resp = client.post("/api/memory/proposals/3/approve")
         assert resp.status_code == 200

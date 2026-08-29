@@ -16,7 +16,7 @@ async def test_cli_starts_background_maintenance_and_closes_agent(
         start_background_tasks=MagicMock(),
         close=AsyncMock(),
     )
-    monkeypatch.setattr("js.ui.cli.JSAgent", lambda _settings: agent)
+    monkeypatch.setattr("js.agent.JSAgent", lambda _settings: agent)
     cli = JSCLI(settings=SimpleNamespace())  # type: ignore[arg-type]
 
     await cli.init()
@@ -44,10 +44,10 @@ async def test_cli_message_error_does_not_echo_private_detail(
             status="error",
             error_message=private_detail,
         )
-        monkeypatch.setattr("js.ui.cli.run_echo_turn", AsyncMock(return_value=state))
+        monkeypatch.setattr("js.echo.turn_runtime.run_echo_turn", AsyncMock(return_value=state))
     else:
         monkeypatch.setattr(
-            "js.ui.cli.run_echo_turn",
+            "js.echo.turn_runtime.run_echo_turn",
             AsyncMock(side_effect=RuntimeError(private_detail)),
         )
 

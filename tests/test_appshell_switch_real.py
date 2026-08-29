@@ -369,7 +369,7 @@ def test_launcher_builds_isolated_argv(tmp_path: Path, monkeypatch: Any) -> None
     )
     monkeypatch.setattr(
         "uvicorn.run",
-        lambda app, *, host, port: served.append((app, host, port)),
+        lambda app, *, host, port, reload=False: served.append((app, host, port)),
     )
     prefs = tmp_path / "prefs.json"
     rc = launcher.launch_appshell(

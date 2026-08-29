@@ -631,3 +631,25 @@ def test_reject_if_new_git_metadata_fails_closed(tmp_path: Path) -> None:
     assert result.returncode == -1
     assert "newly created .git" in result.stderr
     assert not planted_dir.exists()
+
+
+def test_process_tree_rss_sums_descendants(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeMemory:
+        def __init__(self, rss: int) -> None:
+            self.rss = rss
+
+    class FakeChild:
+        def memory_info(self) -> FakeMemory:
+            return FakeMemory(50 * 1024 * 1024)
+
+    class FakeRoot:
+        def memory_info(self) -> FakeMemory:
+            return FakeMemory(40 * 1024 * 1024)
+
+        def children(self, *, recursive: bool) -> list[FakeChild]:
+            assert recursive is True
+            return [FakeChild(), FakeChild()]
+
+    monkeypatch.setattr(os_sandbox.psutil, "Process", lambda _pid: FakeRoot())
+    executor = SandboxExecutor(workspace=tmp_path, timeout=2.0)
+    assert executor._process_tree_rss(123) == 140 * 1024 * 1024

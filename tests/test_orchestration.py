@@ -6,21 +6,6 @@ import pytest
 
 from js.config import JSSettings
 from js.orchestration.fleet import AgentFleet, AgentRole
-from js.orchestration.router import TaskRouter
-
-
-class TestTaskRouter:
-    def test_route_goes_to_worker(self) -> None:
-        router = TaskRouter()
-        score = router.route("Write a Python function to sort a list")
-        assert score.role == AgentRole.WORKER
-
-    def test_decompose(self) -> None:
-        router = TaskRouter()
-        subtasks = router.decompose("First write code, then test it, finally review")
-        assert len(subtasks) >= 1
-        for _desc, role in subtasks:
-            assert role == AgentRole.WORKER
 
 
 class TestAgentFleet:

@@ -1,16 +1,17 @@
 """Fresh-install / first-run bootstrap regression tests.
 
-These guard the experience after ``macos_start.sh`` runs ``js setup`` and then
-``js open``: with ``api_key_required=True`` (the production default) the site
-must land in a *usable* state.  The historical bug was that no admin key was
-ever created, so either the first-run wizard 401'd on ``/api/models`` or — worse
-— ``/api/setup/complete`` set ``first_run_completed=true`` with no admin key in
-``api_keys.db``, locking every endpoint behind 401 with no recovery path.
+These guard the experience after ``macos_start.sh`` runs ``js setup`` and the
+desktop Host starts: with ``api_key_required=True`` (the production default)
+the site must land in a *usable* state.  The historical bug was that no admin
+key was ever created, so either the first-run wizard 401'd on ``/api/models``
+or — worse — ``/api/setup/complete`` set ``first_run_completed=true`` with no
+admin key in ``api_keys.db``, locking every endpoint behind 401 with no
+recovery path.
 
 The fix: startup provisioning mints a one-time admin key whenever auth is
 required and none exists (self-healing the lockdown), persists it to a 0600
-file, logs only that file's path, and injects it into the local browser so the
-fresh install authenticates automatically.
+file, logs only that file's path, and injects it into the local desktop window
+so the fresh install authenticates automatically.
 """
 
 from __future__ import annotations
@@ -28,8 +29,8 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from js.agent import JSAgent
+from js.appshell.entry_url import bootstrap_browser_url
 from js.config import JSSettings
-from js.ui.cli import _bootstrap_browser_url
 from js.web import server as web_server
 from js.web.auth import AuthManager, authenticate_credentials
 from js.web.server import _provision_bootstrap_admin_key, create_app
@@ -223,6 +224,25 @@ class TestProvisioning:
         mode = stat.S_IMODE(key_file.stat().st_mode)
         assert mode == 0o600
 
+    def test_consume_helper_deletes_regular_key_file_only(self, tmp_path: Path) -> None:
+        from js.web.bootstrap import consume_bootstrap_admin_key_file
+
+        s = _settings(tmp_path, api_key_required=True)
+        key = _provision_bootstrap_admin_key(s)
+        assert key
+        key_file = s.state_dir / "bootstrap_admin_key.txt"
+        assert key_file.exists()
+        assert consume_bootstrap_admin_key_file(s.state_dir) is True
+        assert not key_file.exists()
+        assert consume_bootstrap_admin_key_file(s.state_dir) is False
+
+        symlink = s.state_dir / "bootstrap_admin_key.txt"
+        target = s.state_dir / "other.txt"
+        target.write_text("js_not_the_key\n", encoding="utf-8")
+        symlink.symlink_to(target)
+        assert consume_bootstrap_admin_key_file(s.state_dir) is False
+        assert target.exists()
+
     def test_plaintext_bootstrap_key_is_never_logged(
         self,
         tmp_path: Path,
@@ -301,7 +321,7 @@ class TestBootstrapBrowserUrl:
         key_file.write_text("js_secret/value\n", encoding="utf-8")
         key_file.chmod(0o600)
 
-        url = _bootstrap_browser_url("http://127.0.0.1:8000", tmp_path)
+        url = bootstrap_browser_url("http://127.0.0.1:8000", tmp_path)
 
         assert url.startswith("http://127.0.0.1:8000/#bootstrap-api-key=")
         assert "js_secret/value" not in url
@@ -311,16 +331,12 @@ class TestBootstrapBrowserUrl:
         target.write_text("js_secret\n", encoding="utf-8")
         key_file = tmp_path / "bootstrap_admin_key.txt"
         key_file.symlink_to(target)
-        assert _bootstrap_browser_url("http://localhost:8000", tmp_path) == (
-            "http://localhost:8000"
-        )
+        assert bootstrap_browser_url("http://localhost:8000", tmp_path) == ("http://localhost:8000")
 
         key_file.unlink()
         key_file.write_text("js_secret\n", encoding="utf-8")
         key_file.chmod(0o644)
-        assert _bootstrap_browser_url("http://localhost:8000", tmp_path) == (
-            "http://localhost:8000"
-        )
+        assert bootstrap_browser_url("http://localhost:8000", tmp_path) == ("http://localhost:8000")
 
 
 class TestAuthEnforcement:

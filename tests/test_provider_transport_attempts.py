@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 import pytest
 
-from js.config import ModelProviderConfig
+from js.config import ModelConfig, ModelProviderConfig
 from js.models.providers import ChatMessage, OpenAICompatibleProvider
 
 
@@ -61,3 +61,18 @@ async def test_provider_stream_performs_one_transport_attempt_and_delegates_retr
     assert calls == 1
     assert len(events) == 1 and events[0].kind == "error"
     assert events[0].meta["retryable"] is True
+
+
+def test_openai_provider_defers_http_client_until_first_use() -> None:
+    provider = OpenAICompatibleProvider(
+        ModelProviderConfig(
+            name="lazy",
+            base_url="http://127.0.0.1:9/v1",
+            default_model="model-a",
+            models=[ModelConfig(id="model-a", name="model-a")],
+        )
+    )
+    assert provider._client is None
+    client = provider.client
+    assert client is not None
+    assert provider._client is client
