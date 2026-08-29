@@ -42,10 +42,7 @@ OWNER_MARKER_NAME = ".js-agent-build-owner"
 INVALID_RUN_MARKER_NAME = ".js-agent-build-invalid-manual-cleanup"
 _LOWER_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _BUILD_NUMBER = re.compile(r"(?P<day>[0-9]{8})(?P<sequence>[0-9]{2})\Z")
-_PIN = re.compile(
-    r"([A-Za-z0-9_.-]+)==([^\s=]+)(?:\s+--hash=sha256:[0-9a-f]{64})+\Z"
-    r"|([A-Za-z0-9_.-]+)==([^\s=]+)\Z"
-)
+_PIN = re.compile(r"([A-Za-z0-9_.-]+)==([^\s=]+)(?:\s+--hash=sha256:[0-9a-f]{64})+\Z")
 _REQUIRE_HASHES = ("--require-hashes",)
 TREE_DIGEST_SCHEMA = "JSAgentTreeDigestV2"
 _TREE_DIGEST_DOMAIN = (TREE_DIGEST_SCHEMA + "\0").encode("ascii")
@@ -760,8 +757,8 @@ def verify_python_build_requirements(
         pending = ""
         if match is None:
             raise RuntimeError("Python build requirements must use exact pins")
-        name = (match.group(1) or match.group(3)).lower().replace("_", "-")
-        version = match.group(2) or match.group(4)
+        name = match.group(1).lower().replace("_", "-")
+        version = match.group(2)
         if name in pins:
             raise RuntimeError("Python build requirements contain duplicate pins")
         pins[name] = version

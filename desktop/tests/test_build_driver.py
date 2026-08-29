@@ -289,7 +289,8 @@ def test_stage_and_build_commands_are_source_stable_locked_and_offline(
 def test_python_build_versions_must_match_exact_offline_pins(tmp_path: Path) -> None:
     requirements = tmp_path / "requirements-build.txt"
     requirements.write_text(
-        "pyinstaller==6.21.0\npyinstaller-hooks-contrib==2026.6\n",
+        "pyinstaller==6.21.0 --hash=sha256:" + ("ab" * 32) + "\n"
+        "pyinstaller-hooks-contrib==2026.6 --hash=sha256:" + ("cd" * 32) + "\n",
         encoding="utf-8",
     )
     installed = {
@@ -326,10 +327,24 @@ def test_python_build_pins_accept_require_hashes(tmp_path: Path) -> None:
     ]
 
 
-def test_python_build_versions_mismatch_still_fails(tmp_path: Path) -> None:
+def test_unhashed_python_pins_are_rejected(tmp_path: Path) -> None:
     requirements = tmp_path / "requirements-build.txt"
     requirements.write_text(
         "pyinstaller==6.21.0\npyinstaller-hooks-contrib==2026.6\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="exact pins"):
+        build_driver.verify_python_build_requirements(
+            requirements,
+            version_resolver=lambda _name: "6.21.0",
+        )
+
+
+def test_python_build_versions_mismatch_still_fails(tmp_path: Path) -> None:
+    requirements = tmp_path / "requirements-build.txt"
+    requirements.write_text(
+        "pyinstaller==6.21.0 --hash=sha256:" + ("ab" * 32) + "\n"
+        "pyinstaller-hooks-contrib==2026.6 --hash=sha256:" + ("cd" * 32) + "\n",
         encoding="utf-8",
     )
     installed = {
