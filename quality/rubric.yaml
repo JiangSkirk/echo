@@ -1,7 +1,7 @@
 # Canonical quality criteria. New bars require a rubric_version bump + changelog.
 # Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
 
-rubric_version: "2026.09.4"
+rubric_version: "2026.09.5"
 
 label_enum:
   - OPEN
@@ -118,6 +118,12 @@ inventory_units:
       - js/bots/
     scopes:
       - repo.default
+  gateway:
+    paths:
+      - js/gateway/
+    scopes:
+      - repo.default
+      - gateway.cold_start
 
 scopes:
   repo.default:
@@ -274,8 +280,18 @@ scopes:
         description: Isolation posture detection and doctor findings
         evidence_kind: pytest_node
         nodeid: tests/security/test_posture.py
+  gateway.cold_start:
+    criteria:
+      - id: gateway.cold_start
+        description: Gateway default-off and Host cold start does not import js.gateway
+        evidence_kind: pytest_node
+        nodeid: tests/gateway/test_gateway_cold_start.py
 
 changelog:
+  - version: "2026.09.5"
+    date: "2026-08-29"
+    changes:
+      - "Gateway surface skeleton (ADR 0008); pairing fail-closed; Host cold start isolation"
   - version: "2026.09.4"
     date: "2026-08-29"
     changes:

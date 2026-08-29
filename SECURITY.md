@@ -94,6 +94,7 @@ Host 本身仍在原生进程内。
 - `friends_enabled`（`JSSettings.friends_enabled`）
 - `mobile_enabled`（`JSSettings.mobile_enabled`）
 - `remote_collaboration_enabled`
+- `gateway.enabled`（`JSSettings.gateway.enabled`，默认 `false`；未配对发件人一律丢弃）
 - Telegram 等消息集成是可选 extra，不是默认冷启动路径。
 
 `features.pipeline_enabled` 默认 `true` 只是能力旗标，不等于 Host 冷启动加载

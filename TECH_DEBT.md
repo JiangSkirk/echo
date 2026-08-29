@@ -63,6 +63,7 @@
 
 ### 预留模块（不是死代码，也不是默认运行时）
 - `js/scenarios/`：Host 可列出/启动模板，不进入默认 Echo turn
+- `js/gateway/`：骨架已落地（ADR 0008），`gateway.enabled` 默认 false，Host 冷启动不 import
 - `js/pipeline/`、`js/friends/`、`js/mobile/`：默认不在 AppShell / Host 启动 import 图里；`friends_enabled` / `mobile_enabled` 默认 false
 - `features.pipeline_enabled` 默认 true **只是能力旗标**，不等于冷启动加载 `js.pipeline`
 - `js/evolution/`：Host 上 mutate 走 admin；冷启动不跑 cycle

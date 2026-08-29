@@ -107,6 +107,7 @@ These flags default to `false`; enabling them widens the input surface:
 - `friends_enabled` (`JSSettings.friends_enabled`)
 - `mobile_enabled` (`JSSettings.mobile_enabled`)
 - `remote_collaboration_enabled`
+- `gateway.enabled` (`JSSettings.gateway.enabled`, default `false`; unpaired senders are discarded)
 - Telegram and similar integrations are optional extras, not Host cold-start.
 
 `features.pipeline_enabled` defaulting to `true` is a capability flag only; it

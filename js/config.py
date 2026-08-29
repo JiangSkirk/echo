@@ -657,6 +657,40 @@ class AgentFeatureConfig(BaseModel):
     daemon_enabled: bool = True
 
 
+class GatewayChannelConfig(BaseModel):
+    """One messaging channel. Disabled unless both the gateway and the channel are on."""
+
+    name: str
+    enabled: bool = False
+    bot_id: str | None = None
+    owner: str = "local"
+    dm_scope: Literal["main", "per-peer"] = "per-peer"
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def require_exact_boolean_channel_gate(cls, value: object) -> bool:
+        if type(value) is not bool:
+            raise ValueError("gateway channel enabled must be an exact boolean")
+        return value
+
+
+class GatewayConfig(BaseModel):
+    """Messaging gateway surface. Default off; unpaired senders are discarded."""
+
+    enabled: bool = False
+    pairing_ttl_seconds: int = Field(default=600, ge=1)
+    discard_log_min_interval_seconds: float = Field(default=5.0, ge=0.0)
+    max_pairing_attempts_per_peer: int = Field(default=8, ge=1)
+    channels: list[GatewayChannelConfig] = Field(default_factory=list)
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def require_exact_boolean_gateway_gate(cls, value: object) -> bool:
+        if type(value) is not bool:
+            raise ValueError("gateway.enabled must be an exact boolean")
+        return value
+
+
 # Module-level cache for parsed config files: path -> (mtime, instance)
 _settings_file_cache: dict[Path, tuple[float, JSSettings]] = {}
 
@@ -797,6 +831,7 @@ class JSSettings(BaseSettings):
     display: DisplayConfig = Field(default_factory=DisplayConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
     features: AgentFeatureConfig = Field(default_factory=AgentFeatureConfig)
+    gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     search_configured: bool = False
     first_run_completed: bool = False
     # Server-authoritative first-run wizard state. ``first_run_completed`` remains
