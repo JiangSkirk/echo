@@ -84,6 +84,7 @@ dev = [
     "websockets>=12",
     "playwright>=1.52,<2",
     "httpx2>=2.4",  # Starlette TestClient prefers httpx2 over plain httpx
+    "hypothesis>=6.112",
     "js-agent[office,pdf]",
 ]
 [project.scripts]
@@ -135,7 +136,16 @@ warn_unused_ignores = false
 exclude = []
 
 [[tool.mypy.overrides]]
-module = ["docx.*", "pypdf.*", "pdfplumber.*", "pandas.*", "openpyxl.*", "rfc8785.*", "tiktoken"]
+module = [
+    "docx.*",
+    "pypdf.*",
+    "pdfplumber.*",
+    "pandas.*",
+    "openpyxl.*",
+    "rfc8785.*",
+    "tiktoken",
+    "telegram.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

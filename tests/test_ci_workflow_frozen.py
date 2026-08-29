@@ -24,7 +24,7 @@ def test_ci_uses_frozen_uv_sync() -> None:
     text = _read("ci.yml")
     assert "pip install -e" not in text
     assert "uv lock --check" in text
-    assert "uv sync --frozen --extra dev --extra monitor" in text
+    assert "uv sync --frozen --extra dev --extra monitor --extra echo-tokenizer" in text
     assert "0.11.24" in text
 
 

@@ -67,7 +67,8 @@
 - `js/pipeline/`、`js/mobile/`：默认不在 AppShell / Host 启动 import 图里；`mobile_enabled` 默认 false
 - `js/friends/`：v1 已实装（owner SQLite + X25519/ChaCha20-Poly1305 + Host-to-Host HMAC）。`friends_enabled` 默认 false，未启用不进 Host import 图
 - `features.pipeline_enabled` 默认 true **只是能力旗标**，不等于冷启动加载 `js.pipeline`
-- `js/evolution/`：cycle 只生成提案；批准后才应用并跑 mock benchmark，回归自动回滚；冷启动仍不跑
+- `js/evolution/`：cycle 只生成提案；批准后才应用并跑 mock benchmark，回归自动回滚；冷启动仍不跑。磁盘满时 applied 文件写失败保持 `proposed`，不半应用。
+- 测试密度 M1（1.2:1）已入 CI 棘轮；M2（2.0）/ M3（3.2，Hermes 级）仍是方向性。覆盖率 M1 棘轮为 `js/security` ≥86%、`js/echo` ≥85%、全库 branch ≥65%；计划值 90/85/75 按里程碑上调，不在本轮假装已到。`mutmut` 杀伤率抽查只本地跑，不进 CI。独立红队仍待外部。
 - Host 任务页（`/api/tasks` + `tabs/tasks.js`）是 bots goals 只读视图；mutate 503。不是已删除的 `TaskManager` / `TaskStore`
 - 已删孤儿：`js/persistence/task_store.py`、`agent_store.py`。历史审计里对 `task_store.py` 的 High **作废**（文件不在树里）
 - Fleet ≠ Bots。Fleet 是一次性集群（`js/orchestration/fleet/`）。Bots 是命名机器人 + 房间 + Goal（`js/bots/`），回合仍走 Echo。Orin 的 `bot.room.create` / `bot.message.send` / `bot.soul.write` 是收紧规格；v1 生产仍写 `bots.db`，不是第二套运行时。

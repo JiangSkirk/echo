@@ -136,6 +136,7 @@ pytest tests -q -p no:cacheprovider
 | Skills | 静态文件 | ❌ | ✅ **代码/Prompt/工作流 + 安全扫描 + 可安装** |
 | 多Agent | 简单子Agent | 委托线程池 | ✅ **角色系统 + 并行编排** |
 | 自主学习 | ❌ | ❌ | ✅ **提案制闭环**（生成→人工批准→应用→benchmark 回归回滚，无无人值守自改） |
+| 测试密度 | ~中 | 3.2:1 | ⚠️ **M1 ≥ 1.2:1**（棘轮；覆盖率地板入 CI；M2/M3 方向性） |
 | 安装体验 | JSON 手动配置 | YAML 388行 | ✅ **`js setup` 一键** |
 
 ## Skill 系统
@@ -236,6 +237,8 @@ pytest tests/ -v
 - 流水线：Auto-Fetch (20) + Benchmark (11)
 - 取消/恢复：Checkpoint/Resume (10) + Smoke (26)
 - 发布门禁：`ruff`、`mypy`、完整测试、benchmark mock、release smoke 均需通过。
+- 密度棘轮：`uv run python scripts/test_density_report.py --min 1.2`（M1 硬验收 1.2:1）。
+- 覆盖率 M1 棘轮（CI）：`js/security` ≥86%、`js/echo` ≥85%、全库 branch ≥65%；90/85/75 为 M2 方向。
 
 ```bash
 # 代码质量检查

@@ -196,8 +196,12 @@ class EvolutionCycle:
         proposal = self.get(proposal_id, owner)
         if proposal is None or proposal.status != STATUS_PROPOSED:
             raise ValueError("proposal is not open")
+        try:
+            applied_path = self._write_applied(proposal)
+        except OSError:
+            logger.exception("evolution applied file write failed")
+            raise
         self._set_status(proposal_id, owner, STATUS_APPROVED, decided_by=decided_by)
-        applied_path = self._write_applied(proposal)
         score: float | None = None
         try:
             score = 1.0 if benchmark is None else float(benchmark())

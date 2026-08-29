@@ -118,6 +118,7 @@ That moves leases back in-process and changes the daily security boundary. Do no
 | Skills | Static files | ❌ | ✅ **Code/Prompt/Workflow + security scan + installable** |
 | Multi-Agent | Simple sub-agent | Delegation thread pool | ✅ **Role system + parallel orchestration** |
 | Self-Learning | ❌ | ❌ | ✅ **Proposal loop** (generate → human approve → apply → mock benchmark rollback; never unattended) |
+| Test density | mid | 3.2:1 | ⚠️ **M1 ≥ 1.2:1** (ratchet; coverage floors in CI; M2/M3 directional) |
 | Install Experience | JSON manual config | YAML 388-line | ✅ **`js setup` one-shot** |
 
 ## Testing
@@ -131,6 +132,9 @@ python scripts/release_smoke.py --all
 ```
 
 The release gate covers lint, typing, full tests, mock benchmarks, and release smoke.
+M1 density is hard-gated at 1.2:1 via `scripts/test_density_report.py`. CI also enforces
+M1 coverage ratchets: `js/security` ≥86%, `js/echo` ≥85%, whole-library branch ≥65%
+(plan targets 90/85/75 stay directional for M2).
 
 ## Known Limits
 

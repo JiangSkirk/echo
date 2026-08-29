@@ -1,7 +1,7 @@
 # Canonical quality criteria. New bars require a rubric_version bump + changelog.
 # Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
 
-rubric_version: "2026.09.10"
+rubric_version: "2026.09.11"
 
 label_enum:
   - OPEN
@@ -136,6 +136,17 @@ inventory_units:
       - gateway.cold_start
       - gateway.webhook
       - gateway.discord
+  tests.quality:
+    paths:
+      - tests/adversarial/
+      - tests/property/
+      - tests/faults/
+      - scripts/test_density_report.py
+      - scripts/check_coverage_floors.py
+    scopes:
+      - repo.default
+      - tests.density
+      - tests.coverage
 
 scopes:
   repo.default:
@@ -328,8 +339,24 @@ scopes:
         description: Discord mock transport e2e and lease-gated cron push
         evidence_kind: pytest_node
         nodeid: tests/gateway/test_discord_e2e.py
+  tests.density:
+    criteria:
+      - id: tests.density
+        description: M1 test/product line density >= 1.2
+        evidence_kind: pytest_node
+        nodeid: tests/test_density_report.py
+  tests.coverage:
+    criteria:
+      - id: tests.coverage
+        description: M1 coverage ratchet security 86 / echo 85 / lib 65 branch; 90/85/75 is M2
+        evidence_kind: pytest_node
+        nodeid: tests/test_coverage_floors.py
 
 changelog:
+  - version: "2026.09.11"
+    date: "2026-08-29"
+    changes:
+      - "M1 density ratchet 1.2:1; coverage floors; hypothesis + adversarial corpus + fault matrix"
   - version: "2026.09.10"
     date: "2026-08-29"
     changes:
