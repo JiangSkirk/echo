@@ -34,15 +34,29 @@ def load_markdown_files(directory: Path) -> list[dict[str, str]]:
             if len(parts) >= 3:
                 frontmatter = parts[1].strip()
                 body = parts[2].strip()
-                docs.append({
-                    "path": str(path.relative_to(directory.parent)),
-                    "frontmatter": frontmatter,
-                    "body": body,
-                })
+                docs.append(
+                    {
+                        "path": str(path.relative_to(directory.parent)),
+                        "frontmatter": frontmatter,
+                        "body": body,
+                    }
+                )
             else:
-                docs.append({"path": str(path.relative_to(directory.parent)), "frontmatter": "", "body": content})
+                docs.append(
+                    {
+                        "path": str(path.relative_to(directory.parent)),
+                        "frontmatter": "",
+                        "body": content,
+                    }
+                )
         else:
-            docs.append({"path": str(path.relative_to(directory.parent)), "frontmatter": "", "body": content})
+            docs.append(
+                {
+                    "path": str(path.relative_to(directory.parent)),
+                    "frontmatter": "",
+                    "body": content,
+                }
+            )
     return docs
 
 
@@ -58,22 +72,26 @@ def chunk_document(doc: dict[str, str], token_limit: int = 3000) -> list[dict[st
     for line in lines:
         line_len = len(line) + 1
         if current_len + line_len > char_limit and current:
-            chunks.append({
-                "path": doc["path"],
-                "frontmatter": doc["frontmatter"],
-                "content": "\n".join(current),
-            })
+            chunks.append(
+                {
+                    "path": doc["path"],
+                    "frontmatter": doc["frontmatter"],
+                    "content": "\n".join(current),
+                }
+            )
             current = []
             current_len = 0
         current.append(line)
         current_len += line_len
 
     if current:
-        chunks.append({
-            "path": doc["path"],
-            "frontmatter": doc["frontmatter"],
-            "content": "\n".join(current),
-        })
+        chunks.append(
+            {
+                "path": doc["path"],
+                "frontmatter": doc["frontmatter"],
+                "content": "\n".join(current),
+            }
+        )
     return chunks
 
 
@@ -97,7 +115,7 @@ def main() -> int:
             elif "category: quality_checklist" in chunk["frontmatter"]:
                 category = "quality_checklist"
 
-            key = f"{chunk['path']}#chunk{i+1}"
+            key = f"{chunk['path']}#chunk{i + 1}"
             value = f"{chunk['frontmatter']}\n\n{chunk['content']}"
             memory.store_semantic(
                 key=key,
@@ -112,9 +130,10 @@ def main() -> int:
     print(f"\n✅ Ingested {len(docs)} documents, {total_chunks} chunks into semantic memory.")
     print(f"   Database: {settings.state_dir / 'memory_enhanced.db'}")
     print("\nNext steps:")
-    print("  1. Start the web UI: python -m js.web.server")
-    print("  2. Ask: 'What is the fabric of HL-2026-TShirt?'")
-    print("  3. Check Memory tab to see sources and edit facts.")
+    print("  1. Start the local Host: js appshell --no-browser")
+    print("  2. Open the JS Agent desktop app")
+    print("  3. Ask: 'What is the fabric of HL-2026-TShirt?'")
+    print("  4. Check Memory to see sources and edit facts.")
     return 0
 
 

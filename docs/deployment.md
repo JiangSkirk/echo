@@ -22,13 +22,17 @@ docker run -d \
   -p 127.0.0.1:8000:8000 \
   -v "$(pwd)/workspace:/app/workspace" \
   -v "$(pwd)/state:/app/state" \
+  -v "$(pwd)/state-work:/home/appuser/.js-work" \
   -e JS_LOG_LEVEL=INFO \
   -e JS_STATE_DIR=/app/state \
+  -e JS_APPSHELL_PROVISION_KEY=1 \
   --restart unless-stopped \
   js-agent:latest
 ```
 
 端口默认只绑定回环地址；确需对外暴露时去掉 `127.0.0.1:` 前缀，并务必保持 API key 鉴权开启。
+
+首次启动若还没有 admin，镜像会把共享管理密钥写入 `./state/bootstrap_admin_key.txt`（0600）。用该密钥登录后再访问 `/api/*`。首次成功登录（`/api/appshell/session` 或 `/api/auth/session`）后该明文文件会被删除；`/api/appshell/bootstrap` 铸造时会保留文件，方便无头环境读取。
 
 ### 3. 查看日志
 
@@ -96,6 +100,8 @@ docker compose up -d --build js-agent
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
 | `JS_LOG_LEVEL` | `INFO` | 日志输出级别，可选值：`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL` |
+| `JS_STATE_DIR` | `/app/state` | 容器内状态目录；compose 将其挂到宿主机 `./state` |
+| `JS_APPSHELL_PROVISION_KEY` | `1`（镜像/compose） | 为 `1`/`true`/`yes`/`on` 时，AppShell 启动若无 admin 则铸造共享管理密钥并写入 `bootstrap_admin_key.txt`。本地默认关闭。该文件在首次 `/api/appshell/session` 或 `/api/auth/session` 登录后删除。 |
 
 如需添加更多环境变量，可在 `docker-compose.yaml` 的 `environment` 节中配置，或通过 `.env` 文件加载：
 
@@ -108,18 +114,20 @@ env_file:
 
 ## 持久化卷说明
 
-JS Agent Harness 使用两个数据卷来实现状态持久化：
+JS Agent Harness 使用三个数据卷来实现状态持久化：
 
 | 卷 | 容器内路径 | 用途 |
 |----|-----------|------|
 | `workspace` | `/app/workspace` | 存放 Agent 运行时生成的工作文件、代码检查点（checkpoints）等 |
-| `state` | `/app/state` | 存放应用状态数据，如会话状态、记忆、缓存等 |
+| `state` | `/app/state` | 存放 Personal 应用状态数据，如会话状态、记忆、缓存、bootstrap 密钥等 |
+| `state-work` | `/home/appuser/.js-work` | 存放 Work 模式状态：凭据、记忆、ledger。不挂此卷则容器重建后 Work store 被清空 |
 
 **重要提示**：
 
-- 这两个目录在 `.dockerignore` 中已被排除，不会被复制到镜像内，确保数据始终从宿主机卷挂载。
+- 这些目录在 `.dockerignore` 中已被排除，不会被复制到镜像内，确保数据始终从宿主机卷挂载。
 - 删除容器时，挂载卷的数据会保留在宿主机上，不会丢失。
-- 备份时只需备份宿主机上的 `./workspace` 和 `./state` 目录即可。
+- 备份时只需备份宿主机上的 `./workspace`、`./state` 和 `./state-work` 目录即可。
+- 开发 profile（`js-agent-dev`）以 root 运行，Work home 挂到 `./state-work-dev:/root/.js-work`，不要与生产卷混用。
 
 ---
 

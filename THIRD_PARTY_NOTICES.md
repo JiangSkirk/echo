@@ -3,8 +3,8 @@
 This repository uses the Python dependencies declared in `pyproject.toml` and
 pinned in `uv.lock`.
 
-The Web UI vendors these static browser assets so a local installation does not
-contact a public CDN:
+The local Host UI vendors these static window assets so a local installation does
+not contact a public CDN:
 
 - Tailwind CSS 3.4.17 generated utility stylesheet, MIT License.
 - Font Awesome Free 6.7.2 CSS and web fonts. CSS is MIT licensed; fonts are

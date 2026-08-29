@@ -1,10 +1,10 @@
 # Orin 阶段 C WP-C0 Authority Inventory
 
-> 状态：机器生成、人工分类的只读证据；仅完成 WP-C0 盘点与书面冻结，阶段 C 未实施
-> 日期：2026-08-24（Asia/Shanghai）
+> 状态：机器生成、人工分类的只读证据；仅完成 WP-C0 盘点与书面冻结；本轮软件侧为 enforce 增加未分类出口 deny-list 与 digest 钉死，默认生产开关仍关闭，阶段 C 未实施
+> 日期：2026-08-25（Asia/Shanghai）
 > 文档基线：`245c208ce95bf6bb3c05702f8dce65b8483da542`
 > 运行时行为基线：`652d035e0fda0e945da97e55b73a8f4116716410`
-> 授权边界：本索引冻结 WP-C0；C1 身份检查点、真实 Echo 第一块与 C2 Desktop 检查点另经显式 construction harness 授权，C3–C7 未获授权，所有阶段 C 生产开关保持关闭
+> 授权边界：本索引冻结 WP-C0；C1–C3 仅获显式 construction harness 授权；软件合取检查器仍将 #8/#9/正式 TCC/AppShell 分离标为未观察；所有阶段 C 生产开关保持关闭，不得宣称阶段 C 已实施
 
 本文件是 `ORIN_STAGE_C_SPEC.md` 的 C0 证据索引，不是实现报告。它不证明阶段 C 已实施，不证明 Echo RCE 已收口，也不授权修改产品路由、预建 Desktop/Memory Cell 或打开任何强制模式开关。
 
@@ -130,7 +130,7 @@
 | 5 | `csv_write`, `excel_write`, `excel_merge`, `excel_create`, `pdf_generate` | Echo 内直接保存/发布到 workspace（`js/tools/office.py:667-782,1151-1192,1293-1383,1536-1682`） | `disabled-in-enforce` | 接入 File Cell 后方可重新分类为 `cell` |
 | 1 | `web_search` | SearchManager 直接联网并取 Tavily key（`js/agent/tool_executor.py:5164-5210`；`js/search/engines.py:44-71,272-300`） | `disabled-in-enforce` | 固定目标的 Network/Secret Cell 路径完成后再审 |
 | 9 | `web_navigate`, `web_snapshot`, `web_click`, `web_fill`, `web_screenshot`, `web_evaluate`, `web_find_tab`, `web_list_tabs`, `web_extract_text` | Echo 持有 0600 WebBridge token，经 loopback HTTP 控制真实浏览器（`js/tools/webbridge.py:24-72,158-239,262-713`） | `disabled-in-enforce` | C2/C4 明确映射 Desktop/Network/File Cell；自报 read-only 不算 |
-| 16 | `desktop_get_permissions`, `desktop_get_state`, `desktop_screenshot`, `desktop_list`, `desktop_operation_log`, `desktop_emergency_stop`, `desktop_clear_stop`, `desktop_click`, `desktop_move`, `desktop_scroll`, `desktop_drag`, `desktop_type`, `desktop_key`, `desktop_app`, `desktop_window`, `desktop_set_mode` | 默认生产 Echo 仍直接持有 Screen Recording/Accessibility 并调用 Quartz、`cliclick`、`screencapture`、`osascript`（`js/tools/desktop_tools.py`；`js/tools/desktop/controller.py`） | `disabled-in-enforce` | C2 显式 harness 已把 16 个 handler 接到 fail-closed Cell backend 并取得真实像素只读证据；原生精确动作与真实模型 E2E blocked，默认生产分类不变 |
+| 16 | `desktop_get_permissions`, `desktop_get_state`, `desktop_screenshot`, `desktop_list`, `desktop_operation_log`, `desktop_emergency_stop`, `desktop_clear_stop`, `desktop_click`, `desktop_move`, `desktop_scroll`, `desktop_drag`, `desktop_type`, `desktop_key`, `desktop_app`, `desktop_window`, `desktop_set_mode` | 默认生产 Echo 仍直接持有 Screen Recording/Accessibility 并调用 Quartz、`cliclick`、`screencapture`、`osascript`（`js/tools/desktop_tools.py`；`js/tools/desktop/controller.py`） | `disabled-in-enforce` | C2 显式 harness 已观察 ApplicationHandle、原生 window bundle 硬拒、digest upsert 与 Echo 去 PID/AX/`window_number`；`idempotent` 仍为 False，真实模型 E2E 与正式 TCC blocked，默认生产分类不变 |
 | 1 | `fleet_collaborate` | 同进程创建 JSAgent workers，并直写 workspace/state/history（`js/tools/fleet_tools.py:17-214`；`js/orchestration/fleet.py:1280-1957`） | `disabled-in-enforce` | 本地编排须继承非扩张 task/Intent 且所有效果进 Cell；跨设备委托属 P6 |
 | 1 | `desktop_wizard_action` | 控制 Desktop 配置/权限引导，当前在 Echo/AppShell 失陷域 | `disabled-in-enforce` | C1 可信宿主 + C2 Desktop Cell 后再审 |
 | 18 | `control_skill_install`, `control_clawhub_discover`, `control_clawhub_install`, `control_provider_discover`, `control_provider_mutate`, `control_fleet_configure`, `control_fleet_continue`, `control_fleet_session_delete`, `control_model_switch`, `control_setup_state`, `control_session_mutate`, `control_desktop_state`, `control_task_mutate`, `control_memory_mutate`, `control_skill_mutate`, `control_evolution_action`, `control_upload_mutate`, `control_cron_mutate` | 当前可变更 provider、skill、Fleet、session、Desktop、task、Memory、upload、cron 等产品状态 | `disabled-in-enforce` | 逐项迁入可信 AppShell、Cell 或永久关闭；不能因模型不可见而豁免 |
@@ -259,9 +259,9 @@ HTTP 路由“不可被模型直接调用”不构成豁免；受限 Echo RCE �
 
 ### 5.5 DesktopTargetHandle 与 Memory 冻结
 
-- **Desktop**：C0 登记的默认生产 observe/action/native helper 出口仍为 ambient 且在 enforce 分类中保持禁用。C2 显式 harness 已让 Desktop Cell 在可信 observe 后用 Cell 会话封印 `DesktopTargetHandle`，由 orind 验签、重封并以不可变 ID 登记；沿用既有 `handle/draft/preflight/commit` 载荷，普通 `handle.op=issue`、Echo 自造、AppShell 通用 issue 与读取完整 handle 均继续拒绝。真实 macOS 像素 observe 已测；原生精确 window/control 动作、K4 幂等/对账下限、完整签名 EffectReceipt 与真实模型 E2E 仍 **blocked**，故 C2 未完成且默认产品路由不变。
-- **Memory**：C0 只登记现有 DB、文件、prefetch、finalizer、Web/control 和后台 callback 出口。C3 必须整迁到 Memory Cell；C0 不创建 Memory Cell、cap、消息或句柄。
-- `js/orin/receipts.py` 仍只承载 orind `DecisionReceipt`；K§8.5 Cell 签名 `EffectReceipt` 只允许未来在 `js/orin/draft.py` 按 `receipt.signed.v1` 扩展，禁止把 DecisionReceipt 冒充 Cell 收据。
+- **Desktop**：C0 登记的默认生产 observe/action/native helper 出口仍为 ambient 且在 enforce 分类中保持禁用。C2 显式 harness 已让 Desktop Cell 在可信 observe 后封印 `DesktopTargetHandle`，并补主人签发的 `ApplicationHandle`、原生 window/control bundle 硬拒、无 Controller 观察回退、digest upsert 对账、以及 HMAC `receipt.signed.v1` 验签。`desktop.action` 仍不可幂等，完整 consume 继续双控；全局 CGEvent 验证后竞态、真实模型 E2E 与正式打包 TCC 仍 **blocked**。C2 未完成，默认产品路由不变。
+- **Memory**：C3 显式 harness 已有 `cell.memory` 读写隔离、AppShell session 全等、`ORIN_CELL_PRIVATE_STATE`、commit taint 复验与 SECRET 不洗白证据；生产 `js.memory.store` / `/api/memory*` / cron dream 仍 ambient。Memory 未整迁，C0 登记的主进程出口分类不变。
+- `js/orin/receipts.py` 仍只承载 orind `DecisionReceipt`；`js/orin/draft.py` 现有 `receipt.signed.v1` / `SignedEffectReceiptV1` 用于 C2/C3 Cell 收据并由 orind 验签，禁止把 DecisionReceipt 冒充 Cell 收据。这不是 C-I09 Cell 独立软件签名身份。生产 enforce 收据链仍未接入。
 
 ---
 
@@ -328,4 +328,4 @@ C0 不向主测试套加入故意失败的 pytest。以下只登记为 C5 施工
 | Desktop/Memory 整迁 | **blocked** | 分别留给 C2/C3；未完成前不得进入发布声明 |
 | 阶段 B golden | **已观察** | 本轮选择集 31/31；两条 auth 红只登记 |
 
-因此，WP-C0 的文档盘点与书面冻结已经形成证据，C1 与 C2 仅有显式 construction harness 检查点证据，但阶段 C 仍未实施；C2 未完成且 WP-C3 未获授权。当前不能宣称 Echo 进程失陷后的结构性收口，也不能进入 Stage C 上线声明。
+因此，WP-C0 的文档盘点与书面冻结已经形成证据，C1–C3 仅有显式 construction harness 检查点证据，C4–C7 只有局部 harness/书面标签，阶段 C 仍未实施。C2 与 Memory 整迁均未完成。当前不能宣称 Echo 进程失陷后的结构性收口，也不能进入 Stage C 上线声明。

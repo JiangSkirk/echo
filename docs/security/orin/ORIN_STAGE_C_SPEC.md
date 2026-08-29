@@ -1,7 +1,7 @@
 # Orin 阶段 C「强制模式」实施规格
 
-> 状态：已人工评审；C0 已冻结；C1 与 C2 仅显式 harness 检查点已测，C2 未完成；默认生产仍单进程；禁止进入 C3；阶段 C 未实施
-> 日期：2026-08-24（Asia/Shanghai）
+> 状态：已人工评审；C0 已冻结；C1–C3 仅显式 harness 检查点已测；§6.1 合取检查器、enforce fail-fast、C6/C7 证据索引与 [C7 完成声明](ORIN_STAGE_C_CLOSEOUT.md) 已成文。默认生产在 enforce 关闭时仍是 652d035 单进程 ambient；`orin.enforce=true` 因 #8/#9/正式 TCC/AppShell 分离/provider token 等合取缺位继续 fail-fast；**阶段 C 未实施**
+> 日期：2026-08-28（Asia/Shanghai）
 > 施工基线：commit `652d035e0fda0e945da97e55b73a8f4116716410`，分支 `feature/orin-stage-b`
 > 终态北极星：`ORIN_EFFECT_KERNEL_V1.md`（**K**）；阶段 C 对应 K P5，上线验收只听 K§15.6
 > 阶段裁决：`ORIN_MERGE_REVIEW.md`（**M**）§3.1；机制库存：`ORIN_DESIGN.md` v1.3（**D**，只取自沙箱与 fail-closed）
@@ -391,9 +391,9 @@ C0 证据索引：[`ORIN_STAGE_C_C0_INVENTORY.md`](ORIN_STAGE_C_C0_INVENTORY.md)
 
 状态（2026-08-24）：
 
-- **已观察 / 身份检查点**：Build/File/Services 的严格 Orin 身份、逐 Cell 环境 allowlist 与 private-path 合同已在显式 `C1TestOrind` harness 验收；生产 orind 入口不传 `c1_test_harness`，`orin.enforce=true` 仍 fail-fast。
+- **已观察 / 身份检查点**：Build/File/Services 的严格 Orin 身份、逐 Cell 环境 allowlist 与 private-path 合同已在显式 `C1TestOrind` harness 验收。生产 orind 入口仍不传 `c1_test_harness`；`--cell-identity-enforce` 可在 `--stage-b` 下显式打开身份合同（默认仍 false），不再绑死测试 harness。Desktop/Memory 进程仍只在 harness 或 `orin.enforce` 合取下 spawn。`orin.enforce=true` 仍因 §6.1 合取未全真 fail-fast。
 - **已观察 / macOS 显式 harness 进程分离**：测试宿主先持有 owner-witness 私钥并按既有 B schema 签名，再以全新 OS 进程执行 `JSAgent → run_echo_turn → EchoTurnLoop`。worker 只读宿主生成的裁剪 runtime image、只写私有 scratch state，并只接收 task/handle ID、模型上下文与安全投影；宿主从 `create_subprocess_exec` 记录 Darwin `sandbox-exec` payload PID，固定攻击进程在同一 OS 策略下不能读主人私钥/宿主 state/仓库签发源码、不能发现 AppShell 签发模块或连接宿主 UDS。worker 能用临时自有 key 构造 `approved=True` DTO，但该签名不能通过宿主公钥验证，因而不能成为受信权威事件。旧 stdlib 探针仅保留为负对照。
-- **边界未扩张**：上述证据只通过显式 `c1_harness` 取得；默认 `launcher/server/sidecar` 仍是 `652d035` 的单进程产品路径，真实 provider token、Keychain/Mach 与正式打包边界仍为 `untested` / `external-pending`。该 C1 检查点当时不授权或进入 WP-C2；后续 C2 仍只获独立显式 harness 授权，二者都不构成阶段 C 已实施或 Echo RCE 已收口的证据。
+- **边界未扩张**：C1 进程分离证据仍只通过显式 `c1_harness` 取得。默认 `launcher/server/sidecar` 仍是 `652d035` 的单进程产品路径；`echo_minimal_os` 仅为可选载体探测（无 Darwin `sandbox-exec` 则该位为假），不把 `SandboxExecutor` 写成已公证 Echo OS 身份。真实 provider token、Keychain/Mach 与正式打包边界仍为 `untested` / `external-pending`。`appshell_echo_separated` 与 `provider_tokens_out_of_echo` 合取位保持假。该检查点不构成阶段 C 已实施或 Echo RCE 已收口的证据。
 
 交付物：
 
@@ -418,8 +418,10 @@ C0 证据索引：[`ORIN_STAGE_C_C0_INVENTORY.md`](ORIN_STAGE_C_C0_INVENTORY.md)
 
 - **已观察 / 显式 harness 检查点**：`C2TestOrind` 复用 C1 launch ticket、Cell 身份、private path 与逐 Cell 环境 allowlist，只在显式 harness 启动 `cell.desktop`。真实 macOS 只读观察已取得像素、坐标 scale 与哈希证据；脚本后端已验证严格 draft/preflight/package/permit、DesktopTargetHandle 的 Cell 会话封印 + orind 验签重封、状态漂移/重放拒绝、preflight 零动作和协议级 `observe → act → observe`。普通 `handle.op=issue` 与 Echo 读取完整 DesktopTargetHandle 继续硬拒。
 - **已观察 / fail-closed 裁决**：Desktop preflight 在调用 Cell 前、Cell 返回后及 handle sealing 返回后均重新执行主人证/effect/handle/time Gate。K4 能力表不完整仍按阶段 B 规则升级双控；fresh witness 与 post-observe 不顶替幂等/对账证据。因此 Work 预授权不能让 Desktop action consume，Personal 也不能借 ExportPass 放行。
-- **blocked / 不算 C2 完成**：现有 native controller 缺少精确 AX window/control identity、topmost hit-test、单一无 fallback 动作 sink 与歧义提交对账；除 Cell 内部 emergency stop 外，原生 OS mutation 在 harness 中全部硬拒。真实模型尚不能消费真实像素完成桌面闭环，K§15.6 第 8 条保持 `blocked`；未实现 K§8.5 完整签名 EffectReceipt。本检查点不得进入 WP-C3。
-- **兼容边界**：默认 launcher/server/router/sidecar 与生产 DesktopTools 未接入本 harness，`orin.enforce=false` 时仍执行 `26da9be` / `652d035` 的单进程 ambient Desktop 路径；`cell_desktop` 默认 `false` 且单独置真仍惰性。本状态不证明图像注入免疫、阶段 C 已实施或 Echo RCE 已收口。
+- **已观察 / 本轮原生补证**：Cell-private `MacOSAXActionSink` 只使用 AX/CoreGraphics/AppKit，按 action 派生 point/drag/pointer/focused/application/window selector；PID、bundle id、CGWindowID、AX 结构路径、role/identifier/bounds 与 topmost window 进入 Cell 私有 target/state digest，动作边界再次全等解析。自动化负测覆盖遮挡、同名窗口、PID/window/control/bounds 漂移、单次 sink 与无 legacy controller fallback；本机受控 Calculator 原生烟测观察到真实 AXButton 的像素 `observe → click → observe` 发生变化。该烟测不是模型 E2E，也不证明正式签名包的 TCC。
+- **已观察 / 本轮 C2 残余**：Cell 内列表/截图/状态不再构造 `DesktopController`；`AppShellDesktopAppBindingV1` 派生 `ApplicationHandle`，observe/action 只在主人签发的 bundle 内解析，普通 `handle.op=issue` 仍硬拒；原生 window/control 缺 bundle 硬拒；`window_facts` 带 `bundle_id`；Echo 安全投影不再带 PID/AX/`window_number`；store upsert 保留 before/after/target digest，reconcile 可带回；膜重建挂 ApplicationHandle 且不把 `desktop.action` 放进膜自动 consume；Cell commit 封印 HMAC `receipt.signed.v1`，orind 验签后才记 committed，Echo 不见该字段。C2 harness 有与 File 同构的主人签发助手；默认 `/intent` 模板仍只发 DirectoryHandle。
+- **blocked / 不算 C2 完成**：`desktop.action` 的 `idempotent` 必须保持 False，K4 能力表因此仍不完整，完整 consume 继续双控；全局 CGEvent 验证后竞态不能从 OS 消掉；真实模型尚未消费真实像素完成决策和动作，K§15.6 第 8 条保持 `blocked`；正式打包 TCC 仍 `external-pending`。§12「Desktop 已整迁」保持未勾。默认生产 DesktopTools 仍 ambient。
+- **兼容边界**：默认 launcher/server/router/sidecar 与生产 DesktopTools 在 `orin.enforce=false` 时仍执行 `3b739e5` / `652d035` 的单进程 ambient Desktop 路径。enforce 产品路径已接线 `OrinDesktopCellBackend` 且失联不回 `DesktopController`，但合取未全真，该路径不可达。`cell_desktop` 默认 `false` 且单独置真仍惰性。本状态不证明图像注入免疫、阶段 C 已实施或 Echo RCE 已收口。
 
 交付物：
 
@@ -440,6 +442,11 @@ C0 证据索引：[`ORIN_STAGE_C_C0_INVENTORY.md`](ORIN_STAGE_C_C0_INVENTORY.md)
 
 ### WP-C3：Memory Cell 产品迁移
 
+状态（2026-08-25）：
+
+- **已观察 / 显式 harness**：`C3TestOrind` 才启动 `cell.memory`；`cell_memory` 默认 false 且单独置真惰性。Memory Cell 私有库绑定 owner/profile/session/task + source/taint/clearance；`arguments.session_id` 必须与 AppShell/parent session 全等，错 session/profile/task 经 client 硬拒；DB 只写 `ORIN_CELL_PRIVATE_STATE`，KeyBox 仍用 `ORIN_STATE_DIR`；write/mutate commit 复验 SECRET/taint，未知 commit 行不插入；commit 封印 `receipt.signed.v1` 并由 orind 验签。SECRET/低完整性不得被摘要洗白；重放不重复持久化；跨 owner/session/profile 读取为 ABSENT 或硬拒。
+- **blocked / 不算 Memory 已整迁**：默认 launcher/server/sidecar 零接入。`orin.enforce=false` 时 `js.memory.store` / EnhancedStore / `/api/memory*` / cron dream 仍是生产 ambient 路径。enforce 绑定后 ambient 写/读硬拒且 HTTP 503，不回主进程 DB；合取未全真故该路径不可达。§12 Memory 复选框保持未勾。
+
 交付物：
 
 - MemoryStore、EnhancedStore、layered memory、prefetch、`sync_turn` 与 mutation 的 Cell 后端；
@@ -458,6 +465,8 @@ C0 证据索引：[`ORIN_STAGE_C_C0_INVENTORY.md`](ORIN_STAGE_C_C0_INVENTORY.md)
 回退开关：`orin.enforce=false` 冷重启；`cell_memory` 在总闸关闭时惰性。enforce 实例中的 Memory Cell 故障关闭新记忆读取/写入，不回退直接数据库访问。
 
 ### WP-C4：macOS 最小 OS 权限与 ambient handler 收口
+
+状态（2026-08-25）：显式 deny-default 沙箱探针要求 stdout `ok` 且成功退出，并使用宿主文件/socket 探针；默认 launcher 未接入。正式签名包 TCC **external-pending**，不得因此打开 enforce。不得把 `SandboxExecutor` 写成 Echo OS 身份。
 
 交付物：
 
@@ -479,6 +488,8 @@ C0 证据索引：[`ORIN_STAGE_C_C0_INVENTORY.md`](ORIN_STAGE_C_C0_INVENTORY.md)
 回退开关：`orin.enforce=false` 冷重启；`echo_minimal_os` 在总闸关闭时惰性。强制实例运行中不能解除沙箱；某类故障退只读/只草稿，不把权限还给 Echo。
 
 ### WP-C5：`orin.enforce` 与降级阻断
+
+状态（2026-08-25）：`receipt.signed.v1` 已扩 `EffectDraft` 侧 `SignedEffectReceiptV1`，C2/C3 Cell commit 封印并由 orind 验签后才记 committed，Echo 投影丢弃该字段；DecisionReceipt 不得冒充 Cell 收据；C2/C3 harness 缺/错/过期 witness 经 client 全拒；未登记 handler 默认 deny；HMAC `handle.op=issue` 仍无生产副作用。§6.1 合取检查器列出缺失位（含 #8/#9/正式 TCC/AppShell 分离/provider token 离 Echo）；任一为假则 `orin.enforce=true` 继续 fail-fast，禁止空泛 “C2-C7 未完成”。`orin.enforce=false` 默认路径仍不拉起 Desktop/Memory Cell。
 
 交付物：
 
@@ -503,6 +514,8 @@ C0 证据索引：[`ORIN_STAGE_C_C0_INVENTORY.md`](ORIN_STAGE_C_C0_INVENTORY.md)
 
 ### WP-C6：崩溃、重放、RCE 假设与降级验证
 
+状态（2026-08-25）：Desktop/Memory harness 已观察 UNKNOWN_COMMIT 不盲重放；C3 client `draft→preflight→consume` 路径覆盖 Memory UNKNOWN_COMMIT 与 Cell 失联否认。无真实 provider 幂等证据的不可逆 Connector 保持 blocked。禁止把本文件写成攻击 PoC。
+
 交付物：
 
 - 状态机每一边界的 kill/timeout/断连矩阵；
@@ -523,6 +536,8 @@ C0 证据索引：[`ORIN_STAGE_C_C0_INVENTORY.md`](ORIN_STAGE_C_C0_INVENTORY.md)
 回退开关：保持 `orin.enforce=false`；任一失败不得扩大权限或跳到性能 WP。
 
 ### WP-C7：性能、产品接受、独立复核与发布裁决
+
+状态（2026-08-28）：K§10.4 延迟/RSS/启动/背压 **untested**，非正式 K§10.4。仓库现有测量夹具只产出带 “harness 观察 / untested / 非正式 K§10.4” 标签的观察，禁止把数字写成达标。C2/C3 harness 可记录一条 IPC/commit 延迟作为 **harness 观察**。enforce 关闭时继续走 `3b739e5`/`652d035` 单进程路径，不在日常启动拉起 Desktop/Memory Cell；Cell 在 harness/enforce 下常驻由 watchdog 保活。enforce 效用与日均审批 **untested**。#8 真实模型 E2E 与 #9 独立红队无证据，正式 TCC/公证仍 external-pending，不得上线、不得宣称 Echo RCE 已收口。发布决议已写成 [`ORIN_STAGE_C_CLOSEOUT.md`](ORIN_STAGE_C_CLOSEOUT.md)，裁决为 **阶段 C 未实施**。
 
 交付物：
 
@@ -558,11 +573,13 @@ C0 证据索引：[`ORIN_STAGE_C_C0_INVENTORY.md`](ORIN_STAGE_C_C0_INVENTORY.md)
 | 5 | 崩溃与超时中不可逆重复次数为 0 | **本阶段必须测** | B 已测本地膜逐状态 crash/restart；真 provider、响应丢失和真实不可逆效果仍不足 | WP-C6 对每个发布 Connector 给出 provider 级幂等/对账证据 |
 | 6 | 性能、内存、CPU、启动、背压达 K§10.4 或书面调整 | **untested** | K§10.4 全部是目标值；不得沿用 D 的微秒/qps 口号 | WP-C7 实测报告或逐项书面调整 |
 | 7 | 正常效用与审批量达产品标准 | **untested** | B mock 11/11、overall 1.000 是已有局部证据；enforce 效用与日均审批未测 | mock ≥95%、批准的真实任务基线、日均审批 ≤5 |
-| 8 | 真实 `observe → act → observe` 桌面闭环 | **blocked** | C2 显式 harness 已取得真实像素只读 observe，脚本后端仅证明协议绑定；默认 Desktop 仍在主进程，原生精确动作与真实模型闭环未验收 | WP-C2 实迁与真实模型 E2E；未通过即禁止上线声明 |
+| 8 | 真实 `observe → act → observe` 桌面闭环 | **blocked** | C2 显式 harness 已观察 ApplicationHandle、原生 window bundle 硬拒、Echo 去 PID/AX/`window_number`、digest upsert 与 HMAC Cell 收据验签；确定性烟测仍无真实模型决策，`desktop.action` 因非幂等继续双控，默认 Desktop 仍 ambient | 真实模型 E2E 与生产 Desktop 整迁；未通过即禁止上线声明 |
 | 9 | 独立红队未发现完整仲裁绕过 | **blocked** | 独立复核资源与结果均为 external-pending | WP-C7 独立复核完成；外部资源未到位也不得上线 |
 | 10 | 未完成项明确标 blocked/untested/external-pending | **本阶段必须测** | B 债务已有标签，但 C 尚无实施证据账本 | 每 WP 更新证据索引，最终人工审计；“计划完成”不算 |
 
 第 6 条不承诺任何数字。第 7 条的 `日均审批 ≤5` 与 `mock ≥95%` 是产品接受标准，不是当前实测结论。第 8、9 条在本表为发布阻断项，因此本规格不能支持任何上线声明。
+
+软件关不掉的外部门：正式 TCC / Developer ID / 公证、K§15.6 #8 真实模型 `observe → act → observe`、#9 独立红队、每个不可逆 Connector 的 provider 幂等 / operation ID 证据。未完成前不得打开 `orin.enforce`，不得勾选 §12「Desktop/Memory 已整迁」，不得宣称阶段 C 已实施或 Echo RCE 已收口。全局 CGEvent 验证后 TOCTOU 无法从 OS 消掉；`desktop.action` 必须保持 `idempotent=False`。
 
 ---
 
@@ -659,4 +676,4 @@ RCE 验证使用“已获得任意控制流”的无害测试入口与哨兵资�
 - [ ] 无秘密、permit、package、token 或 owner-root 泄漏；
 - [ ] 发布说明只限 macOS、固定版本和实际测试边界。
 
-在此清单关闭前，本文只是一份实施规格。
+在此清单关闭前，本文只是一份实施规格。C7 完成声明见 [`ORIN_STAGE_C_CLOSEOUT.md`](ORIN_STAGE_C_CLOSEOUT.md)；写成“未实施”不等于把上表勾成已实施候选。

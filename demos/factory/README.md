@@ -6,8 +6,8 @@ A complete, self-contained demonstration of how JS Agent manages real factory do
 
 1. **Structured Document Ingestion** — Factory docs are chunked, embedded, and stored in the agent's semantic memory with source citations.
 2. **Transparent Memory Retrieval** — When you ask about a product, the agent shows which document and section it retrieved the answer from.
-3. **Editable Memory** — Users can view, edit, or delete stored facts via the Web UI, with full audit trails.
-4. **Resilience** — Documents survive Web restarts, model disconnects, and task interruptions via checkpoint/resume.
+3. **Editable Memory** — Users can view, edit, or delete stored facts in the desktop app, with full audit trails.
+4. **Resilience** — Documents survive Host restarts, model disconnects, and task interruptions via checkpoint/resume.
 
 ## Files
 
@@ -23,14 +23,14 @@ A complete, self-contained demonstration of how JS Agent manages real factory do
 ## Quick Start
 
 ```bash
-# 1. Ensure the agent is running
-python -m js.web.server
+# 1. Start the local Host (does not open a browser)
+js appshell --no-browser
 
 # 2. In another terminal, ingest the demo documents
 cd demos/factory
 python ingest.py
 
-# 3. Open the Web UI at http://localhost:8000
+# 3. Open the JS Agent desktop app
 # 4. Ask questions like:
 #    "What is the fabric composition of HL-2026-TShirt?"
 #    "What are the sewing tolerances?"
@@ -65,7 +65,7 @@ When you ask a question, the agent:
 4. Shows the sources it used in the response
 
 ### 4. Transparency
-In the Web UI **Memory** tab:
+In the desktop app **Memory** panel:
 - Each memory shows its `source` file
 - Click **Edit** to update a fact (e.g., new fabric blend)
 - Click **Delete** to remove outdated specs
@@ -99,7 +99,7 @@ pipeline:
 This demo validates the following 9/10 product features:
 
 - [x] **One-click install** — `python ingest.py` loads everything
-- [x] **First-start wizard** — Web UI guides model setup on first visit
+- [x] **First-start wizard** — desktop app guides model setup on first visit
 - [x] **Model switching** — Switch between local LM Studio models without restart
 - [x] **Transparent memory** — Sources visible, editable, deletable
 - [x] **Real documentation** — Actual factory SOPs, not toy examples

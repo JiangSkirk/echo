@@ -1,0 +1,239 @@
+# Current review stamps. One row per inventory unit.
+# Authoritative with quality/rubric.yaml only. Do not invent criteria here.
+
+rubric_version: "2026.09.1"
+
+labels:
+  - unit: echo.ledger
+    paths:
+      - js/echo/ledger/
+    label: PEAK
+    rubric_version: "2026.09.1"
+    stamped_at: "2026-08-27"
+    reviewer: "agent:echo-orin-upgrade"
+    evidence:
+      - criterion_id: gate.ruff
+        status: pass
+      - criterion_id: gate.mypy
+        status: pass
+      - criterion_id: gate.pytest
+        status: pass
+      - criterion_id: m3.structure
+        status: pass
+      - criterion_id: echo.tip_anchor
+        status: pass
+    notes: "2026.09.1 local tip seal + v1 external AnchorBackend; not TPM"
+  - unit: echo.runtime
+    paths:
+      - js/echo/turn_loop/
+      - js/echo/capability.py
+      - js/echo/spi.py
+      - js/echo/context_store.py
+    label: PEAK
+    rubric_version: "2026.09.1"
+    stamped_at: "2026-08-27"
+    reviewer: "agent:echo-orin-upgrade"
+    evidence:
+      - criterion_id: gate.ruff
+        status: pass
+      - criterion_id: gate.mypy
+        status: pass
+      - criterion_id: gate.pytest
+        status: pass
+      - criterion_id: m1.structure
+        status: pass
+      - criterion_id: echo.lease_compact
+        status: pass
+      - criterion_id: echo.observability
+        status: pass
+    notes: "M1 structure + lease maybe_compact schedule + effect id metrics"
+  - unit: orin.orind
+    paths:
+      - js/orin/
+      - js/orind/
+    label: PEAK
+    rubric_version: "2026.09.1"
+    stamped_at: "2026-08-27"
+    reviewer: "agent:echo-orin-upgrade"
+    evidence:
+      - criterion_id: gate.ruff
+        status: pass
+      - criterion_id: gate.mypy
+        status: pass
+      - criterion_id: gate.pytest
+        status: pass
+      - criterion_id: m3.structure
+        status: pass
+      - criterion_id: orin.process_split
+        status: pass
+      - criterion_id: orin.provider_via_cell
+        status: pass
+      - criterion_id: orin.signed_receipts
+        status: pass
+      - criterion_id: orin.cell_product_routes
+        status: pass
+    notes: "Stage C harness + opt-in split/cell transport; orin.enforce remains default false"
+  - unit: web.appshell
+    paths:
+      - js/web/
+      - js/appshell/
+    label: PEAK
+    rubric_version: "2026.09.1"
+    stamped_at: "2026-08-27"
+    reviewer: "agent:switch-memory-ui"
+    evidence:
+      - criterion_id: gate.ruff
+        status: pass
+      - criterion_id: gate.mypy
+        status: pass
+      - criterion_id: gate.pytest
+        status: pass
+      - criterion_id: web.auth_contracts
+        status: pass
+      - criterion_id: tasks.empty_shell
+        status: pass
+      - criterion_id: m2.structure
+        status: pass
+      - criterion_id: appshell.process_split
+        status: pass
+      - criterion_id: security.onboarding_admin
+        status: pass
+    notes: "Mode-switch overlay/prewarm + memory tab subnav; process split still opt-in"
+  - unit: memory
+    paths:
+      - js/memory/
+    label: PEAK
+    rubric_version: "2026.09.1"
+    stamped_at: "2026-08-27"
+    reviewer: "agent:echo-orin-upgrade"
+    evidence:
+      - criterion_id: gate.ruff
+        status: pass
+      - criterion_id: gate.mypy
+        status: pass
+      - criterion_id: gate.pytest
+        status: pass
+      - criterion_id: m1.structure
+        status: pass
+    notes: "Ambient writes fail-closed under product enforce; owner isolation SQL unchanged"
+  - unit: agent.tools
+    paths:
+      - js/agent/
+      - js/tools/
+    label: PEAK
+    rubric_version: "2026.09.1"
+    stamped_at: "2026-08-27"
+    reviewer: "agent:echo-orin-upgrade"
+    evidence:
+      - criterion_id: gate.ruff
+        status: pass
+      - criterion_id: gate.mypy
+        status: pass
+      - criterion_id: gate.pytest
+        status: pass
+      - criterion_id: m2.structure
+        status: pass
+    notes: "Build Cell private staging + Memory/Desktop product backends; lease authorize/execute stay in facade"
+  - unit: security
+    paths:
+      - js/security/
+    label: PEAK
+    rubric_version: "2026.09.1"
+    stamped_at: "2026-08-27"
+    reviewer: "agent:echo-orin-upgrade"
+    evidence:
+      - criterion_id: gate.ruff
+        status: pass
+      - criterion_id: gate.mypy
+        status: pass
+      - criterion_id: gate.pytest
+        status: pass
+      - criterion_id: m3.security
+        status: pass
+      - criterion_id: skills.key_registry
+        status: pass
+    notes: "rules.py tests + trusted skill key registry; external human audit still pending"
+  - unit: runtime.governor
+    paths:
+      - js/runtime/
+    label: PEAK
+    rubric_version: "2026.09.1"
+    stamped_at: "2026-08-27"
+    reviewer: "agent:echo-orin-upgrade"
+    evidence:
+      - criterion_id: gate.ruff
+        status: pass
+      - criterion_id: gate.mypy
+        status: pass
+      - criterion_id: gate.pytest
+        status: pass
+      - criterion_id: runtime.wal_allowlist
+        status: pass
+    notes: "Lease JSONL compact is scheduled from governor hot-state; not a WAL allowlist path"
+  - unit: reserved
+    paths:
+      - js/scenarios/
+      - js/pipeline/
+      - js/friends/
+      - js/mobile/
+      - js/evolution/
+    label: PEAK
+    rubric_version: "2026.09.1"
+    stamped_at: "2026-08-27"
+    reviewer: "agent:echo-orin-upgrade"
+    evidence:
+      - criterion_id: gate.ruff
+        status: pass
+      - criterion_id: gate.mypy
+        status: pass
+      - criterion_id: gate.pytest
+        status: pass
+      - criterion_id: reserved.isolation
+        status: pass
+    notes: "Still not loaded on Host cold start"
+  - unit: js_work
+    paths:
+      - js_work/
+    label: PEAK
+    rubric_version: "2026.09.1"
+    stamped_at: "2026-08-27"
+    reviewer: "agent:echo-orin-upgrade"
+    evidence:
+      - criterion_id: gate.ruff
+        status: pass
+      - criterion_id: gate.mypy
+        status: pass
+      - criterion_id: gate.pytest
+        status: pass
+    notes: "Unchanged this wave; restamped to 2026.09.1"
+  - unit: bots.surface
+    paths:
+      - js/bots/
+    label: PEAK
+    rubric_version: "2026.09.1"
+    stamped_at: "2026-08-28"
+    reviewer: "agent:bots-surface"
+    evidence:
+      - criterion_id: gate.ruff
+        status: pass
+      - criterion_id: gate.mypy
+        status: pass
+      - criterion_id: gate.pytest
+        status: pass
+    notes: "Named bots + rooms + goal harness; Orin bits 13-15 tighten only"
+  - unit: docs.debt
+    paths:
+      - TECH_DEBT.md
+      - AGENTS.md
+    label: PEAK
+    rubric_version: "2026.09.1"
+    stamped_at: "2026-08-27"
+    reviewer: "agent:echo-orin-upgrade"
+    evidence:
+      - criterion_id: gate.ruff
+        status: pass
+      - criterion_id: gate.mypy
+        status: pass
+      - criterion_id: gate.pytest
+        status: pass
+    notes: "TECH_DEBT aligned to compact schedule, tip anchor v1, skill registry; Stage C still not implemented"

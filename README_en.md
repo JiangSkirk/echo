@@ -48,12 +48,10 @@ The model is the engine. The harness is the complete frame that lets the engine 
 - **Four trust levels**: builtin → trusted → community → quarantine
 - **Hermes compatible**: Direct installation and execution of Hermes-format skills
 
-### 🌐 Local Web Interface
-- **FastAPI + WebSocket**: Real-time streaming chat without heavy Next.js dependencies
-- **Model management panel**: View local model status, health checks, one-click switching
-- **Memory browser**: View, search, and manage persistent memories
-- **Audit log**: Complete tool-call history with traceability
-- **Skill panel**: Install, uninstall, adjust trust levels, and view content online
+### 💻 Desktop app
+- **Primary surface**: Tauri window loading the local AppShell Host (not the system browser)
+- **CLI / TUI**: `js`, `js tui`, `js daemon` remain available in the terminal
+- **Local Host**: `js appshell` starts the local service without opening a browser
 
 ## Skill Promotion Gate (v0.1.5)
 
@@ -86,12 +84,20 @@ js setup
 # CLI interactive mode
 js
 
-# Web UI
-js web --port 8000
+# Desktop app is the main UI; local Host (does not open a browser):
+js appshell
 
 # Search
 js search "latest AI developments"
 ```
+
+Dev-machine troubleshooting only (**not for everyday product use**): the desktop app and `js appshell` still start orind by default so leases stay in a separate gatekeeper process. To temporarily cut processes while debugging a noisy machine:
+
+```bash
+JS_ORIND=0 js appshell
+```
+
+That moves leases back in-process and changes the daily security boundary. Do not set `JS_ORIND=0` as a product default.
 
 ## Architecture Comparison
 
@@ -104,7 +110,7 @@ js search "latest AI developments"
 | Circuit Breaker | ❌ | ❌ | ✅ **Auto-recovery probes** |
 | Model Discovery | ❌ Manual | ❌ Manual | ✅ **Auto-detection** |
 | Search | ❌ Plugin needed | Tavily (config needed) | ✅ **DuckDuckGo out-of-box** |
-| Web UI | Next.js heavy | Next.js + Python RPC | ✅ **FastAPI + lightweight native JS** |
+| Web UI | Next.js heavy | Next.js + Python RPC | ✅ **Desktop app (Tauri) + local Host** |
 | MCP | ❌ | Relatively new | ✅ **Native stdio/SSE** |
 | Skills | Static files | ❌ | ✅ **Code/Prompt/Workflow + security scan + installable** |
 | Multi-Agent | Simple sub-agent | Delegation thread pool | ✅ **Role system + parallel orchestration** |
@@ -132,20 +138,17 @@ The release gate covers lint, typing, full tests, mock benchmarks, and release s
 - **Abnormal-exit recovery is a status marker, not auto-resume**: on startup, sessions whose heartbeat has gone stale are marked `aborted` with `exit_reason="abnormal_exit_recovery"`. **The agent does not automatically re-run, re-tool, or continue an aborted session from its last checkpoint.** Users still need to start a new run; the existing checkpoint-resume APIs are unchanged.
 - **Optional extras**: Office/PDF tools require `pip install -e ".[office]"` / `".[pdf]"`; without them the related tools fail with a clear error and core agent still works.
 
-## Production Deployment
+## Daily use
 
-> Note: binding to `0.0.0.0` exposes the service beyond localhost. Production, LAN, or public deployments must require an API key; never expose no-auth mode outside the local machine.
+The main path is the **JS Agent desktop app**. Use `js` / `js tui` / `js daemon` in the terminal. `js appshell` only starts the local Host for the desktop app or development; it does not open a browser.
+
+## Docker
 
 ```bash
-# Web UI
-js web --host 0.0.0.0 --port 8000
-
-# Or Docker
-docker run -p 8000:8000 -e OPENAI_API_KEY=xxx js-agent
-
-# Or Gunicorn + Uvicorn
-gunicorn "js.web:create_app()" -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
+docker compose up -d js-agent
 ```
+
+The image and compose file set `JS_APPSHELL_PROVISION_KEY=1` by default. On first start, if no admin exists, a shared recovery key is written to `./state/bootstrap_admin_key.txt` (mode 0600). Use that key to sign in before calling `/api/*`. **The plaintext file is deleted after the first successful `/api/appshell/session` or `/api/auth/session` login**; `/api/appshell/bootstrap` leaves it in place so headless operators can still read it. The published port is loopback-only (`127.0.0.1:8000`). See [docs/deployment.md](docs/deployment.md).
 
 ## License
 

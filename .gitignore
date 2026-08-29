@@ -84,6 +84,15 @@ MagicMock/
 # Local architecture research notes (optional publish later)
 architecture-research/
 
+# One-off research dumps (not product)
+analysis_3ai/
+
+# Repo-root scratch created by local runs (workspace-relative copies stay in workspace/)
+.echo-tmp/
+.js-code/
+.build/
+/echo/
+
 # Internal findings dumps (not curated evidence)
 docs/security/_enum_findings.json
 docs/security/_unique_findings_*.json

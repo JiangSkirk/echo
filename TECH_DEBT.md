@@ -2,27 +2,45 @@
 
 > 本文件记录当前代码库中已知的技术债务和待审查项。
 > 创建时间：2026-06-04（P0 子任务1 提交后）
+>
+> 库存审查落盘：[`quality/rubric.yaml`](quality/rubric.yaml) + [`quality/labels.yaml`](quality/labels.yaml)。
+> 「本轮是否到顶」只跑 `uv run python scripts/check_quality_labels.py --peak`，不要临时发明新标准。
 
 ---
 
 ## 🔴 必须回审（P1 之后）
 
-### 机器生成的安全扫描模块
+### 安全模块：已对照测试 vs 仍待外部审计
 
-以下文件由自动化安全扫描生成，**尚未经过人工审计**，可能存在误报、漏报或实现缺陷：
+本轮**不重写**解析引擎，也不收敛 `parser.py` 与 `_fs_restricted_rejection`（架构债，见 ADR 0006）。
+生产权威路径是 **EchoRuntime + EchoSafetyService + LeaseAuthority**；
+`pulse()` / `spi.Sandbox` 是内核演进面，不是当前副作用主机。
+本地 tip seal 防「只改 journal 不改 seal」；外部 tip 锚点 v1（Keychain / 目录外 backend）防
+「state_dir 全控回滚」，不是 TPM，也不抗 root/Keychain 失陷。
 
-| 文件 | 用途 | 风险 |
-|------|------|------|
-| `js/security/net_guard.py` | SSRF 防护（DNS Rebinding、元数据端点拦截） | 可能过度拦截合法请求；重定向跟随逻辑未充分测试 |
-| `js/security/parser.py` | Shell 命令 AST 解析 | 解析覆盖率不完整；复杂管道/子 shell 可能绕过 |
-| `js/security/rules.py` | 安全规则评估引擎 | 规则集可能不完整；误报率未知 |
-| `js/security/signer.py` | Ed25519 技能/插件签名 | 密钥生命周期管理缺失；无轮换机制 |
+#### 已对照现有/新增测试（不是外部人工审计）
 
-**回审要点**：
+| 文件 | 对照测试 | 说明 |
+|------|----------|------|
+| `js/security/rules.py` | `tests/test_security_rules.py`（直接）+ `tests/test_security_shell_allowlist.py` / `tests/test_security.py` | 规则引擎有直接单测；规则完备性仍未知 |
+| `js/security/parser.py` | `tests/test_security.py`、`tests/test_security_hardening_round3.py` | 已有 AST/绕过对照；与 `_fs_restricted_rejection` 双引擎仍未收敛 |
+| `js/security/net_guard.py` | `tests/test_net_guard.py` | SSRF/元数据拦截已对照；重定向跟随与误报未外部审计 |
+| `js/security/signer.py` | `tests/test_security_b04_crypto.py` | 密钥文件硬化/截断 fail-closed 已对照；轮换与可信公钥目录仍缺 |
+
+#### 仍待外部审计（本轮不声称已做）
+
+| 项 | 为什么还不能盖「外部已审」 |
+|----|---------------------------|
+| 独立红队 / K§15.6 #9 | 仓库外人员与范围，本树不能自证 |
+| 正式 TCC / Developer ID / 公证 | `official_tcc_packaging` 保持 false |
+| 技能可信公钥目录 | 已落地 registry + 吊销；TRUSTED 需目录内公钥。外部人工审计仍缺 |
+| 解析引擎与 `_fs_restricted_rejection` 合一 | 架构债，ADR 0006 设计先行，本轮不施工 |
+| 外部 tip 锚点（TPM / 远程公证） | v1 已有 Keychain/目录外 backend；不是 TPM，远程公证仍缺 |
+
+**回审要点（外部）**：
 1. 逐行代码审查，确认无逻辑错误
-2. 补充单元测试（当前测试覆盖可能不足）
-3. 评估生产环境适用性
-4. 确认与现有 `js/security/guard.py`、`js/security/audit.py` 的集成无冲突
+2. 评估生产环境适用性与误报
+3. 确认与现有 `js/security/guard.py`、`js/security/audit.py` 的集成无冲突
 
 ### 安全扫描报告（已排除在仓库外）
 
@@ -42,9 +60,14 @@
 - Windows 支持需后续评估（可能用 pywinauto 或 COM）
 - 当前为"截图+诊断"只读模式，点击/键盘控制需二次确认
 
-### Scenarios / Tasks 系统
-- `js/scenarios/` 和 `js/tasks/` 是预建框架，尚未与主流程深度集成
-- YAML 场景定义未经过工厂场景验证
+### 预留模块（不是死代码，也不是默认运行时）
+- `js/scenarios/`：Host 可列出/启动模板，不进入默认 Echo turn
+- `js/pipeline/`、`js/friends/`、`js/mobile/`：默认不在 AppShell / Host 启动 import 图里；`friends_enabled` / `mobile_enabled` 默认 false
+- `features.pipeline_enabled` 默认 true **只是能力旗标**，不等于冷启动加载 `js.pipeline`
+- `js/evolution/`：Host 上 mutate 走 admin；冷启动不跑 cycle
+- Host 任务页（`/api/tasks` + `tabs/tasks.js`）是空壳：列表为空，mutate 503。不是已删除的 `TaskManager` / `TaskStore`
+- 已删孤儿：`js/persistence/task_store.py`、`agent_store.py`。历史审计里对 `task_store.py` 的 High **作废**（文件不在树里）
+- Fleet ≠ Bots。Fleet 是一次性集群（`js/orchestration/fleet/`）。Bots 是命名机器人 + 房间 + Goal（`js/bots/`），回合仍走 Echo。Orin 的 `bot.room.create` / `bot.message.send` / `bot.soul.write` 是收紧规格；v1 生产仍写 `bots.db`，不是第二套运行时。
 
 ### 模型 Provider 配置
 - 当前默认配置 DeepSeek 云端 API
@@ -77,15 +100,15 @@
 
 以下问题来自两轮安全审计，属于架构级取舍，无法以局部补丁修复；本轮记录但不改动：
 
-1. **Journal/lease ledger 截断回滚无外部锚点** —— Echo ledger 的截断（truncation）回滚仅依赖本地 MAC/hash 链，攻击者控制 state_dir 时可整体回滚到旧 tip 而不留证据。需要 tip seal 设计（外部锚点/单调计数器/签名检查点）才能闭合。
-2. **LeaseAuthority 账本 O(n²) 无 compaction** —— 每次校验都重放全量 JSONL 账本，租约量增长后校验成本平方级上升。需要 compaction/快照机制（与 tip seal 一并设计）。
-3. **os_sandbox 内存监控只看直接子进程 RSS** —— 孙进程脱离监控，进程组级内存合计未实现。需要按进程组/cgroup 聚合记账。
-4. **parser 与 `_fs_restricted_rejection` 双引擎语义不统一** —— shell 命令 AST 解析（js/security/parser.py）与文件系统受限拒绝路径各自实现一套判断，边界案例语义可能分叉。需要收敛到单一判定引擎或显式约定职责边界。
-5. **skills 签名自签即 TRUSTED** —— 当前 Ed25519 签名验证只确认"持有私钥"，自签名技能也被视为 TRUSTED。需要可信 key registry（可信公钥目录 + 轮换/吊销）才有实际约束力。
-6. **shell allowlist 层未逐 flag 覆盖 git 的写文件选项** —— 如 `git log --output=<path>` 在 allowlist 层放行，真实拦截依赖 OS 沙箱（sandbox-exec deny-default / bwrap 空命名空间），已实证无法写工作区外。若未来允许无 OS 沙箱运行（strict_isolation 放开），需补齐。
-7. **code.py 黑名单是纵深防御而非边界** —— asyncio/multiprocessing/http 等模块仍可导入（如 `loop.run_until_complete` 可触达 asyncio 子进程 API），真实边界是 OS 沙箱（无网络、fs deny-default、strict_isolation fail-closed）。pickle/_pickle/marshal/shelve 已封堵（反序列化即代码执行，纯 Python 层可确认 RCE）。
-8. **bwrap 下 `.git` 只读重挂载只在包装时 `.git` 已存在时生效** —— macOS profile 的路径 deny 无此限制；Linux 上沙箱内新建 `.git` 树理论上仍可写（需要工作区原本不是 git 仓库且用户之后在其中跑 git，场景牵强）。彻底闭合需 bwrap 对路径不存在的挂载点做占位 deny。
-9. **红队残余低危项（R3）** —— 稳态下 `/docs`、`/redoc`、`/openapi.json` 无认证暴露 API 结构（信息泄露）；user 角色密钥可翻转 setup 的 onboarding 状态标志（不触及密钥签发，reset 有 admin 卡控）。
+1. **Journal/lease 外部 tip 锚点不是 TPM** —— 本地 tip seal + compaction 已落地；v1 `AnchorBackend`（macOS Keychain 或 journal 目录外 backend）抗「state_dir 全控回滚」。攻击者同时控制 Keychain/anchor 目录仍可无痕 rewind。远程公证 / TPM 仍缺。
+2. **LeaseAuthority compaction 已实现，调度靠 governor** —— `compact()` / snapshot / tip seal bump 已在树内。生产由 ResourceGovernor 按行数/字节/`_ledger_full_reloads` 阈值触发。指纹 miss 仍可能全量重放；无调度时 O(n) 会恶化。
+3. **os_sandbox 进程树 + 进程组 RSS，cgroup 可选** —— `_process_tree_rss` 含 descendants；监控按进程组合计，Linux cgroup v2 `memory.current` 可用时取较大值。`setsid()` 脱离进程组的进程仍盲区；macOS `RLIMIT_AS` 不生效，依赖轮询。
+4. **parser 与 `_fs_restricted_rejection` 双引擎语义不统一** —— shell 命令 AST 解析（js/security/parser.py）与文件系统受限拒绝路径各自实现一套判断，边界案例语义可能分叉。ADR 0006 设计先行，本轮不施工。
+5. **skills TRUSTED 需可信公钥目录** —— 自签不再授予 TRUSTED；BUILTIN 仍走内置白名单，TRUSTED 需 registry 内未吊销公钥。目录文件本身的分发/轮换运营流程仍待外部审计。
+6. **shell allowlist 已拒 git 写文件 flag** —— `--output` / `--output-directory` 等在 allowlist 层拒绝。无 OS 沙箱（`strict_isolation` 放开）时仍须把 allowlist 当边界，不能只靠 sandbox-exec / bwrap。
+7. **code.py 黑名单是纵深防御而非边界** —— asyncio/multiprocessing/http 等模块仍可导入（如 `loop.run_until_complete` 可触达 asyncio 子进程 API），**真实边界是 OS 沙箱**（无网络、fs deny-default、strict_isolation fail-closed）。pickle/_pickle/marshal/shelve 已封堵（反序列化即代码执行，纯 Python 层可确认 RCE）。
+8. **bwrap 对缺失的工作区 `.git` 做占位 deny** —— wrap 时若 `.git` 不存在，用 `--dir` + `--ro-bind` 占位只读。macOS profile 的路径 deny 无此限制。占位不能防 `setsid` 后在其他路径新建 git 元数据；事后 `_reject_planted_git` 仍是纵深。
+9. **红队残余低危项（R3）** —— `/docs`、`/redoc`、`/openapi.json` **已关**。`/api/setup/reopen`（完成后翻转 onboarding）改 admin 卡控；first-run `/skip` 仍允许已认证非 guest。reset 保持 admin + 无 admin 密钥门槛。
 
 ---
 
@@ -97,7 +120,7 @@
 | `docs/security/orin/ORIN_EFFECT_KERNEL_V1.md` | 效果内核路线（终态基线） | 已冻结；勘误：`registry.py` 引用行号 655/78 互换（论断成立） |
 | `docs/security/orin/ORIN_MERGE_REVIEW.md` | 合并评审：33 项机制判定 + 17 条决策（已拍板） | 引用已核验；实施以阶段 A 规格为准 |
 | `docs/security/orin/ORIN_STAGE_A_SPEC.md` | 阶段 A 实施规格 | 机器生成，未经人工评审不得施工 |
-| `docs/security/orin/ORIN_STAGE_C_SPEC.md` | 阶段 C「强制模式」实施规格 | C0 已冻结；C1 真实 Echo 分进程与身份/env/path 仅显式 harness 已测；C2 Desktop 身份/handle/协议与真实像素 observe 仅显式 harness 已测，原生精确 window/control 动作及真实模型 E2E 仍 blocked；默认生产仍单进程，阶段 C 未实施 |
+| `docs/security/orin/ORIN_STAGE_C_SPEC.md` | 阶段 C「强制模式」实施规格 | C0 已冻结；C1–C3 harness 仍在；C7 发布裁决见 `ORIN_STAGE_C_CLOSEOUT.md`（verdict=`not_implemented`）。`orin.enforce=true` 因 #8/#9/正式 TCC 等合取缺位继续 fail-fast；默认生产仍单进程 ambient，**阶段 C 未实施，不得宣称 Echo RCE 已收口** |
 | WP0 基线数字 | `benchmarks/orin/WP0_BASELINE.md` | 已实测；蜜罐不用 pyahocorasick，巡逻基数用标准库近似 |
 | WP1 orind 骨架 + 工牌在线化 | `js/orin/` + `js/orind/` + 测试 `tests/orin/` | 已落地：UDS 协议六类消息、KeyBox 收养不轮换、同一本 JSONL 账本、回退不丢牌、攻击面全拒。心跳在适配器内（1s 兜底）而非 turn_runtime——懒连接 + 失败语义等价，为 Stage A 有意简化 |
 | WP2 污点 + 策略表 | `js/orin/taint.py` + `js/orind/policy.py` + 11 处打标 | 已落地；conservative 默认审批；compat=旧行为+记录；mock 11 任务 1.000；红队仅阻断断言 |
@@ -117,9 +140,9 @@
 | WP9 | File Cell 只从 socket 收 package；staging、规范 diff、CAS/原子 rename、owner-root、symlink/hardlink/设备/NFC/casefold/挂载逃逸防护已落地 | WP7–WP9 回归 84 passed；全 Orin 399 passed | 精确批准已接；完整 diff UI / 真断电仍未做 |
 | WP10 | File/Connector 共用唯一 SQLite WAL/FULL Commit Membrane；Personal 证核销+预算+PREPARED 同事务；Work 常设证重验；UNKNOWN 只读对账；四维 100 rps/burst 200 + 全局 1024 背压；关闭膜显式 `best_effort` | WP10 92 passed（core 39 / cells 38 / integration 15）；逐状态 crash/restart 矩阵通过；全 Orin 399 passed | 真 provider 回执/不可逆 exactly-once 和真断电未测；R0/R1/R3 持久化分级只有分类/阻断，非完整分层实现；完整签名 EffectReceipt 链未接入 |
 
-最终全库验收：`ruff check .` 通过；`mypy js` 覆盖 328 个源文件、零错误；`pytest tests/ -q` 为 6623 passed / 2 skipped / 113 deselected，仅保留两条已确认 auth 基线红；11/11 mock benchmark 通过，overall 1.000，delta +0.000，mock 工具参数已实际执行。
+本轮门禁快照（2026-08-27）：「到顶」以 `scripts/check_quality_labels.py --peak` 为准（rubric `2026.09.1`）。不把 `orin.enforce` 默认 true、正式 TCC、独立红队或 pulse 切权威算作本轮没到顶。
 
 
 ---
 
-*最后更新：2026-08-24*
+*最后更新：2026-08-28*

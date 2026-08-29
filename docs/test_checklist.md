@@ -8,8 +8,8 @@ Use this checklist before tagging a release. Tests should pass on all target pla
 
 | Step | Action | Expected Result | Pass |
 |------|--------|-----------------|------|
-| 1.1 | `python -m js.web.server` starts without errors | Web UI available at `http://localhost:8000` | ☐ |
-| 1.2 | Open Web UI → Chat tab → send "hello" | Assistant responds with streaming tokens | ☐ |
+| 1.1 | `js appshell --no-browser` starts without errors | Local AppShell Host available at `http://127.0.0.1:8000` | ☐ |
+| 1.2 | Open the JS Agent desktop app → Chat → send "hello" | Assistant responds with streaming tokens | ☐ |
 | 1.3 | Memory tab shows embedder status | Green badge: `LLMEmbedder(...)` (not "降级") | ☐ |
 | 1.4 | Models tab shows **only loaded** models | `qwen3.5-122b-a10b` present; `qwen3.6-35b-a3b` absent if not loaded | ☐ |
 | 1.5 | Models tab shows **single** provider | Only one `lmstudio` entry (no `127.0.0.1` + `localhost` dupes) | ☐ |
@@ -31,7 +31,7 @@ Use this checklist before tagging a release. Tests should pass on all target pla
 | 2.1 | `powershell -ExecutionPolicy Bypass -File install.ps1` | Installs venv, deps, shortcut, runs setup | ☐ |
 | 2.2 | `install.ps1 -NoShortcut -NoStart` | Skips shortcut + auto-start; exits cleanly | ☐ |
 | 2.3 | `install.ps1 -ProjectDir "C:\js-agent"` | Installs to specified directory | ☐ |
-| 2.4 | `.venv\Scripts\activate` + `js web --port 8000` | Server starts; Web UI reachable | ☐ |
+| 2.4 | `.venv\Scripts\activate` + `js appshell --no-browser --port 8000` | Local Host starts; desktop app can attach | ☐ |
 | 2.5 | First-Start Wizard on Windows | Same behavior as macOS | ☐ |
 | 2.6 | Chat + Memory + Model switcher | All tabs functional | ☐ |
 
@@ -42,7 +42,7 @@ Use this checklist before tagging a release. Tests should pass on all target pla
 | Step | Action | Expected Result | Pass |
 |------|--------|-----------------|------|
 | 3.1 | `docker compose up js-agent` | Container starts; healthcheck passes | ☐ |
-| 3.2 | `docker compose up js-agent-dev` | Dev container starts with `--reload` | ☐ |
+| 3.2 | `docker compose up js-agent-dev` | Dev container starts `js appshell --no-browser` (no `--reload`) | ☐ |
 | 3.3 | `curl http://localhost:8000/api/status` | Returns JSON with `degraded: false` | ☐ |
 | 3.4 | Healthcheck endpoint (`/api/status`) | Returns 200 within 30s of container start | ☐ |
 | 3.5 | Volume persistence | Stop → restart container; memory and checkpoints survive | ☐ |
@@ -62,7 +62,7 @@ Use this checklist before tagging a release. Tests should pass on all target pla
 
 ---
 
-## 5. Web Restart & Config Persistence
+## 5. Host Restart & Config Persistence
 
 | Step | Action | Expected Result | Pass |
 |------|--------|-----------------|------|

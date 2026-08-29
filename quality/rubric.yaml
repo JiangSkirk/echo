@@ -1,0 +1,271 @@
+# Canonical quality criteria. New bars require a rubric_version bump + changelog.
+# Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
+
+rubric_version: "2026.09.1"
+
+label_enum:
+  - OPEN
+  - PEAK
+  - FROZEN
+  - WONT_FIX
+  - REGRESSED
+
+terminal_labels:
+  - PEAK
+  - FROZEN
+  - WONT_FIX
+
+forbidden_at_peak:
+  - OPEN
+  - REGRESSED
+
+# Package-level inventory. Do not score every .py file.
+inventory_units:
+  echo.ledger:
+    paths:
+      - js/echo/ledger/
+    scopes:
+      - repo.default
+      - m3.structure
+      - echo.tip_anchor
+  echo.runtime:
+    paths:
+      - js/echo/turn_loop/
+      - js/echo/capability.py
+      - js/echo/spi.py
+      - js/echo/context_store.py
+    scopes:
+      - repo.default
+      - m1.structure
+      - echo.lease_compact
+      - echo.observability
+  orin.orind:
+    paths:
+      - js/orin/
+      - js/orind/
+    scopes:
+      - repo.default
+      - m3.structure
+      - orin.process_split
+      - orin.provider_via_cell
+      - orin.signed_receipts
+      - orin.cell_product_routes
+  web.appshell:
+    paths:
+      - js/web/
+      - js/appshell/
+    scopes:
+      - repo.default
+      - web.auth_contracts
+      - tasks.empty_shell
+      - m2.structure
+      - appshell.process_split
+      - security.onboarding_admin
+  memory:
+    paths:
+      - js/memory/
+    scopes:
+      - repo.default
+      - m1.structure
+  agent.tools:
+    paths:
+      - js/agent/
+      - js/tools/
+    scopes:
+      - repo.default
+      - m2.structure
+  security:
+    paths:
+      - js/security/
+    scopes:
+      - repo.default
+      - m3.security
+      - skills.key_registry
+  runtime.governor:
+    paths:
+      - js/runtime/
+    scopes:
+      - repo.default
+      - runtime.wal_allowlist
+  reserved:
+    paths:
+      - js/scenarios/
+      - js/pipeline/
+      - js/friends/
+      - js/mobile/
+      - js/evolution/
+    scopes:
+      - repo.default
+      - reserved.isolation
+  js_work:
+    paths:
+      - js_work/
+    scopes:
+      - repo.default
+  docs.debt:
+    paths:
+      - TECH_DEBT.md
+      - AGENTS.md
+    scopes:
+      - repo.default
+  bots.surface:
+    paths:
+      - js/bots/
+    scopes:
+      - repo.default
+
+scopes:
+  repo.default:
+    criteria:
+      - id: gate.ruff
+        description: ruff lint
+        evidence_kind: command
+        command:
+          - uv
+          - run
+          - ruff
+          - check
+          - .
+      - id: gate.mypy
+        description: mypy on js/
+        evidence_kind: command
+        command:
+          - uv
+          - run
+          - mypy
+          - js
+      - id: gate.pytest
+        description: full pytest; environment skips only
+        evidence_kind: recorded
+        command:
+          - uv
+          - run
+          - pytest
+          - tests/
+          - -q
+  reserved.isolation:
+    criteria:
+      - id: reserved.isolation
+        description: Host startup does not import pipeline/friends/mobile
+        evidence_kind: pytest_node
+        nodeid: tests/test_reserved_runtime_isolation.py
+  web.auth_contracts:
+    criteria:
+      - id: web.auth_contracts
+        description: unfreeze admin, managed Origin, scenarios write
+        evidence_kind: pytest_node
+        nodeid: tests/test_appshell_single_host.py
+  runtime.wal_allowlist:
+    criteria:
+      - id: runtime.wal_allowlist
+        description: governor WAL only touches PRODUCT_STATE_DB_NAMES
+        evidence_kind: pytest_node
+        nodeid: tests/test_governor_event_retention.py::test_governor_wal_checkpoint_only_touches_known_state_dbs
+  tasks.empty_shell:
+    criteria:
+      - id: tasks.empty_shell
+        description: /api/tasks empty list + mutate 503
+        evidence_kind: pytest_node
+        nodeid: tests/test_tasks_empty_shell.py
+  m1.structure:
+    criteria:
+      - id: m1.structure
+        description: office/fleet/memory/turn_loop facades keep old imports
+        evidence_kind: pytest_node
+        nodeid: tests/test_m_wave_facades.py::test_m1_facades
+  m2.structure:
+    criteria:
+      - id: m2.structure
+        description: server.py and tool_executor facades keep old imports
+        evidence_kind: pytest_node
+        nodeid: tests/test_m_wave_facades.py::test_m2_facades
+  m3.structure:
+    criteria:
+      - id: m3.structure
+        description: local tip seal + lease compaction + ledger/orind facades
+        evidence_kind: pytest_node
+        nodeid: tests/test_m_wave_facades.py::test_m3_facades
+  m3.security:
+    criteria:
+      - id: m3.security
+        description: rules.py has direct unit tests
+        evidence_kind: pytest_node
+        nodeid: tests/test_security_rules.py
+  echo.lease_compact:
+    criteria:
+      - id: echo.lease_compact
+        description: LeaseAuthority.maybe_compact + governor scheduling
+        evidence_kind: pytest_node
+        nodeid: tests/echo/test_capability_lease_compaction.py
+  echo.tip_anchor:
+    criteria:
+      - id: echo.tip_anchor
+        description: External tip anchor rejects journal+seal rewind
+        evidence_kind: pytest_node
+        nodeid: tests/echo/ledger/test_tip_anchor.py
+  echo.observability:
+    criteria:
+      - id: echo.observability
+        description: Effect id binding and Amber overwrite counters
+        evidence_kind: pytest_node
+        nodeid: tests/echo/test_observability_ids.py
+  skills.key_registry:
+    criteria:
+      - id: skills.key_registry
+        description: Self-sign is COMMUNITY; registry grants TRUSTED
+        evidence_kind: pytest_node
+        nodeid: tests/test_skill_key_registry.py
+  appshell.process_split:
+    criteria:
+      - id: appshell.process_split
+        description: Opt-in process split observation + stripped worker env
+        evidence_kind: pytest_node
+        nodeid: tests/test_appshell_process_split.py
+  orin.process_split:
+    criteria:
+      - id: orin.process_split
+        description: Default split bits stay unobserved
+        evidence_kind: pytest_node
+        nodeid: tests/orin/test_orin_stagec_process_split.py
+  orin.provider_via_cell:
+    criteria:
+      - id: orin.provider_via_cell
+        description: Cell-backed provider holds no api_key
+        evidence_kind: pytest_node
+        nodeid: tests/test_cell_model_transport.py
+  orin.signed_receipts:
+    criteria:
+      - id: orin.signed_receipts
+        description: CellBase attaches K§8.5 HMAC receipts
+        evidence_kind: pytest_node
+        nodeid: tests/orin/test_signed_receipts_cells.py
+  orin.cell_product_routes:
+    criteria:
+      - id: orin.cell_product_routes
+        description: Supervisor can pass Desktop/Memory argv without enforce
+        evidence_kind: pytest_node
+        nodeid: tests/orin/test_orin_supervisor.py
+  security.onboarding_admin:
+    criteria:
+      - id: security.onboarding_admin
+        description: User cannot reopen onboarding after skip
+        evidence_kind: pytest_node
+        nodeid: tests/test_onboarding_skip_and_status.py::TestOnboardingSkip::test_user_cannot_reopen_onboarding
+
+changelog:
+  - version: "2026.09.1"
+    date: "2026-08-27"
+    changes:
+      - "Wave 0–5 Echo/Orin upgrades: lease compact schedule, tip anchor v1, skill registry, opt-in process split, provider-via-cell, signed receipts, C6/C7 evidence, ADRs 0005/0006"
+      - "Not in v1: orin.enforce default true, TPM tip, official TCC, K§15.6 #8/#9, pulse Exec cutover"
+  - version: "2026.08.2"
+    date: "2026-08-26"
+    changes:
+      - "M1–M3 mechanical splits + old import facades + local tip seal/lease compaction"
+      - "Not in v2: orin.enforce default true, external tip anchor, pipeline cold-start, TaskManager revival, Windows desktop, roadmap metrics"
+  - version: "2026.08.1"
+    date: "2026-08-26"
+    changes:
+      - "v1 lock: 三件套 + reserved isolation + auth contracts + WAL allowlist + tasks empty shell"
+      - "Later monolith waves M1/M2/M3 require a version bump before those units can leave FROZEN"
+      - "Not in v1: monolith splits, Stage C, tip seal, lease compaction, roadmap metrics, Windows desktop"
