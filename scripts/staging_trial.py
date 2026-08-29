@@ -143,6 +143,13 @@ def _case(cases: list[dict[str, Any]], name: str, ok: bool, detail: str) -> None
     cases.append({"name": name, "ok": ok, "detail": detail})
 
 
+def _search_hits(payload: Any, needle: str) -> bool:
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list):
+        return False
+    return any(needle in json.dumps(item) for item in results)
+
+
 def run_trial(*, output: Path, minimal: bool) -> dict[str, Any]:
     base_dir = Path(tempfile.mkdtemp(prefix="js-staging-trial-"))
     personal_ws = base_dir / "personal-ws"
@@ -245,10 +252,8 @@ def run_trial(*, output: Path, minimal: bool) -> dict[str, Any]:
             _case(cases, "alice_write_memory", created == 200, f"status={created} body={body}")
 
             searched, payload = bob.request("GET", "/api/memory/search?q=owner-a-secret-token")
+            leaked = _search_hits(payload, "owner-a-secret")
             results = payload.get("results") if isinstance(payload, dict) else None
-            leaked = False
-            if isinstance(results, list):
-                leaked = any("owner-a-secret" in json.dumps(item) for item in results)
             _case(
                 cases,
                 "bob_cannot_search_alice_memory",
@@ -267,9 +272,26 @@ def run_trial(*, output: Path, minimal: bool) -> dict[str, Any]:
 
             mixed = HttpClient(base, origin)
             mixed.request("POST", "/api/appshell/session", key=key_a)
-            header_win, _ = mixed.request("GET", "/api/status", key=key_b)
+            switch_token = "must-stay-owner-a-token"
+            switched, _ = mixed.request(
+                "POST",
+                "/api/memory/semantic",
+                key=key_b,
+                body={"key": "trial-header-switch", "value": switch_token, "category": "fact"},
+            )
+            bob_sw, bob_payload = bob.request("GET", f"/api/memory/search?q={switch_token}")
+            alice_sw, alice_payload = alice.request("GET", f"/api/memory/search?q={switch_token}")
+            bob_hits = _search_hits(bob_payload, switch_token)
+            alice_hits = _search_hits(alice_payload, switch_token)
             _case(
-                cases, "api_key_header_still_accepted_on_host", header_win == 200, f"{header_win}"
+                cases,
+                "foreign_api_key_cannot_switch_appshell_identity",
+                switched == 200
+                and bob_sw == 200
+                and alice_sw == 200
+                and not bob_hits
+                and alice_hits,
+                f"write={switched} bob_hits={bob_hits} alice_hits={alice_hits}",
             )
 
             if not minimal:

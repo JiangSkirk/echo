@@ -30,6 +30,8 @@ def test_minimal_trial_writes_internal_report(tmp_path: Path) -> None:
     names = {item["name"] for item in summary["cases"]}
     assert "bob_cannot_search_alice_memory" in names
     assert "anon_status_401" in names
+    assert "foreign_api_key_cannot_switch_appshell_identity" in names
+    assert "api_key_header_still_accepted_on_host" not in names
 
 
 def test_audit_pack_points_at_staging_trial() -> None:
