@@ -1,7 +1,7 @@
 # Canonical quality criteria. New bars require a rubric_version bump + changelog.
 # Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
 
-rubric_version: "2026.09.9"
+rubric_version: "2026.09.10"
 
 label_enum:
   - OPEN
@@ -92,7 +92,6 @@ inventory_units:
   reserved:
     paths:
       - js/pipeline/
-      - js/friends/
       - js/mobile/
     scopes:
       - repo.default
@@ -118,6 +117,12 @@ inventory_units:
     scopes:
       - repo.default
       - evolution.cycle
+  friends:
+    paths:
+      - js/friends/
+    scopes:
+      - repo.default
+      - friends.v1
   bots.surface:
     paths:
       - js/bots/
@@ -305,6 +310,12 @@ scopes:
         description: HMAC webhook rejects bad signatures and replay; unpaired drops Echo
         evidence_kind: pytest_node
         nodeid: tests/gateway/test_webhook.py
+  friends.v1:
+    criteria:
+      - id: friends.v1
+        description: Friends v1 owner isolation, real E2E, dual-HOME tainted ingest
+        evidence_kind: pytest_node
+        nodeid: tests/friends/test_friends_v1.py
   evolution.cycle:
     criteria:
       - id: evolution.cycle
@@ -319,6 +330,10 @@ scopes:
         nodeid: tests/gateway/test_discord_e2e.py
 
 changelog:
+  - version: "2026.09.10"
+    date: "2026-08-29"
+    changes:
+      - "Friends v1 store + X25519/ChaCha20-Poly1305 + Host-to-Host HMAC; default off"
   - version: "2026.09.9"
     date: "2026-08-29"
     changes:

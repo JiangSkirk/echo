@@ -229,6 +229,7 @@ _UNTRUSTED_ENTRY_PREFIXES: Final[tuple[str, ...]] = (
     "webhook",
     "discord",
     "gateway",
+    "friends",
 )
 
 

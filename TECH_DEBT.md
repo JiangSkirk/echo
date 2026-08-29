@@ -64,7 +64,8 @@
 ### 预留模块（不是死代码，也不是默认运行时）
 - `js/scenarios/`：实装为 bots goal 模板（启动即建 bot/房间/goal）；不进入默认 Echo turn
 - `js/gateway/`：骨架已落地（ADR 0008），`gateway.enabled` 默认 false，Host 冷启动不 import
-- `js/pipeline/`、`js/friends/`、`js/mobile/`：默认不在 AppShell / Host 启动 import 图里；`friends_enabled` / `mobile_enabled` 默认 false
+- `js/pipeline/`、`js/mobile/`：默认不在 AppShell / Host 启动 import 图里；`mobile_enabled` 默认 false
+- `js/friends/`：v1 已实装（owner SQLite + X25519/ChaCha20-Poly1305 + Host-to-Host HMAC）。`friends_enabled` 默认 false，未启用不进 Host import 图
 - `features.pipeline_enabled` 默认 true **只是能力旗标**，不等于冷启动加载 `js.pipeline`
 - `js/evolution/`：cycle 只生成提案；批准后才应用并跑 mock benchmark，回归自动回滚；冷启动仍不跑
 - Host 任务页（`/api/tasks` + `tabs/tasks.js`）是 bots goals 只读视图；mutate 503。不是已删除的 `TaskManager` / `TaskStore`

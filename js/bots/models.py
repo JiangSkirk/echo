@@ -22,6 +22,14 @@ GOAL_PHASES: tuple[str, ...] = (
 )
 
 
+def _int_field(value: object, default: int) -> int:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return default
+    return int(value)
+
+
 class BotStatus(StrEnum):
     DRAFT = BOT_STATUS_DRAFT
     ACTIVE = BOT_STATUS_ACTIVE
@@ -96,12 +104,12 @@ class GoalBudget:
     def from_dict(cls, data: dict[str, Any] | None) -> GoalBudget:
         payload = data or {}
         return cls(
-            max_echo_turns=int(payload.get("max_echo_turns") or 24),
-            max_tool_calls=int(payload.get("max_tool_calls") or 80),
-            max_elapsed_ms=int(payload.get("max_elapsed_ms") or 15 * 60 * 1000),
-            echo_turns_used=int(payload.get("echo_turns_used") or 0),
-            tool_calls_used=int(payload.get("tool_calls_used") or 0),
-            elapsed_ms_used=int(payload.get("elapsed_ms_used") or 0),
+            max_echo_turns=_int_field(payload.get("max_echo_turns"), 24),
+            max_tool_calls=_int_field(payload.get("max_tool_calls"), 80),
+            max_elapsed_ms=_int_field(payload.get("max_elapsed_ms"), 15 * 60 * 1000),
+            echo_turns_used=_int_field(payload.get("echo_turns_used"), 0),
+            tool_calls_used=_int_field(payload.get("tool_calls_used"), 0),
+            elapsed_ms_used=_int_field(payload.get("elapsed_ms_used"), 0),
         )
 
     def remaining(self) -> GoalBudget:

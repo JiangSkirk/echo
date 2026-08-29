@@ -44,6 +44,7 @@ PRODUCT_STATE_DB_NAMES: tuple[str, ...] = (
     "skill_promotions.db",
     "bots.db",
     "evolution_proposals.db",
+    "friends.db",
 )
 
 

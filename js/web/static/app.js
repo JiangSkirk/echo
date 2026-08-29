@@ -18,6 +18,7 @@ import { loadAudit } from './tabs/audit.js';
 import { loadApprovals, startApprovalsPolling, stopApprovalsPolling } from './tabs/approvals.js';
 import { loadTasks, startTasksPolling } from './tabs/tasks.js';
 import { loadScenarios, startScenario, fillScenarioPrompt } from './tabs/scenarios.js';
+import { loadFriends } from './js/friends.js';
 import { loadAgents } from './tabs/agents.js';
 import {
   loadMemory, renderSemanticMemoryItem, editSemanticMemory, saveSemanticMemory,
@@ -2290,6 +2291,7 @@ function switchTab(tab) {
   if (tab === 'models') { loadModels(); loadCloudPresets().catch(e => console.error('[switchTab] loadCloudPresets failed:', e)); }
   if (tab === 'tasks') loadTasks();
   if (tab === 'scenarios') loadScenarios();
+  if (tab === 'friends') loadFriends();
   if (tab === 'search') loadSearch();
   if (tab === 'stats') loadStats();
 }

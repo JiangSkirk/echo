@@ -525,6 +525,10 @@ def create_app(
     app.include_router(desktop.router)
     app.include_router(metrics.router)
     app.include_router(gateway_router.router)
+    if bool(getattr(effective_settings, "friends_enabled", False)):
+        from js.web.routers import friends as friends_router
+
+        app.include_router(friends_router.router)
 
     @app.get("/", response_class=HTMLResponse)
     async def root() -> str:

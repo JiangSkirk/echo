@@ -27,6 +27,7 @@ REQUIRED_STATIC = (
     "js/web/static/js/shell.js",
     "js/web/static/js/work_context.js",
     "js/web/static/js/bots.js",
+    "js/web/static/js/friends.js",
     "js/web/static/js/icons.js",
     "js/web/static/vendor/lucide/LICENSE",
     "js/web/static/vendor/lucide/icons/message-circle.svg",
