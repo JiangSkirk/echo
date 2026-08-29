@@ -65,6 +65,9 @@ from js.agent.tool_executor_constants import (
     CONTROL_FLEET_SESSION_DELETE_TOOL as CONTROL_FLEET_SESSION_DELETE_TOOL,
 )
 from js.agent.tool_executor_constants import (
+    CONTROL_GATEWAY_PUSH_TOOL as CONTROL_GATEWAY_PUSH_TOOL,
+)
+from js.agent.tool_executor_constants import (
     CONTROL_MEMORY_MUTATE_TOOL as CONTROL_MEMORY_MUTATE_TOOL,
 )
 from js.agent.tool_executor_constants import (

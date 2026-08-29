@@ -22,6 +22,7 @@ CONTROL_SKILL_MUTATE_TOOL = "control_skill_mutate"
 CONTROL_EVOLUTION_ACTION_TOOL = "control_evolution_action"
 CONTROL_UPLOAD_MUTATE_TOOL = "control_upload_mutate"
 CONTROL_CRON_MUTATE_TOOL = "control_cron_mutate"
+CONTROL_GATEWAY_PUSH_TOOL = "control_gateway_push"
 CONTROL_PLANE_TOOL_NAMES = frozenset(
     {
         CONTROL_SKILL_INSTALL_TOOL,
@@ -42,5 +43,6 @@ CONTROL_PLANE_TOOL_NAMES = frozenset(
         CONTROL_EVOLUTION_ACTION_TOOL,
         CONTROL_UPLOAD_MUTATE_TOOL,
         CONTROL_CRON_MUTATE_TOOL,
+        CONTROL_GATEWAY_PUSH_TOOL,
     }
 )

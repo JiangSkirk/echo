@@ -174,6 +174,7 @@ class JSDaemon:
         self.cron.register_callback("shell", self._cb_shell)
         self.cron.register_callback("chat", self._cb_chat)
         self.cron.register_callback("custom", self._cb_custom)
+        self.cron.register_callback("gateway_push", self._cb_gateway_push)
 
     async def _cb_health_check(self, job: ScheduledJob) -> None:
         provider_count = len(self.agent.settings.providers)
@@ -292,6 +293,41 @@ class JSDaemon:
             if message.role == "assistant" and isinstance(message.content, str) and message.content:
                 return message.content
         raise RuntimeError("Echo cron turn completed without an assistant response")
+
+    async def _cb_gateway_push(self, job: ScheduledJob) -> str:
+        from js.agent.tool_executor import CONTROL_GATEWAY_PUSH_TOOL
+        from js.gateway.push import push_peer_from_payload, render_push_template
+
+        template_id = str(job.payload.get("template") or "")
+        render_push_template(template_id)
+        peer = push_peer_from_payload(job.payload)
+        owner = job.owner_key_hash
+        if not owner:
+            raise ValueError("gateway push rejected: job has no explicit owner scope")
+        runtime = self.agent.echo_runtime
+        context = runtime.build_context(
+            channel="cron_gateway_push",
+            owner_key_hash=owner,
+            session_id=job.session_id or f"cron:{job.id}",
+            role="system",
+            capabilities=(CONTROL_GATEWAY_PUSH_TOOL,),
+        )
+        _message, result = await runtime.execute_tool_effect(
+            ToolEffect.from_arguments(
+                CONTROL_GATEWAY_PUSH_TOOL,
+                {
+                    "template_id": template_id,
+                    "channel": peer.channel,
+                    "peer_id": peer.peer_id,
+                },
+                user_input=f"scheduled gateway push {job.id}",
+                allowed_tools=(CONTROL_GATEWAY_PUSH_TOOL,),
+            ),
+            context,
+        )
+        if not result.success:
+            raise RuntimeError(result.error or "gateway push failed")
+        return str(result.output or "sent")
 
     async def _cb_custom(self, job: ScheduledJob) -> str:
         logger.info(f"[cron] Custom task: {job.name}")

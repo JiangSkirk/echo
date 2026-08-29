@@ -111,7 +111,7 @@ class GatewayService:
         require_untrusted_surface(self._settings, f"gateway:{envelope.peer.channel}")
         from js.echo.turn_runtime import run_echo_turn
 
-        await run_echo_turn(
+        state = await run_echo_turn(
             agent,
             envelope.text,
             channel=f"gateway:{envelope.peer.channel}",
@@ -119,7 +119,20 @@ class GatewayService:
             session_id=decision.route.session_key,
             attachments=list(envelope.attachments) or None,
         )
+        reply = _assistant_text(state)
+        if reply:
+            await self.send(envelope.peer, reply)
         return decision
+
+    def bind_inbound(self, adapter: ChannelAdapter, agent: Any) -> None:
+        """Wire adapter inbound into a tainted Echo turn and optional reply."""
+
+        async def _on_inbound(envelope: InboundEnvelope) -> None:
+            await self.dispatch_echo(agent, envelope)
+
+        setter = getattr(adapter, "set_inbound_handler", None)
+        if callable(setter):
+            setter(_on_inbound)
 
     async def send(self, peer: ChannelPeer, text: str) -> None:
         adapter = self._adapters.get(peer.channel)
@@ -133,3 +146,11 @@ class GatewayService:
             "started": self._started,
             "adapters": sorted(self._adapters),
         }
+
+
+def _assistant_text(state: Any) -> str:
+    for msg in reversed(getattr(state, "messages", ())):
+        content = getattr(msg, "content", None)
+        if getattr(msg, "role", "") == "assistant" and isinstance(content, str) and content:
+            return content
+    return ""

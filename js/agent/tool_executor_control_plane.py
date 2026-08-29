@@ -22,6 +22,7 @@ from js.agent.tool_executor_constants import (
     CONTROL_FLEET_CONFIGURE_TOOL,
     CONTROL_FLEET_CONTINUE_TOOL,
     CONTROL_FLEET_SESSION_DELETE_TOOL,
+    CONTROL_GATEWAY_PUSH_TOOL,
     CONTROL_MEMORY_MUTATE_TOOL,
     CONTROL_MODEL_SWITCH_TOOL,
     CONTROL_PROVIDER_DISCOVER_TOOL,
@@ -54,6 +55,7 @@ class ControlPlaneMixin(AgentBase):
         evolution_action_lock = asyncio.Lock()
         upload_mutation_lock = asyncio.Lock()
         cron_mutation_lock = asyncio.Lock()
+        gateway_push_lock = asyncio.Lock()
 
         def skill_manager() -> Any | None:
             return getattr(self, "skills", None)
@@ -2270,6 +2272,32 @@ class ControlPlaneMixin(AgentBase):
                 metadata={"result_ref": result_ref},
             )
 
+        async def gateway_push_handler(
+            template_id: str,
+            channel: str,
+            peer_id: str,
+        ) -> ToolResult:
+            """Send one allowlisted template to a paired gateway peer."""
+            async with gateway_push_lock:
+                from js.gateway.adapter import ChannelPeer
+                from js.gateway.push import PushTemplateError, render_push_template
+
+                try:
+                    text = render_push_template(template_id)
+                except PushTemplateError as exc:
+                    return failure(str(exc), 400)
+                service = getattr(self, "gateway_service", None)
+                if service is None:
+                    return failure("Gateway is not running", 503)
+                try:
+                    await service.send(
+                        ChannelPeer(channel=channel, peer_id=peer_id),
+                        text,
+                    )
+                except Exception as exc:
+                    return failure(f"{type(exc).__name__}: {exc}", 500)
+                return ToolResult(success=True, output="gateway push sent")
+
         specs = (
             (
                 ToolSpec(
@@ -2582,6 +2610,19 @@ class ControlPlaneMixin(AgentBase):
                     model_visible=False,
                 ),
                 upload_mutate_handler,
+            ),
+            (
+                ToolSpec(
+                    name=CONTROL_GATEWAY_PUSH_TOOL,
+                    description="Internal lease-gated gateway template push.",
+                    parameters=[
+                        ToolParam("template_id", "string", "Allowlisted push template"),
+                        ToolParam("channel", "string", "Gateway channel name"),
+                        ToolParam("peer_id", "string", "Paired peer id"),
+                    ],
+                    model_visible=False,
+                ),
+                gateway_push_handler,
             ),
             (
                 ToolSpec(

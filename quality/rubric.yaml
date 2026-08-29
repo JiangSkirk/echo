@@ -1,7 +1,7 @@
 # Canonical quality criteria. New bars require a rubric_version bump + changelog.
 # Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
 
-rubric_version: "2026.09.6"
+rubric_version: "2026.09.7"
 
 label_enum:
   - OPEN
@@ -125,6 +125,7 @@ inventory_units:
       - repo.default
       - gateway.cold_start
       - gateway.webhook
+      - gateway.discord
 
 scopes:
   repo.default:
@@ -293,8 +294,18 @@ scopes:
         description: HMAC webhook rejects bad signatures and replay; unpaired drops Echo
         evidence_kind: pytest_node
         nodeid: tests/gateway/test_webhook.py
+  gateway.discord:
+    criteria:
+      - id: gateway.discord
+        description: Discord mock transport e2e and lease-gated cron push
+        evidence_kind: pytest_node
+        nodeid: tests/gateway/test_discord_e2e.py
 
 changelog:
+  - version: "2026.09.7"
+    date: "2026-08-29"
+    changes:
+      - "Discord channel + mock transport e2e; cron whitelist push via control_gateway_push lease"
   - version: "2026.09.6"
     date: "2026-08-29"
     changes:

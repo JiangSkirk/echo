@@ -44,6 +44,7 @@ def test_every_user_surface_names_its_echo_channel() -> None:
         "js/integrations/telegram_bot.py": "telegram",
         "js/gateway/channels/telegram.py": "telegram",
         "js/gateway/channels/webhook.py": "webhook",
+        "js/gateway/channels/discord.py": "discord",
         "js/orchestration/fleet/agent_fleet.py": "fleet",
         "js/daemon/core.py": "cron",
         "js/bots/service.py": "bots",

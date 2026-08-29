@@ -112,6 +112,20 @@ TEMPLATE_REGISTRY: dict[str, TaskTemplate] = {
         # the daemon refuses to run task_type="shell" jobs that were not
         # created with system_scope=True (see JSDaemon._cb_shell).
         TaskTemplate(
+            id="gateway_daily_brief",
+            name="渠道每日简报",
+            description="向已配对渠道发送白名单每日简报模板（外发走 lease）",
+            task_type="gateway_push",
+            default_cron="0 9 * * *",
+            default_payload={
+                "template": "daily_brief",
+                "channel": "discord",
+                "peer_id": "",
+            },
+            icon="📣",
+            category="information",
+        ),
+        TaskTemplate(
             id="custom_chat",
             name="自定义对话任务",
             description="定时向 Agent 发送指定提示词并记录回复",

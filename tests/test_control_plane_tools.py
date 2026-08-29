@@ -379,6 +379,7 @@ def test_control_plane_tools_are_registered_but_hidden_from_model_schema(
         "control_evolution_action",
         "control_upload_mutate",
         "control_cron_mutate",
+        "control_gateway_push",
     }
     registered = {tool.name: tool for tool in executor.registry.list_tools()}
     assert control_names <= registered.keys()
