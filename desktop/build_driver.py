@@ -42,7 +42,11 @@ OWNER_MARKER_NAME = ".js-agent-build-owner"
 INVALID_RUN_MARKER_NAME = ".js-agent-build-invalid-manual-cleanup"
 _LOWER_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _BUILD_NUMBER = re.compile(r"(?P<day>[0-9]{8})(?P<sequence>[0-9]{2})\Z")
-_PIN = re.compile(r"([A-Za-z0-9_.-]+)==([^\s=]+)\Z")
+_PIN = re.compile(
+    r"([A-Za-z0-9_.-]+)==([^\s=]+)(?:\s+--hash=sha256:[0-9a-f]{64})+\Z"
+    r"|([A-Za-z0-9_.-]+)==([^\s=]+)\Z"
+)
+_REQUIRE_HASHES = ("--require-hashes",)
 TREE_DIGEST_SCHEMA = "JSAgentTreeDigestV2"
 _TREE_DIGEST_DOMAIN = (TREE_DIGEST_SCHEMA + "\0").encode("ascii")
 _THIN_MACH_O_MAGICS = {
@@ -743,17 +747,26 @@ def verify_python_build_requirements(
     except UnicodeDecodeError as exc:
         raise RuntimeError("Python build requirements are not UTF-8") from exc
     pins: dict[str, str] = {}
+    pending = ""
     for raw in lines:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        match = _PIN.fullmatch(line)
+        if line.endswith("\\"):
+            pending += line[:-1].strip() + " "
+            continue
+        pending += line
+        match = _PIN.fullmatch(pending)
+        pending = ""
         if match is None:
             raise RuntimeError("Python build requirements must use exact pins")
-        name = match.group(1).lower().replace("_", "-")
+        name = (match.group(1) or match.group(3)).lower().replace("_", "-")
+        version = match.group(2) or match.group(4)
         if name in pins:
             raise RuntimeError("Python build requirements contain duplicate pins")
-        pins[name] = match.group(2)
+        pins[name] = version
+    if pending.strip():
+        raise RuntimeError("Python build requirements end with an incomplete continuation")
     if set(pins) != _PYTHON_BUILD_REQUIREMENTS:
         raise RuntimeError("Python build requirements have an unexpected package set")
     for name, expected in pins.items():
@@ -765,6 +778,12 @@ def verify_python_build_requirements(
             raise RuntimeError(
                 f"Python build requirement mismatch: {name} expected {expected}, got {actual}"
             )
+
+
+def python_build_pip_args(requirements_path: Path) -> list[str]:
+    """Install args that require the hashed pin file."""
+
+    return ["-r", str(requirements_path), *_REQUIRE_HASHES]
 
 
 def install_desktop_dependencies(

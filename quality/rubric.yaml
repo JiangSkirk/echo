@@ -1,7 +1,7 @@
 # Canonical quality criteria. New bars require a rubric_version bump + changelog.
 # Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
 
-rubric_version: "2026.09.2"
+rubric_version: "2026.09.3"
 
 label_enum:
   - OPEN
@@ -111,6 +111,7 @@ inventory_units:
     scopes:
       - repo.default
       - security.policy_doc
+      - ci.frozen_install
   bots.surface:
     paths:
       - js/bots/
@@ -260,8 +261,19 @@ scopes:
         description: SECURITY.md trust model matches config defaults
         evidence_kind: pytest_node
         nodeid: tests/test_security_policy_doc.py
+  ci.frozen_install:
+    criteria:
+      - id: ci.frozen_install
+        description: CI workflows use uv --frozen and SHA-pinned actions
+        evidence_kind: pytest_node
+        nodeid: tests/test_ci_workflow_frozen.py
 
 changelog:
+  - version: "2026.09.3"
+    date: "2026-08-29"
+    changes:
+      - "CI/Release Smoke/weekly audit use uv lock --check and SHA-pinned actions"
+      - "Desktop Python build pins include --hash; pip install requires hashes"
   - version: "2026.09.2"
     date: "2026-08-29"
     changes:

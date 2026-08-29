@@ -102,7 +102,11 @@ Host 本身仍在原生进程内。
 ### 2.5 供应链姿态
 
 - 发布与安装路径要求 `uv.lock` + `uv sync --frozen`。
-- Docker 镜像钉扎 `uv` 二进制版本并以 `--frozen` 安装。
+- Docker 镜像钉扎 `uv` 二进制 `0.11.24` 并以 `--frozen` 安装。
+- CI / Release Smoke / 周审计使用同一 `uv` 版本、`uv lock --check`、
+  以及 SHA 钉扎的 GitHub Actions（禁止 `pip install -e` 现场解析）。
+- `.github/workflows/deps-audit.yml` 每周跑 `pip-audit`。
+- 桌面构建 `desktop/requirements-build.txt` 使用精确 pin + `--hash`。
 - `scripts/install.sh` 拒绝远程 `curl | sh` 与无锁文件安装。
 - `pyproject.toml` 中的版本区间是解析上界；可复现构建以锁文件为准。
 

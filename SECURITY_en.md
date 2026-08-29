@@ -115,7 +115,12 @@ does not import `js.pipeline` on Host cold start.
 ### 2.5 Supply Chain
 
 - Release and install paths require `uv.lock` and `uv sync --frozen`.
-- The Docker image pins the `uv` binary and installs `--frozen`.
+- The Docker image pins `uv` `0.11.24` and installs `--frozen`.
+- CI, Release Smoke, and the weekly audit use that same `uv` version,
+  `uv lock --check`, and SHA-pinned GitHub Actions (no live `pip install -e`
+  resolution).
+- `.github/workflows/deps-audit.yml` runs `pip-audit` weekly.
+- Desktop `desktop/requirements-build.txt` uses exact pins plus `--hash`.
 - `scripts/install.sh` refuses remote `curl | sh` and lockless installs.
 - Version ranges in `pyproject.toml` are resolver bounds; reproducible builds
   follow the lockfile.

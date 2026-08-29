@@ -148,9 +148,7 @@ def manifest_tree(tmp_path: Path) -> dict[str, Any]:
     bundled_sidecar.chmod(0o755)
     standalone.chmod(0o755)
     source_digest = release_source_digest(repo_root)
-    zip_path = artifacts / (
-        f"JS-Agent-0.1.0-macos-arm64-unsigned-{source_digest[:16]}.zip"
-    )
+    zip_path = artifacts / (f"JS-Agent-0.1.0-macos-arm64-unsigned-{source_digest[:16]}.zip")
     _write_zip_from_app(app_path, zip_path)
     manifest_path = build_driver.generate_manifest(
         source_digest=source_digest,
@@ -212,8 +210,7 @@ def test_stage_and_build_commands_are_source_stable_locked_and_offline(
     tauri.write_text("fixture", encoding="utf-8")
     tauri.chmod(0o700)
     app_path = (
-        run.root
-        / "stage/cargo-target/aarch64-apple-darwin/release/bundle/macos/JS Agent.app"
+        run.root / "stage/cargo-target/aarch64-apple-darwin/release/bundle/macos/JS Agent.app"
     )
     app_path.mkdir(parents=True)
     _write_info_plist(app_path / "Contents/Info.plist", build_number="0")
@@ -305,7 +302,40 @@ def test_python_build_versions_must_match_exact_offline_pins(tmp_path: Path) -> 
         version_resolver=installed.__getitem__,
     )
 
-    installed["pyinstaller"] = "6.20.0"
+
+def test_python_build_pins_accept_require_hashes(tmp_path: Path) -> None:
+    requirements = tmp_path / "requirements-build.txt"
+    requirements.write_text(
+        "pyinstaller==6.21.0 --hash=sha256:" + ("ab" * 32) + "\n"
+        "pyinstaller-hooks-contrib==2026.6 \\\n"
+        "    --hash=sha256:" + ("cd" * 32) + "\n",
+        encoding="utf-8",
+    )
+    installed = {
+        "pyinstaller": "6.21.0",
+        "pyinstaller-hooks-contrib": "2026.6",
+    }
+    build_driver.verify_python_build_requirements(
+        requirements,
+        version_resolver=installed.__getitem__,
+    )
+    assert build_driver.python_build_pip_args(requirements) == [
+        "-r",
+        str(requirements),
+        "--require-hashes",
+    ]
+
+
+def test_python_build_versions_mismatch_still_fails(tmp_path: Path) -> None:
+    requirements = tmp_path / "requirements-build.txt"
+    requirements.write_text(
+        "pyinstaller==6.21.0\npyinstaller-hooks-contrib==2026.6\n",
+        encoding="utf-8",
+    )
+    installed = {
+        "pyinstaller": "6.20.0",
+        "pyinstaller-hooks-contrib": "2026.6",
+    }
     with pytest.raises(RuntimeError, match="Python build requirement mismatch"):
         build_driver.verify_python_build_requirements(
             requirements,
@@ -395,26 +425,25 @@ def test_digest_drift_retains_failed_run_and_marks_manifest_invalid(
     assert output_dir.is_dir()
     assert (output_dir / ".js-agent-build-invalid-manual-cleanup").is_file()
     assert (output_dir / "artifacts/build.zip").read_bytes() == b"zip"
-    assert (
-        output_dir / "artifacts/js-agent-host-aarch64-apple-darwin"
-    ).read_bytes() == b"sidecar"
+    assert (output_dir / "artifacts/js-agent-host-aarch64-apple-darwin").read_bytes() == b"sidecar"
     assert not (output_dir / "manifest.json").exists()
 
 
 def test_manifest_accepts_exact_closed_artifact_set(manifest_tree: dict[str, Any]) -> None:
-    assert build_driver.verify_manifest(
-        manifest_tree["manifest_path"],
-        repo_root=manifest_tree["repo_root"],
-    ) == []
+    assert (
+        build_driver.verify_manifest(
+            manifest_tree["manifest_path"],
+            repo_root=manifest_tree["repo_root"],
+        )
+        == []
+    )
 
 
 def test_build_number_is_explicit_and_bound_to_manifest_and_bundle(
     manifest_tree: dict[str, Any],
 ) -> None:
     payload = json.loads(manifest_tree["manifest_path"].read_text(encoding="utf-8"))
-    info = plistlib.loads(
-        (manifest_tree["app_path"] / "Contents/Info.plist").read_bytes()
-    )
+    info = plistlib.loads((manifest_tree["app_path"] / "Contents/Info.plist").read_bytes())
 
     assert payload["product_version"] == "0.1.0"
     assert payload["build_number"] == BUILD_NUMBER
@@ -438,9 +467,7 @@ def test_artifact_zip_name_uses_product_version_constant(
 
     paths = build_driver._artifact_paths("a" * 64)
 
-    assert paths["zip"] == (
-        "artifacts/JS-Agent-9.8.7-macos-arm64-unsigned-aaaaaaaaaaaaaaaa.zip"
-    )
+    assert paths["zip"] == ("artifacts/JS-Agent-9.8.7-macos-arm64-unsigned-aaaaaaaaaaaaaaaa.zip")
 
 
 def test_manifest_rejects_build_number_or_bundle_version_drift(
@@ -561,9 +588,7 @@ def test_java_class_magic_is_not_treated_as_fat_macho(tmp_path: Path) -> None:
     real_fat_macho = app / "Contents/Frameworks/universal.dylib"
     java_class.parent.mkdir(parents=True)
     real_macho.parent.mkdir(parents=True)
-    java_class.write_bytes(
-        bytes.fromhex("cafebabe0000003d0011") + b"java-constant-pool-fixture"
-    )
+    java_class.write_bytes(bytes.fromhex("cafebabe0000003d0011") + b"java-constant-pool-fixture")
     real_macho.write_bytes(_thin_macho64())
     real_fat_macho.write_bytes(_fat_macho64())
     java_class.chmod(0o755)
@@ -758,9 +783,7 @@ def test_zip_forbidden_members_detects_appledouble(tmp_path: Path) -> None:
     """Injected AppleDouble / __MACOSX / .DS_Store members must fail closed."""
     zip_path = tmp_path / "poison.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
-        archive.writestr(
-            _zip_member("JS Agent.app/", file_type=stat.S_IFDIR, mode=0o755), b""
-        )
+        archive.writestr(_zip_member("JS Agent.app/", file_type=stat.S_IFDIR, mode=0o755), b"")
         archive.writestr(
             _zip_member("JS Agent.app/Contents/", file_type=stat.S_IFDIR, mode=0o755),
             b"",
@@ -771,9 +794,7 @@ def test_zip_forbidden_members_detects_appledouble(tmp_path: Path) -> None:
             ("__MACOSX/JS Agent.app/._Contents", b"junk"),
             ("JS Agent.app/Contents/.DS_Store", b"ds"),
         ):
-            archive.writestr(
-                _zip_member(name, file_type=stat.S_IFREG, mode=0o644), payload
-            )
+            archive.writestr(_zip_member(name, file_type=stat.S_IFREG, mode=0o644), payload)
     bad = build_driver._zip_forbidden_members(zip_path)
     assert any("._" in name for name in bad)
     assert any("__MACOSX" in name for name in bad)
@@ -796,9 +817,7 @@ def test_manifest_rejects_unsafe_or_nonreproducing_zip_closure(
     app_path = manifest_tree["app_path"]
     with zipfile.ZipFile(zip_path, "w") as archive:
         files = [
-            path
-            for path in sorted(app_path.rglob("*"))
-            if path.is_file() and not path.is_symlink()
+            path for path in sorted(app_path.rglob("*")) if path.is_file() and not path.is_symlink()
         ]
         if case == "missing":
             files = files[:-1]
@@ -898,10 +917,7 @@ def test_prepare_build_run_rejects_existing_output_without_touching_user_files(
     with pytest.raises(RuntimeError, match="already exists"):
         prepare(output_dir=output_dir, repo_root=repo_root)
 
-    assert {
-        relative: (output_dir / relative).read_bytes()
-        for relative in user_files
-    } == user_files
+    assert {relative: (output_dir / relative).read_bytes() for relative in user_files} == user_files
 
 
 def test_prepare_build_run_rejects_every_repository_subpath_before_write(
@@ -1130,7 +1146,10 @@ def test_manifest_rejects_external_hardlink_to_lock_or_driver(
     ("first", "second"),
     [
         ("Contents/Readme.txt", "contents/readme.txt"),
-        ("Contents/Caf\N{LATIN SMALL LETTER E WITH ACUTE}.txt", "Contents/Cafe\N{COMBINING ACUTE ACCENT}.txt"),
+        (
+            "Contents/Caf\N{LATIN SMALL LETTER E WITH ACUTE}.txt",
+            "Contents/Cafe\N{COMBINING ACUTE ACCENT}.txt",
+        ),
     ],
 )
 def test_zip_rejects_casefold_or_unicode_normalization_collision(
@@ -1140,23 +1159,17 @@ def test_zip_rejects_casefold_or_unicode_normalization_collision(
 ) -> None:
     zip_path = tmp_path / "collision.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
-        archive.writestr(
-            _zip_member("JS Agent.app/", file_type=stat.S_IFDIR, mode=0o755), b""
-        )
+        archive.writestr(_zip_member("JS Agent.app/", file_type=stat.S_IFDIR, mode=0o755), b"")
         archive.writestr(
             _zip_member("JS Agent.app/Contents/", file_type=stat.S_IFDIR, mode=0o755),
             b"",
         )
         archive.writestr(
-            _zip_member(
-                f"JS Agent.app/{first}", file_type=stat.S_IFREG, mode=0o644
-            ),
+            _zip_member(f"JS Agent.app/{first}", file_type=stat.S_IFREG, mode=0o644),
             b"first",
         )
         archive.writestr(
-            _zip_member(
-                f"JS Agent.app/{second}", file_type=stat.S_IFREG, mode=0o644
-            ),
+            _zip_member(f"JS Agent.app/{second}", file_type=stat.S_IFREG, mode=0o644),
             b"second",
         )
 
@@ -1283,9 +1296,7 @@ def test_fake_successful_build_binds_controlled_tools_caches_and_owner_marker(
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert payload["build_number"] == BUILD_NUMBER
     assert payload["product_version"] == "0.1.0"
-    info = plistlib.loads(
-        (output / "artifacts/JS Agent.app/Contents/Info.plist").read_bytes()
-    )
+    info = plistlib.loads((output / "artifacts/JS Agent.app/Contents/Info.plist").read_bytes())
     assert info["CFBundleVersion"] == BUILD_NUMBER
     assert info["CFBundleShortVersionString"] == "0.1.0"
     environment = payload["build_environment"]
@@ -1295,9 +1306,10 @@ def test_fake_successful_build_binds_controlled_tools_caches_and_owner_marker(
     assert environment["pnpm"]["path"] == str(inputs.pnpm_executable.resolve())
     assert environment["node"]["path"] == str(inputs.node_executable.resolve())
     assert environment["ditto"]["path"] == str(inputs.ditto_executable.resolve())
-    assert environment["run_owner_marker_sha256"] == hashlib.sha256(
-        (output / ".js-agent-build-owner").read_bytes()
-    ).hexdigest()
+    assert (
+        environment["run_owner_marker_sha256"]
+        == hashlib.sha256((output / ".js-agent-build-owner").read_bytes()).hexdigest()
+    )
     assert build_driver.verify_manifest(manifest_path, repo_root=repo_root) == []
     assert len(calls) == 7
     assert calls[4]["cmd"][:5] == [
