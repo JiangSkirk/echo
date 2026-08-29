@@ -112,6 +112,10 @@ These flags default to `false`; enabling them widens the input surface:
 `features.pipeline_enabled` defaulting to `true` is a capability flag only; it
 does not import `js.pipeline` on Host cold start.
 
+`security.untrusted_ingestion_policy` defaults to `warn`: native posture may
+enable those surfaces, and the status page / `js doctor --security` keep a
+warning. `enforce` allows them only when `isolation_posture=container-full`.
+
 ### 2.5 Supply Chain
 
 - Release and install paths require `uv.lock` and `uv sync --frozen`.

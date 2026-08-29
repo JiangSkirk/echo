@@ -99,6 +99,10 @@ Host 本身仍在原生进程内。
 `features.pipeline_enabled` 默认 `true` 只是能力旗标，不等于 Host 冷启动加载
 `js.pipeline`。
 
+`security.untrusted_ingestion_policy` 默认 `warn`：原生姿态可启用这些表面，
+状态页与 `js doctor --security` 会持续警示。`enforce` 仅在
+`isolation_posture=container-full` 时允许启用。
+
 ### 2.5 供应链姿态
 
 - 发布与安装路径要求 `uv.lock` + `uv sync --frozen`。

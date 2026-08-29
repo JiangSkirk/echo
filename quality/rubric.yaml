@@ -1,7 +1,7 @@
 # Canonical quality criteria. New bars require a rubric_version bump + changelog.
 # Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
 
-rubric_version: "2026.09.3"
+rubric_version: "2026.09.4"
 
 label_enum:
   - OPEN
@@ -81,6 +81,7 @@ inventory_units:
       - repo.default
       - m3.security
       - skills.key_registry
+      - security.posture
   runtime.governor:
     paths:
       - js/runtime/
@@ -267,8 +268,18 @@ scopes:
         description: CI workflows use uv --frozen and SHA-pinned actions
         evidence_kind: pytest_node
         nodeid: tests/test_ci_workflow_frozen.py
+  security.posture:
+    criteria:
+      - id: security.posture
+        description: Isolation posture detection and doctor findings
+        evidence_kind: pytest_node
+        nodeid: tests/security/test_posture.py
 
 changelog:
+  - version: "2026.09.4"
+    date: "2026-08-29"
+    changes:
+      - "Isolation posture detection, js doctor --security, hardened compose"
   - version: "2026.09.3"
     date: "2026-08-29"
     changes:

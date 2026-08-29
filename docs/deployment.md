@@ -34,6 +34,24 @@ docker run -d \
 
 首次启动若还没有 admin，镜像会把共享管理密钥写入 `./state/bootstrap_admin_key.txt`（0600）。用该密钥登录后再访问 `/api/*`。首次成功登录（`/api/appshell/session` 或 `/api/auth/session`）后该明文文件会被删除；`/api/appshell/bootstrap` 铸造时会保留文件，方便无头环境读取。
 
+### 2b. 不可信内容部署姿态
+
+默认 `docker-compose.yaml` 只做回环绑定。接触入站消息、未审查 MCP 或共享主机时，用加固整进程姿态：
+
+```bash
+docker compose -f docker-compose.hardened.yaml up -d --build
+```
+
+`docker-compose.hardened.yaml` 打开 `read_only`、`cap_drop: [ALL]`、`no-new-privileges`，并且不挂载 Docker socket。
+
+本机诊断：
+
+```bash
+js doctor --security
+```
+
+`security.untrusted_ingestion_policy` 默认 `warn`：原生桌面可以启用不可信入站表面，但状态页持续警示。设为 `enforce` 时，非 `container-full` 姿态拒绝这些表面。详见 [SECURITY.md](../SECURITY.md)。
+
 ### 3. 查看日志
 
 ```bash

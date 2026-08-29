@@ -24,7 +24,16 @@ export async function loadStatus() {
     if (data.suggestion) {
       html += `<div class="text-xs text-gray-400 mt-1">${escapeHtml(data.suggestion)}</div>`;
     }
-    html += `</div>
+    const posture = data.isolation_posture || {};
+    const postureLevel = String(posture.level || 'unknown');
+    const postureWarn = postureLevel === 'container-full'
+      ? 'text-green-400'
+      : (postureLevel === 'native-tool-sandbox' ? 'text-yellow-400' : 'text-red-400');
+    html += `<div class="text-xs ${postureWarn} mt-2">隔离姿态: ${escapeHtml(postureLevel)}`;
+    if (posture.warning) {
+      html += ` — ${escapeHtml(String(posture.warning))}`;
+    }
+    html += `</div></div>
       <details class="text-xs">
         <summary class="cursor-pointer text-gray-500 hover:text-gray-300">技术详情</summary>
         <pre class="mt-2 whitespace-pre-wrap break-all text-gray-400">${escapeHtml(JSON.stringify(data, null, 2))}</pre>

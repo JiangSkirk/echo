@@ -1,0 +1,35 @@
+# Hardened whole-process posture for untrusted inbound surfaces.
+# The Gateway/Host process stays in this container; do not mount docker.sock.
+
+services:
+  js-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: js-agent-hardened
+    ports:
+      - "127.0.0.1:8000:8000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    user: "1000:1000"
+    volumes:
+      - ./workspace:/app/workspace
+      - ./state:/app/state
+      - ./state-work:/home/appuser/.js-work
+    environment:
+      - JS_LOG_LEVEL=INFO
+      - JS_STATE_DIR=/app/state
+      - JS_APPSHELL_PROVISION_KEY=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

@@ -9,7 +9,7 @@ import re
 import sys
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -346,6 +346,14 @@ class SecurityConfig(BaseModel):
     network_allowlist: list[str] = Field(
         default_factory=list,
         description="Exact public DNS hosts permitted for Echo network tools",
+    )
+    untrusted_ingestion_policy: Literal["warn", "enforce"] = Field(
+        default="warn",
+        description=(
+            "warn: untrusted inbound surfaces may start on a native host and "
+            "keep a status warning. enforce: refuse those surfaces unless the "
+            "runtime posture is container-full."
+        ),
     )
     upload_owner_max_bytes: int = Field(default=2 * 1024 * 1024 * 1024, ge=1024)
     upload_owner_max_files: int = Field(default=5_000, ge=1)

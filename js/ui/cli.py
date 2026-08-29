@@ -749,6 +749,37 @@ def open_cmd(host: str, port: int, config: str | None) -> None:
 
 
 @main.command()
+@click.option("--security", is_flag=True, help="Run the isolation/security audit")
+@click.option("--config", "-c", type=click.Path(), help="Config file path")
+@click.option("--bind-host", default="127.0.0.1", help="Host bind to evaluate")
+def doctor(security: bool, config: str | None, bind_host: str) -> None:
+    """Local diagnostics. ``--security`` prints isolation posture findings."""
+    if not security:
+        console.print("Usage: js doctor --security")
+        raise SystemExit(2)
+    from js.security.posture import (
+        UntrustedIngestionPolicy,
+        detect_posture,
+        security_doctor_findings,
+    )
+
+    settings = _product_settings(config)
+    policy = str(getattr(settings.security, "untrusted_ingestion_policy", "warn") or "warn")
+    typed: UntrustedIngestionPolicy = "enforce" if policy == "enforce" else "warn"
+    posture = detect_posture(policy=typed)
+    findings = security_doctor_findings(settings, posture=posture, bind_host=bind_host)
+    table = Table(title="js doctor --security")
+    table.add_column("severity")
+    table.add_column("id")
+    table.add_column("message")
+    for item in findings:
+        table.add_row(item["severity"], item["id"], item["message"])
+    console.print(table)
+    if any(item["severity"] == "high" for item in findings):
+        raise SystemExit(1)
+
+
+@main.command()
 @click.option("--yes", "-y", is_flag=True, help="Non-interactive mode")
 def setup(yes: bool) -> None:
     """Run setup wizard to auto-configure everything."""

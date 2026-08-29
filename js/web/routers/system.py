@@ -46,6 +46,11 @@ async def status(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, 
     echo_health = get_echo_safety_service(agent.settings).health(
         max_verify_age_seconds=_STATUS_HEALTH_VERIFY_CACHE_SECONDS,
     )
+    from js.security.posture import UntrustedIngestionPolicy, detect_posture
+
+    policy = str(getattr(agent.settings.security, "untrusted_ingestion_policy", "warn") or "warn")
+    typed_policy: UntrustedIngestionPolicy = "enforce" if policy == "enforce" else "warn"
+    isolation = detect_posture(policy=typed_policy)
     product_id = str(getattr(agent.settings, "product_id", "js-agent"))
     profile = str(
         getattr(agent, "_work_profile", None)
@@ -59,6 +64,7 @@ async def status(auth: dict[str, Any] = Depends(require_auth_dep)) -> dict[str, 
         "state_dir": str(agent.settings.state_dir),
         "max_turns": agent.settings.max_turns,
         "defense_mode": agent.settings.security.defense_mode.value,
+        "isolation_posture": isolation.as_dict(),
         "degraded": agent.degraded,
         "degraded_reason": agent.degraded_reason,
         "tool_stats": agent.registry.get_stats(),
