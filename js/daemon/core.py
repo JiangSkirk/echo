@@ -296,6 +296,7 @@ class JSDaemon:
 
     async def _cb_gateway_push(self, job: ScheduledJob) -> str:
         from js.agent.tool_executor import CONTROL_GATEWAY_PUSH_TOOL
+        from js.gateway.attach import attach_gateway_service
         from js.gateway.push import push_peer_from_payload, render_push_template
 
         template_id = str(job.payload.get("template") or "")
@@ -304,6 +305,7 @@ class JSDaemon:
         owner = job.owner_key_hash
         if not owner:
             raise ValueError("gateway push rejected: job has no explicit owner scope")
+        attach_gateway_service(self.agent)
         runtime = self.agent.echo_runtime
         context = runtime.build_context(
             channel="cron_gateway_push",

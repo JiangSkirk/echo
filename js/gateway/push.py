@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Final
+from typing import Any, Final
 
 from js.gateway.adapter import ChannelPeer
 
@@ -22,6 +22,17 @@ def render_push_template(template_id: str) -> str:
     if text is None:
         raise PushTemplateError(f"gateway push template is not allowlisted: {template_id!r}")
     return text
+
+
+def authorize_push(service: Any, *, owner: str, peer: ChannelPeer) -> str | None:
+    """Return an error if the peer is unpaired or belongs to another owner."""
+
+    paired = service.pairing.owner_of(peer)
+    if paired is None:
+        return "peer is not paired"
+    if paired != owner:
+        return "owner mismatch"
+    return None
 
 
 def push_peer_from_payload(payload: dict[str, object]) -> ChannelPeer:

@@ -31,7 +31,6 @@ async def inbound_webhook(request: Request) -> JSONResponse:
         parse_webhook_body,
         verify_webhook,
     )
-    from js.gateway.service import GatewayService
 
     body = await request.body()
     timestamp = request.headers.get(TIMESTAMP_HEADER, "")
@@ -55,11 +54,12 @@ async def inbound_webhook(request: Request) -> JSONResponse:
     except WebhookAuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    service = getattr(request.app.state, "gateway_service", None)
-    if not isinstance(service, GatewayService):
-        service = GatewayService(settings)
-        request.app.state.gateway_service = service
-    decision = await service.dispatch_echo(get_agent(), envelope)
+    from js.gateway.attach import attach_gateway_service
+
+    agent = get_agent()
+    service = attach_gateway_service(agent)
+    request.app.state.gateway_service = service
+    decision = await service.dispatch_echo(agent, envelope)
     payload: dict[str, Any] = {
         "accepted": decision.accepted,
         "reason": decision.reason,

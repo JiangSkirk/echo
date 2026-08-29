@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from js.config import GatewayConfig, JSSettings
 from js.cron.engine import ScheduledJob
 from js.daemon.core import JSDaemon
 from js.gateway.adapter import ChannelPeer
@@ -59,7 +60,9 @@ async def test_cron_push_goes_through_execute_tool_effect() -> None:
             return None, SimpleNamespace(success=True, output="sent", error=None)
 
     daemon = object.__new__(JSDaemon)
-    daemon.agent = SimpleNamespace(echo_runtime=_Runtime())
+    settings = JSSettings()
+    settings.gateway = GatewayConfig(enabled=True)
+    daemon.agent = SimpleNamespace(echo_runtime=_Runtime(), settings=settings)
     job = ScheduledJob(
         name="brief",
         cron_expr="0 9 * * *",

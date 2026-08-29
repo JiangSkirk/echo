@@ -2279,21 +2279,29 @@ class ControlPlaneMixin(AgentBase):
         ) -> ToolResult:
             """Send one allowlisted template to a paired gateway peer."""
             async with gateway_push_lock:
+                from js.echo.turn_context import current_runtime_context
                 from js.gateway.adapter import ChannelPeer
-                from js.gateway.push import PushTemplateError, render_push_template
+                from js.gateway.attach import attach_gateway_service
+                from js.gateway.push import (
+                    PushTemplateError,
+                    authorize_push,
+                    render_push_template,
+                )
 
                 try:
                     text = render_push_template(template_id)
                 except PushTemplateError as exc:
                     return failure(str(exc), 400)
-                service = getattr(self, "gateway_service", None)
-                if service is None:
-                    return failure("Gateway is not running", 503)
+                context = current_runtime_context()
+                if context is None or not context.owner_key_hash:
+                    return failure("Gateway push requires an Echo runtime owner", 500)
+                service = attach_gateway_service(self)
+                peer = ChannelPeer(channel=channel, peer_id=peer_id)
+                denied = authorize_push(service, owner=context.owner_key_hash, peer=peer)
+                if denied is not None:
+                    return failure(denied, 403)
                 try:
-                    await service.send(
-                        ChannelPeer(channel=channel, peer_id=peer_id),
-                        text,
-                    )
+                    await service.send(peer, text)
                 except Exception as exc:
                     return failure(f"{type(exc).__name__}: {exc}", 500)
                 return ToolResult(success=True, output="gateway push sent")
