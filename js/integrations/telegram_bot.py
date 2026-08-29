@@ -50,6 +50,9 @@ class TelegramBotIntegration:
                 f"Set {TELEGRAM_ALLOWED_CHATS_ENV} to a comma-separated list "
                 "of allowed chat IDs."
             )
+        from js.security.posture import require_untrusted_surface
+
+        require_untrusted_surface(settings, "telegram")
         self.token = token
         self.settings = settings
         self.agent = JSAgent(settings)
@@ -68,8 +71,7 @@ class TelegramBotIntegration:
                 chat_ids.add(int(part))
             except ValueError as exc:
                 raise ValueError(
-                    f"{TELEGRAM_ALLOWED_CHATS_ENV} contains a non-numeric "
-                    f"chat ID: {part!r}"
+                    f"{TELEGRAM_ALLOWED_CHATS_ENV} contains a non-numeric chat ID: {part!r}"
                 ) from exc
         return frozenset(chat_ids)
 
@@ -221,7 +223,9 @@ class TelegramBotIntegration:
             return
         status = {
             "models": len(self.agent.settings.providers),
-            "tools": len(self.agent.registry._tools) if hasattr(self.agent.registry, "_tools") else 0,
+            "tools": len(self.agent.registry._tools)
+            if hasattr(self.agent.registry, "_tools")
+            else 0,
             "memory_sessions": "active",
         }
         text = (

@@ -187,6 +187,17 @@ def security_doctor_findings(
             }
         )
     orin = getattr(settings, "orin", None)
+    if typed_policy == "enforce" and current.level is not IsolationLevel.CONTAINER_FULL:
+        findings.append(
+            {
+                "severity": "high",
+                "id": "enforce_without_container",
+                "message": (
+                    "untrusted_ingestion_policy=enforce requires container-full; "
+                    f"current={current.level}"
+                ),
+            }
+        )
     if getattr(orin, "enforce", False) is True:
         findings.append(
             {
@@ -196,6 +207,19 @@ def security_doctor_findings(
             }
         )
     return findings
+
+
+def require_untrusted_surface(settings: Any, surface: str) -> IsolationPosture:
+    """Fail-closed gate for inbound untrusted surfaces."""
+
+    security = getattr(settings, "security", None)
+    policy = str(getattr(security, "untrusted_ingestion_policy", "warn") or "warn")
+    typed: UntrustedIngestionPolicy = "enforce" if policy == "enforce" else "warn"
+    posture = detect_posture(policy=typed)
+    message = refuse_untrusted_surface(posture, surface)
+    if message is not None:
+        raise RuntimeError(message)
+    return posture
 
 
 def refuse_untrusted_surface(posture: IsolationPosture, surface: str) -> str | None:

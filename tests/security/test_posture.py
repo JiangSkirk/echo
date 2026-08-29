@@ -7,9 +7,11 @@ from pathlib import Path
 from js.config import SecurityConfig
 from js.security.posture import (
     IsolationLevel,
+    IsolationPosture,
     detect_container,
     detect_posture,
     refuse_untrusted_surface,
+    require_untrusted_surface,
     security_doctor_findings,
 )
 
@@ -67,6 +69,34 @@ def test_container_full_allows_enforce(tmp_path: Path, monkeypatch) -> None:
     assert refuse_untrusted_surface(posture, "gateway") is None
 
 
+def test_require_untrusted_surface_enforce_raises(monkeypatch) -> None:
+    class _Security:
+        untrusted_ingestion_policy = "enforce"
+
+    class _Settings:
+        security = _Security()
+
+    monkeypatch.setattr(
+        "js.security.posture.detect_posture",
+        lambda **_kwargs: IsolationPosture(
+            level=IsolationLevel.NATIVE_TOOL_SANDBOX,
+            in_container=False,
+            sandbox_exec=True,
+            bwrap=False,
+            unshare=False,
+            rlimit_as=False,
+            platform_name="Darwin",
+            untrusted_ingestion_policy="enforce",
+        ),
+    )
+    try:
+        require_untrusted_surface(_Settings(), "telegram")
+    except RuntimeError as exc:
+        assert "telegram" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+
 def test_security_config_defaults_warn() -> None:
     assert SecurityConfig.model_fields["untrusted_ingestion_policy"].default == "warn"
 
@@ -87,3 +117,28 @@ def test_doctor_flags_non_loopback_and_disabled_key() -> None:
     assert "non_loopback_bind" in ids
     assert "api_key_disabled" in ids
     assert "friends_enabled" in ids
+
+
+def test_doctor_flags_enforce_without_container() -> None:
+    class _Security:
+        untrusted_ingestion_policy = "enforce"
+        api_key_required = True
+
+    class _Settings:
+        security = _Security()
+        friends_enabled = False
+        mobile_enabled = False
+        orin = None
+
+    posture = IsolationPosture(
+        level=IsolationLevel.NATIVE_TOOL_SANDBOX,
+        in_container=False,
+        sandbox_exec=True,
+        bwrap=False,
+        unshare=False,
+        rlimit_as=False,
+        platform_name="Darwin",
+        untrusted_ingestion_policy="enforce",
+    )
+    findings = security_doctor_findings(_Settings(), posture=posture, bind_host="127.0.0.1")
+    assert any(item["id"] == "enforce_without_container" for item in findings)
