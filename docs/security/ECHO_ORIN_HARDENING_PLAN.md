@@ -128,7 +128,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | T2 | Plan-then-Execute / Action-Selector 模式 | Echo `turn_loop` 新增 plan-commit 回合模式 | 控制流先于不可信数据定型；**控制流部分**零额外 token（填槽若走隔离提取则另计） | 中高：非纯重组——lease 现状是整参数摘要，槽位策略是新建；须配套 M1 ≥1.2 测试 | 无第二套 loop | **采纳（P0 核心）** |
 | T3 | Progent Z3 单调约束 | Orin 策略更新路径（`policy_profile` / 策略表 / config / 手动 `policy.change`；**不**预设 evolution 接线） | 策略只能收窄不能扩，SMT 确定性证明 | 中：Z3 依赖 ~30MB，只在策略更新路径，不在回合热路径 | 无 | 采纳（P1） |
 | T4 | FIDES 规划器级 IFC | Orin taint 升级：标签进规划器 | 证据显示可增效用（+16%） | 中高 | taint 铁律保持不破 | 采纳（P2） |
-| T5 | AgentDojo CI 门 | Orin 验收体系 | 安全效果从"自说自话"变标准化度量 | 中：benchmark 适配 | 无 | **采纳（P1 核心）** |
+| T5 | AgentDojo CI 门 | Orin 验收体系 | 安全效果从"自说自话"变标准化度量 | 中高：须写 Echo 工具→AgentDojo pipeline 适配器；每夜真模型成本与抖动 | 2pp 阈值在 LLM 抖动下易 flaky | **采纳（P1 核心）** |
 | T6 | 前向安全键控 + Merkle 锚定 | Echo ledger 升级 | 历史日志前向完整；外部可验证证据 | 中：现状单静态 `journal.key`/`permit.key`，`PermitSeal.key_epoch` 硬编码 `permit-epoch-1`；`tip_anchor.py` 非 Merkle | 验证路径必须改：按 epoch 选钥或从 genesis 验证棘轮 | 采纳（P1，**绑定交付**） |
 | T7 | Apple Containerization 载体 | Orin Stage C `production_sandbox_carrier`（**先改 SPEC 再改位语义**） | P2-1 给 **file/build** 真 VM 隔离；memory/net 须先让该进程不再持有生产 KeyBox；**不**解锁 Stage C 外部门，也**不**承载 desktop/secret | 中：需 macOS 26；老设备回退 sandbox-exec | 设备要求上升 → 分层回退；Linux VM 跑不了 AppKit/Keychain；file/memory/services 今日会在进程内构造 KeyBox | **采纳（P2 核心，范围收窄）** |
 | T8 | Wasmtime skill 沙箱 | Echo skill/插件执行 | 亚毫秒启动的全平台沙箱 | 中：skill 需编译 wasm 或运行时嵌入 | 现有 skill 是 Python → 渐进式 | 采纳（P3 探索） |
@@ -214,7 +214,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 
 | 项 | 内容 | 验收标准 | 回退 |
 |---|---|---|---|
-| P1-1 | 接入 AgentDojo：js-agent 工具集映射到 AgentDojo 任务套件，CI 每夜跑注入套件 | CI 产出 ASR（攻击成功率）数字；基线存档；ASR 回归 >2pp 即 fail | 不阻塞发布，仅报告 |
+| P1-1 | 接入 AgentDojo：把 js-agent 工具集映射到 AgentDojo 任务套件（**适配器是真实工程量**，不是 drop-in）。CI：**每夜子集、每周全量**；固定模型版本 + 多 seed 降抖动。预算上限写入 CI 配置，超支停跑并报告。**门控分两期**：基线期（未写入 `benchmarks/` 或约定基线文件前）仅报告、不阻塞发布；基线稳定后 ASR 回归 >2pp 或 ASR >5% **阻断发布**（与 §7 一致）。 | CI 产出 ASR 数字与基线存档；基线期流水线黄灯；稳定后回归超阈值红灯阻断；held-out 不进调参循环（R3） | 基线期可关阻断；不可关报告 |
 | P1-2 | ledger 前向安全升级，**与 Merkle 锚定绑定交付**（拆开即缺口）：HMAC 密钥按 epoch 演进，旧 epoch 密钥销毁后，该 epoch 历史条目的完整性验证义务**必须**转移到关闭该 epoch 时的 seal / Merkle 根（否则要么留着链头等于没销毁，要么历史不可验证）。现状：单静态 `journal.key`/`permit.key`（`js/echo/ledger/service.py` 无轮换）；`PermitSeal.key_epoch` 仅命名、硬编码 `"permit-epoch-1"`。`tip_anchor.py` 是外部单调计数器 + MAC，不是 Merkle；inclusion proof 是新组件。双读期 1 个版本：旧验证器可读旧链。 | 篡改任一历史条目 → 验证失败且定位到条目；密钥泄露模拟：当前 epoch 钥泄漏不得伪造已关闭 epoch；关闭 epoch 后销毁旧钥仍能用 Merkle 根+包含证明验证该 epoch | 保留旧验证器读旧链（双读期 1 个版本）；不得单独上线"销毁旧钥"而无锚定 |
 | P1-3 | 策略收窄证明（T3 轻量版）。**守护现有真实入口**，不预设 evolution→policy 接线：evolution 今日是 proposal-only，`approve_and_apply` 只写 `evolution/applied/` JSON，不改 Orin 策略表；`policy.change`/`SINK_POLICY_CHANGE` 只是效应词汇。本项覆盖：（1）`policy_profile` 切换；（2）策略表 / `orin.*` config 变更；（3）手动 intent 的 `policy.change`。**包括** AppShell `prepare_product_orin` 把 `conservative` 静默改成 `compat`——这是扩张，P1-3 必须挡住或改成显式配置；该静默改写不得覆盖 P0-4 gateway 表面。暂不引入 Z3，用格（lattice）比较：动作空间是否收窄。日后若接线 evolution，须先经过本检查，本项不负责去建那条接线。 | 扩张性策略变更 100% 触发人工审批；收窄性变更可自动通过；负例：伪造 evolution 提案直接改策略表 → deny；负例：supervisor 静默 conservative→compat 仍发生在 gateway 表面 → fail | 全部转人工审批 |
 
@@ -270,7 +270,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | 重路径注入防御 | plan-commit 使入口不可信表面的内部注入用例 0 成功（P0 验收） | 20/20 用例无计划外动作 | ≥1 用例突破 | 暂停该表面写入权限，回退 deny-all 读模式 |
 | 中途污染收窄 | 可信入口 + 中途 web/邮件/文档注入后，剩余迭代 0 次写/egress 成功（P0 验收） | 构造用例 0 次收窄后写/egress | ≥1 用例在收窄后仍写出或 egress | 暂停该工具类写入，回退 deny-all 读模式 |
 | gateway 默认生效面 | `gateway.enabled=true` 时该表面 plan-commit 开且 Orin 非 allow 判定实际拦截（P0-4） | 注入用例走重路径；compat 降级计数 = 0 | 仍走轻路径或 allow+log | 拒绝启动 gateway 或标为降级并阻断该表面写入 |
-| AgentDojo ASR | P1 建立基线后，P2 末 ASR ≤5% | CI 实测 ≤5% | >5% 或回归 >2pp | 阻断版本发布，启动用例复盘 |
+| AgentDojo ASR | P1 建立基线后，P2 末 ASR ≤5% | CI 实测 ≤5%（固定模型+多种子中位数） | 基线稳定后 >5% 或回归 >2pp | **基线稳定后**阻断版本发布，启动用例复盘；基线期仅报告 |
 | 云端 token 成本 | 级联路由 + 稳定前缀后，同任务集云端调用量降 ≥40% | 降 ≥40% | 降 <20% | 检查路由误判率，调整难度分类规则 |
 | 任务成功率 | 全部优化后成功率不低于当前基线 -2pp | 降幅 ≤2pp | 降幅 >2pp | 按 P3→P0 逆序逐个关开关定位元凶 |
 | 回合延迟 | plan-commit 重路径增加的本地延迟 <200ms（不含模型调用） | p95 <200ms | p95 ≥500ms | 计划缓存 + 合并 BIND 检查 |
