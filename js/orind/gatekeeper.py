@@ -94,6 +94,7 @@ class GateKeeper:
         self._receipts = ReceiptSigner(key_dir)
         self._policy_profile = policy_profile
         self._shadow_mode = shadow_mode
+        self._gateway_lease_ids: set[str] = set()
         self.policy_version = POLICY_VERSION
         self.canaries = CanaryVault(store, enabled=canary_enabled)
         self.responder = Responder(
@@ -115,16 +116,21 @@ class GateKeeper:
         arg_taint_bits: int,
         args_overlap_dirty: bool,
         clearance: int,
+        channel: str = "",
+        lease_id: str = "",
     ) -> policy_mod.PolicyDecision:
         """Evaluate the policy table; shadow mode records but never blocks."""
 
+        profile = self._policy_profile
+        if channel.startswith("gateway:") or lease_id in self._gateway_lease_ids:
+            profile = policy_mod.PROFILE_CONSERVATIVE
         decision = policy_mod.evaluate(
             tool_name=tool_name,
             context_taint=context_taint,
             arg_taint_bits=arg_taint_bits,
             args_overlap_dirty=args_overlap_dirty,
             clearance=clearance,
-            profile=self._policy_profile,
+            profile=profile,
         )
         if self._shadow_mode and decision.verdict != policy_mod.VERDICT_ALLOW:
             return policy_mod.PolicyDecision(
@@ -185,6 +191,7 @@ class GateKeeper:
         context_taint: int = 0,
         arg_taint: int = 0,
         clearance: int = 1,
+        channel: str = "",
     ) -> dict[str, Any]:
         tool_name = str(lease_params.get("tool_name", ""))
         args_overlap = bool(arg_taint)
@@ -194,6 +201,7 @@ class GateKeeper:
             arg_taint_bits=arg_taint,
             args_overlap_dirty=args_overlap,
             clearance=clearance,
+            channel=channel,
         )
         policy_error = self._policy_error(decision)
         if policy_error is not None:
@@ -205,6 +213,8 @@ class GateKeeper:
                 taint_sink=policy_mod.sinks_for_tool(tool_name),
                 clearance=clearance,
             )
+            if channel.startswith("gateway:"):
+                self._gateway_lease_ids.add(lease.lease_id)
             signature = ""
             if context_fields is not None:
                 signature = self._sign_context(lease, context_fields)
@@ -285,6 +295,7 @@ class GateKeeper:
         context_taint: int = 0,
         arg_taint: int = 0,
         clearance: int = 1,
+        channel: str = "",
     ) -> dict[str, Any]:
         """Deterministic policy gate for a cell-dispatched effect (WP7).
 
@@ -300,6 +311,7 @@ class GateKeeper:
             arg_taint_bits=arg_taint,
             args_overlap_dirty=bool(arg_taint),
             clearance=clearance,
+            channel=channel,
         )
         policy_error = self._policy_error(decision)
         if policy_error is not None:
@@ -326,6 +338,7 @@ class GateKeeper:
         scan_text: str = "",
         scan_surface: str = "",
         session_id: str = "",
+        channel: str = "",
     ) -> dict[str, Any]:
         if mode == "scan":
             return self._handle_scan(
@@ -334,38 +347,43 @@ class GateKeeper:
                 session_id=session_id,
             )
         tool_name = ""
+        lease_id = ""
         if lease_payload is not None:
             tool_name = str(lease_payload.get("tool_name", ""))
+            lease_id = str(lease_payload.get("lease_id", ""))
         elif context_payload is not None:
             tool_name = str(context_payload.get("tool_name", ""))
+            lease_id = str(context_payload.get("lease_id", ""))
         decision = self._evaluate_policy(
             tool_name=tool_name,
             context_taint=context_taint,
             arg_taint_bits=arg_taint,
             args_overlap_dirty=bool(arg_taint),
             clearance=clearance,
+            channel=channel,
+            lease_id=lease_id,
         )
         policy_error = self._policy_error(decision)
         if policy_error is not None:
-            lease_id = ""
-            if lease_payload is not None:
-                lease_id = str(lease_payload.get("lease_id", ""))
-            elif context_payload is not None:
-                lease_id = str(context_payload.get("lease_id", ""))
             self._sign_receipt(kind="consume", verdict=decision.verdict, lease_id=lease_id)
             return policy_error
         try:
             if mode == "verify":
-                return self._consume_verify(lease_payload, expected)
-            if mode == "preflight":
-                return self._consume_bound(lease_payload, expected, consume=False)
-            if mode == "consume":
+                result = self._consume_verify(lease_payload, expected)
+            elif mode == "preflight":
+                result = self._consume_bound(lease_payload, expected, consume=False)
+            elif mode == "consume":
                 if expected is None:
-                    return self._consume_plain(lease_payload)
-                return self._consume_bound(lease_payload, expected, consume=True)
-            if mode == "context":
-                return self._consume_context(context_payload)
-            return {"ok": False, "code": "bad_message", "reason": "unknown mode"}
+                    result = self._consume_plain(lease_payload)
+                else:
+                    result = self._consume_bound(lease_payload, expected, consume=True)
+            elif mode == "context":
+                result = self._consume_context(context_payload)
+            else:
+                result = {"ok": False, "code": "bad_message", "reason": "unknown mode"}
+            if result.get("ok") and lease_id and mode in {"consume", "context"}:
+                self._gateway_lease_ids.discard(lease_id)
+            return result
         except Exception as exc:  # noqa: BLE001 - mapped to error acks
             return self._error_payload(exc)
 

@@ -14,14 +14,16 @@ issue time (``issue_ack.context_signature``) and serves it through
 through this adapter cannot be signed — fail closed.
 
 Threading: the adapter owns a dedicated background event-loop thread.
-Sync calls block on ``run_coroutine_threadsafe`` futures for the IPC round
-trip (sub-millisecond); async callers block for that duration in Stage A.
+Sync calls copy the caller ``ContextVar`` snapshot onto that loop so
+``issue``/``consume`` can stamp ``channel``; they then block on a future
+for the IPC round trip (sub-millisecond).
 """
 
 from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
 import os
 import secrets
 import stat
@@ -599,11 +601,48 @@ class OrinLeaseClientAdapter:
     ) -> _T:
         self._wait_owned_orind()
         loop = self._ensure_loop()
-        future = asyncio.run_coroutine_threadsafe(coro_factory(), loop)
+        ctx = contextvars.copy_context()
+        inner = coro_factory()
+
+        async def _bound() -> _T:
+            return await inner
+
+        done: concurrent.futures.Future[_T] = concurrent.futures.Future()
+        task_holder: list[asyncio.Task[_T]] = []
+
+        def _schedule() -> None:
+            try:
+                task = loop.create_task(_bound(), context=ctx)
+            except Exception as exc:
+                if not done.done():
+                    done.set_exception(exc)
+                return
+            task_holder.append(task)
+
+            def _complete(finished: asyncio.Task[_T]) -> None:
+                if done.cancelled() or done.done():
+                    return
+                if finished.cancelled():
+                    done.cancel()
+                    return
+                exc = finished.exception()
+                if exc is not None:
+                    done.set_exception(exc)
+                    return
+                done.set_result(finished.result())
+
+            task.add_done_callback(_complete)
+
+        loop.call_soon_threadsafe(_schedule)
         try:
-            return future.result(timeout=timeout)
+            return done.result(timeout=timeout)
         except concurrent.futures.TimeoutError as exc:
-            future.cancel()
+
+            def _cancel() -> None:
+                if task_holder and not task_holder[0].done():
+                    task_holder[0].cancel()
+
+            loop.call_soon_threadsafe(_cancel)
             raise OrinUnavailable("orind request timed out") from exc
         except _FUTURES_ERRORS as exc:
             raise OrinUnavailable(f"orind call failed: {exc}") from exc
@@ -639,6 +678,12 @@ class OrinLeaseClientAdapter:
                 return
 
     async def _request(self, message_type: str, **fields: Any) -> dict[str, Any]:
+        if message_type in {"issue", "consume"} and "channel" not in fields:
+            from js.echo.turn_context import current_runtime_context
+
+            runtime = current_runtime_context()
+            if runtime is not None and runtime.channel:
+                fields["channel"] = runtime.channel
         conn = await self._connection()
         response = await conn.request(message_type, **fields)
         if not response.get("ok", True):

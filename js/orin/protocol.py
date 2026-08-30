@@ -294,6 +294,7 @@ _SCHEMA: Final[dict[str, tuple[FieldSpec, ...]]] = {
         FieldSpec("context_taint", kinds=_I, optional=True),
         FieldSpec("arg_taint", kinds=_I, optional=True),
         FieldSpec("clearance", kinds=_I, optional=True, lo=0, hi=2),
+        FieldSpec("channel", kinds=_S, optional=True, max_len=128),
     ),
     "issue_ack": (
         FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),
@@ -320,6 +321,7 @@ _SCHEMA: Final[dict[str, tuple[FieldSpec, ...]]] = {
         FieldSpec("scan_surface", kinds=_S, optional=True, max_len=16),
         FieldSpec("session_id", kinds=_S, optional=True, max_len=128),
         FieldSpec("payload", kinds=(dict,), optional=True),
+        FieldSpec("channel", kinds=_S, optional=True, max_len=128),
     ),
     "consume_ack": (
         FieldSpec("v", kinds=_I, lo=1, hi=PROTOCOL_VERSION),

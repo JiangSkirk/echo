@@ -989,6 +989,7 @@ class OrinDaemon:
                 context_taint=int(envelope.get("context_taint") or 0),
                 arg_taint=int(envelope.get("arg_taint") or 0),
                 clearance=self._clearance_of(envelope),
+                channel=str(envelope.get("channel") or ""),
             )
         if message_type == "consume":
             return self._gatekeeper.handle_consume(
@@ -1002,6 +1003,7 @@ class OrinDaemon:
                 scan_text=str(envelope.get("scan_text") or ""),
                 scan_surface=str(envelope.get("scan_surface") or ""),
                 session_id=str(envelope.get("session_id") or ""),
+                channel=str(envelope.get("channel") or ""),
             )
         if message_type == "revoke":
             return self._gatekeeper.handle_revoke(
@@ -2086,6 +2088,7 @@ class OrinDaemon:
                 context_taint=int(envelope.get("context_taint") or 0),
                 arg_taint=int(envelope.get("arg_taint") or 0),
                 clearance=self._clearance_of(envelope),
+                channel=str(envelope.get("channel") or ""),
             )
             if not authz.get("ok"):
                 return authz
@@ -2101,6 +2104,7 @@ class OrinDaemon:
             context_taint=int(envelope.get("context_taint") or 0),
             arg_taint=int(envelope.get("arg_taint") or 0),
             clearance=self._clearance_of(envelope),
+            channel=str(envelope.get("channel") or ""),
         )
         if not authz.get("ok"):
             return authz

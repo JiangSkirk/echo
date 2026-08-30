@@ -109,6 +109,8 @@ class GatewayService:
         if not decision.accepted or decision.route is None or decision.owner is None:
             return decision
         require_untrusted_surface(self._settings, f"gateway:{envelope.peer.channel}")
+        # gateway:* defaults to plan-commit unless echo_plan_commit.enabled
+        # is explicitly false (that explicit off is a documented degrade).
         from js.echo.turn_runtime import run_echo_turn
 
         state = await run_echo_turn(
