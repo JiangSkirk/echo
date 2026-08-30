@@ -3,7 +3,7 @@
 | 项目 | 内容 |
 |------|------|
 | **报告日期** | 2026-07-21 |
-| **审计对象** | `/Users/jiangxuanzhen/titan-agent` |
+| **审计对象** | `{repo_root}` |
 | **产品** | JS Agent（`js/`）、JS Agent Work（`js_work/`）、Web UI、集成与编排 |
 | **版本线索** | js-agent v0.1.5 / 分支 feature/echo-runtime |
 | **统计口径** | **去重后真实安全问题（口径 C）** — 已去掉跨轮重复、同一事实多标签、测试清单与误报 |

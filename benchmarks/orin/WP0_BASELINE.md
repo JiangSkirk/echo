@@ -34,19 +34,19 @@ These are measured numbers, not targets. Do not treat them as acceptance.
 - elapsed **483.979 s**, returncode 1
 
 ```
-  /Users/jiangxuanzhen/titan-agent/tests/test_work_cli_surface.py:118: FutureWarning: js-work is a compatibility shim; use `js work`.
+tests/test_work_cli_surface.py:118: FutureWarning: js-work is a compatibility shim; use `js work`.
     work_cli.compat_main()
 
 tests/test_work_cli_surface.py::test_compat_and_module_dispatch_through_same_canonical_hook
-  /Users/jiangxuanzhen/titan-agent/js_work/__main__.py:8: FutureWarning: js-work is a compatibility shim; use `js work`.
+js_work/__main__.py:8: FutureWarning: js-work is a compatibility shim; use `js work`.
     compat_main()
 
 tests/test_work_cli_surface.py::test_compat_web_inherits_canonical_overlap_gate
-  /Users/jiangxuanzhen/titan-agent/tests/test_work_cli_surface.py:148: FutureWarning: js-work is a compatibility shim; use `js work`.
+tests/test_work_cli_surface.py:148: FutureWarning: js-work is a compatibility shim; use `js work`.
     work_cli.compat_main()
 
 tests/test_work_cli_surface.py::test_compat_web_serves_parent_appshell_instead_of_work_only_host
-  /Users/jiangxuanzhen/titan-agent/tests/test_work_cli_surface.py:208: FutureWarning: js-work is a compatibility shim; use `js work`.
+tests/test_work_cli_surface.py:208: FutureWarning: js-work is a compatibility shim; use `js work`.
     work_cli.compat_main()
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html

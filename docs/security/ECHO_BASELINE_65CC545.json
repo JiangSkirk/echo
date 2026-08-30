@@ -13,7 +13,7 @@
     "uv_lock_sha256": "ff448bc032a8bf5dc4dd85ddaf3e1b495a95acd1f9ac9a5a7dae83dd94a0c1c8",
     "measured_root": "/private/tmp/js-agent-baseline-clone",
     "import_root": "/private/tmp/js-agent-baseline-clone/js/__init__.py",
-    "harness_root": "/Users/jiangxuanzhen/titan-agent",
+    "harness_root": "{repo_root}",
     "baseline_script_sha256": "6a9ac87fa2e0e4f6639f9a0a2322429da2509d536fc2af3c5da5be504494271a",
     "harness_sha256": "6a9ac87fa2e0e4f6639f9a0a2322429da2509d536fc2af3c5da5be504494271a",
     "import_root_sha256": "52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0",
@@ -27,7 +27,7 @@
       "encoding": "cl100k_base",
       "tiktoken_version": "0.13.0",
       "resource_digest_algorithm": "ECHO-TOKENIZER-TREE-V1",
-      "resource_root": "/Users/jiangxuanzhen/titan-agent/resources/tokenizer",
+      "resource_root": "{repo_root}/resources/tokenizer",
       "resource_tree_sha256": "038f2a73f7b54a01024bb5e897c319250ff11faf730c9c405a9010cb9d6e3f2c"
     },
     "interpreter": {

@@ -20,7 +20,7 @@ This packet records local adversarial simulation evidence. It is not a real inde
 ### Echo Ledger Smoke
 
 ```text
-$ /Users/jiangxuanzhen/titan-agent/.venv/bin/python scripts/echo_ledger_smoke.py --turns 5 --state-dir <temporary-state-dir>
+$ uv run python scripts/echo_ledger_smoke.py --turns 5 --state-dir <temporary-state-dir>
 exit=0
 echo_ledger_smoke ok mode=on records=45 journal=<temporary-state-dir>/echo/ledger/chat.jsonl
 ```
@@ -28,7 +28,7 @@ echo_ledger_smoke ok mode=on records=45 journal=<temporary-state-dir>/echo/ledge
 ### Release Smoke
 
 ```text
-$ /Users/jiangxuanzhen/titan-agent/.venv/bin/python scripts/release_smoke.py --all
+$ uv run python scripts/release_smoke.py --all
 exit=0
 [检查] package
 [OK] package

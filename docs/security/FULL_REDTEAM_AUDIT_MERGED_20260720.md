@@ -3,7 +3,7 @@
 | 字段 | 内容 |
 |------|------|
 | **权威日期** | 2026-07-20 |
-| **代码根** | `/Users/jiangxuanzhen/titan-agent` |
+| **代码根** | `{repo_root}` |
 | **轮次** | R1–R3/R3M → R4–R8 → **R9–R16 穷尽扫描直至饱和** |
 | **条目总数** | **7206**（`VULN-0001` … `VULN-7206`） |
 | **全表** | [`VULN_CATALOG_FULL.md`](./VULN_CATALOG_FULL.md) |

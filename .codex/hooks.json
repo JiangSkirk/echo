@@ -6,11 +6,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash '/Users/jiangxuanzhen/titan-agent/.codex/hooks/format-python.sh'"
+            "command": "bash .codex/hooks/format-python.sh"
           },
           {
             "type": "command",
-            "command": "bash '/Users/jiangxuanzhen/titan-agent/.codex/hooks/check-js.sh'"
+            "command": "bash .codex/hooks/check-js.sh"
           }
         ]
       }

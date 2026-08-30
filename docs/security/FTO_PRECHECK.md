@@ -17,7 +17,7 @@ This packet is engineering input for outside counsel or an external FTO reviewer
 ## Local Gate Evidence
 
 ```text
-$ /Users/jiangxuanzhen/titan-agent/.venv/bin/python -c from pathlib import Path; from js.echo.ledger.release_gates import verify_release_readiness; r=verify_release_readiness(Path('.')); print(f'internal_ready={r.internal_ready} stable_ready={r.stable_ready}'); print('passed=' + ','.join(r.passed)); print('external_blockers=' + ','.join(r.external_blockers))
+$ uv run python -c from pathlib import Path; from js.echo.ledger.release_gates import verify_release_readiness; r=verify_release_readiness(Path('.')); print(f'internal_ready={r.internal_ready} stable_ready={r.stable_ready}'); print('passed=' + ','.join(r.passed)); print('external_blockers=' + ','.join(r.external_blockers))
 exit=0
 internal_ready=True stable_ready=False
 passed=origin_ledger,third_party_notices,codeowners,adr,rfc_template,echo_self_developed_boundary,echo_unified_execution_contract,security_matrix_25,real_sandbox_backend,echo_ip_boundary,echo_kernel_core,echo_recovery_probe,echo_local_sandbox_adapter,echo_live_acceptance_60m,sbom_spdx,license_scan,echo_slo_benchmark,echo_audit_reports_bound

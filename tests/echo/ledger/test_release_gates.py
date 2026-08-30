@@ -16,10 +16,13 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from js.echo.ledger.release_gates import (
+    _REPO_ROOT_TOKEN,
     _canonical_external_approval_payload,
+    _expand_repo_root_token,
     _has_unresolved_artifact_marker,
     _valid_echo_live_acceptance,
     _valid_echo_slo_benchmark,
+    _valid_old_baseline_evidence,
     release_source_digest,
     verify_echo_ip_boundary,
     verify_release_readiness,
@@ -1732,8 +1735,7 @@ def test_ip_boundary_handoff_vault_still_blocks_other_tokens(
     code_path = tmp_path / "js" / "echo" / "handoff_vault.py"
     code_path.parent.mkdir(parents=True)
     code_path.write_text(
-        'HANDOFF_VAULT_MAC_DOMAIN = b"js-agent:handoff-vault:v1\\0"\n'
-        "class StateGraph:\n    pass\n",
+        'HANDOFF_VAULT_MAC_DOMAIN = b"js-agent:handoff-vault:v1\\0"\nclass StateGraph:\n    pass\n',
         encoding="utf-8",
     )
 
@@ -2103,3 +2105,40 @@ def test_release_gate_rejects_slo_artifact_without_recovery_metrics(
     report = verify_release_readiness(tmp_path)
 
     assert "echo_slo_benchmark_invalid" in report.external_blockers
+
+
+def test_expand_repo_root_token_round_trips_absolute_and_token(tmp_path: pathlib.Path) -> None:
+    resolved = tmp_path.resolve()
+    assert _expand_repo_root_token(_REPO_ROOT_TOKEN, root=tmp_path) == str(resolved)
+    assert _expand_repo_root_token(f"{_REPO_ROOT_TOKEN}/resources/tokenizer", root=tmp_path) == str(
+        (resolved / "resources" / "tokenizer").resolve()
+    )
+    assert _expand_repo_root_token(str(resolved), root=tmp_path) == str(resolved)
+    assert _expand_repo_root_token(f"{_REPO_ROOT_TOKEN}/../secret", root=tmp_path) is None
+    assert _expand_repo_root_token(None, root=tmp_path) is None
+
+
+def test_old_baseline_evidence_accepts_repo_root_tokens(tmp_path: pathlib.Path) -> None:
+    _write_valid_stable_artifacts(tmp_path)
+    baseline_path = tmp_path / "docs" / "security" / "ECHO_BASELINE_65CC545.json"
+    payload = json.loads(baseline_path.read_text(encoding="utf-8"))
+    payload["provenance"]["harness_root"] = _REPO_ROOT_TOKEN
+    payload["provenance"]["tokenizer"]["resource_root"] = f"{_REPO_ROOT_TOKEN}/resources/tokenizer"
+    script_sha256 = payload["script_sha256"]
+    assert _valid_old_baseline_evidence(
+        payload, root=tmp_path, baseline_script_sha256=script_sha256
+    )
+    payload["provenance"]["harness_root"] = f"{_REPO_ROOT_TOKEN}/../outside"
+    assert not _valid_old_baseline_evidence(
+        payload, root=tmp_path, baseline_script_sha256=script_sha256
+    )
+
+
+def test_committed_echo_baseline_uses_repo_root_tokens() -> None:
+    payload = json.loads(
+        pathlib.Path("docs/security/ECHO_BASELINE_65CC545.json").read_text(encoding="utf-8")
+    )
+    assert payload["provenance"]["harness_root"] == _REPO_ROOT_TOKEN
+    assert payload["provenance"]["tokenizer"]["resource_root"] == (
+        f"{_REPO_ROOT_TOKEN}/resources/tokenizer"
+    )

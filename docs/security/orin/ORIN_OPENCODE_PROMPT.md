@@ -2,7 +2,7 @@
 
 你是 titan-agent / JS Agent 仓库的实施代理。只做 **阶段 A**。不要发明新架构，不要提前做阶段 B/C。
 
-仓库：`/Users/jiangxuanzhen/titan-agent`
+仓库：`{repo_root}`
 建议分支：从当前 `feature/echo-runtime` 切出 `feature/orin-stage-a`（若已存在则在其上继续，不要另起第三套设计）。
 
 ---

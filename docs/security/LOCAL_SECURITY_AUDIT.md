@@ -20,7 +20,7 @@ This is a local engineering audit packet for Echo 2.0. It does not replace an ex
 ### Security Matrix
 
 ```text
-$ /Users/jiangxuanzhen/titan-agent/.venv/bin/python -c from js.echo.ledger.security_matrix import run_security_matrix; r=run_security_matrix(); print(f'ok={r.ok} passed={r.passed} total={r.total} failed={r.failed}')
+$ uv run python -c from js.echo.ledger.security_matrix import run_security_matrix; r=run_security_matrix(); print(f'ok={r.ok} passed={r.passed} total={r.total} failed={r.failed}')
 exit=0
 ok=True passed=25 total=25 failed=()
 ```
@@ -28,7 +28,7 @@ ok=True passed=25 total=25 failed=()
 ### Core Regression
 
 ```text
-$ /Users/jiangxuanzhen/titan-agent/.venv/bin/python -m pytest tests/echo/ledger/test_release_gates.py tests/echo/ledger/test_security_matrix.py tests/echo/ledger/test_web_status.py -q
+$ uv run python -m pytest tests/echo/ledger/test_release_gates.py tests/echo/ledger/test_security_matrix.py tests/echo/ledger/test_web_status.py -q
 exit=0
 ......................................................                   [100%]
 54 passed in <elapsed>s
@@ -37,7 +37,7 @@ exit=0
 ### Static Quality
 
 ```text
-$ /Users/jiangxuanzhen/titan-agent/.venv/bin/ruff check js/echo js/agent js/models js/tools js/web js_work tests/echo tests/work scripts/echo_ledger_smoke.py
+$ uv run ruff check js/echo js/agent js/models js/tools js/web js_work tests/echo tests/work scripts/echo_ledger_smoke.py
 exit=0
 All checks passed!
 ```

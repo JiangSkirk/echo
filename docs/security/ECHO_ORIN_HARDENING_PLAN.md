@@ -1,7 +1,7 @@
 # Echo × Orin 架构强化方案
 
 > 版本：v1.1 · 2026-08-30
-> 范围：js-agent（`/Users/jiangxuanzhen/titan-agent`）
+> 范围：js-agent（`{repo_root}`）
 > 基线：v1.0 针对 commit `7652629`（2026-08-30 02:04）实测；v1.1 评审对照 HEAD `c4aa97b`（其后仅文档修订）
 > 目标：让 Echo（通用 agent 核心）与 Orin（安全防护架构）做到 **安全、稳定、快捷、低延迟、省 token、低设备要求**
 > 方法：完整盘点现状 → 学术/工程调研（Google Scholar + arXiv + 一手工程资料）→ 交叉检查 → 可执行方案
@@ -319,6 +319,6 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 - Hyperlight：Microsoft 开源博客 2024-11-07(https://opensource.microsoft.com/blog/2024/11/07/introducing-hyperlight-virtual-machine-based-security-for-functions-at-scale/)；hyperlight.org 对比表(https://hyperlight.org/)；Hyperlight Wasm 2025-03-26(https://opensource.microsoft.com/blog/2025/03/26/hyperlight-wasm-fast-secure-and-os-free/)
 - Apple Containerization：awesome-sandbox(https://github.com/restyler/awesome-sandbox)；oflight 专栏 2026-06-29(https://www.oflight.co.jp/en/columns/apple-container-macos-linux-runtime-2026-06)；sandbox-exec 废弃评价：networkeffect.dev 2026-04-15(https://networkeffect.dev/)
 - LLMLingua：arXiv:2310.05736(https://arxiv.org/abs/2310.05736)；C2KV：ACM DL 2026(https://dl.acm.org/doi/abs/10.1145/3770855.3817715)；Route-and-Reason：WWW 2026(https://dl.acm.org/doi/abs/10.1145/3774904.3793038)；cost-aware routing：NeurIPS 2025(https://proceedings.neurips.cc/paper_files/paper/2025/hash/e46eb6403af68506331f941282d838aa-Abstract-Conference.html)；agentic 推测解码：arXiv:2607.03333(https://arxiv.org/abs/2607.03333)；SPADE：arXiv:2608.13076(https://arxiv.org/abs/2608.13076)
-- 现状基线：`/Users/jiangxuanzhen/titan-agent` 工作树实测（`js/echo/`、`js/orin/`、`js/orind/`、`docs/security/orin/`）
+- 现状基线：`{repo_root}` 工作树实测（`js/echo/`、`js/orin/`、`js/orind/`、`docs/security/orin/`）
 
 *调研原始数据：`research/s1_agent_sec.csv` ~ `s8_sel4.csv`*

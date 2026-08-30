@@ -20,7 +20,7 @@ This packet prepares the independent clean-room review. It is not reviewer sign-
 ## Local Automated Boundary Check
 
 ```text
-$ /Users/jiangxuanzhen/titan-agent/.venv/bin/python -c from pathlib import Path; from js.echo.ledger.release_gates import verify_echo_ip_boundary; r=verify_echo_ip_boundary(Path('.')); print(f'ip_ok={r.ok} findings={len(r.findings)}')
+$ uv run python -c from pathlib import Path; from js.echo.ledger.release_gates import verify_echo_ip_boundary; r=verify_echo_ip_boundary(Path('.')); print(f'ip_ok={r.ok} findings={len(r.findings)}')
 exit=0
 ip_ok=True findings=0
 ```

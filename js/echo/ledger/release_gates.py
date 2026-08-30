@@ -176,9 +176,7 @@ _RELEASE_SOURCE_DESKTOP_GENERATED_PARTS = frozenset(
         "target",
     }
 )
-_RELEASE_SOURCE_DESKTOP_GENERATED_ROOTS = (
-    Path("desktop/src-tauri/gen"),
-)
+_RELEASE_SOURCE_DESKTOP_GENERATED_ROOTS = (Path("desktop/src-tauri/gen"),)
 _ISOLATED_VENV_E2E_EVIDENCE = Path("docs/security/ECHO_ISOLATED_VENV_E2E.json")
 _ISOLATED_VENV_E2E_SCHEMA_VERSION = "isolated-venv-e2e-v8"
 _WORK_LEDGER_CHAIN_TYPES: tuple[str, ...] = (
@@ -421,10 +419,7 @@ def _iter_release_source_files(root: Path) -> list[Path]:
                 files.append(candidate)
         elif candidate.is_dir():
             for path in candidate.rglob("*"):
-                if (
-                    not path.is_file()
-                    or path.is_symlink()
-                ):
+                if not path.is_file() or path.is_symlink():
                     continue
                 key = path.relative_to(resolved_root).as_posix()
                 if key in seen or not _release_source_member_included(Path(key)):
@@ -2490,7 +2485,9 @@ def _verify_work_ledger_receipt_binding(
         public_key_path = evidence_root.parent
         while (
             public_key_path != public_key_path.parent
-            and not (public_key_path / "docs" / "security" / "ECHO_E2E_LEDGER_PUBKEY.json").is_file()
+            and not (
+                public_key_path / "docs" / "security" / "ECHO_E2E_LEDGER_PUBKEY.json"
+            ).is_file()
         ):
             public_key_path = public_key_path.parent
         frozen_path = public_key_path / "docs" / "security" / "ECHO_E2E_LEDGER_PUBKEY.json"
@@ -2677,7 +2674,9 @@ def _valid_isolated_venv_e2e_work_receipt(
     owner_root = f"owners/{_owner_path_slug(str(owner))}/{_session_path_slug(str(session))}"
     if owner_root not in output_path.replace("\\", "/"):
         return False
-    if not _verify_work_ledger_receipt_binding(receipt, evidence_root=evidence_root, repo_root=repo_root):
+    if not _verify_work_ledger_receipt_binding(
+        receipt, evidence_root=evidence_root, repo_root=repo_root
+    ):
         return False
     if work_output is None or evidence_root is None:
         return True
@@ -3637,7 +3636,7 @@ def _valid_old_baseline_evidence(
         != _RELEASE_SOURCE_DIGEST_VERSION.decode("ascii").rstrip("\0")
         or provenance.get("source_digest") != measured_source_digest
         or provenance.get("uv_lock_sha256") != hashlib.sha256(old_uv_lock).hexdigest()
-        or provenance.get("harness_root") != str(root.resolve())
+        or _expand_repo_root_token(provenance.get("harness_root"), root=root) != str(root.resolve())
         or provenance.get("baseline_script_sha256") != baseline_script_sha256
         or provenance.get("harness_sha256") != baseline_script_sha256
         or provenance.get("import_root_sha256") != hashlib.sha256(old_import_root).hexdigest()
@@ -3649,7 +3648,8 @@ def _valid_old_baseline_evidence(
         or tokenizer.get("tiktoken_version") != tiktoken_version
         or tokenizer.get("resource_digest_algorithm")
         != _TOKENIZER_TREE_DIGEST_VERSION.decode("ascii").rstrip("\0")
-        or tokenizer.get("resource_root") != str((root / "resources" / "tokenizer").resolve())
+        or _expand_repo_root_token(tokenizer.get("resource_root"), root=root)
+        != str((root / "resources" / "tokenizer").resolve())
         or tokenizer.get("resource_tree_sha256") != expected_tokenizer_sha256
         or interpreter.get("implementation") != python_implementation
         or interpreter.get("version") != python_version
@@ -4468,6 +4468,25 @@ _LOCAL_GATE_DURATION_TOLERANCE_SECONDS = 1.0
 _EVIDENCE_DIR_TOKEN = "{evidence_dir}"
 _REPO_ROOT_TOKEN = "{repo_root}"
 _SOURCE_DIGEST_TOKEN = "{source_digest}"
+
+
+def _expand_repo_root_token(value: object, *, root: Path) -> str | None:
+    """Expand ``{repo_root}`` / ``{repo_root}/rel``; leave other strings unchanged."""
+
+    if not isinstance(value, str) or not value:
+        return None
+    resolved = root.resolve()
+    if value == _REPO_ROOT_TOKEN:
+        return str(resolved)
+    prefix = f"{_REPO_ROOT_TOKEN}/"
+    if value.startswith(prefix):
+        suffix = value.removeprefix(prefix)
+        if not suffix or suffix.startswith("/") or ".." in Path(suffix).parts:
+            return None
+        return str((resolved / suffix).resolve())
+    return value
+
+
 _LOCAL_GATE_PARSER_KINDS = frozenset(
     {
         "git_diff",
@@ -5104,8 +5123,7 @@ def _valid_supervised_overlay_report(
         or started is None
         or finished is None
         or finished < started
-        or (finished - started).total_seconds()
-        < duration - _SOAK_COVERAGE_TOLERANCE_SECONDS
+        or (finished - started).total_seconds() < duration - _SOAK_COVERAGE_TOLERANCE_SECONDS
         or not isinstance(acceptance_pid, int)
         or isinstance(acceptance_pid, bool)
         or acceptance_pid <= 0
@@ -5220,13 +5238,13 @@ def _valid_supervised_overlay_report(
                 or setup_bias > _SOAK_SETUP_BIAS_MAX_SECONDS
             ):
                 return False
-        elif setup_bias is None or abs(
-            (wall_utc - started).total_seconds() - monotonic_s - setup_bias
-        ) > _SOAK_WALL_MONO_ALIGN_TOLERANCE_SECONDS:
-            return False
-        if any(
-            heartbeat_counters[key] < prior_counters[key] for key in _SUPERVISED_COUNTER_KEYS
+        elif (
+            setup_bias is None
+            or abs((wall_utc - started).total_seconds() - monotonic_s - setup_bias)
+            > _SOAK_WALL_MONO_ALIGN_TOLERANCE_SECONDS
         ):
+            return False
+        if any(heartbeat_counters[key] < prior_counters[key] for key in _SUPERVISED_COUNTER_KEYS):
             return False
         if prior_monotonic is not None:
             gap = monotonic_s - prior_monotonic
@@ -5292,9 +5310,7 @@ def _valid_supervised_soak_artifact(
     if set(combined) != _SUPERVISED_COMBINED_FIELDS:
         return False
     claimed_combined_sha = combined.get("combined_sha256")
-    unsigned_combined = {
-        key: value for key, value in combined.items() if key != "combined_sha256"
-    }
+    unsigned_combined = {key: value for key, value in combined.items() if key != "combined_sha256"}
     actual_combined_sha = hashlib.sha256(
         json.dumps(
             unsigned_combined,
@@ -5319,8 +5335,7 @@ def _valid_supervised_soak_artifact(
         or started is None
         or finished is None
         or finished < started
-        or (finished - started).total_seconds()
-        < duration - _SOAK_COVERAGE_TOLERANCE_SECONDS
+        or (finished - started).total_seconds() < duration - _SOAK_COVERAGE_TOLERANCE_SECONDS
         or combined.get("source_digest") != expected_source_digest
         or release_source_digest(root.resolve()) != expected_source_digest
         or combined.get("metadata_fingerprint") != current_metadata

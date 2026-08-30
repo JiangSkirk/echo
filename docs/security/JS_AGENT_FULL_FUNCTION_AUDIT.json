@@ -7,7 +7,7 @@
       "group": "web_api",
       "name": "HTTP chat/status/router regression",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "-m",
         "pytest",
         "tests/web",
@@ -26,7 +26,7 @@
       "group": "websocket",
       "name": "WebSocket message and stream regression",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "-m",
         "pytest",
         "tests/echo/ledger/test_websocket_primary.py",
@@ -44,7 +44,7 @@
       "group": "stream_thinking",
       "name": "Stream events and thinking frames",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "-m",
         "pytest",
         "tests/test_stream_events_dispatch.py",
@@ -62,7 +62,7 @@
       "group": "tools",
       "name": "Tool lease and registry boundary",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "-m",
         "pytest",
         "tests/echo/test_tool_capability_context.py",
@@ -81,7 +81,7 @@
       "group": "attachments_vision",
       "name": "Attachments and vision safety",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "-m",
         "pytest",
         "tests/web/test_chat_router.py",
@@ -100,7 +100,7 @@
       "group": "memory_skills",
       "name": "Memory, capsule, and skills",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "-m",
         "pytest",
         "tests/test_memory.py",
@@ -120,7 +120,7 @@
       "group": "fleet_cron_setup",
       "name": "Fleet, cron, setup, and static frontend",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "-m",
         "pytest",
         "tests/test_orchestration.py",
@@ -141,7 +141,7 @@
       "group": "work",
       "name": "JS Agent Work Echo product smoke",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "scripts/js_work_echo_smoke.py",
         "--turns",
         "3",
@@ -160,7 +160,7 @@
       "group": "security",
       "name": "Security and red-team regression",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "-m",
         "pytest",
         "tests/test_sandbox.py",
@@ -181,7 +181,7 @@
       "group": "performance",
       "name": "Echo benchmark SLO",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "scripts/echo_architecture_benchmark.py",
         "--iterations",
         "50",
@@ -189,7 +189,7 @@
         "10",
         "--enforce-slo",
         "--baseline",
-        "/Users/jiangxuanzhen/titan-agent/docs/security/ECHO_BASELINE_65CC545.json",
+        "<REPO_ROOT>/docs/security/ECHO_BASELINE_65CC545.json",
         "--output",
         "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/js-agent-full-function-audit-9kgy8xd2/ECHO_SLO_BENCHMARK.json"
       ],
@@ -205,7 +205,7 @@
       "group": "release",
       "name": "Echo ledger smoke",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "scripts/echo_ledger_smoke.py",
         "--turns",
         "5",
@@ -224,7 +224,7 @@
       "group": "release",
       "name": "Release smoke all",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "scripts/release_smoke.py",
         "--all"
       ],
@@ -240,7 +240,7 @@
       "group": "quality",
       "name": "Ruff quality gate",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "-m",
         "ruff",
         "check",
@@ -261,7 +261,7 @@
       "group": "quality",
       "name": "Mypy quality gate",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "-m",
         "mypy",
         "js",
@@ -280,7 +280,7 @@
       "group": "code_audit",
       "name": "Round 1 repository audit",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "scripts/echo_full_audit.py",
         "--rounds",
         "1",
@@ -302,7 +302,7 @@
       "group": "code_audit",
       "name": "Round 2 repository audit",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "scripts/echo_full_audit.py",
         "--rounds",
         "2",
@@ -324,7 +324,7 @@
       "group": "code_audit",
       "name": "Round 3 repository audit",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "scripts/echo_full_audit.py",
         "--rounds",
         "3",
@@ -346,7 +346,7 @@
       "group": "code_audit",
       "name": "Round 4 repository audit",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "scripts/echo_full_audit.py",
         "--rounds",
         "4",
@@ -368,7 +368,7 @@
       "group": "code_audit",
       "name": "Round 5 repository audit",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "scripts/echo_full_audit.py",
         "--rounds",
         "5",
@@ -390,7 +390,7 @@
       "group": "code_audit",
       "name": "Round 6 repository audit",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "scripts/echo_full_audit.py",
         "--rounds",
         "6",
@@ -412,7 +412,7 @@
       "group": "code_audit",
       "name": "Round 7 repository audit",
       "command": [
-        "/Users/jiangxuanzhen/titan-agent/.venv/bin/python",
+        "<REPO_ROOT>/.venv/bin/python",
         "scripts/echo_full_audit.py",
         "--rounds",
         "7",

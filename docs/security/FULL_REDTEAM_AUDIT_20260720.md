@@ -7,7 +7,7 @@
 | 字段 | 内容 |
 |------|------|
 | **审计日期** | 2026-07-20 |
-| **代码根** | `/Users/jiangxuanzhen/titan-agent` |
+| **代码根** | `{repo_root}` |
 | **范围** | `js/**`（JS Agent）、`js_work/**`（JS Agent Work）、关联 Web/静态前端、集成入口 |
 | **版本线索** | `js-agent` v0.1.5 / 分支 `feature/echo-runtime` |
 | **方法** | 6 路并行源码深度审计 + 主审计员关键路径复核；**未对生产系统投放真实 exploit payload** |
@@ -586,9 +586,9 @@ DATA-001 主密钥文件 · 002 记忆明文 · 003 目录权限 · 004 bootstra
 ## 7. 验证建议（安全回归，非攻击 payload）
 
 ```bash
-cd /Users/jiangxuanzhen/titan-agent
+cd {repo_root}
 # 既有安全矩阵
-.venv/bin/python -c "from js.echo.ledger.security_matrix import run_security_matrix; r=run_security_matrix(); print(r.ok, r.passed, r.total)"
+uv run python -c "from js.echo.ledger.security_matrix import run_security_matrix; r=run_security_matrix(); print(r.ok, r.passed, r.total)"
 
 # 应用修复后应新增的测试方向（建议）
 # - test_auth_anonymous_never_admin
