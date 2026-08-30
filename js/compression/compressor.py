@@ -49,7 +49,7 @@ class CompressionLevel(StrEnum):
 
     NONE = "none"
     GENTLE = "gentle"  # prune tool outputs only
-    FULL = "full"      # summarize middle section
+    FULL = "full"  # summarize middle section
 
 
 @dataclass
@@ -58,8 +58,8 @@ class CompressionConfig:
 
     max_tokens: int = 32000
     protect_head_messages: int = 3  # system + first user + first assistant
-    protect_tail_turns: int = 6     # recent conversation turns
-    summary_ratio: float = 0.20     # summary gets 20% of compressed content budget
+    protect_tail_turns: int = 6  # recent conversation turns
+    summary_ratio: float = 0.20  # summary gets 20% of compressed content budget
     summary_min_tokens: int = 2000
     summary_max_tokens: int = 12000
     image_token_estimate: int = 1600  # per image
@@ -67,7 +67,7 @@ class CompressionConfig:
     use_llm_summary: bool = True  # Use LLM if summarizer available
 
     # Dual-threshold compression (Hermes-inspired)
-    warning_threshold: float = 0.50   # at 50% of max_tokens, start gentle compression
+    warning_threshold: float = 0.50  # at 50% of max_tokens, start gentle compression
     critical_threshold: float = 0.85  # at 85%, use full compression
 
     # Adaptive mode (auto-adjust based on feedback)
@@ -80,6 +80,10 @@ class CompressionConfig:
     # Count compression restarts toward a hard limit. When the limit is
     # exceeded we truncate instead of calling the LLM summariser again.
     max_compression_restarts: int = 3
+
+    # P3-1 LLMLingua-style compaction. Default off; no GPU; cap 10×.
+    llmlingua_enabled: bool = False
+    llmlingua_max_ratio: float = 10.0
 
 
 @dataclass
@@ -94,12 +98,12 @@ class CompressionResult:
     identifiers_found: list[str] = field(default_factory=list)
     identifiers_preserved: list[str] = field(default_factory=list)
     # Visibility fields for observability
-    trigger_ratio: float = 0.0          # estimated / max_tokens that triggered compression
-    head_count: int = 0                 # messages protected in head
-    middle_count: int = 0               # messages in compressible middle
-    tail_count: int = 0                 # messages protected in tail
-    pruned_count: int = 0               # tool-output messages pruned
-    summary_length: int = 0             # chars in generated summary
+    trigger_ratio: float = 0.0  # estimated / max_tokens that triggered compression
+    head_count: int = 0  # messages protected in head
+    middle_count: int = 0  # messages in compressible middle
+    tail_count: int = 0  # messages protected in tail
+    pruned_count: int = 0  # tool-output messages pruned
+    summary_length: int = 0  # chars in generated summary
 
 
 class ContextCompressor:
@@ -131,12 +135,19 @@ class ContextCompressor:
             if not recs.get("needs_adjustment"):
                 return
             for param, info in recs.get("recommendations", {}).items():
-                if param == "protect_tail_turns" and hasattr(self.config, param) or param == "protect_head_messages" and hasattr(self.config, param):
+                if (
+                    param == "protect_tail_turns"
+                    and hasattr(self.config, param)
+                    or param == "protect_head_messages"
+                    and hasattr(self.config, param)
+                ):
                     current = getattr(self.config, param)
                     delta = info.get("recommended_delta", 0)
                     new_val = max(1, current + delta)
                     setattr(self.config, param, new_val)
-                    self._feedback.apply_adjustment(param, float(new_val), info.get("reason", "adaptive"))
+                    self._feedback.apply_adjustment(
+                        param, float(new_val), info.get("reason", "adaptive")
+                    )
         except Exception:
             logger.warning("Adaptive adjustment failed", exc_info=True)
 
@@ -309,7 +320,9 @@ class ContextCompressor:
                     original_tokens=estimated,
                     compressed_tokens=final_estimate,
                     token_unit_id=token_unit_id,
-                    identifiers_found=self._extract_identifiers(result) if self.config.preserve_identifiers else [],
+                    identifiers_found=self._extract_identifiers(result)
+                    if self.config.preserve_identifiers
+                    else [],
                     trigger_ratio=ratio,
                     pruned_count=pruned,
                 )
@@ -663,21 +676,47 @@ class ContextCompressor:
         """Replace long tool outputs with concise summaries."""
         pruned: list[ChatMessage] = []
         for msg in messages:
-            if msg.role == "tool" and isinstance(msg.content, str) and len(msg.content) > _TOOL_OUTPUT_PRUNE_LEN:
+            if (
+                msg.role == "tool"
+                and isinstance(msg.content, str)
+                and len(msg.content) > _TOOL_OUTPUT_PRUNE_LEN
+            ):
                 lines = msg.content.splitlines()
                 pruned_content = (
                     f"[Tool output truncated] {lines[0][:100]}... "
                     f"({len(lines)} lines, {len(msg.content)} chars total)"
                 )
-                pruned.append(ChatMessage(
-                    role=msg.role,
-                    content=pruned_content,
-                    tool_call_id=msg.tool_call_id,
-                    name=msg.name,
-                ))
+                pruned.append(
+                    ChatMessage(
+                        role=msg.role,
+                        content=pruned_content,
+                        tool_call_id=msg.tool_call_id,
+                        name=msg.name,
+                    )
+                )
             else:
                 pruned.append(msg)
-        return pruned
+        if not self.config.llmlingua_enabled:
+            return pruned
+        from js.compression.llmlingua import compact_text
+
+        compacted: list[ChatMessage] = []
+        for msg in pruned:
+            if msg.role == "tool" and isinstance(msg.content, str) and msg.content:
+                compacted.append(
+                    ChatMessage(
+                        role=msg.role,
+                        content=compact_text(
+                            msg.content,
+                            max_ratio=self.config.llmlingua_max_ratio,
+                        ),
+                        tool_call_id=msg.tool_call_id,
+                        name=msg.name,
+                    )
+                )
+            else:
+                compacted.append(msg)
+        return compacted
 
     async def _generate_summary(
         self,
@@ -717,7 +756,10 @@ class ContextCompressor:
         return self._fallback_summary(messages, identifiers, max_chars)
 
     def _fallback_summary(
-        self, messages: list[ChatMessage], identifiers: list[str] | None = None, max_chars: int | None = None
+        self,
+        messages: list[ChatMessage],
+        identifiers: list[str] | None = None,
+        max_chars: int | None = None,
     ) -> str:
         """Rule-based summary when LLM is unavailable."""
         parts: list[str] = []
@@ -894,7 +936,9 @@ class ContextCompressor:
             "original_tokens": orig_tokens,
             "compressed_tokens": comp_tokens,
             "saved_tokens": orig_tokens - comp_tokens,
-            "reduction_pct": round((1 - comp_tokens / orig_tokens) * 100, 1) if orig_tokens > 0 else 0,
+            "reduction_pct": round((1 - comp_tokens / orig_tokens) * 100, 1)
+            if orig_tokens > 0
+            else 0,
             "original_messages": len(original),
             "compressed_messages": len(compressed),
             "token_unit_id": counter.token_unit_id,

@@ -57,6 +57,13 @@ class ModelProviderConfig(BaseModel):
         description="Query parameter name for auth_adapter=query_param",
     )
     models: list[ModelConfig] = Field(default_factory=list)
+    draft_model: str | None = Field(
+        default=None,
+        description=(
+            "Optional local draft model for speculative decoding (P3-3). "
+            "Default off. Router chat does not read this field."
+        ),
+    )
 
     @field_validator("name")
     @classmethod
@@ -130,6 +137,13 @@ class ModelConfig(BaseModel):
     probed_at: float | None = Field(
         default=None,
         description="Unix timestamp when this capability profile was last probed",
+    )
+    draft_model: str | None = Field(
+        default=None,
+        description=(
+            "Optional speculative-decoding draft model id for a local server "
+            "(Ollama/LM Studio). Default off; the router does not consume this."
+        ),
     )
 
 

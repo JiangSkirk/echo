@@ -328,16 +328,14 @@ class ContentAddressableStore:
             )
             payload_size = len(payload)
             if self._max_records == 0 or (
-                self._max_payload_bytes is not None
-                and payload_size > self._max_payload_bytes
+                self._max_payload_bytes is not None and payload_size > self._max_payload_bytes
             ):
                 self._record_rejection(payload_size)
                 return record, False
 
             self._evict_until_fits(payload_size)
-            if (
-                self._reserve_payload_bytes is not None
-                and not self._reserve_payload_bytes(payload_size)
+            if self._reserve_payload_bytes is not None and not self._reserve_payload_bytes(
+                payload_size
             ):
                 self._record_rejection(payload_size)
                 return record, False
@@ -420,6 +418,8 @@ def summarize_context(
     *,
     store: ContentAddressableStore | None = None,
     token_counter: TokenCounter | None = None,
+    llmlingua: bool = False,
+    llmlingua_max_ratio: float = 10.0,
 ) -> ContextSavingsResult:
     """Fold ``entries`` through a CAS and compute savings counters.
 
@@ -459,13 +459,18 @@ def summarize_context(
     newly_stored: set[bytes] = set()
 
     for entry in entries:
-        payload_tokens = estimate_tokens(entry.payload, token_counter=token_counter)
+        payload = entry.payload
+        if llmlingua:
+            from js.compression.llmlingua import compact_bytes
+
+            payload = compact_bytes(payload, max_ratio=llmlingua_max_ratio)
+        payload_tokens = estimate_tokens(payload, token_counter=token_counter)
         naive_tokens += payload_tokens
         if token_counter is None:
-            record, created = cas.put_with_status(entry.payload)
+            record, created = cas.put_with_status(payload)
         else:
             record, created = cas._put_with_status_counted(  # noqa: SLF001 -- same-module internal API
-                entry.payload,
+                payload,
                 tokens=payload_tokens,
                 token_unit_id=effective_unit_id,
             )

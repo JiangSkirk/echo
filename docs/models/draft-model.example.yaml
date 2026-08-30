@@ -1,0 +1,15 @@
+# Example: local speculative decoding (P3-3)
+# Copy into ~/.config/js/config.yaml. Default installs omit draft_model.
+
+providers:
+  - name: ollama
+    base_url: http://127.0.0.1:11434/v1
+    api_key: ollama
+    default_model: llama3.2
+    draft_model: null
+
+  - name: lmstudio
+    base_url: http://127.0.0.1:1234/v1
+    api_key: lm-studio
+    default_model: local-lm
+    draft_model: null
