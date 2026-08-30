@@ -133,7 +133,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | T7 | Apple Containerization 载体 | Orin Stage C `production_sandbox_carrier`（**先改 SPEC 再改位语义**） | P2-1 给 **file/build** 真 VM 隔离；memory/net 须先让该进程不再持有生产 KeyBox；**不**解锁 Stage C 外部门，也**不**承载 desktop/secret | 中：需 macOS 26；老设备回退 sandbox-exec | 设备要求上升 → 分层回退；Linux VM 跑不了 AppKit/Keychain；file/memory/services 今日会在进程内构造 KeyBox | **采纳（P2 核心，范围收窄）** |
 | T8 | Wasmtime skill 沙箱 | Echo skill/插件执行 | 亚毫秒启动的全平台沙箱 | 中：skill 需编译 wasm 或运行时嵌入 | 现有 skill 是 Python → 渐进式 | 采纳（P3 探索） |
 | T9 | LLMLingua 式压缩 | Echo context_savings 升级 | 工具输出/长文档最多 20× 压缩 | 中：压缩模型本地运行（phi-2 级 <8GB），启发式回退 | 与"低设备"部分冲突 → 可选模块 | 采纳（P3，可选） |
-| T10 | KV 复用 + 稳定前缀契约 | Echo prompt 组装层 | prefill 成本显著下降；零质量损失 | 低 | 无 | **采纳（P0 顺手做）** |
+| T10 | KV 复用 + 稳定前缀契约 | Echo prompt 组装层 | prefill 成本显著下降；零质量损失 | 低中：须冻结自适应 schema、把 memory 移出 system | 与自适应工具子集互斥 → 可信会话可冻结后追加；**不可信表面整段会话不得扩大冻结集** | **采纳（P0 顺手做）** |
 | T11 | 模型级联路由 | Echo models/router 升级 | 本地小模型优先，云端兜底；成本/延迟双降 | 中 | 现有 fallback 路由器兼容 | 采纳（P2） |
 | T12 | 推测解码 | 本地推理后端（Ollama/LM Studio）集成层 | 本地模型解码 2–3× 加速 | 低（后端配置而非自研） | 依赖后端支持 | 采纳（P3 配置层） |
 | T13 | Gemini 教训：检测式防御的定位 | SECURITY.md 已声明 | 防止团队对分类器产生错误信心 | 零 | 无 | 已采纳（维持） |
@@ -164,7 +164,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 │  │  P2：中途 dirty 位可升级为对剩余动作 BIND（与 T4 合并）     │  │
 │  ├─ capability（租约签发/消费/撤销，+ T3 SMT 收窄证明）      │  │
 │  ├─ ledger（哈希链 + 前向安全键控 + Merkle 锚定，T6）         │  │
-│  ├─ context（CAS 去重 + 稳定前缀契约 T10 + 可选压缩 T9）      │  │
+│  ├─ context（CAS 去重 + 稳定前缀 T10：system+冻结 schema；memory 不进前缀）│  │
 │  └─ models（级联路由 T11：本地小模型 → 云端，风险/难度感知）   │  │
 └──────────────────────────┬──────────────────────────────────┘
                            ▼  每个 effect 草案
@@ -207,7 +207,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 |---|---|---|---|
 | P0-1 | `turn_loop` 新增 `plan_commit` 回合模式：PLAN→BIND→EXECUTE 三阶段。**激活条件是动态风险门控，不是入口一次性判定**。（1）入口不可信（`run_echo_turn` 经 `orin_taint.set_entry_source(channel)` 打上 `INBOX_CONTENT\|WEB_CONTENT` 或 `AUTO_TASK`）→ 整回合走 plan-commit；（2）入口可信但迭代边界发现 `context_taint` 新增 dirty 位（至少 `WEB_CONTENT`/`INBOX_CONTENT`/`BOT_PEER`；与现有 `DIRTY_FOR_WRITE` 对齐）→ **P0 对剩余迭代单调收窄：禁写、禁 egress，只收紧不放松**；（3）中途升级到 plan-commit（对剩余动作重新 BIND）放到 P2-2，与 taint→label 合并。收窄是确定性策略，零额外 token。不沿用 `require_untrusted_surface`（那是隔离姿态门，不是逐回合信任标记）。 | 新增模式与收窄路径单测全覆盖；轻路径现有测试文件零回归；构造"可信入口 + 中途 web 读入注入"用例，收窄后 0 次写/egress 成功 | 配置开关 `echo.plan_commit=false` 恢复现状；收窄路径可单独关但默认与 plan-commit 同开关 |
 | P0-2 | 值槽位机制（**新建，不是复用现有 capability 检查**）。现状 lease 把**整份 arguments** 哈希进 `args_schema`（`js/agent/tool_executor.py` 的 `stable_payload_hash`），`taint_floor`/`taint_sink` 是 lease 级字段，`consume` 不做逐参数评估。P0 要新增槽位：计划里每个参数位 `{slot:taint_policy}`，EXECUTE 只能填已 BIND 的槽。**填槽来源（二选一，优先 1）**：（1）工具输出的确定性投影（结构化字段：路径、ID、URL、状态码）——零模型、零额外 token；（2）隔离提取调用（Q-LLM 角色，只许返回值、不许发起工具）——**有额外 token，T2 不承诺全局零 token**。禁止用同一个受污染上下文的模型既提取值又隐式决定参数拼装（否则拿不到 CaMeL 控制流性质）。**落点必须分三层，缺一不可**：（a）PLAN 用 `TurnRequest.disable_tools`；（b）BIND 冻结工具**名**（`lease_tool_allowlist`；bots 冻结 schema / `c4aa97b` 只覆盖这一层，不够）**并且**签发槽位级绑定（每槽 taint_policy + 允许的填充源），不是只哈希模型刚产出的整份 JSON；（c）EXECUTE 是对已绑定序列的**确定性步进**（下一步由计划计数器决定，不是模型选择）：本阶段不向模型下发可选工具 schema；由装配器按 BIND 表填槽，再对装配结果做 `args_schema`。若为填槽发起隔离提取，那是一次 `disable_tools` 的独立模型调用，不得进入工具循环。若实现仍把模型 `tool_calls` 接到 EXECUTE，视为缺陷：模型建议只能校验、不得增键、不得改已填槽、不得改下一步工具名，否则 deny。 | 构造注入用例（邮件/网页/文档，优先扩展 `tests/adversarial/corpus.jsonl`）重路径下 0 个导致计划外动作；负例：仅设 `lease_tool_allowlist` 仍消费模型 arguments、或 EXECUTE 仍让模型选下一步工具 → 必须失败；新增代码保持测试密度 ≥1.2 | 同上 |
-| P0-3 | prompt 稳定前缀契约：系统提示 + 工具描述排序固定，变动只追加在尾部（配合 provider 的 prompt caching） | 相同会话连续 5 回合的 prompt 前缀哈希一致；token 计量记录入 ledger | 开关回退 |
+| P0-3 | prompt 稳定前缀契约。今日破坏前缀的因素包括：memory `get_context_string`（query 依赖，注入 system prompt）、learned insight / optimizer A/B、session capsule 改写、**自适应工具 schema 子集**（`turn_loop/schema.py`，按 query 变化）、压缩替换中段、bots volatile tail。**决策：会话内冻结工具子集**（该冻结集同时作为 plan-commit PLAN 的动作词典）。可信 CLI：可按首回合 query 定集，之后只许追加不得重排/删减。**不可信表面（gateway 等）：冻结集 ⊆ 该表面静态允许清单，整段会话不得扩大**——静态清单是显式配置（建议 `gateway.tool_allowlist`，默认只读/无 exec/无任意 egress），**不得把全量 registry 当默认清单**；清单缺失则 fail-closed（该表面不下发写/egress 工具，或拒绝启动 gateway）。首回合 = 静态清单 ∩ 自适应；后续回合只可保持或再交而缩小，**禁止追加、禁止把后续用户消息或工具结果并入冻结集**。memory 注入从 system prompt 挪到 system 之后的独立消息（保持 `<memory trust="untrusted">`），不得进入可缓存前缀。推广 bots 已有 `prompt_cache_key` + Anthropic `cache_control` 钩子（`js/bots/persona.py`）到通用 Echo 路径。 | **限定**无压缩、无 capsule 的会话段，且 **5 回合用户 query 互不相同**（须覆盖若走旧自适应路径会选出不同工具子集的 query）：`system+冻结工具 schema` 前缀哈希一致；哈希输入**不得**含 memory 块（负例：memory 仍在 `_build_system_message` → fail）；负例：未冻结 schema 时这 5 个 query 的工具子集哈希应互不相同；**负例：gateway 会话无论第 1 条还是第 N 条塞工具关键词，冻结集不得超出该表面静态允许清单，也不得比本会话已冻结集更宽**。token 计量入 ledger | 开关回退；schema 冻结可单独关，关则不宣称缓存收益 |
 | P0-4 | **默认生效面（gateway 联动）**：`gateway.enabled=true` 时，（1）`gateway:*` channel 的 `plan_commit` 默认开（仍可用显式 `echo.plan_commit=false` 关掉，但文档必须把这标成降级）；（2）该表面策略档不落入 `policy_profile=compat`：`file_write`+dirty→approval、`shell`+`WEB_CONTENT`→deny 等现有表项必须拦截，不得 allow+log。AppShell 全局 compat 改写不得覆盖 gateway 表面。CLI/桌面默认仍可不启用 plan-commit。 | gateway 开启的集成测试：注入用例走 plan-commit；Orin 非 allow 判定实际拒绝/要求审批，日志里不得出现"compat degraded to allow" | 显式 `echo.plan_commit=false` 或关闭 gateway；compat 降级必须打可见警告 |
 
 ### P1 —— 可度量安全（3–4 周）
