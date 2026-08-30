@@ -684,12 +684,41 @@ class GatewayConfig(BaseModel):
     webhook_secret: str = Field(default="", repr=False)
     webhook_max_skew_seconds: int = Field(default=300, ge=1)
     channels: list[GatewayChannelConfig] = Field(default_factory=list)
+    # Empty = built-in read-only set (file_read/list_dir/glob/grep/memory_search).
+    tool_allowlist: list[str] = Field(default_factory=list)
 
     @field_validator("enabled", mode="before")
     @classmethod
     def require_exact_boolean_gateway_gate(cls, value: object) -> bool:
         if type(value) is not bool:
             raise ValueError("gateway.enabled must be an exact boolean")
+        return value
+
+    @field_validator("tool_allowlist")
+    @classmethod
+    def validate_gateway_tool_allowlist(cls, value: list[str]) -> list[str]:
+        names: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("gateway.tool_allowlist entries must be non-empty strings")
+            name = item.strip()
+            if name not in seen:
+                names.append(name)
+                seen.add(name)
+        return names
+
+
+class EchoPlanCommitConfig(BaseModel):
+    """Plan-then-execute mode. Default off; explicit false is a degrade (P0-4)."""
+
+    enabled: bool = False
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def require_exact_boolean_plan_commit(cls, value: object) -> bool:
+        if type(value) is not bool:
+            raise ValueError("echo_plan_commit.enabled must be an exact boolean")
         return value
 
 
@@ -827,6 +856,9 @@ class JSSettings(BaseSettings):
     tools: ToolLimits = Field(default_factory=ToolLimits)
     echo_budget: EchoBudgetConfig = Field(default_factory=EchoBudgetConfig)
     echo_ledger: EchoLedgerConfig = Field(default_factory=EchoLedgerConfig)
+    # Nested name is echo_plan_commit (not `echo`) so JS_ECHO__* does not
+    # collide with echo_budget / echo_engine / echo_ledger.
+    echo_plan_commit: EchoPlanCommitConfig = Field(default_factory=EchoPlanCommitConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     orin: OrinConfig = Field(default_factory=OrinConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)

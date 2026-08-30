@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import time
 from collections import Counter
@@ -21,6 +22,18 @@ from js.echo.ledger.service import (
     EchoUnavailableError,
 )
 from js.echo.model_budget import MODEL_CALL_JOURNAL_RECORDS, EchoBudgetExceededError
+from js.echo.plan_commit.activation import (
+    midturn_narrowing_active,
+    plan_commit_turn_active,
+)
+from js.echo.plan_commit.narrowing import (
+    filter_write_egress_schema,
+    messages_have_injection_dirty,
+    reset_write_egress_blocked,
+    restore_checkpoint_tool_taint,
+    set_write_egress_blocked,
+)
+from js.echo.plan_commit.plan import PLAN_INSTRUCTIONS, PlanError, parse_plan
 from js.echo.primitives import BudgetClock, BudgetLimits
 from js.echo.state import AgentState
 from js.echo.turn_context import current_runtime_context, runtime_partition_key
@@ -111,6 +124,9 @@ class EchoTurnLoop:
         self._budget_elapsed_reserved_ms = 0
         self._pending_model_prompt_tokens = 0
         self._prompt_token_counter: TokenCounter | None = None
+        self._write_egress_narrowed = False
+        self._plan_commit_receipts: list[dict[str, Any]] = []
+        self._last_tools_schema: list[dict[str, Any]] | None = None
 
     # ------------------------------------------------------------------
     # Orchestration
@@ -800,6 +816,19 @@ class EchoTurnLoop:
 
     async def _run_loop(self) -> None:
         agent = self.agent
+        runtime = current_runtime_context()
+        channel = runtime.channel if runtime is not None else ""
+        narrowing_token = set_write_egress_blocked(self._write_egress_narrowed)
+        try:
+            if plan_commit_turn_active(settings=agent.settings, channel=channel):
+                await self._run_plan_commit()
+                return
+            await self._run_react_loop()
+        finally:
+            reset_write_egress_blocked(narrowing_token)
+
+    async def _run_react_loop(self) -> None:
+        agent = self.agent
         state = self.state
         empty_response_retries = 0
         while state.turn_count < agent.settings.max_turns:
@@ -815,6 +844,7 @@ class EchoTurnLoop:
             agent.logger.debug(f"Turn {state.turn_count}", extra={"run": self.run_id})
 
             self._enforce_message_limit()
+            self._apply_midturn_narrowing()
 
             turn_start = time.perf_counter()
             turn_tool_scores: list[Any] = []
@@ -875,6 +905,145 @@ class EchoTurnLoop:
                 f"Maximum turn limit ({agent.settings.max_turns}) reached before completion"
             )
 
+    def _turn_channel(self) -> str:
+        runtime = current_runtime_context()
+        return runtime.channel if runtime is not None else ""
+
+    def _apply_midturn_narrowing(self) -> None:
+        """Before the next model call: restore checkpoint bits, then maybe narrow."""
+
+        if not midturn_narrowing_active(
+            settings=self.agent.settings,
+            channel=self._turn_channel(),
+        ):
+            return
+        stats = self.state.compression_stats.get("midturn_narrowing")
+        if isinstance(stats, dict) and stats.get("write_egress_blocked"):
+            self._arm_write_egress_narrowing(reason=str(stats.get("reason") or "checkpoint"))
+            return
+        self.state.messages = restore_checkpoint_tool_taint(self.state.messages)
+        if self._write_egress_narrowed:
+            return
+        if not messages_have_injection_dirty(self.state.messages):
+            return
+        self._arm_write_egress_narrowing(reason="injection_dirty")
+
+    def _arm_write_egress_narrowing(self, *, reason: str) -> None:
+        self._write_egress_narrowed = True
+        set_write_egress_blocked(True)
+        self.state.compression_stats["midturn_narrowing"] = {
+            "write_egress_blocked": True,
+            "reason": reason,
+        }
+
+    async def _run_plan_commit(self) -> None:
+        """PLAN (no tools) → BIND names → EXECUTE literal steps. Fail closed."""
+
+        agent = self.agent
+        state = self.state
+        saved_disable_tools = self.disable_tools
+        receipts: list[dict[str, Any]] = []
+        turn_start = time.perf_counter()
+        turn_tool_scores: list[Any] = []
+        try:
+            self._reserve_echo_budget()
+            await self._heartbeat()
+            if self._check_cancelled():
+                return
+            state.turn_count += 1
+            self.disable_tools = True
+            _, compressed_messages = await self._compress()
+            plan_messages = [
+                *compressed_messages,
+                ChatMessage(role="system", content=PLAN_INSTRUCTIONS, taint=0),
+            ]
+            plan_response = await self._get_response(plan_messages, None)
+            self._record_response(plan_response)
+            try:
+                plan = parse_plan(plan_response.content)
+            except PlanError as exc:
+                state.status = "error"
+                state.error_message = f"plan-commit rejected: {exc}"
+                receipts.append({"phase": "plan", "status": "rejected", "reason": str(exc)})
+                return
+
+            tool_names = plan.tool_names()
+            self.lease_tool_allowlist = tool_names
+            self.allowed_tools = set(tool_names)
+            receipts.append(
+                {
+                    "phase": "bind",
+                    "status": "ok",
+                    "tools": list(tool_names),
+                }
+            )
+
+            for index, step in enumerate(plan.steps):
+                if self._check_cancelled() or state.turn_count >= agent.settings.max_turns:
+                    break
+                state.turn_count += 1
+                if step.needs_untrusted_fill():
+                    receipt = {
+                        "phase": "execute",
+                        "status": "skipped",
+                        "tool": step.tool,
+                        "reason": "untrusted_slot",
+                        "index": index,
+                    }
+                    receipts.append(receipt)
+                    state.messages.append(
+                        ChatMessage(
+                            role="system",
+                            content=(
+                                f"plan-commit skipped step {index} ({step.tool}): "
+                                "untrusted fill is not bound in this phase"
+                            ),
+                            taint=0,
+                        )
+                    )
+                    continue
+                call = {
+                    "id": f"plan-exec-{index}",
+                    "type": "function",
+                    "function": {
+                        "name": step.tool,
+                        "arguments": json.dumps(step.arguments, ensure_ascii=True, sort_keys=True),
+                    },
+                }
+                step_response = ChatResponse(
+                    content="",
+                    tool_calls=[call],
+                    model=plan_response.model or (self.model or ""),
+                    usage={},
+                    finish_reason="tool_calls",
+                )
+                self._record_response(step_response)
+                await self._run_tools(step_response, turn_tool_scores)
+                receipts.append(
+                    {
+                        "phase": "execute",
+                        "status": "ok",
+                        "tool": step.tool,
+                        "index": index,
+                    }
+                )
+
+            if self._check_cancelled():
+                return
+            if state.turn_count < agent.settings.max_turns:
+                state.turn_count += 1
+                self.disable_tools = True
+                _, final_messages = await self._compress()
+                final_response = await self._get_response(final_messages, None)
+                self._record_response(final_response)
+            if state.status == "running":
+                state.status = "completed"
+        finally:
+            self.disable_tools = saved_disable_tools
+            self._plan_commit_receipts = receipts
+            state.compression_stats["plan_commit"] = {"receipts": receipts}
+            await self._record_turn_metrics(turn_start, turn_tool_scores)
+
     # ------------------------------------------------------------------
     # Compression
     # ------------------------------------------------------------------
@@ -926,6 +1095,13 @@ class EchoTurnLoop:
                     "tools_after": len(tools_schema),
                 }
 
+        if self._write_egress_narrowed and tools_schema is not None:
+            tools_schema = filter_write_egress_schema(tools_schema)
+            state.compression_stats["midturn_schema"] = {
+                "write_egress_blocked": True,
+                "tools_after": len(tools_schema),
+            }
+
         # Compress context if needed (tools included in token estimate)
         token_counter = agent._token_counter_for_model(self.model)
         summary_token = None
@@ -945,6 +1121,7 @@ class EchoTurnLoop:
         compressed_messages = compression_result.messages
         if compression_result.token_unit_id != token_counter.token_unit_id:
             raise RuntimeError("compression token unit changed during one model turn")
+        self._last_tools_schema = tools_schema
         self._prompt_token_counter = token_counter
         self._pending_model_prompt_tokens = max(0, int(compression_result.compressed_tokens))
         state.compression_stats["compression"] = {
@@ -973,10 +1150,14 @@ class EchoTurnLoop:
             )
 
         # Record which tools the model is allowed to call this turn
-        self.allowed_tools = {s.get("function", {}).get("name", "") for s in (tools_schema or [])}
+        schema_names = {s.get("function", {}).get("name", "") for s in (tools_schema or [])}
         lease_tool_allowlist = getattr(self, "lease_tool_allowlist", None)
-        if lease_tool_allowlist is not None:
-            self.allowed_tools &= set(lease_tool_allowlist)
+        if tools_schema is None:
+            self.allowed_tools = set(lease_tool_allowlist or ())
+        else:
+            self.allowed_tools = schema_names
+            if lease_tool_allowlist is not None:
+                self.allowed_tools &= set(lease_tool_allowlist)
         self._observe_echo_prompt_context(
             messages=compressed_messages,
             tools_schema=tools_schema,
@@ -1709,24 +1890,58 @@ class EchoTurnLoop:
             )
             batch_tasks: list[Awaitable[tuple[ChatMessage, ToolResult]]] = []
             batch_call_ids: list[str] = []
+            from js.echo.plan_commit.narrowing import (
+                is_write_or_egress_tool,
+                write_egress_blocked,
+            )
+
             for tc in batch:
                 tool_call_id = _valid_tool_call_id(tc.get("id"))
                 if tool_call_id is None:
                     raise EchoUnavailableError("recorded tool batch has an invalid tool-call ID")
                 batch_call_ids.append(tool_call_id)
-                batch_tasks.append(
-                    agent.echo_runtime.execute_tool_effect(
-                        ToolEffect(
-                            tool_name=str(tc.get("function", {}).get("name", "")),
-                            arguments_json=str(tc.get("function", {}).get("arguments", "{}")),
-                            tool_call_id=tool_call_id,
-                            user_input=self.user_input,
-                            allowed_tools=tuple(sorted(self.allowed_tools)),
+                tool_name = str(tc.get("function", {}).get("name", ""))
+
+                async def _dispatch_one(
+                    captured_tc: dict[str, Any] = tc,
+                    captured_id: str = tool_call_id,
+                    captured_name: str = tool_name,
+                    captured_context: Any = tool_context,
+                ) -> tuple[ChatMessage, ToolResult]:
+                    if write_egress_blocked() and is_write_or_egress_tool(captured_name):
+                        err = ToolResult(
+                            success=False,
+                            error=(
+                                f"Tool '{captured_name}' is blocked after mid-turn dirty context."
+                            ),
+                        )
+                        return (
+                            ChatMessage(
+                                role="tool",
+                                content=err.to_text(),
+                                tool_call_id=captured_id,
+                                name=captured_name,
+                            ),
+                            err,
+                        )
+                    return cast(
+                        "tuple[ChatMessage, ToolResult]",
+                        await agent.echo_runtime.execute_tool_effect(
+                            ToolEffect(
+                                tool_name=captured_name,
+                                arguments_json=str(
+                                    captured_tc.get("function", {}).get("arguments", "{}")
+                                ),
+                                tool_call_id=captured_id,
+                                user_input=self.user_input,
+                                allowed_tools=tuple(sorted(self.allowed_tools)),
+                            ),
+                            captured_context,
+                            self.progress_callback,
                         ),
-                        tool_context,
-                        self.progress_callback,
                     )
-                )
+
+                batch_tasks.append(_dispatch_one())
             _raw_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
             # unwrap any exceptions into error results so that one
             # failed tool does not cancel the others

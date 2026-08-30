@@ -290,6 +290,10 @@ class EffectInterpreter:
         if not effect.tool_name:
             raise ValueError("Echo tool effect requires a tool name")
 
+        from js.echo.plan_commit.narrowing import deny_write_egress_if_blocked
+
+        deny_write_egress_if_blocked(effect.tool_name)
+
         context_tools = set(context.capabilities)
         effect_tools = set(effect.allowed_tools)
         allowed_tools = context_tools & effect_tools

@@ -726,6 +726,23 @@ class ToolExecutorMixin(ControlPlaneMixin, ToolHandoffMixin):
                 err_result,
             )
 
+        from js.echo.plan_commit.narrowing import is_write_or_egress_tool, write_egress_blocked
+
+        if write_egress_blocked() and is_write_or_egress_tool(tool_name):
+            err_result = ToolResult(
+                success=False,
+                error=f"Tool '{tool_name}' is blocked after mid-turn dirty context.",
+            )
+            return (
+                ChatMessage(
+                    role="tool",
+                    content=err_result.to_text(),
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                ),
+                err_result,
+            )
+
         # Hard block: model called a tool that is not in its allowed schema.
         # This catches hallucinated tool calls from weak FC models (e.g. local
         # models that infer tool names from the system prompt even when the
