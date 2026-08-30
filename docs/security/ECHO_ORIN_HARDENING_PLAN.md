@@ -19,7 +19,7 @@
 4. **省 token / 低延迟 / 低设备三个目标与安全性存在真实冲突**（CaMeL 花 2.8 倍 token 买安全），本方案的解法是 **动态风险门控（risk-gated）**：入口可信且 `context_taint` 无 dirty 位时走轻路径；入口不可信走 plan-commit 重路径；**入口可信但回合中途出现 dirty 位时，P0 对剩余迭代单调收窄（禁写/禁 egress），不在当回合中途升级 plan-commit**。只看入口会漏掉最常见的注入路径（CLI/桌面回合中途用 web 工具读入恶意内容）。现有 `js/orin/taint.py` 已按来源给工具结果打位（`WEB_CONTENT`/`INBOX_CONTENT`/`BOT_PEER` 等），P0 消费该信号做收窄；中途升级 plan-commit 放到 P2 与 taint→label 合并。
 5. **最紧迫的工程发现**：macOS 的 `sandbox-exec`（Echo 当前默认沙箱载体）已被 Apple 标记废弃且被认为"弱"（见 §2.3），而 Apple 官方 Containerization 框架（每容器独立轻量 **Linux** VM、亚秒启动、Apache-2.0、v1.0.0 已于 2026-06-09 发布）是 **file/build cell** 的载体候选，**不是** desktop/secret/memory/net 或 Stage C 外部门的总开关。desktop（AX/AppKit/`screencapture`）与 secret / production keybox（Keychain）必须留宿主。memory 与 net+connector 今日在进程内构造 `KeyBox`/`SecretStore`，P2-1 **不得**把它们放进 VM。guest **禁止**挂载生产 KeyBox / lease 密钥 / secret 路径。`production_sandbox_carrier` 合取位**当前语义**是 Darwin `sandbox-exec` 可用性（`js/orin/stage_c.py`），升级为 Containerization 验收须先改 `ORIN_STAGE_C_SPEC.md`；即便该位置真，`official_tcc_packaging` / `k156_8_real_model_e2e` / `k156_9_independent_red_team` 仍是外部门，本方案不宣称解锁 Stage C。
 
-**推荐行动**：按 §5 的 P0→P3 四阶段执行。P0（零新依赖、纯现有代码重组）即可拿到"入口不可信 → plan-commit"与"中途 dirty 位 → 单调收窄"两大收益；P1 引入 AgentDojo 作为 Orin 的 CI 安全门；P2 把中途收窄升级为剩余迭代 plan-commit，并解决沙箱载体迁移；P3 做性能与 token 优化。**任何阶段失败都可回退到上一阶段，不破坏现有行为。**
+**推荐行动**：按 §5 的 P0→P3 四阶段执行。P0（零新外部依赖，但是槽位策略与测试密度配套，不是"纯重组"）即可拿到"入口不可信 → plan-commit"与"中途 dirty 位 → 单调收窄"两大收益；P1 引入 AgentDojo 作为 Orin 的 CI 安全门；P2 把中途收窄升级为剩余迭代 plan-commit，并解决沙箱载体迁移；P3 做性能与 token 优化。**任何阶段失败都可回退到上一阶段，不破坏现有行为。**
 
 ---
 
@@ -125,7 +125,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | # | 技术 | 落点 | 预期收益 | 成本 | 与现状冲突 | 裁决 |
 |---|---|---|---|---|---|---|
 | T1 | CaMeL 双 LLM + 值级 capability | Orin 高风险回合模式 | 注入攻击结构性免疫（可证明） | 高：2.8× token、双模型 | 与"省 token"直接冲突 → **风险门控，不全局启用** | 采纳（改造版） |
-| T2 | Plan-then-Execute / Action-Selector 模式 | Echo `turn_loop` 新增 plan-commit 回合模式 | 控制流先于不可信数据定型；零额外 token | 中：纯代码重组 | 无 | **采纳（P0 核心）** |
+| T2 | Plan-then-Execute / Action-Selector 模式 | Echo `turn_loop` 新增 plan-commit 回合模式 | 控制流先于不可信数据定型；**控制流部分**零额外 token（填槽若走隔离提取则另计） | 中高：非纯重组——lease 现状是整参数摘要，槽位策略是新建；须配套 M1 ≥1.2 测试 | 无第二套 loop | **采纳（P0 核心）** |
 | T3 | Progent Z3 单调约束 | Orin 策略更新路径（尤其 evolution 自进化提案） | 策略只能收窄不能扩，SMT 确定性证明 | 中：Z3 依赖 ~30MB，只在策略更新路径，不在回合热路径 | 无 | 采纳（P1） |
 | T4 | FIDES 规划器级 IFC | Orin taint 升级：标签进规划器 | 证据显示可增效用（+16%） | 中高 | taint 铁律保持不破 | 采纳（P2） |
 | T5 | AgentDojo CI 门 | Orin 验收体系 | 安全效果从"自说自话"变标准化度量 | 中：benchmark 适配 | 无 | **采纳（P1 核心）** |
@@ -156,10 +156,11 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 │  │  ├─ 中途收窄（P0）：迭代边界发现 context_taint 新增 dirty 位  │  │
 │  │  │     → 剩余迭代禁写/禁 egress（只收紧不放松）             │  │
 │  │  └─ 重路径：入口不可信 → plan-commit 模式（T2）            │  │
-│  │       1. PLAN：模型只见可信指令，输出计划（动作序列骨架）    │  │
-│  │       2. BIND：计划经 capability 策略检查，锁定动作空间     │  │
-│  │       3. EXECUTE：不可信数据只能填充计划内的值槽位          │  │
-│  │           （值槽位带 taint 标签，策略拒绝越权使用）         │  │
+│  │       1. PLAN：模型只见可信指令，disable_tools，输出计划骨架     │  │
+│  │       2. BIND：新建槽位级绑定（工具名 + 每槽 taint_policy + 填充源）│  │
+│  │          现有 capability 整参数哈希不够；allowlist 只锁工具名     │  │
+│  │       3. EXECUTE：确定性步进已绑定序列，不让模型再选工具         │  │
+│  │           装配器填槽；模型 tool_calls.arguments 非权威           │  │
 │  │  P2：中途 dirty 位可升级为对剩余动作 BIND（与 T4 合并）     │  │
 │  ├─ capability（租约签发/消费/撤销，+ T3 SMT 收窄证明）      │  │
 │  ├─ ledger（哈希链 + 前向安全键控 + Merkle 锚定，T6）         │  │
@@ -200,12 +201,12 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 
 ## 5. 分阶段实施路线图
 
-### P0 —— plan-commit 模式 + 稳定前缀（2–3 周，零新依赖）
+### P0 —— plan-commit 模式 + 稳定前缀（**4–5 周**；零新外部依赖，含 M1 测试密度配套）
 
 | 项 | 内容 | 验收标准 | 回退 |
 |---|---|---|---|
 | P0-1 | `turn_loop` 新增 `plan_commit` 回合模式：PLAN→BIND→EXECUTE 三阶段。**激活条件是动态风险门控，不是入口一次性判定**。（1）入口不可信（`run_echo_turn` 经 `orin_taint.set_entry_source(channel)` 打上 `INBOX_CONTENT\|WEB_CONTENT` 或 `AUTO_TASK`）→ 整回合走 plan-commit；（2）入口可信但迭代边界发现 `context_taint` 新增 dirty 位（至少 `WEB_CONTENT`/`INBOX_CONTENT`/`BOT_PEER`；与现有 `DIRTY_FOR_WRITE` 对齐）→ **P0 对剩余迭代单调收窄：禁写、禁 egress，只收紧不放松**；（3）中途升级到 plan-commit（对剩余动作重新 BIND）放到 P2-2，与 taint→label 合并。收窄是确定性策略，零额外 token。不沿用 `require_untrusted_surface`（那是隔离姿态门，不是逐回合信任标记）。 | 新增模式与收窄路径单测全覆盖；轻路径现有测试文件零回归；构造"可信入口 + 中途 web 读入注入"用例，收窄后 0 次写/egress 成功 | 配置开关 `echo.plan_commit=false` 恢复现状；收窄路径可单独关但默认与 plan-commit 同开关 |
-| P0-2 | 值槽位机制：计划中的参数位标记 `{slot:taint_policy}`，不可信数据只能填槽；槽位策略复用现有 capability 检查 | 构造 20 个注入用例（邮件/网页/文档各含恶意指令），重路径下 0 个导致计划外动作 | 同上 |
+| P0-2 | 值槽位机制（**新建，不是复用现有 capability 检查**）。现状 lease 把**整份 arguments** 哈希进 `args_schema`（`js/agent/tool_executor.py` 的 `stable_payload_hash`），`taint_floor`/`taint_sink` 是 lease 级字段，`consume` 不做逐参数评估。P0 要新增槽位：计划里每个参数位 `{slot:taint_policy}`，EXECUTE 只能填已 BIND 的槽。**填槽来源（二选一，优先 1）**：（1）工具输出的确定性投影（结构化字段：路径、ID、URL、状态码）——零模型、零额外 token；（2）隔离提取调用（Q-LLM 角色，只许返回值、不许发起工具）——**有额外 token，T2 不承诺全局零 token**。禁止用同一个受污染上下文的模型既提取值又隐式决定参数拼装（否则拿不到 CaMeL 控制流性质）。**落点必须分三层，缺一不可**：（a）PLAN 用 `TurnRequest.disable_tools`；（b）BIND 冻结工具**名**（`lease_tool_allowlist`；bots 冻结 schema / `c4aa97b` 只覆盖这一层，不够）**并且**签发槽位级绑定（每槽 taint_policy + 允许的填充源），不是只哈希模型刚产出的整份 JSON；（c）EXECUTE 是对已绑定序列的**确定性步进**（下一步由计划计数器决定，不是模型选择）：本阶段不向模型下发可选工具 schema；由装配器按 BIND 表填槽，再对装配结果做 `args_schema`。若为填槽发起隔离提取，那是一次 `disable_tools` 的独立模型调用，不得进入工具循环。若实现仍把模型 `tool_calls` 接到 EXECUTE，视为缺陷：模型建议只能校验、不得增键、不得改已填槽、不得改下一步工具名，否则 deny。 | 构造注入用例（邮件/网页/文档，优先扩展 `tests/adversarial/corpus.jsonl`）重路径下 0 个导致计划外动作；负例：仅设 `lease_tool_allowlist` 仍消费模型 arguments、或 EXECUTE 仍让模型选下一步工具 → 必须失败；新增代码保持测试密度 ≥1.2 | 同上 |
 | P0-3 | prompt 稳定前缀契约：系统提示 + 工具描述排序固定，变动只追加在尾部（配合 provider 的 prompt caching） | 相同会话连续 5 回合的 prompt 前缀哈希一致；token 计量记录入 ledger | 开关回退 |
 | P0-4 | **默认生效面（gateway 联动）**：`gateway.enabled=true` 时，（1）`gateway:*` channel 的 `plan_commit` 默认开（仍可用显式 `echo.plan_commit=false` 关掉，但文档必须把这标成降级）；（2）该表面策略档不落入 `policy_profile=compat`：`file_write`+dirty→approval、`shell`+`WEB_CONTENT`→deny 等现有表项必须拦截，不得 allow+log。AppShell 全局 compat 改写不得覆盖 gateway 表面。CLI/桌面默认仍可不启用 plan-commit。 | gateway 开启的集成测试：注入用例走 plan-commit；Orin 非 allow 判定实际拒绝/要求审批，日志里不得出现"compat degraded to allow" | 显式 `echo.plan_commit=false` 或关闭 gateway；compat 降级必须打可见警告 |
 
@@ -242,7 +243,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | # | 机制 | 失效模式 | 检测 | 缓解/降级 | 残余风险 |
 |---|---|---|---|---|---|
 | R1 | plan-commit（P0） | 模型生成的计划本身错误（非恶意） | 计划 schema 校验 + 动作白名单 | BIND 阶段拒绝不合法计划，转人工 | 计划质量依赖模型能力；弱模型效用下降（CaMeL 实测 -26.8pp）→ 轻路径不受影响 |
-| R2 | plan-commit（P0） | 不可信数据填满值槽位时语义下毒（值合法但内容误导） | taint 标签 + 槽位策略 | CaMeL 同源局限：只能保证控制流安全，不保证值正确；SECERT 槽位禁填不可信数据 | **明示残余风险，写入 SECURITY.md** |
+| R2 | plan-commit（P0） | 不可信数据填满值槽位时语义下毒（值合法但内容误导）；或填槽由受污染模型同时拼装参数 | taint 标签 + 槽位策略；填槽来源审计（确定性投影 vs 隔离提取） | CaMeL 同源局限：只能保证控制流安全，不保证值正确；SECRET 槽位禁填不可信数据；**禁止**受污染模型既提取又拼装 | **明示残余风险，写入 SECURITY.md** |
 | R3 | AgentDojo CI（P1） | benchmark 过拟合（针对 629 用例调参） | 保留 held-out 用例集不进 CI 调参循环 | 每季度引入新攻击集；配合内部红队用例 | 中 |
 | R4 | 前向安全键控（P1） | epoch 切换时密钥管理 bug 导致链验证失败 | 双读期 + 链回放测试 | 旧链只读冻结归档 | 低 |
 | R5 | 格比较策略收窄（P1） | 策略语言表达力不足，误判"收窄/扩张" | 全部误判偏向人工审批（fail-safe 方向） | 误判成本=多一次人工审批，无安全损失 | 低 |
