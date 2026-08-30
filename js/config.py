@@ -723,6 +723,19 @@ class EchoPlanCommitConfig(BaseModel):
         return value
 
 
+class ModelCascadeConfig(BaseModel):
+    """Light-path local-first routing. Does not disable the heavy-path local ban."""
+
+    enabled: bool = True
+
+    @field_validator("enabled", mode="before")
+    @classmethod
+    def require_exact_boolean_cascade(cls, value: object) -> bool:
+        if type(value) is not bool:
+            raise ValueError("model_cascade.enabled must be an exact boolean")
+        return value
+
+
 # Module-level cache for parsed config files: path -> (mtime, instance)
 _settings_file_cache: dict[Path, tuple[float, JSSettings]] = {}
 
@@ -860,6 +873,7 @@ class JSSettings(BaseSettings):
     # Nested name is echo_plan_commit (not `echo`) so JS_ECHO__* does not
     # collide with echo_budget / echo_engine / echo_ledger.
     echo_plan_commit: EchoPlanCommitConfig = Field(default_factory=EchoPlanCommitConfig)
+    model_cascade: ModelCascadeConfig = Field(default_factory=ModelCascadeConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     orin: OrinConfig = Field(default_factory=OrinConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)

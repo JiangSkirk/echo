@@ -12,7 +12,32 @@ from js.echo.ledger.service import (
     EchoUnavailableError,
 )
 from js.echo.turn_context import current_runtime_context
+from js.models.cascade import current_cascade_intent, decision_is_local
 from js.models.providers import ChatMessage
+
+
+def _enforce_cascade_model_policy(
+    agent: Any,
+    *,
+    provider_id: str,
+    model_id: str,
+) -> None:
+    """Fail closed if a heavy-path call would use a local model while cloud exists.
+
+    This check is not a routing-table flag and cannot be disabled by
+    ``model_cascade.enabled``.
+    """
+
+    intent = current_cascade_intent()
+    if intent is None or not intent.forbid_local:
+        return
+    router = getattr(agent, "router", None)
+    if router is None:
+        return
+    if decision_is_local(router, provider_id=provider_id, model_id=model_id):
+        raise EchoBlockedError(
+            "plan-commit and mid-turn dirty model calls cannot use a local model"
+        )
 
 
 def _model_terminal_status(error: BaseException | None) -> str:
@@ -43,6 +68,7 @@ def _authorize_echo_model_call(
         else str(getattr(getattr(agent, "settings", None), "product_id", "js-agent"))
     )
     try:
+        _enforce_cascade_model_policy(agent, provider_id=provider_id, model_id=model_id)
         return cast(
             "EchoTurnContext",
             agent.echo_safety_service.authorize_model_call(

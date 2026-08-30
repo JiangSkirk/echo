@@ -171,6 +171,17 @@ def _is_no_router_fallback(exc: BaseException) -> bool:
     return bool(getattr(exc, _NO_ROUTER_FALLBACK_ATTR, False))
 
 
+def _provider_is_local(provider: Any) -> bool:
+    return bool(getattr(provider, "_is_local", False))
+
+
+def _forbid_local_on_this_call() -> bool:
+    from js.models.cascade import current_cascade_intent
+
+    intent = current_cascade_intent()
+    return bool(intent is not None and intent.forbid_local)
+
+
 def _provider_attempt_limit(provider: ModelProvider) -> int:
     configured = getattr(getattr(provider, "config", None), "max_retries", 1)
     try:
@@ -547,11 +558,18 @@ class ModelRouter:
         entry = self._model_map.get(model_id)
         if not entry:
             return False
-        provider_name = entry[0]
-        provider = self._providers.get(provider_name)
-        if isinstance(provider, OpenAICompatibleProvider):
-            return getattr(provider, "_is_local", False)
-        return False
+        provider = self._providers.get(entry[0])
+        return _provider_is_local(provider)
+
+    def has_non_local_backend(self) -> bool:
+        """True when at least one configured provider is not a local server."""
+
+        return any(not _provider_is_local(provider) for provider in self._providers.values())
+
+    def local_only_backends(self) -> bool:
+        """True when every configured provider is local (and at least one exists)."""
+
+        return bool(self._providers) and not self.has_non_local_backend()
 
     async def _provider_healthy(self, provider: ModelProvider) -> bool:
         """Read local health state without starting an unpermitted network probe.
@@ -580,44 +598,9 @@ class ModelRouter:
         except Exception:
             return False
 
-    async def select_model(
-        self,
-        _task_complexity: str = "medium",  # Reserved for future complexity-based routing
-        preferred: str | None = None,
-    ) -> RoutingDecision:
-        """Select best model for task, skipping unhealthy providers."""
-        if preferred is None and self.preferred_model:
-            preferred = self.preferred_model
-        cache_key = preferred or "__default__"
-        cached: RoutingDecision | None = self._routing_cache.get(cache_key)
-        if cached is not None:
-            return cached
+    def _provider_defaults(self) -> dict[str, str]:
+        """Provider name → default model id from settings and runtime adds."""
 
-        if preferred and preferred in self._model_map:
-            provider_name, config = self._model_map[preferred]
-            provider = self._providers[provider_name]
-            if await self._provider_healthy(provider):
-                decision = RoutingDecision(
-                    provider=provider,
-                    model=config.id,
-                    provider_name=provider_name,
-                    reason=f"User preferred: {preferred}",
-                )
-            else:
-                # Respect user's explicit choice even if the provider appears
-                # unhealthy.  Let the actual API call fail and surface the
-                # error rather than silently falling back to a different model.
-                decision = RoutingDecision(
-                    provider=provider,
-                    model=config.id,
-                    provider_name=provider_name,
-                    reason=f"User preferred (unhealthy): {preferred}",
-                )
-            self._routing_cache[cache_key] = decision
-            return decision
-
-        # Build a unified view of provider → default_model from both
-        # settings.providers (static config) and _model_map (runtime adds).
         provider_defaults: dict[str, str] = {}
         for p_config in self.settings.providers:
             if p_config.default_model:
@@ -627,46 +610,133 @@ class ModelRouter:
                 model_candidates = chat_models if chat_models else p_config.models
                 if model_candidates:
                     provider_defaults[p_config.name] = model_candidates[0].id
-
-        # Fallback: infer from _model_map for providers added at runtime
         for full_id, (provider_name, config) in self._model_map.items():
             if provider_name not in provider_defaults and "/" not in full_id:
                 provider_defaults[provider_name] = config.id
+        return provider_defaults
 
-        # Select first healthy provider (parallel health checks for speed)
+    def _order_candidates(
+        self,
+        candidates: list[tuple[str, str, ModelProvider]],
+        *,
+        complexity: str,
+        forbid_local: bool,
+    ) -> list[tuple[str, str, ModelProvider]]:
+        if forbid_local:
+            remote = [item for item in candidates if not _provider_is_local(item[2])]
+            return remote
+        from js.models.cascade import cascade_routing_enabled
+
+        if complexity == "light" and cascade_routing_enabled(self.settings):
+            local = [item for item in candidates if _provider_is_local(item[2])]
+            remote = [item for item in candidates if not _provider_is_local(item[2])]
+            return local + remote
+        return candidates
+
+    async def select_model(
+        self,
+        _task_complexity: str = "medium",
+        preferred: str | None = None,
+    ) -> RoutingDecision:
+        """Select best model for task, skipping unhealthy providers.
+
+        ``_task_complexity`` is the T11 cascade input (light / medium / heavy).
+        Echo may override it via cascade intent. Heavy + a non-local backend
+        never returns a local model; that rule is not a routing-table flag.
+        """
+        from js.models.cascade import current_cascade_intent
+
+        intent = current_cascade_intent()
+        complexity = intent.complexity if intent is not None else _task_complexity
+        if complexity not in {"light", "medium", "heavy"}:
+            complexity = "medium"
+        forbid_local = bool(intent is not None and intent.forbid_local)
+        if (
+            preferred is None
+            and self.preferred_model
+            and not (complexity == "light" and not forbid_local)
+        ):
+            preferred = self.preferred_model
+        if preferred and forbid_local and self.is_local_model(preferred):
+            preferred = None
+        cache_key = f"{preferred or '__default__'}|{complexity}|{int(forbid_local)}"
+        cached: RoutingDecision | None = self._routing_cache.get(cache_key)
+        if cached is not None:
+            if forbid_local and _provider_is_local(cached.provider):
+                self._routing_cache.pop(cache_key, None)
+            else:
+                return cached
+
+        if preferred and preferred in self._model_map:
+            provider_name, config = self._model_map[preferred]
+            provider = self._providers[provider_name]
+            if not (forbid_local and _provider_is_local(provider)):
+                if await self._provider_healthy(provider):
+                    decision = RoutingDecision(
+                        provider=provider,
+                        model=config.id,
+                        provider_name=provider_name,
+                        reason=f"User preferred: {preferred}",
+                    )
+                else:
+                    # Respect user's explicit choice even if the provider appears
+                    # unhealthy.  Let the actual API call fail and surface the
+                    # error rather than silently falling back to a different model.
+                    decision = RoutingDecision(
+                        provider=provider,
+                        model=config.id,
+                        provider_name=provider_name,
+                        reason=f"User preferred (unhealthy): {preferred}",
+                    )
+                self._routing_cache[cache_key] = decision
+                return decision
+
+        provider_defaults = self._provider_defaults()
         candidates = [
             (name, model, self._providers[name])
             for name, model in provider_defaults.items()
             if name in self._providers
         ]
-        if candidates:
+        ordered = self._order_candidates(
+            candidates,
+            complexity=complexity,
+            forbid_local=forbid_local,
+        )
+        if forbid_local and not ordered:
+            raise RuntimeError("plan-commit and mid-turn dirty calls require a non-local model")
+        if ordered:
             health_results = await asyncio.gather(
-                *[self._provider_healthy(p) for _, _, p in candidates],
+                *[self._provider_healthy(p) for _, _, p in ordered],
                 return_exceptions=True,
             )
-            for (name, model, _provider), healthy in zip(candidates, health_results, strict=False):
+            for (name, model, _provider), healthy in zip(ordered, health_results, strict=False):
                 if isinstance(healthy, bool) and healthy:
                     decision = RoutingDecision(
                         provider=self._providers[name],
                         model=model,
                         provider_name=name,
-                        reason=f"Default model: {model}",
+                        reason=f"Default model: {model} ({complexity})",
                     )
                     self._routing_cache[cache_key] = decision
                     return decision
 
-        # Last resort: first configured provider even if unhealthy
-        for provider_name, default_model in provider_defaults.items():
+        last_resort = (
+            [(item[0], item[1]) for item in ordered] if ordered else list(provider_defaults.items())
+        )
+        for provider_name, default_model in last_resort:
             maybe_provider = self._providers.get(provider_name)
-            if maybe_provider is not None:
-                decision = RoutingDecision(
-                    provider=maybe_provider,
-                    model=default_model,
-                    provider_name=provider_name,
-                    reason=f"Fallback (unhealthy): {default_model}",
-                )
-                self._routing_cache[cache_key] = decision
-                return decision
+            if maybe_provider is None:
+                continue
+            if forbid_local and _provider_is_local(maybe_provider):
+                continue
+            decision = RoutingDecision(
+                provider=maybe_provider,
+                model=default_model,
+                provider_name=provider_name,
+                reason=f"Fallback (unhealthy): {default_model}",
+            )
+            self._routing_cache[cache_key] = decision
+            return decision
 
         raise RuntimeError("No models configured")
 
@@ -817,6 +887,8 @@ class ModelRouter:
         # Try fallback providers (skip unhealthy ones)
         for name, provider in self._providers.items():
             if name == decision.provider_name:
+                continue
+            if _forbid_local_on_this_call() and _provider_is_local(provider):
                 continue
             try:
                 if not await self._provider_healthy(provider):
@@ -1005,6 +1077,8 @@ class ModelRouter:
         # Fallback path is only reached when ``model`` is None.
         for name, provider in self._providers.items():
             if name == decision.provider_name:
+                continue
+            if _forbid_local_on_this_call() and _provider_is_local(provider):
                 continue
             fallback_emitted_text = False
             attempt_max_tokens = (

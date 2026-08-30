@@ -36,13 +36,21 @@ def bind_context_taint(messages: Sequence[Any]) -> int:
     return bits
 
 
-def remaining_step_allowed(step: PlanStep, *, context_taint: int) -> bool:
+def remaining_step_allowed(
+    step: PlanStep,
+    *,
+    context_taint: int,
+    deny_write: bool = False,
+) -> bool:
     """True when this not-yet-executed step may still run.
 
     Read-only steps stay. Remaining write/egress is refused once messages
-    carry a mid-turn injection dirty bit (tighten only).
+    carry a mid-turn injection dirty bit, or when the turn is local-only
+    deny-write (heavy path with no non-local backend).
     """
 
     if not is_write_or_egress_tool(step.tool):
         return True
+    if deny_write:
+        return False
     return not bool(context_taint & DIRTY_MIDTURN)

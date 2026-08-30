@@ -30,6 +30,16 @@ def test_remaining_write_refused_when_dirty() -> None:
     assert remaining_step_allowed(step, context_taint=0) is True
 
 
+def test_remaining_write_refused_when_local_only_deny_write() -> None:
+    step = PlanStep(
+        tool="file_write",
+        arguments={"path": "a.txt", "content": "x"},
+    )
+    assert remaining_step_allowed(step, context_taint=0, deny_write=True) is False
+    read = PlanStep(tool="file_read", arguments={"path": "a.txt"})
+    assert remaining_step_allowed(read, context_taint=0, deny_write=True) is True
+
+
 def test_user_entry_taint_is_not_midturn_dirty() -> None:
     user = ChatMessage(
         role="user",

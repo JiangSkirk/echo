@@ -74,6 +74,15 @@ from js.echo.turn_loop.stream_tools import (
     _stream_tool_call_key,
 )
 from js.echo.turn_loop.telemetry import _tool_quality_score, _tool_result_event
+from js.models.cascade import (
+    CascadeIntent,
+    TaskComplexity,
+    classify_task_complexity,
+    reset_cascade_intent,
+    router_has_non_local_backend,
+    router_is_local_only,
+    set_cascade_intent,
+)
 from js.models.providers import ChatMessage, ChatResponse
 from js.orin import taint as orin_taint
 from js.security.audit import AuditEventType
@@ -146,6 +155,7 @@ class EchoTurnLoop:
         self._prompt_token_counter: TokenCounter | None = None
         self._write_egress_narrowed = False
         self._remaining_rebind_pending = False
+        self._local_only_deny_write = False
         self._plan_commit_receipts: list[dict[str, Any]] = []
         self._last_tools_schema: list[dict[str, Any]] | None = None
 
@@ -940,6 +950,31 @@ class EchoTurnLoop:
                 f"Maximum turn limit ({agent.settings.max_turns}) reached before completion"
             )
 
+    def _heavy_model_path(self) -> bool:
+        channel = self._turn_channel()
+        if plan_commit_turn_active(settings=self.agent.settings, channel=channel):
+            return True
+        return bool(self._write_egress_narrowed or self._remaining_rebind_pending)
+
+    def _cascade_intent_for_call(self) -> CascadeIntent:
+        heavy = self._heavy_model_path()
+        router = getattr(self.agent, "router", None)
+        has_cloud = router_has_non_local_backend(router)
+        local_only = router_is_local_only(router)
+        complexity: TaskComplexity
+        if heavy:
+            complexity = "heavy"
+        else:
+            complexity = classify_task_complexity(
+                user_text=self.user_input,
+                messages=self.state.messages,
+            )
+        return CascadeIntent(
+            complexity=complexity,
+            forbid_local=heavy and has_cloud,
+            local_only_deny_write=heavy and local_only,
+        )
+
     def _turn_channel(self) -> str:
         runtime = current_runtime_context()
         return runtime.channel if runtime is not None else ""
@@ -990,6 +1025,7 @@ class EchoTurnLoop:
         )
 
     async def _run_bound_plan(self, *, instructions: str, stats_key: str) -> None:
+        self._local_only_deny_write = self._cascade_intent_for_call().local_only_deny_write
         agent = self.agent
         state = self.state
         saved_disable_tools = self.disable_tools
@@ -1083,7 +1119,11 @@ class EchoTurnLoop:
             if self._check_cancelled() or state.turn_count >= agent.settings.max_turns:
                 break
             context_taint = bind_context_taint(state.messages)
-            if not remaining_step_allowed(step, context_taint=context_taint):
+            if not remaining_step_allowed(
+                step,
+                context_taint=context_taint,
+                deny_write=self._local_only_deny_write,
+            ):
                 receipts.append(
                     {
                         "phase": "execute",
@@ -1127,6 +1167,7 @@ class EchoTurnLoop:
             if not remaining_step_allowed(
                 labeled_step,
                 context_taint=bind_context_taint(state.messages),
+                deny_write=self._local_only_deny_write,
             ):
                 receipts.append(
                     {
@@ -1401,6 +1442,18 @@ class EchoTurnLoop:
     # ------------------------------------------------------------------
 
     async def _get_response(
+        self, compressed_messages: list[ChatMessage], tools_schema: list[dict[str, Any]] | None
+    ) -> ChatResponse:
+        """Call the model, preserving structured stream events when requested."""
+        intent = self._cascade_intent_for_call()
+        self._local_only_deny_write = intent.local_only_deny_write
+        token = set_cascade_intent(intent)
+        try:
+            return await self._deliver_model_response(compressed_messages, tools_schema)
+        finally:
+            reset_cascade_intent(token)
+
+    async def _deliver_model_response(
         self, compressed_messages: list[ChatMessage], tools_schema: list[dict[str, Any]] | None
     ) -> ChatResponse:
         """Call the model, preserving structured stream events when requested."""
