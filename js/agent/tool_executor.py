@@ -770,13 +770,29 @@ class ToolExecutorMixin(ControlPlaneMixin, ToolHandoffMixin):
             )
 
         try:
-            arguments = (
+            loaded_args = (
                 json.loads(raw_args)
                 if isinstance(raw_args, str)
                 else (raw_args if isinstance(raw_args, dict) else {})
             )
         except json.JSONDecodeError as e:
             err_result = ToolResult(success=False, error=f"Invalid tool arguments JSON: {e}")
+            return (
+                ChatMessage(
+                    role="tool",
+                    content=err_result.to_text(),
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                ),
+                err_result,
+            )
+        arguments: dict[str, Any] = loaded_args if isinstance(loaded_args, dict) else {}
+
+        from js.echo.plan_commit.assembler import apply_assembled_arguments
+
+        assembled_error, arguments = apply_assembled_arguments(tool_name, arguments)
+        if assembled_error is not None:
+            err_result = ToolResult(success=False, error=assembled_error)
             return (
                 ChatMessage(
                     role="tool",

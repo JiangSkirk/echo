@@ -26,6 +26,14 @@ from js.echo.plan_commit.activation import (
     midturn_narrowing_active,
     plan_commit_turn_active,
 )
+from js.echo.plan_commit.assembler import (
+    AssemblyError,
+    assemble_step,
+    assembled_args_schema,
+    reset_assembled_call,
+    set_assembled_call,
+)
+from js.echo.plan_commit.extract import EXTRACT_INSTRUCTIONS, parse_extracted_value
 from js.echo.plan_commit.narrowing import (
     filter_write_egress_schema,
     messages_have_injection_dirty,
@@ -33,7 +41,7 @@ from js.echo.plan_commit.narrowing import (
     restore_checkpoint_tool_taint,
     set_write_egress_blocked,
 )
-from js.echo.plan_commit.plan import PLAN_INSTRUCTIONS, PlanError, parse_plan
+from js.echo.plan_commit.plan import PLAN_INSTRUCTIONS, PlanError, SlotBinding, parse_plan
 from js.echo.primitives import BudgetClock, BudgetLimits
 from js.echo.state import AgentState
 from js.echo.turn_context import current_runtime_context, runtime_partition_key
@@ -937,7 +945,7 @@ class EchoTurnLoop:
         }
 
     async def _run_plan_commit(self) -> None:
-        """PLAN (no tools) → BIND names → EXECUTE literal steps. Fail closed."""
+        """PLAN (no tools) → BIND names/slots → EXECUTE assembled steps. Fail closed."""
 
         agent = self.agent
         state = self.state
@@ -975,29 +983,44 @@ class EchoTurnLoop:
                     "phase": "bind",
                     "status": "ok",
                     "tools": list(tool_names),
+                    "slots": [
+                        {
+                            "tool": step.tool,
+                            "name": slot.name,
+                            "taint_policy": slot.taint_policy,
+                            "fill_source": slot.fill_source,
+                        }
+                        for step in plan.steps
+                        for slot in step.slots
+                    ],
                 }
             )
 
+            prior_outputs: list[str] = []
             for index, step in enumerate(plan.steps):
                 if self._check_cancelled() or state.turn_count >= agent.settings.max_turns:
                     break
                 state.turn_count += 1
-                if step.needs_untrusted_fill():
-                    receipt = {
-                        "phase": "execute",
-                        "status": "skipped",
-                        "tool": step.tool,
-                        "reason": "untrusted_slot",
-                        "index": index,
-                    }
-                    receipts.append(receipt)
+                try:
+                    assembled = await assemble_step(
+                        step,
+                        prior_outputs=tuple(prior_outputs),
+                        extract=self._isolated_extract,
+                    )
+                except AssemblyError as exc:
+                    receipts.append(
+                        {
+                            "phase": "execute",
+                            "status": "skipped",
+                            "tool": step.tool,
+                            "reason": str(exc),
+                            "index": index,
+                        }
+                    )
                     state.messages.append(
                         ChatMessage(
                             role="system",
-                            content=(
-                                f"plan-commit skipped step {index} ({step.tool}): "
-                                "untrusted fill is not bound in this phase"
-                            ),
+                            content=(f"plan-commit skipped step {index} ({step.tool}): {exc}"),
                             taint=0,
                         )
                     )
@@ -1006,8 +1029,10 @@ class EchoTurnLoop:
                     "id": f"plan-exec-{index}",
                     "type": "function",
                     "function": {
-                        "name": step.tool,
-                        "arguments": json.dumps(step.arguments, ensure_ascii=True, sort_keys=True),
+                        "name": assembled.tool,
+                        "arguments": json.dumps(
+                            assembled.arguments, ensure_ascii=True, sort_keys=True
+                        ),
                     },
                 }
                 step_response = ChatResponse(
@@ -1017,14 +1042,24 @@ class EchoTurnLoop:
                     usage={},
                     finish_reason="tool_calls",
                 )
-                self._record_response(step_response)
-                await self._run_tools(step_response, turn_tool_scores)
+                assembled_tokens = set_assembled_call(
+                    tool=assembled.tool,
+                    arguments=assembled.arguments,
+                )
+                try:
+                    self._record_response(step_response)
+                    await self._run_tools(step_response, turn_tool_scores)
+                finally:
+                    reset_assembled_call(assembled_tokens)
+                if state.tool_results:
+                    prior_outputs.append(str(state.tool_results[-1].output or ""))
                 receipts.append(
                     {
                         "phase": "execute",
                         "status": "ok",
-                        "tool": step.tool,
+                        "tool": assembled.tool,
                         "index": index,
+                        "args_schema": assembled_args_schema(assembled.arguments),
                     }
                 )
 
@@ -1043,6 +1078,30 @@ class EchoTurnLoop:
             self._plan_commit_receipts = receipts
             state.compression_stats["plan_commit"] = {"receipts": receipts}
             await self._record_turn_metrics(turn_start, turn_tool_scores)
+
+    async def _isolated_extract(self, slot: SlotBinding, source_text: str) -> Any:
+        """Fill one slot via a disable_tools model call. Never advertises tools."""
+
+        if self.state.turn_count >= self.agent.settings.max_turns:
+            raise AssemblyError(f"extract for {slot.name} exceeded turn budget")
+        saved_disable = self.disable_tools
+        self.disable_tools = True
+        try:
+            self.state.turn_count += 1
+            response = await self._get_response(
+                [
+                    ChatMessage(role="system", content=EXTRACT_INSTRUCTIONS, taint=0),
+                    ChatMessage(
+                        role="user",
+                        content=f"Field: {slot.name}\nSource:\n{source_text}",
+                        taint=0,
+                    ),
+                ],
+                None,
+            )
+            return parse_extracted_value(response.content, slot.name)
+        finally:
+            self.disable_tools = saved_disable
 
     # ------------------------------------------------------------------
     # Compression

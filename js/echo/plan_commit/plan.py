@@ -41,7 +41,7 @@ class PlanStep:
     def needs_untrusted_fill(self) -> bool:
         if any(slot.fill_source != "literal" for slot in self.slots):
             return True
-        return any(_looks_like_slot_value(value) for value in self.arguments.values())
+        return any(is_slot_placeholder(value) for value in self.arguments.values())
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,7 +158,9 @@ def _parse_slots(raw: object, *, index: int) -> tuple[SlotBinding, ...]:
     return tuple(slots)
 
 
-def _looks_like_slot_value(value: object) -> bool:
+def is_slot_placeholder(value: object) -> bool:
+    """True for `{slot}` / `{slot:hint}` refs and fill-descriptor objects."""
+
     if isinstance(value, str) and _SLOT_REF_RE.fullmatch(value.strip()):
         return True
     return isinstance(value, dict) and (
