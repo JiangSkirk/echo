@@ -94,7 +94,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 - **前向安全日志（Schneier-Kelsey 传统）**：密钥随时间演进，攻击者拿到当前密钥也无法伪造历史——Echo 的 HMAC 链可升级为前向安全键控（多篇来源确认该传统：scholar 检索 s2，Custos 论文引述 Bellare-Yee 与"forward integrity"定义）
 - **WinSeal**（IEEE S&P 2026）：高效溯源日志篡改保护，指出现有部署的审计日志系统存在窗口期漏洞。来源：IEEE Xplore: 2026(https://ieeexplore.ieee.org/abstract/document/11573416/)（scholar s2）
 - **Custos**（USENIX Security 2020）：用可信执行环境做操作系统级防篡改审计，被引 145。来源：NSF PAR: 2020(https://par.nsf.gov/biblio/10146530)（scholar s2）
-- **证书透明（Certificate Transparency, RFC 6962）式 Merkle 树**：把账本 tip 周期性锚定到外部见证，提供包含证明——Echo 已有 `tip_anchor.py`，扩展量小
+- **证书透明（Certificate Transparency, RFC 6962）式 Merkle 树**：把账本 tip 周期性锚定到外部见证，提供包含证明。Echo 已有 `tip_anchor.py`，但是**外部单调计数器 + MAC，不是 Merkle**；inclusion proof 是新组件，不得写成"扩展量小"
 
 ### 2.3 隔离载体（对应 Orin Stage C `production_sandbox_carrier` 卡点）
 
@@ -129,7 +129,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | T3 | Progent Z3 单调约束 | Orin 策略更新路径（尤其 evolution 自进化提案） | 策略只能收窄不能扩，SMT 确定性证明 | 中：Z3 依赖 ~30MB，只在策略更新路径，不在回合热路径 | 无 | 采纳（P1） |
 | T4 | FIDES 规划器级 IFC | Orin taint 升级：标签进规划器 | 证据显示可增效用（+16%） | 中高 | taint 铁律保持不破 | 采纳（P2） |
 | T5 | AgentDojo CI 门 | Orin 验收体系 | 安全效果从"自说自话"变标准化度量 | 中：benchmark 适配 | 无 | **采纳（P1 核心）** |
-| T6 | 前向安全键控 + Merkle 锚定 | Echo ledger 升级 | 历史日志前向完整；外部可验证证据 | 低：已有 tip_anchor 基础 | 无 | 采纳（P1） |
+| T6 | 前向安全键控 + Merkle 锚定 | Echo ledger 升级 | 历史日志前向完整；外部可验证证据 | 中：现状单静态 `journal.key`/`permit.key`，`PermitSeal.key_epoch` 硬编码 `permit-epoch-1`；`tip_anchor.py` 非 Merkle | 验证路径必须改：按 epoch 选钥或从 genesis 验证棘轮 | 采纳（P1，**绑定交付**） |
 | T7 | Apple Containerization 载体 | Orin Stage C `production_sandbox_carrier`（**先改 SPEC 再改位语义**） | P2-1 给 **file/build** 真 VM 隔离；memory/net 须先让该进程不再持有生产 KeyBox；**不**解锁 Stage C 外部门，也**不**承载 desktop/secret | 中：需 macOS 26；老设备回退 sandbox-exec | 设备要求上升 → 分层回退；Linux VM 跑不了 AppKit/Keychain；file/memory/services 今日会在进程内构造 KeyBox | **采纳（P2 核心，范围收窄）** |
 | T8 | Wasmtime skill 沙箱 | Echo skill/插件执行 | 亚毫秒启动的全平台沙箱 | 中：skill 需编译 wasm 或运行时嵌入 | 现有 skill 是 Python → 渐进式 | 采纳（P3 探索） |
 | T9 | LLMLingua 式压缩 | Echo context_savings 升级 | 工具输出/长文档最多 20× 压缩 | 中：压缩模型本地运行（phi-2 级 <8GB），启发式回退 | 与"低设备"部分冲突 → 可选模块 | 采纳（P3，可选） |
@@ -215,7 +215,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | 项 | 内容 | 验收标准 | 回退 |
 |---|---|---|---|
 | P1-1 | 接入 AgentDojo：js-agent 工具集映射到 AgentDojo 任务套件，CI 每夜跑注入套件 | CI 产出 ASR（攻击成功率）数字；基线存档；ASR 回归 >2pp 即 fail | 不阻塞发布，仅报告 |
-| P1-2 | ledger 前向安全升级：HMAC 密钥按 epoch 演进（旧 epoch 密钥销毁），tip 计算 Merkle 根并可导出包含证明 | 篡改任一历史条目 → 验证失败且定位到条目；密钥泄露模拟测试通过 | 保留旧验证器读旧链（双读期 1 个版本） |
+| P1-2 | ledger 前向安全升级，**与 Merkle 锚定绑定交付**（拆开即缺口）：HMAC 密钥按 epoch 演进，旧 epoch 密钥销毁后，该 epoch 历史条目的完整性验证义务**必须**转移到关闭该 epoch 时的 seal / Merkle 根（否则要么留着链头等于没销毁，要么历史不可验证）。现状：单静态 `journal.key`/`permit.key`（`js/echo/ledger/service.py` 无轮换）；`PermitSeal.key_epoch` 仅命名、硬编码 `"permit-epoch-1"`。`tip_anchor.py` 是外部单调计数器 + MAC，不是 Merkle；inclusion proof 是新组件。双读期 1 个版本：旧验证器可读旧链。 | 篡改任一历史条目 → 验证失败且定位到条目；密钥泄露模拟：当前 epoch 钥泄漏不得伪造已关闭 epoch；关闭 epoch 后销毁旧钥仍能用 Merkle 根+包含证明验证该 epoch | 保留旧验证器读旧链（双读期 1 个版本）；不得单独上线"销毁旧钥"而无锚定 |
 | P1-3 | 策略收窄证明（T3 轻量版）：evolution 自进化提案的策略变更先经"动作空间是否收窄"判定；暂不引入 Z3，用格（lattice）比较实现 | 扩张性策略变更 100% 触发人工审批；收窄性变更自动通过 | 全部转人工审批 |
 
 ### P2 —— 生产隔离载体（4–6 周，对齐 Orin Stage C 外部门）
@@ -245,7 +245,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | R1 | plan-commit（P0） | 模型生成的计划本身错误（非恶意） | 计划 schema 校验 + 动作白名单 | BIND 阶段拒绝不合法计划，转人工 | 计划质量依赖模型能力；弱模型效用下降（CaMeL 实测 -26.8pp）→ 轻路径不受影响 |
 | R2 | plan-commit（P0） | 不可信数据填满值槽位时语义下毒（值合法但内容误导）；或填槽由受污染模型同时拼装参数 | taint 标签 + 槽位策略；填槽来源审计（确定性投影 vs 隔离提取） | CaMeL 同源局限：只能保证控制流安全，不保证值正确；SECRET 槽位禁填不可信数据；**禁止**受污染模型既提取又拼装 | **明示残余风险，写入 SECURITY.md** |
 | R3 | AgentDojo CI（P1） | benchmark 过拟合（针对 629 用例调参） | 保留 held-out 用例集不进 CI 调参循环 | 每季度引入新攻击集；配合内部红队用例 | 中 |
-| R4 | 前向安全键控（P1） | epoch 切换时密钥管理 bug 导致链验证失败 | 双读期 + 链回放测试 | 旧链只读冻结归档 | 低 |
+| R4 | 前向安全键控（P1） | epoch 切换时密钥管理 bug 导致链验证失败；或销毁旧钥却未写 Merkle 根 | 双读期 + 链回放测试；关闭 epoch 的合取：根已锚定 ∧ 旧钥已销毁 | 旧链只读冻结归档；缺根则拒绝销毁旧钥 | 低 |
 | R5 | 格比较策略收窄（P1） | 策略语言表达力不足，误判"收窄/扩张" | 全部误判偏向人工审批（fail-safe 方向） | 误判成本=多一次人工审批，无安全损失 | 低 |
 | R6 | Apple Containerization（P2） | macOS 26 以下 / Intel Mac / 未来 Windows；误把 desktop/secret/net/memory 放进 Linux VM；guest 挂上生产 KeyBox | 启动探测 + **cell 类型白名单（P2-1 仅 file/build）** + guest 挂载不得含 keybox/secret/lease 密钥 | 自动回退 L1；凡进 VM 的 cell 一律走宿主 broker，不按模块名猜测是否构造 KeyBox | 中（spawn 模型与密钥材料） |
 | R7 | Hyperlight（P3 候选） | 基座 macOS 支持缺失/不成熟；Hyperlight Wasm 自述"实验性，非生产级" | 原型评估 | 仅作 Windows 阶段候选，不进 macOS 关键路径 | 中（故列 P3） |
