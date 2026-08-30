@@ -62,15 +62,9 @@ def prepare_product_orin(settings: Any) -> Any:
         return settings
     if getattr(orin, "enforce", False) is True:
         return settings
-    already_enabled = getattr(orin, "enabled", False) is True
     orin.enabled = True
-    if not already_enabled:
-        profile = getattr(orin, "policy_profile", "conservative")
-        profile_value = str(getattr(profile, "value", profile))
-        if profile_value == "conservative":
-            from js.config import OrinPolicyProfile
-
-            orin.policy_profile = OrinPolicyProfile.COMPAT
+    # P1-3: never silently widen conservative → compat. Explicit
+    # JS_ORIN__POLICY_PROFILE=compat (or config) is the documented degrade.
     return settings
 
 
@@ -102,7 +96,7 @@ def _argv(settings: Any, socket_path: Path) -> list[str]:
         "--keybox-tier",
         str(getattr(orin, "keybox_tier", "dev")),
         "--policy-profile",
-        str(getattr(orin, "policy_profile", "compat")),
+        str(getattr(orin, "policy_profile", "conservative")),
     ]
     if getattr(orin, "stage_b", False) is True:
         argv.append("--stage-b")

@@ -78,10 +78,15 @@ Host 本身仍在原生进程内。
   `execute_tool_effect`。缺失、不健康或不可验证的闸门 fail-closed。
 - **单次租约**：绑定 product / owner / session / run / 工具 / 参数 / 预算。
 - **污点与策略表**：不可信输入会打标。`OrinConfig.policy_profile` 字段默认是
-  `conservative`（未匹配行需审批）。AppShell 在打开 Stage A、且
-  `orin.enforce` 仍为 false 时，会把该默认值改成 `compat`：非 allow 裁决降为
-  允许并记日志。因此**默认桌面/Host 路径不把污点当作审批闸**。
-  `conservative` 是显式配置或未来 enforce 姿态，不是当前产品默认。
+  `conservative`（未匹配行需审批）。产品启动 Stage A 时**不再**把该默认值
+  静默改成 `compat`；要走 allow+log 必须显式写出
+  `JS_ORIN__POLICY_PROFILE=compat` 或配置文件。`gateway:*` 租约即使全局
+  是 `compat` 也强制 conservative，不得 allow+log。
+  扩张性策略变更（conservative→compat、打开 `shadow_mode` 等）须显式配置
+  或人工审批；收窄可自动通过。evolution 提案不得改 Orin 策略表。
+- **计划控制流 ≠ 值正确**：plan-commit 只保证工具名与已 BIND 槽位的控制流；
+  不可信数据填进值槽时仍可能语义下毒（值合法但内容误导）。SECRET 槽禁填
+  不可信数据。这不是第 3.1 节漏洞。
 - **技能四级信任**：`builtin` → `trusted` → `community` → `quarantine`。
   TRUSTED 需要可信公钥目录内未吊销的公钥；自签最高 COMMUNITY。
 - **进程内启发式**（审批正则、输出脱敏、技能扫描、shell allowlist）捕获合作模式

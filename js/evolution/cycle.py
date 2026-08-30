@@ -196,6 +196,9 @@ class EvolutionCycle:
         proposal = self.get(proposal_id, owner)
         if proposal is None or proposal.status != STATUS_PROPOSED:
             raise ValueError("proposal is not open")
+        from js.orin.policy_lattice import reject_evolution_policy_mutation
+
+        reject_evolution_policy_mutation(proposal.payload)
         try:
             applied_path = self._write_applied(proposal)
         except OSError:

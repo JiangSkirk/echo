@@ -89,11 +89,17 @@ sandbox alone.
   and budget.
 - **Taint and the policy table.** Untrusted input is marked. The
   `OrinConfig.policy_profile` field default is `conservative` (unmatched rows
-  require approval). When AppShell turns on Stage A and `orin.enforce` is still
-  false, that default is rewritten to `compat`: non-allow verdicts become
-  allow-with-log. **The default desktop/Host path does not treat taint as an
-  approval gate.** `conservative` is an explicit setting or a future enforce
-  posture, not the current product default.
+  require approval). Product Stage A start **does not** silently rewrite that
+  default to `compat`; allow-with-log requires an explicit
+  `JS_ORIN__POLICY_PROFILE=compat` or config file. `gateway:*` leases stay
+  conservative even when the global profile is `compat`. Widening changes
+  (conservative→compat, enabling `shadow_mode`) need explicit config or
+  human approval; narrowing may auto-pass. Evolution proposals must not
+  mutate the Orin policy table.
+- **Plan control flow is not value correctness.** Plan-commit binds tool
+  names and slots; untrusted values in those slots can still semantically
+  poison a legitimate action. SECRET slots refuse untrusted fill. This is
+  not a §3.1 issue.
 - **Skill trust tiers** `builtin` → `trusted` → `community` → `quarantine`.
   TRUSTED requires an unrevoked key in the trusted public-key directory;
   self-signatures stop at COMMUNITY.

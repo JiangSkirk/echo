@@ -27,6 +27,7 @@ _REQUIRED_ZH = (
     "constraints.txt",
     "not_implemented",
     "compat",
+    "计划控制流",
 )
 
 _REQUIRED_EN = (
@@ -46,6 +47,7 @@ _REQUIRED_EN = (
     "constraints.txt",
     "not_implemented",
     "compat",
+    "control flow",
 )
 
 

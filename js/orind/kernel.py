@@ -101,6 +101,7 @@ class GateInputs:
     quotas_ok: bool = True
     freeze_active: bool = False
     reconciliation_pending: bool = False
+    policy_profile: str = "conservative"
 
 
 def _deny(missing: tuple[str, ...], reason: str) -> GateDecision:
@@ -362,6 +363,20 @@ class GateKernel:
         if missing:
             return _deny(tuple(missing), "missing_conjunct")
         assert intent is not None  # owner_intent would have returned above
+
+        if draft.effect_type == "policy.change":
+            from js.orin.policy_lattice import evaluate_policy_change_intent
+
+            lattice = evaluate_policy_change_intent(
+                dict(draft.arguments),
+                current_profile=str(inputs.policy_profile or "conservative"),
+                approved=bool(inputs.approval_satisfied),
+            )
+            if not lattice.allowed:
+                return GateDecision(
+                    verdict="require_dual_control",
+                    reason_code="policy_widen_requires_approval",
+                )
 
         # 7) Echo-facing requirement label for non-automatic effects.
         if draft.effect_type in READ_EFFECTS:

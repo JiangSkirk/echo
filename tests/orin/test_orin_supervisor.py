@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from js.config import JSSettings
+from js.config import JSSettings, OrinConfig, OrinPolicyProfile
 from js.orin.supervisor import (
     _argv,
     _socket_live,
@@ -37,7 +37,7 @@ def test_prepare_product_orin_enables_stage_a_without_enforce(tmp_path: Path) ->
     assert settings.orin.enabled is True
     assert settings.orin.enforce is False
     assert settings.orin.stage_b is False
-    assert settings.orin.policy_profile.value == "compat"
+    assert settings.orin.policy_profile.value == "conservative"
     assert settings.orin.cell_desktop is False
     assert settings.orin.cell_memory is False
 
@@ -72,6 +72,19 @@ def test_supervisor_argv_includes_desktop_memory_when_stage_b_identity(tmp_path:
     assert "--orin-enforce" not in argv
 
 
+def test_prepare_keeps_explicit_compat_profile(tmp_path: Path) -> None:
+    settings = JSSettings(
+        workspace=tmp_path / "ws",
+        state_dir=tmp_path / "st",
+        providers=[],
+        orin=OrinConfig(policy_profile=OrinPolicyProfile.COMPAT),
+    )
+    prepare_product_orin(settings)
+    assert settings.orin.enabled is True
+    assert settings.orin.enforce is False
+    assert settings.orin.policy_profile.value == "compat"
+
+
 def test_supervisor_argv_is_stage_a_only(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     prepare_product_orin(settings)
@@ -80,7 +93,8 @@ def test_supervisor_argv_is_stage_a_only(tmp_path: Path) -> None:
     argv = _argv(settings, tmp_path / "orind.sock")
     assert "--dev" in argv
     assert "--policy-profile" in argv
-    assert "compat" in argv
+    assert "conservative" in argv
+    assert "compat" not in argv
     assert "--stage-b" not in argv
     assert "--cell-desktop" not in argv
     assert "--cell-memory" not in argv

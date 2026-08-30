@@ -262,6 +262,7 @@ class OrinDaemon:
         if now_fn is not None:
             gate_kwargs["now_fn"] = now_fn
         self._gatekeeper = GateKeeper(**gate_kwargs)
+        self._policy_profile = str(policy_profile)
         # -- stage B surfaces (all off unless stage_b=True) --------------------
         self._stage_b = stage_b
         self._cell_build_enabled = bool(cell_build) and stage_b
@@ -1690,6 +1691,7 @@ class OrinDaemon:
             expected_executor_id=str(record.get("executor_id") or ""),
             context_has_secret=bool(int(record.get("context_taint", 0)) & self._secret_bit),
             freeze_active=bool(self._store.frozen_sessions()),
+            policy_profile=self._policy_profile,
         )
         if self._membrane is not None:
             operation = self._membrane.operation_for_draft(draft.draft_id)
