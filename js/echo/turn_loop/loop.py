@@ -25,6 +25,7 @@ from js.echo.model_budget import MODEL_CALL_JOURNAL_RECORDS, EchoBudgetExceededE
 from js.echo.plan_commit.activation import (
     midturn_narrowing_active,
     plan_commit_turn_active,
+    remaining_rebind_active,
 )
 from js.echo.plan_commit.assembler import (
     AssemblyError,
@@ -34,6 +35,7 @@ from js.echo.plan_commit.assembler import (
     set_assembled_call,
 )
 from js.echo.plan_commit.extract import EXTRACT_INSTRUCTIONS, parse_extracted_value
+from js.echo.plan_commit.labels import bind_context_taint, remaining_step_allowed
 from js.echo.plan_commit.narrowing import (
     filter_write_egress_schema,
     messages_have_injection_dirty,
@@ -41,7 +43,15 @@ from js.echo.plan_commit.narrowing import (
     restore_checkpoint_tool_taint,
     set_write_egress_blocked,
 )
-from js.echo.plan_commit.plan import PLAN_INSTRUCTIONS, PlanError, SlotBinding, parse_plan
+from js.echo.plan_commit.plan import (
+    PLAN_INSTRUCTIONS,
+    REMAINING_PLAN_INSTRUCTIONS,
+    Plan,
+    PlanError,
+    PlanStep,
+    SlotBinding,
+    parse_plan,
+)
 from js.echo.primitives import BudgetClock, BudgetLimits
 from js.echo.state import AgentState
 from js.echo.turn_context import current_runtime_context, runtime_partition_key
@@ -135,6 +145,7 @@ class EchoTurnLoop:
         self._pending_model_prompt_tokens = 0
         self._prompt_token_counter: TokenCounter | None = None
         self._write_egress_narrowed = False
+        self._remaining_rebind_pending = False
         self._plan_commit_receipts: list[dict[str, Any]] = []
         self._last_tools_schema: list[dict[str, Any]] | None = None
 
@@ -866,6 +877,9 @@ class EchoTurnLoop:
 
             self._enforce_message_limit()
             self._apply_midturn_narrowing()
+            if self._remaining_rebind_pending:
+                await self._run_remaining_rebind()
+                break
 
             turn_start = time.perf_counter()
             turn_tool_scores: list[Any] = []
@@ -944,10 +958,14 @@ class EchoTurnLoop:
             return
         self.state.messages = restore_checkpoint_tool_taint(self.state.messages)
         if self._write_egress_narrowed:
+            if remaining_rebind_active(settings=self.agent.settings, channel=self._turn_channel()):
+                self._remaining_rebind_pending = True
             return
         if not messages_have_injection_dirty(self.state.messages):
             return
         self._arm_write_egress_narrowing(reason="injection_dirty")
+        if remaining_rebind_active(settings=self.agent.settings, channel=self._turn_channel()):
+            self._remaining_rebind_pending = True
 
     def _arm_write_egress_narrowing(self, *, reason: str) -> None:
         self._write_egress_narrowed = True
@@ -960,6 +978,18 @@ class EchoTurnLoop:
     async def _run_plan_commit(self) -> None:
         """PLAN (no tools) → BIND names/slots → EXECUTE assembled steps. Fail closed."""
 
+        await self._run_bound_plan(instructions=PLAN_INSTRUCTIONS, stats_key="plan_commit")
+
+    async def _run_remaining_rebind(self) -> None:
+        """Re-BIND remaining iterations after mid-turn dirty. Executed steps stay."""
+
+        self._remaining_rebind_pending = False
+        await self._run_bound_plan(
+            instructions=REMAINING_PLAN_INSTRUCTIONS,
+            stats_key="remaining_rebind",
+        )
+
+    async def _run_bound_plan(self, *, instructions: str, stats_key: str) -> None:
         agent = self.agent
         state = self.state
         saved_disable_tools = self.disable_tools
@@ -976,105 +1006,29 @@ class EchoTurnLoop:
             _, compressed_messages = await self._compress()
             plan_messages = [
                 *compressed_messages,
-                ChatMessage(role="system", content=PLAN_INSTRUCTIONS, taint=0),
+                ChatMessage(role="system", content=instructions, taint=0),
             ]
             plan_response = await self._get_response(plan_messages, None)
             self._record_response(plan_response)
             try:
                 plan = parse_plan(plan_response.content)
             except PlanError as exc:
+                if stats_key == "remaining_rebind":
+                    receipts.append({"phase": "plan", "status": "rejected", "reason": str(exc)})
+                    if state.status == "running":
+                        state.status = "completed"
+                    return
                 state.status = "error"
                 state.error_message = f"plan-commit rejected: {exc}"
                 receipts.append({"phase": "plan", "status": "rejected", "reason": str(exc)})
                 return
 
-            tool_names = plan.tool_names()
-            self.lease_tool_allowlist = tool_names
-            self.allowed_tools = set(tool_names)
-            receipts.append(
-                {
-                    "phase": "bind",
-                    "status": "ok",
-                    "tools": list(tool_names),
-                    "slots": [
-                        {
-                            "tool": step.tool,
-                            "name": slot.name,
-                            "taint_policy": slot.taint_policy,
-                            "fill_source": slot.fill_source,
-                        }
-                        for step in plan.steps
-                        for slot in step.slots
-                    ],
-                }
+            await self._execute_bound_plan(
+                plan,
+                receipts=receipts,
+                plan_model=plan_response.model or (self.model or ""),
+                turn_tool_scores=turn_tool_scores,
             )
-
-            prior_outputs: list[str] = []
-            for index, step in enumerate(plan.steps):
-                if self._check_cancelled() or state.turn_count >= agent.settings.max_turns:
-                    break
-                state.turn_count += 1
-                try:
-                    assembled = await assemble_step(
-                        step,
-                        prior_outputs=tuple(prior_outputs),
-                        extract=self._isolated_extract,
-                    )
-                except AssemblyError as exc:
-                    receipts.append(
-                        {
-                            "phase": "execute",
-                            "status": "skipped",
-                            "tool": step.tool,
-                            "reason": str(exc),
-                            "index": index,
-                        }
-                    )
-                    state.messages.append(
-                        ChatMessage(
-                            role="system",
-                            content=(f"plan-commit skipped step {index} ({step.tool}): {exc}"),
-                            taint=0,
-                        )
-                    )
-                    continue
-                call = {
-                    "id": f"plan-exec-{index}",
-                    "type": "function",
-                    "function": {
-                        "name": assembled.tool,
-                        "arguments": json.dumps(
-                            assembled.arguments, ensure_ascii=True, sort_keys=True
-                        ),
-                    },
-                }
-                step_response = ChatResponse(
-                    content="",
-                    tool_calls=[call],
-                    model=plan_response.model or (self.model or ""),
-                    usage={},
-                    finish_reason="tool_calls",
-                )
-                assembled_tokens = set_assembled_call(
-                    tool=assembled.tool,
-                    arguments=assembled.arguments,
-                )
-                try:
-                    self._record_response(step_response)
-                    await self._run_tools(step_response, turn_tool_scores)
-                finally:
-                    reset_assembled_call(assembled_tokens)
-                if state.tool_results:
-                    prior_outputs.append(str(state.tool_results[-1].output or ""))
-                receipts.append(
-                    {
-                        "phase": "execute",
-                        "status": "ok",
-                        "tool": assembled.tool,
-                        "index": index,
-                        "args_schema": assembled_args_schema(assembled.arguments),
-                    }
-                )
 
             if self._check_cancelled():
                 return
@@ -1089,8 +1043,144 @@ class EchoTurnLoop:
         finally:
             self.disable_tools = saved_disable_tools
             self._plan_commit_receipts = receipts
-            state.compression_stats["plan_commit"] = {"receipts": receipts}
+            state.compression_stats[stats_key] = {"receipts": receipts}
             await self._record_turn_metrics(turn_start, turn_tool_scores)
+
+    async def _execute_bound_plan(
+        self,
+        plan: Plan,
+        *,
+        receipts: list[dict[str, Any]],
+        plan_model: str,
+        turn_tool_scores: list[Any],
+    ) -> None:
+        agent = self.agent
+        state = self.state
+        tool_names = plan.tool_names()
+        self.lease_tool_allowlist = tool_names
+        self.allowed_tools = set(tool_names)
+        receipts.append(
+            {
+                "phase": "bind",
+                "status": "ok",
+                "tools": list(tool_names),
+                "slots": [
+                    {
+                        "tool": step.tool,
+                        "name": slot.name,
+                        "taint_policy": slot.taint_policy,
+                        "fill_source": slot.fill_source,
+                        "source_label": slot.source_label,
+                    }
+                    for step in plan.steps
+                    for slot in step.slots
+                ],
+            }
+        )
+
+        prior_outputs: list[str] = []
+        for index, step in enumerate(plan.steps):
+            if self._check_cancelled() or state.turn_count >= agent.settings.max_turns:
+                break
+            context_taint = bind_context_taint(state.messages)
+            if not remaining_step_allowed(step, context_taint=context_taint):
+                receipts.append(
+                    {
+                        "phase": "execute",
+                        "status": "skipped",
+                        "tool": step.tool,
+                        "reason": "bind-time policy refused remaining write/egress",
+                        "index": index,
+                    }
+                )
+                continue
+            state.turn_count += 1
+            try:
+                assembled = await assemble_step(
+                    step,
+                    prior_outputs=tuple(prior_outputs),
+                    extract=self._isolated_extract,
+                )
+            except AssemblyError as exc:
+                receipts.append(
+                    {
+                        "phase": "execute",
+                        "status": "skipped",
+                        "tool": step.tool,
+                        "reason": str(exc),
+                        "index": index,
+                    }
+                )
+                state.messages.append(
+                    ChatMessage(
+                        role="system",
+                        content=(f"plan-commit skipped step {index} ({step.tool}): {exc}"),
+                        taint=0,
+                    )
+                )
+                continue
+            labeled_step = PlanStep(
+                tool=assembled.tool,
+                arguments=assembled.arguments,
+                slots=assembled.slot_labels,
+            )
+            if not remaining_step_allowed(
+                labeled_step,
+                context_taint=bind_context_taint(state.messages),
+            ):
+                receipts.append(
+                    {
+                        "phase": "execute",
+                        "status": "skipped",
+                        "tool": assembled.tool,
+                        "reason": "bind-time policy refused after slot labels",
+                        "index": index,
+                    }
+                )
+                continue
+            call = {
+                "id": f"plan-exec-{index}",
+                "type": "function",
+                "function": {
+                    "name": assembled.tool,
+                    "arguments": json.dumps(assembled.arguments, ensure_ascii=True, sort_keys=True),
+                },
+            }
+            step_response = ChatResponse(
+                content="",
+                tool_calls=[call],
+                model=plan_model,
+                usage={},
+                finish_reason="tool_calls",
+            )
+            assembled_tokens = set_assembled_call(
+                tool=assembled.tool,
+                arguments=assembled.arguments,
+            )
+            try:
+                self._record_response(step_response)
+                await self._run_tools(step_response, turn_tool_scores)
+            finally:
+                reset_assembled_call(assembled_tokens)
+            if state.tool_results:
+                prior_outputs.append(str(state.tool_results[-1].output or ""))
+            receipts.append(
+                {
+                    "phase": "execute",
+                    "status": "ok",
+                    "tool": assembled.tool,
+                    "index": index,
+                    "args_schema": assembled_args_schema(assembled.arguments),
+                    "slot_labels": [
+                        {
+                            "name": slot.name,
+                            "source_label": slot.source_label,
+                            "taint_policy": slot.taint_policy,
+                        }
+                        for slot in assembled.slot_labels
+                    ],
+                }
+            )
 
     async def _isolated_extract(self, slot: SlotBinding, source_text: str) -> Any:
         """Fill one slot via a disable_tools model call. Never advertises tools."""

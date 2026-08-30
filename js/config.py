@@ -713,12 +713,13 @@ class EchoPlanCommitConfig(BaseModel):
     """Plan-then-execute mode. Default off; explicit false is a degrade (P0-4)."""
 
     enabled: bool = False
+    remaining_rebind: bool = True
 
-    @field_validator("enabled", mode="before")
+    @field_validator("enabled", "remaining_rebind", mode="before")
     @classmethod
     def require_exact_boolean_plan_commit(cls, value: object) -> bool:
         if type(value) is not bool:
-            raise ValueError("echo_plan_commit.enabled must be an exact boolean")
+            raise ValueError("echo_plan_commit flags must be exact booleans")
         return value
 
 

@@ -9,6 +9,7 @@ from typing import Any, Final, Literal
 
 FillSource = Literal["literal", "projection", "extract"]
 TaintPolicy = Literal["trusted", "untrusted", "any"]
+SourceLabel = Literal["user", "prior_tool", "extract", "unknown"]
 
 _MAX_STEPS: Final[int] = 32
 _MAX_TOOL_NAME: Final[int] = 128
@@ -25,11 +26,12 @@ class PlanError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class SlotBinding:
-    """One BIND slot: name, taint policy, and allowed fill source."""
+    """One BIND slot: name, taint policy, fill source, and source label."""
 
     name: str
     taint_policy: TaintPolicy
     fill_source: FillSource
+    source_label: SourceLabel = "user"
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,9 +58,15 @@ PLAN_INSTRUCTIONS: Final[str] = (
     "Output a JSON object only, no tools, no prose. Schema: "
     '{"steps":[{"tool":"<name>","arguments":{...},"slots":'
     '[{"name":"<arg>","taint_policy":"trusted|untrusted|any",'
-    '"fill_source":"literal|projection|extract"}]}]}. '
+    '"fill_source":"literal|projection|extract",'
+    '"source_label":"user|prior_tool|extract"}]}]}. '
     "Use literal arguments for values taken only from the user instruction. "
     "Omit steps you cannot bind from trusted text."
+)
+
+REMAINING_PLAN_INSTRUCTIONS: Final[str] = (
+    "Executed steps already ran and must not be repeated. "
+    "Output remaining steps only. Do not bind write, shell, or network tools. " + PLAN_INSTRUCTIONS
 )
 
 
@@ -133,7 +141,7 @@ def _parse_slots(raw: object, *, index: int) -> tuple[SlotBinding, ...]:
     for slot_index, item in enumerate(raw):
         if not isinstance(item, dict):
             raise PlanError(f"step {index} slot {slot_index} must be an object")
-        extra = set(item) - {"name", "taint_policy", "fill_source"}
+        extra = set(item) - {"name", "taint_policy", "fill_source", "source_label"}
         if extra:
             raise PlanError(f"step {index} slot {slot_index} has unknown keys")
         name = item.get("name")
@@ -148,11 +156,21 @@ def _parse_slots(raw: object, *, index: int) -> tuple[SlotBinding, ...]:
             raise PlanError(f"step {index} slot {name} has an invalid taint_policy")
         if fill_source not in ("literal", "projection", "extract"):
             raise PlanError(f"step {index} slot {name} has an invalid fill_source")
+        source_label = item.get("source_label")
+        if source_label is None:
+            source_label = {
+                "literal": "user",
+                "projection": "prior_tool",
+                "extract": "extract",
+            }[str(fill_source)]
+        if source_label not in ("user", "prior_tool", "extract", "unknown"):
+            raise PlanError(f"step {index} slot {name} has an invalid source_label")
         slots.append(
             SlotBinding(
                 name=name,
                 taint_policy=taint_policy,  # type: ignore[arg-type]
                 fill_source=fill_source,  # type: ignore[arg-type]
+                source_label=source_label,  # type: ignore[arg-type]
             )
         )
     return tuple(slots)

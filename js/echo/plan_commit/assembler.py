@@ -9,7 +9,13 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import Any, Final
 
-from js.echo.plan_commit.plan import PlanStep, SlotBinding, is_slot_placeholder
+from js.echo.plan_commit.labels import source_label_for_fill
+from js.echo.plan_commit.plan import (
+    PlanStep,
+    SlotBinding,
+    SourceLabel,
+    is_slot_placeholder,
+)
 from js.echo.primitives import stable_payload_hash
 
 PROJECTION_KEYS: Final[tuple[str, ...]] = ("path", "id", "url", "status")
@@ -39,6 +45,7 @@ class AssembledCall:
     tool: str
     arguments: dict[str, Any]
     filled: tuple[str, ...]
+    slot_labels: tuple[SlotBinding, ...] = ()
 
 
 def current_assembled_arguments() -> dict[str, Any] | None:
@@ -122,14 +129,31 @@ async def assemble_step(
 
     arguments = dict(step.arguments)
     filled: list[str] = []
+    labeled: list[SlotBinding] = []
     slots = step.slots or _inferred_slots(step)
     for slot in slots:
         if slot.name in arguments and not _needs_fill(arguments[slot.name]):
             filled.append(slot.name)
+            labeled.append(
+                SlotBinding(
+                    name=slot.name,
+                    taint_policy=slot.taint_policy,
+                    fill_source=slot.fill_source,
+                    source_label="user",
+                )
+            )
             continue
-        value = await _fill_slot(slot, prior_outputs=prior_outputs, extract=extract)
+        value, label = await _fill_slot(slot, prior_outputs=prior_outputs, extract=extract)
         arguments[slot.name] = value
         filled.append(slot.name)
+        labeled.append(
+            SlotBinding(
+                name=slot.name,
+                taint_policy=slot.taint_policy,
+                fill_source=slot.fill_source,
+                source_label=label,
+            )
+        )
     if step.needs_untrusted_fill() and any(
         slot.name not in arguments or _needs_fill(arguments[slot.name]) for slot in slots
     ):
@@ -139,7 +163,12 @@ async def assemble_step(
     leftover = [key for key, value in arguments.items() if is_slot_placeholder(value)]
     if leftover:
         raise AssemblyError(f"step {step.tool} has unbound slots: {sorted(leftover)}")
-    return AssembledCall(tool=step.tool, arguments=arguments, filled=tuple(filled))
+    return AssembledCall(
+        tool=step.tool,
+        arguments=arguments,
+        filled=tuple(filled),
+        slot_labels=tuple(labeled),
+    )
 
 
 async def _fill_slot(
@@ -147,19 +176,19 @@ async def _fill_slot(
     *,
     prior_outputs: tuple[str, ...],
     extract: ExtractFn,
-) -> Any:
+) -> tuple[Any, SourceLabel]:
     if slot.fill_source == "literal":
         raise AssemblyError(f"slot {slot.name} is literal but missing")
     for source_text in reversed(prior_outputs):
         projected = project_value(source_text, slot.name)
         if projected is not None:
-            return projected
+            return projected, "prior_tool"
     if slot.fill_source == "projection":
         raise AssemblyError(f"slot {slot.name} has no projection")
     extracted = await extract(slot, "\n".join(prior_outputs))
     if extracted is None:
         raise AssemblyError(f"slot {slot.name} extract returned null")
-    return extracted
+    return extracted, source_label_for_fill("extract")
 
 
 def project_value(source_text: str, slot_name: str) -> Any | None:
@@ -199,7 +228,14 @@ def _inferred_slots(step: PlanStep) -> tuple[SlotBinding, ...]:
     slots: list[SlotBinding] = []
     for key, value in step.arguments.items():
         if is_slot_placeholder(value):
-            slots.append(SlotBinding(name=key, taint_policy="untrusted", fill_source="projection"))
+            slots.append(
+                SlotBinding(
+                    name=key,
+                    taint_policy="untrusted",
+                    fill_source="projection",
+                    source_label="prior_tool",
+                )
+            )
     return tuple(slots)
 
 

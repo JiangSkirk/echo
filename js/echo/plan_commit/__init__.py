@@ -13,6 +13,7 @@ from js.echo.plan_commit.activation import (
     plan_commit_explicitly_disabled,
     plan_commit_surface_enabled,
     plan_commit_turn_active,
+    remaining_rebind_active,
 )
 from js.echo.plan_commit.assembler import (
     AssemblyError,
@@ -21,7 +22,14 @@ from js.echo.plan_commit.assembler import (
     assembled_args_schema,
     plan_commit_argument_error,
 )
-from js.echo.plan_commit.plan import Plan, PlanError, PlanStep, SlotBinding, parse_plan
+from js.echo.plan_commit.labels import remaining_step_allowed
+from js.echo.plan_commit.plan import (
+    Plan,
+    PlanError,
+    PlanStep,
+    SlotBinding,
+    parse_plan,
+)
 
 __all__ = [
     "READONLY_GATEWAY_TOOLS",
@@ -40,4 +48,6 @@ __all__ = [
     "plan_commit_explicitly_disabled",
     "plan_commit_surface_enabled",
     "plan_commit_turn_active",
+    "remaining_rebind_active",
+    "remaining_step_allowed",
 ]

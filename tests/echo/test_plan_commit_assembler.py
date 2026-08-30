@@ -102,6 +102,7 @@ async def test_assemble_step_prefers_projection_over_extract() -> None:
     )
     assert assembled.arguments["path"] == "notes.txt"
     assert called["extract"] == 0
+    assert assembled.slot_labels[0].source_label == "prior_tool"
 
 
 @pytest.mark.asyncio
@@ -140,6 +141,7 @@ async def test_assemble_step_extract_when_projection_missing() -> None:
         extract=_extract,
     )
     assert assembled.arguments == {"path": "out.txt", "content": "extracted-body"}
+    assert assembled.slot_labels[0].source_label == "extract"
 
 
 @pytest.mark.asyncio

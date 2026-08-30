@@ -39,6 +39,7 @@ def test_parse_plan_marks_slot_fill() -> None:
         '"slots":[{"name":"content","taint_policy":"untrusted","fill_source":"extract"}]}]}'
     )
     assert plan.steps[0].needs_untrusted_fill()
+    assert plan.steps[0].slots[0].source_label == "extract"
 
 
 def test_activation_gateway_default_on_without_global_flag() -> None:
@@ -211,6 +212,45 @@ async def test_execute_does_not_let_model_pick_next_tool(tmp_path) -> None:
 
     assert agent.echo_runtime.executed == ["file_read", "list_dir"]
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_gateway_plan_commit_can_bind_literal_write(tmp_path) -> None:
+    from js.orin.taint import INBOX_CONTENT, USER_TURN, WEB_CONTENT
+
+    agent = LoopAgent(tmp_path, gateway=GatewayConfig(enabled=True))
+    loop = new_loop(agent, user_input="save hello to notes.txt")
+    loop.state.messages[-1] = ChatMessage(
+        role="user",
+        content="save hello to notes.txt",
+        taint=USER_TURN | INBOX_CONTENT | WEB_CONTENT,
+    )
+    calls = 0
+
+    async def _get(
+        _messages: list[ChatMessage],
+        tools_schema: list[dict[str, object]] | None,
+    ) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert tools_schema is None
+            return text_response(
+                '{"steps":[{"tool":"file_write","arguments":'
+                '{"path":"notes.txt","content":"hello"}}]}'
+            )
+        return text_response("wrote")
+
+    loop._get_response = _get  # type: ignore[method-assign]
+    entry = set_entry_source("gateway:telegram")
+    token = set_runtime_context(runtime_context(tmp_path, channel="gateway:telegram"))
+    try:
+        await loop._run_loop()
+    finally:
+        reset_runtime_context(token)
+        reset_entry_source(entry)
+
+    assert agent.echo_runtime.executed == ["file_write"]
 
 
 @pytest.mark.asyncio

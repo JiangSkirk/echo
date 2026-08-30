@@ -92,11 +92,13 @@ async def test_trusted_entry_web_result_cannot_file_write_or_shell_or_fetch(
         if calls == 1:
             return tool_response("browser_fetch", call_id="call-web")
         if calls == 2:
-            assert names is not None
-            assert "file_write" not in names
-            assert "shell" not in names
-            assert "browser_fetch" not in names
-            return tool_response("file_write", call_id="call-write")
+            assert tools_schema is None
+            return text_response(
+                '{"steps":['
+                '{"tool":"file_write","arguments":{"path":"/tmp/x","content":"pwned"}},'
+                '{"tool":"file_read","arguments":{"path":"notes.txt"}}'
+                "]}"
+            )
         return text_response("done")
 
     loop._get_response = _fake_get  # type: ignore[method-assign]
@@ -106,13 +108,14 @@ async def test_trusted_entry_web_result_cannot_file_write_or_shell_or_fetch(
     finally:
         reset_runtime_context(token)
 
-    assert agent.echo_runtime.executed == ["browser_fetch"]
+    assert agent.echo_runtime.executed[0] == "browser_fetch"
+    assert "file_write" not in agent.echo_runtime.executed
+    assert "shell" not in agent.echo_runtime.executed
     assert loop._write_egress_narrowed is True
-    last = loop._last_tools_schema or []
-    last_names = [str(item.get("function", {}).get("name", "")) for item in last]
-    assert "file_write" not in last_names
-    assert "shell" not in last_names
-    assert "browser_fetch" not in last_names
+    receipts = loop.state.compression_stats.get("remaining_rebind", {}).get("receipts", [])
+    assert any(
+        item.get("tool") == "file_write" and item.get("status") == "skipped" for item in receipts
+    )
 
 
 @pytest.mark.asyncio
@@ -185,12 +188,17 @@ async def test_resume_with_dirty_messages_narrows_before_next_model_call(
     ) -> object:
         nonlocal calls
         calls += 1
-        names = [str(item["function"]["name"]) for item in (tools_schema or [])]  # type: ignore[index]
-        assert "file_write" not in names
-        assert "shell" not in names
-        assert "browser_fetch" not in names
+        names = None
+        if tools_schema is not None:
+            names = [str(item["function"]["name"]) for item in tools_schema]  # type: ignore[index]
+        assert "file_write" not in (names or [])
+        assert "shell" not in (names or [])
+        assert "browser_fetch" not in (names or [])
         if calls == 1:
-            return tool_response("file_write", call_id="call-write")
+            assert tools_schema is None
+            return text_response(
+                '{"steps":[{"tool":"file_write","arguments":{"path":"notes.txt","content":"x"}}]}'
+            )
         return text_response("refused")
 
     loop._get_response = _fake_get  # type: ignore[method-assign]
@@ -250,8 +258,12 @@ async def test_checkpoint_flag_narrows_when_taint_was_stripped(tmp_path) -> None
         _messages: list[ChatMessage],
         tools_schema: list[dict[str, object]] | None,
     ) -> object:
-        names = [str(item["function"]["name"]) for item in (tools_schema or [])]  # type: ignore[index]
-        assert "file_write" not in names
+        names = None
+        if tools_schema is not None:
+            names = [str(item["function"]["name"]) for item in tools_schema]  # type: ignore[index]
+        assert "file_write" not in (names or [])
+        if tools_schema is None:
+            return text_response('{"steps":[]}')
         return text_response("refused")
 
     loop._get_response = _fake_get  # type: ignore[method-assign]
@@ -268,4 +280,39 @@ async def test_checkpoint_flag_narrows_when_taint_was_stripped(tmp_path) -> None
 def test_default_settings_do_not_enable_plan_commit() -> None:
     settings = JSSettings()
     assert settings.echo_plan_commit.enabled is False
+    assert settings.echo_plan_commit.remaining_rebind is True
     assert settings.gateway.tool_allowlist == []
+
+
+@pytest.mark.asyncio
+async def test_remaining_rebind_false_falls_back_to_p0_schema_drop(tmp_path) -> None:
+    agent = LoopAgent(
+        tmp_path,
+        plan_commit=EchoPlanCommitConfig(enabled=True, remaining_rebind=False),
+    )
+    loop = new_loop(agent, user_input="open https://example.com then write notes.txt")
+    calls = 0
+
+    async def _fake_get(
+        _messages: list[ChatMessage],
+        tools_schema: list[dict[str, object]] | None,
+    ) -> object:
+        nonlocal calls
+        calls += 1
+        names = [str(item["function"]["name"]) for item in (tools_schema or [])]  # type: ignore[index]
+        if calls == 1:
+            return tool_response("browser_fetch", call_id="call-web")
+        assert "file_write" not in names
+        assert "shell" not in names
+        return text_response("refused")
+
+    loop._get_response = _fake_get  # type: ignore[method-assign]
+    token = set_runtime_context(runtime_context(tmp_path, channel="cli"))
+    try:
+        await loop._run_loop()
+    finally:
+        reset_runtime_context(token)
+
+    assert agent.echo_runtime.executed == ["browser_fetch"]
+    assert loop._write_egress_narrowed is True
+    assert "remaining_rebind" not in loop.state.compression_stats
