@@ -24,6 +24,17 @@ from js.config import EchoLedgerConfig, JSSettings
 from js.echo.execution_contract import ReplayClass, build_effect_bridge
 from js.echo.ledger._hashing import canonical_json, stable_hash
 from js.echo.ledger.effects import DurableEffectLog, EffectReceipt, OutboxRow
+from js.echo.ledger.epoch import (
+    EPOCH_DIR_NAME,
+    MERKLE_ANCHORS_NAME,
+    EpochCloseError,
+    EpochCloseResult,
+    close_epoch,
+    complete_pending_epoch_metadata,
+    permit_epoch_name,
+    recover_pending_key_rotation,
+    verify_closed_epochs,
+)
 from js.echo.ledger.journal import (
     FileEchoLedger,
     JournalEntry,
@@ -309,6 +320,7 @@ class _TenantJournalState:
     permit_key: bytes
     journal: FileEchoLedger
     effects: DurableEffectLog
+    live_epoch: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,7 +350,7 @@ class EchoSafetyService:
         self._skipped_tenant_count = 0
         self._health_verify_cache: dict[
             str,
-            tuple[int, tuple[int, int, int, int, int], VerificationReport],
+            tuple[int, tuple[int, ...], VerificationReport],
         ] = {}
         self._state_lock = threading.RLock()
         self._claim_lock_fds: dict[tuple[str, str], int] = {}
@@ -388,6 +400,26 @@ class EchoSafetyService:
     @property
     def journal_key(self) -> bytes:
         return self._default_state.journal_key
+
+    def close_journal_epoch(self) -> EpochCloseResult:
+        """Close the live HMAC epoch once its Merkle root is anchored."""
+
+        with self._state_lock:
+            state = self._default_state
+            if state.effects.open_count() != 0:
+                raise EpochCloseError("open effects block epoch close")
+            result = close_epoch(
+                self._root,
+                records=state.journal.records,
+                journal_key=state.journal_key,
+                permit_key=state.permit_key,
+                journal_key_path=self._root / "journal.key",
+                permit_key_path=self._root / "permit.key",
+                journal_path=state.journal_path,
+            )
+            self._default_state = _load_journal_state(self._root)
+            self._remember_health_verified(self._default_state)
+            return result
 
     def journal_path_for(self, tenant_id: str) -> Path:
         return self._tenant_state(tenant_id).journal_path
@@ -1117,7 +1149,7 @@ class EchoSafetyService:
             seal = create_permit_seal(
                 intent=intent,
                 decision=policy_decision,
-                key_epoch="permit-epoch-1",
+                key_epoch=permit_epoch_name(tenant_state.live_epoch),
                 journal_seq=record_start + 3,
                 deadline_ms=now_ms + 60_000,
                 signing_key=tenant_state.permit_key,
@@ -2269,7 +2301,7 @@ class EchoSafetyService:
         seal = create_permit_seal(
             intent=intent,
             decision=policy_decision,
-            key_epoch="permit-epoch-1",
+            key_epoch=permit_epoch_name(tenant_state.live_epoch),
             journal_seq=record_start + 3,
             deadline_ms=now_ms + 60_000,
             signing_key=tenant_state.permit_key,
@@ -3754,20 +3786,28 @@ class EchoSafetyService:
         now_ns = monotonic_ns()
         max_age_ns = int(max(0.0, max_verify_age_seconds) * 1_000_000_000)
         cached = self._health_verify_cache.get(cache_key)
-        fingerprint = _journal_fingerprint(state.journal_path)
+        fingerprint = _health_fingerprint(state.journal_path)
         if cached is not None and max_age_ns > 0:
             cached_at_ns, cached_fingerprint, cached_report = cached
             if cached_fingerprint == fingerprint and now_ns - cached_at_ns <= max_age_ns:
                 return cached_report
         report = verify_file(state.journal_path, mac_key=state.journal_key)
+        if report.ok:
+            merkle_report = verify_closed_epochs(state.journal_path.parent)
+            if not merkle_report.ok:
+                report = merkle_report
         self._health_verify_cache[cache_key] = (now_ns, fingerprint, report)
         return report
 
     def _remember_health_verified(self, state: _TenantJournalState) -> None:
+        # Live ``verify_file`` stays off this path so a recent write can reuse
+        # the 60s health cache. Closed-epoch Merkle is cheap and must run here:
+        # otherwise a tampered archive at process start would cache healthy.
+        merkle = verify_closed_epochs(state.journal_path.parent)
         self._health_verify_cache[str(state.journal_path)] = (
             monotonic_ns(),
-            _journal_fingerprint(state.journal_path),
-            VerificationReport(ok=True, errors=()),
+            _health_fingerprint(state.journal_path),
+            merkle,
         )
 
 
@@ -3886,9 +3926,47 @@ def _journal_fingerprint(path: Path) -> tuple[int, int, int, int, int]:
     )
 
 
+def _stat_fingerprint(path: Path) -> tuple[int, int, int, int, int]:
+    try:
+        metadata = path.stat()
+    except FileNotFoundError:
+        return (0, 0, 0, 0, 0)
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _health_fingerprint(journal_path: Path) -> tuple[int, ...]:
+    root = journal_path.parent
+    parts = list(_journal_fingerprint(journal_path))
+    parts.extend(_stat_fingerprint(root / "epoch.json"))
+    parts.extend(_stat_fingerprint(root / MERKLE_ANCHORS_NAME))
+    parts.extend(_stat_fingerprint(root / "journal.key.next"))
+    parts.extend(_stat_fingerprint(root / "permit.key.next"))
+    epochs = root / EPOCH_DIR_NAME
+    if epochs.is_dir():
+        for child in sorted(epochs.glob("epoch-*.json")):
+            parts.extend(_stat_fingerprint(child))
+    return tuple(parts)
+
+
 def _load_journal_state(root: Path) -> _TenantJournalState:
     _ensure_private_directory(root)
     journal_path = root / "chat.jsonl"
+    recover_pending_key_rotation(
+        journal_path,
+        journal_key_path=root / "journal.key",
+        permit_key_path=root / "permit.key",
+    )
+    live_epoch = complete_pending_epoch_metadata(
+        root,
+        journal_path=journal_path,
+        journal_key_path=root / "journal.key",
+    )
     journal_key = _load_or_create_key(root / "journal.key")
     permit_key = _load_or_create_key(root / "permit.key")
     journal = FileEchoLedger(journal_path, mac_key=journal_key, local_tip_seal=True)
@@ -3902,6 +3980,7 @@ def _load_journal_state(root: Path) -> _TenantJournalState:
         permit_key=permit_key,
         journal=journal,
         effects=effects,
+        live_epoch=live_epoch,
     )
 
 
@@ -4146,7 +4225,7 @@ def _replay_effects(
             raise ValueError(f"semantic journal error at record {index}: payload is not an object")
         record_type = getattr(record, "record_type", "")
         try:
-            if record_type == "snapshot_anchor":
+            if record_type in {"snapshot_anchor", "epoch_open"}:
                 snapshot_seen = True
                 tombstones = payload.get("effect_tombstones", [])
                 if not isinstance(tombstones, list) or not all(
@@ -4524,7 +4603,7 @@ def _partition_source_evidence(root: Path) -> _PartitionSourceEvidence:
         if stat.S_ISLNK(metadata.st_mode):
             raise PartitionRetentionError("session partition contains a symlink")
         if stat.S_ISDIR(metadata.st_mode):
-            if relative != Path("claims"):
+            if relative not in {Path("claims"), Path("epochs")}:
                 raise PartitionRetentionError(
                     f"session partition contains unexpected directory: {relative}"
                 )
@@ -4591,7 +4670,7 @@ def _remove_retired_partition(root: Path) -> None:
         relative = candidate.relative_to(root)
         metadata = candidate.lstat()
         if stat.S_ISDIR(metadata.st_mode):
-            if relative != Path("claims"):
+            if relative not in {Path("claims"), Path("epochs")}:
                 raise PartitionRetentionError("retired partition directory changed")
             candidate.rmdir()
             continue
@@ -4607,6 +4686,8 @@ def _is_retirable_partition_file(relative: Path) -> bool:
         return False
     if relative.parent == Path("claims"):
         return relative.name.endswith(".lock")
+    if relative.parent == Path("epochs"):
+        return relative.name.startswith("epoch-") and relative.suffix == ".json"
     if relative.parent != Path("."):
         return False
     if value in {
@@ -4622,6 +4703,8 @@ def _is_retirable_partition_file(relative: Path) -> bool:
         "chat.jsonl.archive.sqlite3-shm",
         "chat.jsonl.archive.sqlite3-journal",
         "echo_tip_seal.json",
+        "epoch.json",
+        "merkle_anchors.jsonl",
     }:
         return True
     return bool(re.fullmatch(r"chat\.jsonl\.archive\.[0-9]+\.gz", value))
