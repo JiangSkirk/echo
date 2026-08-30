@@ -126,7 +126,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 |---|---|---|---|---|---|---|
 | T1 | CaMeL 双 LLM + 值级 capability | Orin 高风险回合模式 | 注入攻击结构性免疫（可证明） | 高：2.8× token、双模型 | 与"省 token"直接冲突 → **风险门控，不全局启用** | 采纳（改造版） |
 | T2 | Plan-then-Execute / Action-Selector 模式 | Echo `turn_loop` 新增 plan-commit 回合模式 | 控制流先于不可信数据定型；**控制流部分**零额外 token（填槽若走隔离提取则另计） | 中高：非纯重组——lease 现状是整参数摘要，槽位策略是新建；须配套 M1 ≥1.2 测试 | 无第二套 loop | **采纳（P0 核心）** |
-| T3 | Progent Z3 单调约束 | Orin 策略更新路径（尤其 evolution 自进化提案） | 策略只能收窄不能扩，SMT 确定性证明 | 中：Z3 依赖 ~30MB，只在策略更新路径，不在回合热路径 | 无 | 采纳（P1） |
+| T3 | Progent Z3 单调约束 | Orin 策略更新路径（`policy_profile` / 策略表 / config / 手动 `policy.change`；**不**预设 evolution 接线） | 策略只能收窄不能扩，SMT 确定性证明 | 中：Z3 依赖 ~30MB，只在策略更新路径，不在回合热路径 | 无 | 采纳（P1） |
 | T4 | FIDES 规划器级 IFC | Orin taint 升级：标签进规划器 | 证据显示可增效用（+16%） | 中高 | taint 铁律保持不破 | 采纳（P2） |
 | T5 | AgentDojo CI 门 | Orin 验收体系 | 安全效果从"自说自话"变标准化度量 | 中：benchmark 适配 | 无 | **采纳（P1 核心）** |
 | T6 | 前向安全键控 + Merkle 锚定 | Echo ledger 升级 | 历史日志前向完整；外部可验证证据 | 中：现状单静态 `journal.key`/`permit.key`，`PermitSeal.key_epoch` 硬编码 `permit-epoch-1`；`tip_anchor.py` 非 Merkle | 验证路径必须改：按 epoch 选钥或从 genesis 验证棘轮 | 采纳（P1，**绑定交付**） |
@@ -216,7 +216,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 |---|---|---|---|
 | P1-1 | 接入 AgentDojo：js-agent 工具集映射到 AgentDojo 任务套件，CI 每夜跑注入套件 | CI 产出 ASR（攻击成功率）数字；基线存档；ASR 回归 >2pp 即 fail | 不阻塞发布，仅报告 |
 | P1-2 | ledger 前向安全升级，**与 Merkle 锚定绑定交付**（拆开即缺口）：HMAC 密钥按 epoch 演进，旧 epoch 密钥销毁后，该 epoch 历史条目的完整性验证义务**必须**转移到关闭该 epoch 时的 seal / Merkle 根（否则要么留着链头等于没销毁，要么历史不可验证）。现状：单静态 `journal.key`/`permit.key`（`js/echo/ledger/service.py` 无轮换）；`PermitSeal.key_epoch` 仅命名、硬编码 `"permit-epoch-1"`。`tip_anchor.py` 是外部单调计数器 + MAC，不是 Merkle；inclusion proof 是新组件。双读期 1 个版本：旧验证器可读旧链。 | 篡改任一历史条目 → 验证失败且定位到条目；密钥泄露模拟：当前 epoch 钥泄漏不得伪造已关闭 epoch；关闭 epoch 后销毁旧钥仍能用 Merkle 根+包含证明验证该 epoch | 保留旧验证器读旧链（双读期 1 个版本）；不得单独上线"销毁旧钥"而无锚定 |
-| P1-3 | 策略收窄证明（T3 轻量版）：evolution 自进化提案的策略变更先经"动作空间是否收窄"判定；暂不引入 Z3，用格（lattice）比较实现 | 扩张性策略变更 100% 触发人工审批；收窄性变更自动通过 | 全部转人工审批 |
+| P1-3 | 策略收窄证明（T3 轻量版）。**守护现有真实入口**，不预设 evolution→policy 接线：evolution 今日是 proposal-only，`approve_and_apply` 只写 `evolution/applied/` JSON，不改 Orin 策略表；`policy.change`/`SINK_POLICY_CHANGE` 只是效应词汇。本项覆盖：（1）`policy_profile` 切换；（2）策略表 / `orin.*` config 变更；（3）手动 intent 的 `policy.change`。**包括** AppShell `prepare_product_orin` 把 `conservative` 静默改成 `compat`——这是扩张，P1-3 必须挡住或改成显式配置；该静默改写不得覆盖 P0-4 gateway 表面。暂不引入 Z3，用格（lattice）比较：动作空间是否收窄。日后若接线 evolution，须先经过本检查，本项不负责去建那条接线。 | 扩张性策略变更 100% 触发人工审批；收窄性变更可自动通过；负例：伪造 evolution 提案直接改策略表 → deny；负例：supervisor 静默 conservative→compat 仍发生在 gateway 表面 → fail | 全部转人工审批 |
 
 ### P2 —— 生产隔离载体（4–6 周，对齐 Orin Stage C 外部门）
 
