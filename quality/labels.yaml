@@ -1,14 +1,14 @@
 # Current review stamps. One row per inventory unit.
 # Authoritative with quality/rubric.yaml only. Do not invent criteria here.
 
-rubric_version: "2026.09.16"
+rubric_version: "2026.09.17"
 
 labels:
   - unit: echo.ledger
     paths:
       - js/echo/ledger/
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -30,7 +30,7 @@ labels:
       - js/echo/spi.py
       - js/echo/context_store.py
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -52,7 +52,7 @@ labels:
       - js/orin/
       - js/orind/
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -78,7 +78,7 @@ labels:
       - js/web/
       - js/appshell/
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-27"
     reviewer: "agent:switch-memory-ui"
     evidence:
@@ -105,7 +105,7 @@ labels:
     paths:
       - js/memory/
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -123,7 +123,7 @@ labels:
       - js/agent/
       - js/tools/
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -140,7 +140,7 @@ labels:
     paths:
       - js/security/
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -161,7 +161,7 @@ labels:
     paths:
       - js/runtime/
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -180,7 +180,7 @@ labels:
       - js/mobile/
       - docs/mobile/MOBILE_CLOSEOUT.md
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-29"
     reviewer: "agent:gap-closure-s3"
     evidence:
@@ -199,7 +199,7 @@ labels:
     paths:
       - js/friends/
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-29"
     reviewer: "agent:gap-closure-wp6b"
     evidence:
@@ -216,7 +216,7 @@ labels:
     paths:
       - js/evolution/
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-29"
     reviewer: "agent:gap-closure-wp5"
     evidence:
@@ -233,7 +233,7 @@ labels:
     paths:
       - js_work/
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-27"
     reviewer: "agent:echo-orin-upgrade"
     evidence:
@@ -248,7 +248,7 @@ labels:
     paths:
       - js/bots/
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-28"
     reviewer: "agent:bots-surface"
     evidence:
@@ -268,7 +268,7 @@ labels:
       - constraints.txt
       - scripts/export_constraints.py
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-29"
     reviewer: "agent:gap-closure-s1"
     evidence:
@@ -289,7 +289,7 @@ labels:
     paths:
       - js/gateway/
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-29"
     reviewer: "agent:gap-closure-wp4a"
     evidence:
@@ -316,9 +316,9 @@ labels:
       - scripts/run_mutation.py
       - docs/quality/mutation-2026-08-29.md
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-30"
-    reviewer: "agent:gap-closure-s2"
+    reviewer: "agent:density-buffer"
     evidence:
       - criterion_id: gate.ruff
         status: pass
@@ -332,7 +332,7 @@ labels:
         status: pass
       - criterion_id: tests.mutation
         status: pass
-    notes: "M1 1.2:1 + py-only 0.937; local mutmut sample on security core"
+    notes: "M1 1.2:1 + py-only 0.94; bots/inbox unit buffer; local mutmut sample on security core"
   - unit: security.audit
     paths:
       - docs/security/THREAT_MODEL.md
@@ -342,7 +342,7 @@ labels:
       - docs/security/staging-trial-2026-08-29.md
       - scripts/staging_trial.py
     label: PEAK
-    rubric_version: "2026.09.16"
+    rubric_version: "2026.09.17"
     stamped_at: "2026-08-30"
     reviewer: "agent:gap-closure-s4"
     evidence:

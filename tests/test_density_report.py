@@ -25,11 +25,11 @@ def test_m1_density_is_at_least_1_2() -> None:
     assert data["ratio"] >= 1.2
     assert data["m1_pass"] == 1
     assert data["test_py_lines"] > 0
-    assert data["ratio_py"] >= 0.937
+    assert data["ratio_py"] >= 0.94
     assert data["py_pass"] == 1
 
 
 def test_ci_ratchets_py_only_density() -> None:
     text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "--min-py" in text
-    assert "0.937" in text
+    assert "0.94" in text

@@ -1,7 +1,7 @@
 # Canonical quality criteria. New bars require a rubric_version bump + changelog.
 # Chat / PR checklists that are not listed here are RUBRIC_DRIFT, not a failed peak.
 
-rubric_version: "2026.09.16"
+rubric_version: "2026.09.17"
 
 label_enum:
   - OPEN
@@ -374,7 +374,7 @@ scopes:
   tests.density:
     criteria:
       - id: tests.density
-        description: M1 density >= 1.2 and py-only density >= 0.937
+        description: M1 density >= 1.2 and py-only density >= 0.94
         evidence_kind: pytest_node
         nodeid: tests/test_density_report.py
   tests.mutation:
@@ -403,6 +403,10 @@ scopes:
         nodeid: tests/test_staging_trial.py
 
 changelog:
+  - version: "2026.09.17"
+    date: "2026-08-30"
+    changes:
+      - "Py-only density ratchet 0.94 after bots/inbox unit coverage buffer"
   - version: "2026.09.16"
     date: "2026-08-30"
     changes:

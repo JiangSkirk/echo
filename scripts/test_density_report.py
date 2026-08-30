@@ -2,7 +2,7 @@
 """Report and ratchet test-to-product line density.
 
 M1 (hard): tests/ (.py + .jsonl + .yaml) / (js+js_work .py) >= 1.2
-Py-only (hard): tests/ .py / (js+js_work .py) >= 0.937
+Py-only (hard): tests/ .py / (js+js_work .py) >= 0.94
 M2/M3 are directional and are not fail-closed here.
 """
 
@@ -19,7 +19,7 @@ TEST_SUFFIXES = {".py", ".jsonl", ".yaml", ".yml"}
 TEST_PY_SUFFIXES = {".py"}
 PRODUCT_SUFFIXES = {".py"}
 M1_FLOOR = 1.2
-PY_FLOOR = 0.937
+PY_FLOOR = 0.94
 
 
 def _count(root: Path, suffixes: set[str]) -> int:

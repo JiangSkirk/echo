@@ -14,7 +14,7 @@ durable recovery behind one fail-closed execution boundary.
 - **`pulse()` 只观察背压**（ADR 0005），不 Exec，不是第二套运行时。
 - **Gateway** 是渠道表面不是运行时（ADR 0008，`gateway.enabled=false`）。未配对发件人丢弃；回合仍走 Echo。
 - **预留模块**（`pipeline` / `mobile`）默认不进 Host 冷启动。mobile 正式声明见 [`docs/mobile/MOBILE_CLOSEOUT.md`](docs/mobile/MOBILE_CLOSEOUT.md)（`not_implemented`）。`friends_enabled` 默认 false，未启用不 import `js.friends`。`scenarios` 是 bots goal 模板；`/api/tasks` 是 bots goals 只读视图。
-- **测试密度**：M1 硬验收 `tests/`（`.py`+`.jsonl`+`.yaml`）/ (`js/`+`js_work/` `.py`) ≥ 1.2；纯 `.py` 口径 ≥ 0.937。棘轮脚本 `scripts/test_density_report.py`。覆盖率 M1 棘轮 `js/security` ≥86%、`js/echo` ≥85%、全库 branch ≥65%；90/85/75 为 M2 方向。安全承重面变异测试见 [`docs/quality/mutation-2026-08-29.md`](docs/quality/mutation-2026-08-29.md)（本地 mutmut，不进 CI）。
+- **测试密度**：M1 硬验收 `tests/`（`.py`+`.jsonl`+`.yaml`）/ (`js/`+`js_work/` `.py`) ≥ 1.2；纯 `.py` 口径 ≥ 0.94。棘轮脚本 `scripts/test_density_report.py`。覆盖率 M1 棘轮 `js/security` ≥86%、`js/echo` ≥85%、全库 branch ≥65%；90/85/75 为 M2 方向。安全承重面变异测试见 [`docs/quality/mutation-2026-08-29.md`](docs/quality/mutation-2026-08-29.md)（本地 mutmut，不进 CI）。
 
 ## Project Structure
 
