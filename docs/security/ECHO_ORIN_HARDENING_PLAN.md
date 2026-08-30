@@ -16,10 +16,10 @@
 1. **Echo 的 capability lease + effect 管道，本质上就是 Google DeepMind CaMeL 的"能力安全模型"的独立实现**——CaMeL 在 AgentDojo 上以 77% 任务完成率（无防护 84%）取得"可证明安全"，代价是 2.8 倍 token。Echo 已有等价骨架但**没有 CaMeL 的"控制流先于不可信数据定型"这一关键性质**，这是本次方案最重要的一课。
 2. **Orin 的 taint（u64 位掩码 + "taint 永不授权"铁律）方向正确**，但学术界已经走得更远：Microsoft FIDES 把信息流标签放进规划器做确定性执行，在 AgentDojo 上挡住全部测试注入且任务完成率反而提升约 16%。Orin 应升级到"规划器级 IFC"。
 3. **"绝对安全"在学术界已被证伪为不可能目标**——Google 防 Gemini 注入的复盘（arXiv:2505.14534）确认：一切分类器/启发式在自适应攻击下都会失效。Orin 的正确目标不是"绝对安全"，而是 **"结构性安全边界 + 可验证审计 + 受控降级"**。这与 Orin 现有 SECURITY.md 信任模型一致，方案不会承诺做不到的事。
-4. **省 token / 低延迟 / 低设备三个目标与安全性存在真实冲突**（CaMeL 花 2.8 倍 token 买安全），本方案的解法是 **风险门控（risk-gated）**：可信回合走轻路径，接触不可信表面的回合才走重路径。已有代码基础（gateway 的 untrusted-surface gate）证明这条路可行。
+4. **省 token / 低延迟 / 低设备三个目标与安全性存在真实冲突**（CaMeL 花 2.8 倍 token 买安全），本方案的解法是 **动态风险门控（risk-gated）**：入口可信且 `context_taint` 无 dirty 位时走轻路径；入口不可信走 plan-commit 重路径；**入口可信但回合中途出现 dirty 位时，P0 对剩余迭代单调收窄（禁写/禁 egress），不在当回合中途升级 plan-commit**。只看入口会漏掉最常见的注入路径（CLI/桌面回合中途用 web 工具读入恶意内容）。现有 `js/orin/taint.py` 已按来源给工具结果打位（`WEB_CONTENT`/`INBOX_CONTENT`/`BOT_PEER` 等），P0 消费该信号做收窄；中途升级 plan-commit 放到 P2 与 taint→label 合并。
 5. **最紧迫的工程发现**：macOS 的 `sandbox-exec`（Echo 当前默认沙箱载体）已被 Apple 标记废弃且被认为"弱"（见 §2.3），而 Apple 官方 Containerization 框架（每容器独立轻量 VM、亚秒启动、Apache-2.0、v1.0.0 已于 2026-06-09 发布）是 Orin Stage C `production_sandbox_carrier` 外部门的现成答案。
 
-**推荐行动**：按 §5 的 P0→P3 四阶段执行。P0（零新依赖、纯现有代码重组）即可拿到"plan-commit 模式 + 风险门控"两大收益；P1 引入 AgentDojo 作为 Orin 的 CI 安全门；P2 解决沙箱载体迁移；P3 做性能与 token 优化。**任何阶段失败都可回退到上一阶段，不破坏现有行为。**
+**推荐行动**：按 §5 的 P0→P3 四阶段执行。P0（零新依赖、纯现有代码重组）即可拿到"入口不可信 → plan-commit"与"中途 dirty 位 → 单调收窄"两大收益；P1 引入 AgentDojo 作为 Orin 的 CI 安全门；P2 把中途收窄升级为剩余迭代 plan-commit，并解决沙箱载体迁移；P3 做性能与 token 优化。**任何阶段失败都可回退到上一阶段，不破坏现有行为。**
 
 ---
 
@@ -145,19 +145,22 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  AppShell / CLI / Gateway（入口，含 untrusted-surface 判定）    │
+│  AppShell / CLI / Gateway（入口；channel 经 set_entry_source 打污点）│
 └──────────────────────────┬──────────────────────────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  Echo Core（通用 agent 核心）                                  │
 │  ┌───────────────────────────────────────────────────────┐  │
-│  │ turn_runtime（唯一回合边界）                             │  │
-│  │  ├─ 轻路径：可信回合 → 现有 effect 管道                   │  │
-│  │  └─ 重路径：不可信回合 → plan-commit 模式（T2）           │  │
+│  │ turn_runtime（唯一回合边界；动态风险门控）                  │  │
+│  │  ├─ 轻路径：入口可信且无 dirty 位 → 现有 effect 管道        │  │
+│  │  ├─ 中途收窄（P0）：迭代边界发现 context_taint 新增 dirty 位  │  │
+│  │  │     → 剩余迭代禁写/禁 egress（只收紧不放松）             │  │
+│  │  └─ 重路径：入口不可信 → plan-commit 模式（T2）            │  │
 │  │       1. PLAN：模型只见可信指令，输出计划（动作序列骨架）    │  │
 │  │       2. BIND：计划经 capability 策略检查，锁定动作空间     │  │
 │  │       3. EXECUTE：不可信数据只能填充计划内的值槽位          │  │
 │  │           （值槽位带 taint 标签，策略拒绝越权使用）         │  │
+│  │  P2：中途 dirty 位可升级为对剩余动作 BIND（与 T4 合并）     │  │
 │  ├─ capability（租约签发/消费/撤销，+ T3 SMT 收窄证明）      │  │
 │  ├─ ledger（哈希链 + 前向安全键控 + Merkle 锚定，T6）         │  │
 │  ├─ context（CAS 去重 + 稳定前缀契约 T10 + 可选压缩 T9）      │  │
@@ -185,7 +188,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 设计不变量（任何阶段不得违反）：
 
 1. **回合唯一边界**：模型、工具、附件只从 `run_echo_turn` 进；plan-commit 是回合内模式，不是第二套 loop
-2. **taint 铁律**：污点永不授权；升级后的 label 同样只能收紧不能放松
+2. **taint 铁律**：污点永不授权；升级后的 label 同样只能收紧不能放松；中途 dirty 位触发的收窄（P0）与剩余迭代 BIND（P2）同样只收紧，不得因后续干净消息放松已收窄的动作空间
 3. **决策路径零模型**：Orin kernel 合取不调用任何模型/分类器（现状已满足，保持）
 4. **fail-closed**：任何子系统缺失/异常 → 拒绝，不降级（现状已满足，保持）
 5. **向后兼容**：轻路径行为与当前版本逐字节一致；所有新机制默认关，显式开启
@@ -198,7 +201,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 
 | 项 | 内容 | 验收标准 | 回退 |
 |---|---|---|---|
-| P0-1 | `turn_loop` 新增 `plan_commit` 回合模式：PLAN→BIND→EXECUTE 三阶段；仅当入口判定为不可信表面（沿用 gateway untrusted-surface gate）时激活 | 新增模式单测全覆盖；轻路径现有 508 个测试文件零回归 | 配置开关 `echo.plan_commit=false` 恢复现状 |
+| P0-1 | `turn_loop` 新增 `plan_commit` 回合模式：PLAN→BIND→EXECUTE 三阶段。**激活条件是动态风险门控，不是入口一次性判定**。（1）入口不可信（`run_echo_turn` 经 `orin_taint.set_entry_source(channel)` 打上 `INBOX_CONTENT\|WEB_CONTENT` 或 `AUTO_TASK`）→ 整回合走 plan-commit；（2）入口可信但迭代边界发现 `context_taint` 新增 dirty 位（至少 `WEB_CONTENT`/`INBOX_CONTENT`/`BOT_PEER`；与现有 `DIRTY_FOR_WRITE` 对齐）→ **P0 对剩余迭代单调收窄：禁写、禁 egress，只收紧不放松**；（3）中途升级到 plan-commit（对剩余动作重新 BIND）放到 P2-2，与 taint→label 合并。收窄是确定性策略，零额外 token。不沿用 `require_untrusted_surface`（那是隔离姿态门，不是逐回合信任标记）。 | 新增模式与收窄路径单测全覆盖；轻路径现有测试文件零回归；构造"可信入口 + 中途 web 读入注入"用例，收窄后 0 次写/egress 成功 | 配置开关 `echo.plan_commit=false` 恢复现状；收窄路径可单独关但默认与 plan-commit 同开关 |
 | P0-2 | 值槽位机制：计划中的参数位标记 `{slot:taint_policy}`，不可信数据只能填槽；槽位策略复用现有 capability 检查 | 构造 20 个注入用例（邮件/网页/文档各含恶意指令），重路径下 0 个导致计划外动作 | 同上 |
 | P0-3 | prompt 稳定前缀契约：系统提示 + 工具描述排序固定，变动只追加在尾部（配合 provider 的 prompt caching） | 相同会话连续 5 回合的 prompt 前缀哈希一致；token 计量记录入 ledger | 开关回退 |
 
@@ -215,7 +218,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | 项 | 内容 | 验收标准 | 回退 |
 |---|---|---|---|
 | P2-1 | Apple Containerization 集成：`orind/cells` 新增 `container_vm` 载体后端；macOS 26 + Apple Silicon 检测，不满足则回退 L1 | 在 VM 内运行 file/desktop cell 冒烟测试通过；`production_sandbox_carrier` 合取位可置真 | 载体探测失败自动 L1，strict_isolation 语义不变 |
-| P2-2 | taint→label 规划器升级（T4）：plan 的每个槽位携带来源标签，策略判定从"工具调用时"提前到"计划绑定时" | AgentDojo 重路径 ASR 对比 P0 再降；效用分不回退超 3pp | 标签层开关 |
+| P2-2 | taint→label 规划器升级（T4）：plan 的每个槽位携带来源标签，策略判定从"工具调用时"提前到"计划绑定时"。**同时把 P0 的中途收窄升级为剩余迭代 plan-commit**：已执行步骤保持，未执行动作空间按当前 taint 重新 BIND（只收紧不放松）。 | AgentDojo 重路径 ASR 对比 P0 再降；效用分不回退超 3pp；中途升级用例在收窄之上进一步禁止计划外动作 | 标签层开关；关闭后回退为 P0 中途收窄 |
 | P2-3 | 模型级联路由（T11）：难度/风险分类器（规则式，非 LLM）→ 本地小模型优先 → 云端升级；与现有 fallback/断路器合并 | 预定义任务集上云端调用占比下降 ≥40% 且任务成功率不降 | 路由表配置回退 |
 
 ### P3 —— 性能与 token 深化（持续，全部可选模块）
@@ -244,6 +247,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | R8 | 级联路由（P2） | 难度误判：难任务路由给弱模型 → 质量下降 | 任务成功率监控（ledger 计量） | 成功率降 >2pp 自动上调该任务类别路由级别 | 低 |
 | R9 | 提示压缩（P3） | 压缩丢关键信息；tokenizer 不一致低估长度 | 压缩前后任务成功率 A/B | 上限 10×；默认关闭；仅长文档场景 | 低 |
 | R10 | 全局 | 任何新层引入的 bug | 现有测试密度 ratchet（M1 ≥1.2:1）继续适用 | 全部新机制默认关 + 特性开关 + 分版本灰度 | — |
+| R11 | 中途污点收窄（P0） | 可信入口回合中途读入注入内容；收窄只作用于**后续**迭代，本批工具结果打位之前已派出的写/egress 无法撤回 | 迭代边界（工具结果打位并写入 `state.messages` 之后、下一轮 `_get_response` 之前）检查 `context_taint` 增量；不得沿用"本阶段开始前"的旧 snapshot | 收窄只收紧：剩余迭代禁写/禁 egress；已发出动作记入 ledger | 中：与现状相同的"本阶段 snapshot 先于 dispatch"窗口仍在，P0 必须把检查点移到结果回流之后 |
 
 **三条全局诚实话**：
 
@@ -257,7 +261,8 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 
 | 指标 | 预测/目标 | 确认阈值 | 挑战阈值 | 触发行动 |
 |---|---|---|---|---|
-| 重路径注入防御 | plan-commit 使内部注入用例 0 成功（P0 验收） | 20/20 用例无计划外动作 | ≥1 用例突破 | 暂停该表面写入权限，回退 deny-all 读模式 |
+| 重路径注入防御 | plan-commit 使入口不可信表面的内部注入用例 0 成功（P0 验收） | 20/20 用例无计划外动作 | ≥1 用例突破 | 暂停该表面写入权限，回退 deny-all 读模式 |
+| 中途污染收窄 | 可信入口 + 中途 web/邮件/文档注入后，剩余迭代 0 次写/egress 成功（P0 验收） | 构造用例 0 次收窄后写/egress | ≥1 用例在收窄后仍写出或 egress | 暂停该工具类写入，回退 deny-all 读模式 |
 | AgentDojo ASR | P1 建立基线后，P2 末 ASR ≤5% | CI 实测 ≤5% | >5% 或回归 >2pp | 阻断版本发布，启动用例复盘 |
 | 云端 token 成本 | 级联路由 + 稳定前缀后，同任务集云端调用量降 ≥40% | 降 ≥40% | 降 <20% | 检查路由误判率，调整难度分类规则 |
 | 任务成功率 | 全部优化后成功率不低于当前基线 -2pp | 降幅 ≤2pp | 降幅 >2pp | 按 P3→P0 逆序逐个关开关定位元凶 |
@@ -271,7 +276,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 
 - **产品代码口径**：`js/`、`js_work/`、`desktop/`、`echo/` 四目录的代码文件（py/js/ts/rs/swift/css/html/sh），排除 tests/docs/demos/benchmarks/scripts 与数据文件（json/md/yaml）；截至 2026-08-30 02:04（commit `7652629`）为 199,764 行
 - **ASR**（Attack Success Rate）：AgentDojo 口径的注入攻击成功率
-- **轻/重路径**：本方案术语，轻路径 = 现状 effect 管道；重路径 = plan-commit 模式
+- **轻/重路径 / 中途收窄**：轻路径 = 现状 effect 管道（入口可信且无 dirty 位）；重路径 = 入口不可信时的 plan-commit 模式；中途收窄 = P0 在轻路径回合中途发现 dirty 位后对剩余迭代禁写/禁 egress（P2 才升级为剩余迭代 plan-commit）。dirty 位至少包括 `WEB_CONTENT`/`INBOX_CONTENT`/`BOT_PEER`，与 `js/orin/taint.py` 的 `DIRTY_FOR_WRITE` 对齐并显式纳入 `INBOX_CONTENT`
 - **Stage C 状态**：以 `docs/security/orin/ORIN_STAGE_C_CLOSEOUT.md`（2026-08-28 裁决）为准——未实施，本方案不构成对其状态的修改
 - **调研截至**：2026-08-30；arXiv 编号均经本轮检索核验，二手转述处已标注
 
