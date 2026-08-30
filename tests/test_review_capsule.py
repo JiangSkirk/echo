@@ -73,6 +73,31 @@ async def test_review_capsule_created(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_review_capsule_uses_user_input_not_memory_block(tmp_path):
+    finalizer = _make_finalizer(tmp_path)
+    state = AgentState(session_id="s1", run_id="r1")
+    state.messages = [
+        ChatMessage(role="system", content="sys"),
+        ChatMessage(
+            role="user",
+            content='<memory trust="untrusted">\nprivate-memory\n</memory>',
+        ),
+        ChatMessage(role="user", content="hello"),
+        ChatMessage(role="assistant", content="world"),
+    ]
+    state.status = "completed"
+    token = set_current_owner_key_hash("owner_a")
+    try:
+        await finalizer._finalize_run(state, "s1", "r1", "hello", 1)
+    finally:
+        reset_current_owner_key_hash(token)
+    capsule = finalizer.review_store.get("s1", "r1", "owner_a")
+    assert capsule is not None
+    assert capsule.first_user_message == "hello"
+    assert "private-memory" not in capsule.first_user_message
+
+
+@pytest.mark.asyncio
 async def test_review_capsule_owner_isolation(tmp_path):
     finalizer = _make_finalizer(tmp_path)
     state = AgentState(session_id="s2", run_id="r2")

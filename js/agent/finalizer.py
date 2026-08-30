@@ -71,12 +71,8 @@ class FinalizerMixin(AgentBase):
         try:
             from js.persistence.review_store import ReviewCapsule
 
-            first_user = ""
+            first_user = user_input if isinstance(user_input, str) else ""
             last_assistant = ""
-            for msg in state.messages:
-                if msg.role == "user" and isinstance(msg.content, str):
-                    first_user = msg.content
-                    break
             if runtime_context is not None and runtime_context.surface == "bots":
                 from js.bots.persona import strip_volatile_tail
 

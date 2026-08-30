@@ -96,15 +96,19 @@ def apply_bots_cache_hooks(
     *,
     transport_type: str,
 ) -> None:
-    """Attach provider prefix-cache breakpoints. No-op off the Bots surface."""
+    """Attach provider prefix-cache breakpoints for Bots and generic Echo."""
 
-    from js.echo.turn_context import current_runtime_context
-
-    runtime = current_runtime_context()
+    prefix_id = ""
     binding = current_bot_binding()
-    if runtime is None or runtime.surface != "bots" or binding is None or not binding.prefix_id:
+    if binding is not None and binding.prefix_id:
+        prefix_id = binding.prefix_id
+    else:
+        from js.echo.turn_loop.schema_freeze import current_turn_prefix_id
+
+        prefix_id = current_turn_prefix_id()
+    if not prefix_id:
         return
-    kwargs["prompt_cache_key"] = binding.prefix_id[:64]
+    kwargs["prompt_cache_key"] = prefix_id[:64]
     if transport_type != "anthropic":
         return
     for message in converted:

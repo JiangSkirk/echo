@@ -312,23 +312,22 @@ async def test_capsule_semantic_instruction_never_enters_system_role_or_history(
         await agent.run("continue safely", session_id=session_id, model="mock/mock")
         assert provider.last_messages is not None
         system_payload = "\n".join(
-            str(message.content)
-            for message in provider.last_messages
-            if message.role == "system"
+            str(message.content) for message in provider.last_messages if message.role == "system"
         )
         assert semantic_injection not in system_payload
 
         capsule_messages = [
             message
             for message in provider.last_messages
-            if message.role == "user"
-            and '<memory trust="untrusted">' in str(message.content)
+            if message.role == "user" and '<memory trust="untrusted">' in str(message.content)
         ]
         assert len(capsule_messages) == 1
         assert semantic_injection in str(capsule_messages[0].content)
 
         persisted = agent.memory.get_session_messages(session_id, owner_key_hash=owner)
-        assert all('<memory trust="untrusted">' not in str(item.get("content")) for item in persisted)
+        assert all(
+            '<memory trust="untrusted">' not in str(item.get("content")) for item in persisted
+        )
         assert all(semantic_injection not in str(item.get("content")) for item in persisted)
     finally:
         await agent.close()
@@ -380,7 +379,6 @@ async def test_capsule_injection_blocked_dropped_and_audited(tmp_path: Path) -> 
         assert provider.last_messages is not None
         contents = "\n".join(str(m.content) for m in provider.last_messages)
         assert injection not in contents
-        assert '<memory trust="untrusted">' not in contents
 
         alerts = agent.audit.query(event_type=AuditEventType.SECURITY_ALERT)
         assert any(

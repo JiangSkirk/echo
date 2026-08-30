@@ -138,6 +138,9 @@ class LoopAgent:
     async def save_checkpoint(self, _state: AgentState) -> None:
         return None
 
+    def _build_untrusted_context(self, **_kwargs: Any) -> str:
+        return ""
+
 
 def runtime_context(
     tmp_path: Path, *, channel: str, session_id: str = "session-1"

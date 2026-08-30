@@ -283,7 +283,10 @@ async def test_isolated_extract_does_not_advertise_tools(tmp_path) -> None:
                 '"fill_source":"extract"}]}]}'
             )
         if calls == 2:
+            from js.echo.turn_loop.schema_freeze import current_turn_prefix_id
+
             assert tools_schema is None
+            assert current_turn_prefix_id() == ""
             return text_response('{"value": "hello"}')
         return text_response("wrote")
 

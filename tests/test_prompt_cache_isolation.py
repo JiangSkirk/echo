@@ -93,6 +93,10 @@ def test_system_prompt_cache_does_not_leak_memory_across_owners(tmp_path: Path) 
             session_id="shared-session",
             model="shared-model",
         )
+        untrusted_a = builder._build_untrusted_context(
+            query="same query",
+            session_id="shared-session",
+        )
 
     with _turn_context(tmp_path, "owner-b"):
         prompt_b = builder._build_system_message(
@@ -100,10 +104,16 @@ def test_system_prompt_cache_does_not_leak_memory_across_owners(tmp_path: Path) 
             session_id="shared-session",
             model="shared-model",
         )
+        untrusted_b = builder._build_untrusted_context(
+            query="same query",
+            session_id="shared-session",
+        )
 
-    assert "private-memory:owner-a" in prompt_a
-    assert "private-memory:owner-b" in prompt_b
-    assert "private-memory:owner-a" not in prompt_b
+    assert "private-memory" not in prompt_a
+    assert "private-memory" not in prompt_b
+    assert "private-memory:owner-a" in untrusted_a
+    assert "private-memory:owner-b" in untrusted_b
+    assert "private-memory:owner-a" not in untrusted_b
 
 
 def test_system_prompt_cache_key_contains_full_runtime_scope(tmp_path: Path) -> None:
@@ -133,22 +143,25 @@ def test_system_prompt_cache_key_contains_full_runtime_scope(tmp_path: Path) -> 
     assert key.query == ""
 
 
-def test_system_prompt_cache_skips_query_dependent_prompts(tmp_path: Path) -> None:
+def test_system_prompt_cache_hits_across_queries(tmp_path: Path) -> None:
     builder = _prompt_builder()
 
     with _turn_context(tmp_path, "owner-a"):
-        builder._build_system_message(
+        first = builder._build_system_message(
             query="first unique query",
             session_id="shared-session",
             model="shared-model",
         )
-        builder._build_system_message(
+        second = builder._build_system_message(
             query="second unique query",
             session_id="shared-session",
             model="shared-model",
         )
 
-    assert len(builder._system_message_cache) == 0
+    assert first == second
+    assert "private-memory" not in first
+    assert len(builder._system_message_cache) == 1
+    assert len(builder.memory.calls) == 0
 
 
 def test_system_prompt_cache_is_disabled_for_missing_identity_placeholder(
@@ -168,9 +181,9 @@ def test_system_prompt_cache_is_disabled_for_missing_identity_placeholder(
             model="shared-model",
         )
 
-    assert isinstance(builder.memory, _OwnerMemory)
-    assert first != second
-    assert len(builder.memory.calls) == 2
+    assert first == second
+    assert "private-memory" not in first
+    assert len(builder.memory.calls) == 0
     assert len(builder._system_message_cache) == 0
 
 
@@ -194,10 +207,9 @@ async def test_prompt_variant_selection_is_isolated_per_concurrent_turn(
     async def select(owner: str) -> str | None:
         nonlocal ready
         with _turn_context(tmp_path, owner):
-            builder._build_system_message(
+            builder._build_untrusted_context(
                 query="same query",
                 session_id="shared-session",
-                model="shared-model",
             )
             ready += 1
             if ready == 2:
