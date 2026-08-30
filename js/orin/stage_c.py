@@ -12,7 +12,7 @@ import contextvars
 from dataclasses import dataclass
 from typing import Any, Final
 
-from js.orin.echo_os import echo_minimal_os_carrier_available
+from js.orin.container_vm import production_sandbox_carrier_available
 from js.orin.inventory import (
     ENFORCE_DISABLED_TOOL_NAMES,
     inventory_digest_matches,
@@ -87,7 +87,7 @@ class StageCEvidence:
         _ = SignedEffectReceiptV1
         return StageCEvidence(
             appshell_echo_separated=production_appshell_echo_separated(),
-            production_sandbox_carrier=echo_minimal_os_carrier_available(),
+            production_sandbox_carrier=production_sandbox_carrier_available(),
             official_tcc_packaging=False,
             k156_8_real_model_e2e=False,
             k156_9_independent_red_team=False,
@@ -161,9 +161,9 @@ def evaluate_stage_c_conjunction(
         ConjunctionBit(
             "production_sandbox_carrier",
             snapshot.production_sandbox_carrier,
-            "deny-default sandbox-exec available"
+            "file/build container_vm or L1 sandbox-exec"
             if snapshot.production_sandbox_carrier
-            else "no Darwin sandbox-exec carrier",
+            else "no file/build container_vm or L1 carrier",
         ),
         ConjunctionBit(
             "official_tcc_packaging",

@@ -22,7 +22,7 @@
 - 配置总闸与 C 子开关（C-I01：默认全关）
 - `appshell_echo_separated`（默认 Host 仍是单进程 ambient）
 - `provider_tokens_out_of_echo`（Echo 仍可在进程内持有 provider token）
-- `production_sandbox_carrier` / `echo_minimal_os`（无正式打包载体验收）
+- `production_sandbox_carrier` / `echo_minimal_os`（P2-1：file/build 的 `container_vm` 或 L1 回退；无正式打包载体验收，不构成 Stage C 已实施）
 - `official_tcc_packaging`（Developer ID / 公证 / 正式 TCC，external-pending）
 - `k156_8_real_model_e2e`（真实模型 observe→act→observe，blocked）
 - `k156_9_independent_red_team`（独立红队，external-pending）

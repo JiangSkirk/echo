@@ -1095,19 +1095,24 @@ def main() -> None:  # pragma: no cover - subprocess entry
     state_dir_env = os.environ.get("ORIN_STATE_DIR")
     if not socket_path or not state_dir_env:
         raise SystemExit("ORIN_CELLS_SOCKET and ORIN_STATE_DIR are required")
+    from js.orin.container_vm import read_host_broker_mac
     from js.orind.keybox import KeyBox
 
     state_dir = Path(state_dir_env)
-    strict_paths = os.environ.get("ORIN_CELL_IDENTITY_ENFORCE") == "1"
-    keybox_tier = os.environ.get("ORIN_KEYBOX_TIER")
-    if strict_paths and keybox_tier not in {"dev", "production"}:
-        raise SystemExit("ORIN_KEYBOX_TIER must be explicit in Cell identity enforce mode")
-    keybox = KeyBox(
-        state_dir,
-        tier=keybox_tier or "dev",
-        strict_paths=strict_paths,
-    )
-    cell = FileCell(socket_path=Path(socket_path), state_dir=state_dir, mac_key=keybox.key)
+    host_mac = read_host_broker_mac()
+    if host_mac is not None:
+        cell = FileCell(socket_path=Path(socket_path), state_dir=state_dir, mac_key=host_mac)
+    else:
+        strict_paths = os.environ.get("ORIN_CELL_IDENTITY_ENFORCE") == "1"
+        keybox_tier = os.environ.get("ORIN_KEYBOX_TIER")
+        if strict_paths and keybox_tier not in {"dev", "production"}:
+            raise SystemExit("ORIN_KEYBOX_TIER must be explicit in Cell identity enforce mode")
+        keybox = KeyBox(
+            state_dir,
+            tier=keybox_tier or "dev",
+            strict_paths=strict_paths,
+        )
+        cell = FileCell(socket_path=Path(socket_path), state_dir=state_dir, mac_key=keybox.key)
     cell.start()
     try:
         while True:

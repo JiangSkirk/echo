@@ -3524,6 +3524,7 @@ class OrinDaemon:
             env = self._legacy_cell_environment()
             env["ORIN_CELLS_SOCKET"] = str(self._cell_socket_path)
             env["ORIN_STATE_DIR"] = str(self._state_dir)
+        env = self._file_build_carrier_env("build", env, runtime_root)
         try:
             proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
                 [sys.executable, "-m", "js.orind.cells.build"],
@@ -3605,6 +3606,7 @@ class OrinDaemon:
             env["ORIN_CELLS_SOCKET"] = str(self._cell_socket_path)
             env["ORIN_STATE_DIR"] = str(self._state_dir)
             env["ORIN_KEYBOX_TIER"] = self._keybox.active_tier
+        env = self._file_build_carrier_env("file", env, runtime_root)
         try:
             proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
                 [sys.executable, "-m", "js.orind.cells.file"],
@@ -3788,6 +3790,25 @@ class OrinDaemon:
         else:  # pragma: no cover - all callers use a closed internal enum
             raise OrinDaemonError("unknown C1 Cell kind")
         return env
+
+    def _file_build_carrier_env(
+        self,
+        kind: str,
+        env: dict[str, str],
+        runtime_root: Path | None,
+    ) -> dict[str, str]:
+        from js.orind.cells.container_vm import prepare_file_build_env
+
+        return prepare_file_build_env(
+            kind,
+            env=env,
+            state_dir=self._state_dir,
+            workspace=self._state_dir / "guest-workspace",
+            runtime_root=runtime_root,
+            socket_path=self._cell_socket_path,
+            mac_key=self._keybox.key,
+            argv=[sys.executable, "-m", f"js.orind.cells.{kind}"],
+        )
 
     @staticmethod
     def _discard_cell_runtime_root(runtime_root: Path | None) -> None:

@@ -104,6 +104,16 @@
 13. **C-I13，Desktop/Memory 是前置**：两类未完成产品迁移时，`orin.enforce=true` 不能进入发布配置，也不能作进程失陷收口声明。
 14. **C-I14，回退需冷启动**：`orin.enforce=false` 经冷重启精确回到 `652d035` 行为；运行中不得动态解除 OS 沙箱。
 
+### 2.4 P2-1：file/build 的 `container_vm` 载体（2026-08-30）
+
+**已观察（本修订）**：合取位 `production_sandbox_carrier` 的语义不再等于「Darwin `sandbox-exec` 是否存在」。P2-1 起该位表示 **file 与 build** 具备生产隔离载体：优先 Apple Containerization（独立 Linux VM，`js/orin/container_vm.py`），探测失败则自动 **L1**（Darwin `sandbox-exec` / Linux `bwrap`，即既有 `echo_minimal_os` 探针）。
+
+**白名单（冻结）**：只有 `file` 与 `build` 可以进 VM。desktop、secret、production keybox、memory、net（含与 secret 同进程的 `services` cell）留宿主。guest **禁止**挂载 `orin/keybox.key`、`echo_tool_lease.key`、`orin/secrets.jsonl`。file 进 VM 前 KeyBox 留在宿主 broker；lease 校验走宿主 `cells.sock`。不得按模块名猜测是否构造 KeyBox。
+
+**拟议落地**：无 macOS 26 / 无 `container` CLI 时用假后端测白名单与挂载拒绝；真实 CLI 缺失不得裸跑进 guest。
+
+**不得宣称**：该位置真、本修订或 `container_vm` 代码存在，都不构成阶段 C 已实施，也不关闭 `official_tcc_packaging` / `k156_8_real_model_e2e` / `k156_9_independent_red_team`。
+
 ---
 
 ## 3. A/B 兼容红线与冲突裁决
@@ -393,7 +403,7 @@ C0 证据索引：[`ORIN_STAGE_C_C0_INVENTORY.md`](ORIN_STAGE_C_C0_INVENTORY.md)
 
 - **已观察 / 身份检查点**：Build/File/Services 的严格 Orin 身份、逐 Cell 环境 allowlist 与 private-path 合同已在显式 `C1TestOrind` harness 验收。生产 orind 入口仍不传 `c1_test_harness`；`--cell-identity-enforce` 可在 `--stage-b` 下显式打开身份合同（默认仍 false），不再绑死测试 harness。Desktop/Memory 进程仍只在 harness 或 `orin.enforce` 合取下 spawn。`orin.enforce=true` 仍因 §6.1 合取未全真 fail-fast。
 - **已观察 / macOS 显式 harness 进程分离**：测试宿主先持有 owner-witness 私钥并按既有 B schema 签名，再以全新 OS 进程执行 `JSAgent → run_echo_turn → EchoTurnLoop`。worker 只读宿主生成的裁剪 runtime image、只写私有 scratch state，并只接收 task/handle ID、模型上下文与安全投影；宿主从 `create_subprocess_exec` 记录 Darwin `sandbox-exec` payload PID，固定攻击进程在同一 OS 策略下不能读主人私钥/宿主 state/仓库签发源码、不能发现 AppShell 签发模块或连接宿主 UDS。worker 能用临时自有 key 构造 `approved=True` DTO，但该签名不能通过宿主公钥验证，因而不能成为受信权威事件。旧 stdlib 探针仅保留为负对照。
-- **边界未扩张**：C1 进程分离证据仍只通过显式 `c1_harness` 取得。默认 `launcher/server/sidecar` 仍是 `652d035` 的单进程产品路径；`echo_minimal_os` 仅为可选载体探测（无 Darwin `sandbox-exec` 则该位为假），不把 `SandboxExecutor` 写成已公证 Echo OS 身份。真实 provider token、Keychain/Mach 与正式打包边界仍为 `untested` / `external-pending`。`appshell_echo_separated` 与 `provider_tokens_out_of_echo` 合取位保持假。该检查点不构成阶段 C 已实施或 Echo RCE 已收口的证据。
+- **边界未扩张**：C1 进程分离证据仍只通过显式 `c1_harness` 取得。默认 `launcher/server/sidecar` 仍是 `652d035` 的单进程产品路径；`echo_minimal_os` 仍为 Echo worker 的 Darwin `sandbox-exec` 探针。`production_sandbox_carrier` 自 P2-1 起按 §2.4 计算（file/build 的 `container_vm` 或 L1 回退），不把 `SandboxExecutor` 写成已公证 Echo OS 身份。真实 provider token、Keychain/Mach 与正式打包边界仍为 `untested` / `external-pending`。`appshell_echo_separated` 与 `provider_tokens_out_of_echo` 合取位保持假。该检查点不构成阶段 C 已实施或 Echo RCE 已收口的证据。
 
 交付物：
 
@@ -466,7 +476,7 @@ C0 证据索引：[`ORIN_STAGE_C_C0_INVENTORY.md`](ORIN_STAGE_C_C0_INVENTORY.md)
 
 ### WP-C4：macOS 最小 OS 权限与 ambient handler 收口
 
-状态（2026-08-25）：显式 deny-default 沙箱探针要求 stdout `ok` 且成功退出，并使用宿主文件/socket 探针；默认 launcher 未接入。正式签名包 TCC **external-pending**，不得因此打开 enforce。不得把 `SandboxExecutor` 写成 Echo OS 身份。
+状态（2026-08-30）：P2-1 为 **file/build** 增加 `container_vm` 载体（§2.4）；探测失败回 L1。显式 deny-default 沙箱探针仍要求 stdout `ok` 且成功退出。默认 launcher 未把整进程 Echo 接入 Containerization。正式签名包 TCC **external-pending**，不得因此打开 enforce。不得把 `SandboxExecutor` 或 `container_vm` 写成 Echo OS 身份或阶段 C 已实施。
 
 交付物：
 
