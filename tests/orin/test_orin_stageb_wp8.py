@@ -269,14 +269,16 @@ class TestClearanceTransport:
     ) -> None:
         seen: list[int] = []
         with TestOrind(state_dir=tmp_path, stage_b=True) as orind:
+
             def authorize(
                 _payload: dict[str, object],
                 *,
                 context_taint: int,
                 arg_taint: int,
                 clearance: int,
+                channel: str = "",
             ) -> dict[str, object]:
-                _ = context_taint, arg_taint
+                _ = context_taint, arg_taint, channel
                 seen.append(clearance)
                 return {"ok": True, "verdict": "allow"}
 
@@ -374,10 +376,14 @@ class TestExportPassFlow:
         assert witness_data["draft_id"] == draft.draft_id
         assert witness_data["executor_id"] == "cell.connector"
         assert witness_data["canonical_effect_hash"] == proposed["payload_hash"]
-        return draft, rcpt_id, {
-            "payload_hash": str(proposed["payload_hash"]),
-            "witness_id": str(witness_data["witness_id"]),
-        }
+        return (
+            draft,
+            rcpt_id,
+            {
+                "payload_hash": str(proposed["payload_hash"]),
+                "witness_id": str(witness_data["witness_id"]),
+            },
+        )
 
     def test_client_cannot_inject_cell_package(self, services_orind) -> None:
         orind, _witness = services_orind
@@ -512,7 +518,10 @@ class TestExportPassFlow:
         state_dir = Path(orind.daemon._state_dir)  # noqa: SLF001
 
         sealed = provision_secret(
-            state_dir, mac_key, name=f"smtp-{uuid4().hex}", token="SUPER-TOKEN",
+            state_dir,
+            mac_key,
+            name=f"smtp-{uuid4().hex}",
+            token="SUPER-TOKEN",
             audience="personal",
         )
         rcpt = _sealed_rcpt(mac_key, f"finance-{uuid4().hex}")
@@ -926,9 +935,7 @@ class TestNetCell:
         from js.orind.cells.services import NetCell
 
         mac_key = b"k" * 32
-        cell = NetCell(
-            socket_path=tmp_path / "unused.sock", state_dir=tmp_path, mac_key=mac_key
-        )
+        cell = NetCell(socket_path=tmp_path / "unused.sock", state_dir=tmp_path, mac_key=mac_key)
         for url in ("http://10.0.0.1/x", "http://169.254.169.254/latest/meta-data"):
             host = url.split("/", 3)[2]
             result = cell._fetch(  # noqa: SLF001
@@ -940,8 +947,7 @@ class TestNetCell:
     def test_unsealed_endpoint_handle_refused(self, tmp_path: Path) -> None:
         from js.orind.cells.services import NetCell
 
-        cell = NetCell(socket_path=tmp_path / "unused.sock", state_dir=tmp_path,
-                       mac_key=b"k" * 32)
+        cell = NetCell(socket_path=tmp_path / "unused.sock", state_dir=tmp_path, mac_key=b"k" * 32)
         result = cell._fetch(  # noqa: SLF001
             {"url": "https://example.com/", "endpoint_handle": {"handle_id": "ep:x"}}
         )
@@ -955,8 +961,9 @@ class TestSecretCellUnit:
 
         secrets = SecretStore(tmp_path)
         sealed = provision_secret(tmp_path, b"k" * 32, name="mail", token="t0k", audience="work")
-        cell = SecretCell(socket_path=tmp_path / "s.sock", state_dir=tmp_path,
-                          mac_key=b"k" * 32, secrets=secrets)
+        cell = SecretCell(
+            socket_path=tmp_path / "s.sock", state_dir=tmp_path, mac_key=b"k" * 32, secrets=secrets
+        )
 
         for clearance in (0, 1):
             denied = cell._resolve(  # noqa: SLF001

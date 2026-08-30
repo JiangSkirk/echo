@@ -86,6 +86,8 @@ class EchoTurnLoop:
     (:meth:`_run_tools`) — while preserving the original behaviour exactly.
     """
 
+    _write_egress_narrowed: bool = False
+
     def __init__(
         self,
         agent: Any,
@@ -1180,7 +1182,7 @@ class EchoTurnLoop:
                 "tools_after": len(tools_schema),
             }
 
-        if self._write_egress_narrowed and tools_schema is not None:
+        if getattr(self, "_write_egress_narrowed", False) and tools_schema is not None:
             tools_schema = filter_write_egress_schema(tools_schema)
             state.compression_stats["midturn_schema"] = {
                 "write_egress_blocked": True,

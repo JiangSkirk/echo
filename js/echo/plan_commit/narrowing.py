@@ -6,14 +6,14 @@ from contextvars import ContextVar, Token
 from dataclasses import replace
 from typing import Any, Final
 
-from js.orin.taint import BOT_PEER, INBOX_CONTENT, WEB_CONTENT, source_taint_for_tool
-from js.orind.policy import (
+from js.orin.sinks import (
     SINK_FS_WRITE,
     SINK_MEMORY_WRITE,
     SINK_NETWORK_EGRESS,
     SINK_SPAWN,
     sinks_for_tool,
 )
+from js.orin.taint import BOT_PEER, INBOX_CONTENT, WEB_CONTENT, source_taint_for_tool
 
 # WEB_CONTENT | INBOX_CONTENT | BOT_PEER. TOOL_RESULT alone must not narrow:
 # a trusted file_read is not an injection.

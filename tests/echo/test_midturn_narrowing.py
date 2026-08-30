@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import pytest
 
 from js.config import EchoPlanCommitConfig, JSSettings
@@ -19,6 +22,18 @@ from tests.echo.plan_commit_fakes import (
     text_response,
     tool_response,
 )
+
+
+def test_narrowing_does_not_import_orind() -> None:
+    """C1 worker omits orind; Echo narrowing must classify sinks without it."""
+
+    source = Path("js/echo/plan_commit/narrowing.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            assert all(not alias.name.startswith("js.orind") for alias in node.names)
+        if isinstance(node, ast.ImportFrom) and node.module:
+            assert not node.module.startswith("js.orind")
 
 
 def test_filter_write_egress_schema_drops_sinks() -> None:

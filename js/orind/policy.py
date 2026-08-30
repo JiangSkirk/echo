@@ -23,6 +23,17 @@ from dataclasses import dataclass
 from typing import Final
 
 from js.orin import taint as t
+from js.orin.sinks import (
+    SINK_CONNECTOR,
+    SINK_FS_OUTSIDE,
+    SINK_FS_READ,
+    SINK_FS_WRITE,
+    SINK_MEMORY_WRITE,
+    SINK_NETWORK_EGRESS,
+    SINK_POLICY_CHANGE,
+    SINK_SPAWN,
+    sinks_for_tool,
+)
 
 # ---------------------------------------------------------------------------
 # Verdicts (fixed vocabulary; strongest first)
@@ -43,17 +54,8 @@ PROFILE_CONSERVATIVE: Final[str] = "conservative"
 PROFILE_COMPAT: Final[str] = "compat"
 PROFILES: Final[frozenset[str]] = frozenset({PROFILE_CONSERVATIVE, PROFILE_COMPAT})
 
-# ---------------------------------------------------------------------------
-# Action sinks (taint_sink bits — D §6.2 lease extension)
-# ---------------------------------------------------------------------------
-SINK_FS_READ: Final[int] = 1 << 0
-SINK_FS_WRITE: Final[int] = 1 << 1
-SINK_FS_OUTSIDE: Final[int] = 1 << 2
-SINK_NETWORK_EGRESS: Final[int] = 1 << 3
-SINK_SPAWN: Final[int] = 1 << 4
-SINK_MEMORY_WRITE: Final[int] = 1 << 5
-SINK_POLICY_CHANGE: Final[int] = 1 << 6
-SINK_CONNECTOR: Final[int] = 1 << 7
+# Action sink bits and sinks_for_tool live in js.orin.sinks so Echo can
+# classify tools without importing the orind daemon package.
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,54 +74,6 @@ def _strongest(*candidates: PolicyDecision) -> PolicyDecision:
         if _PRIORITY[candidate.verdict] > _PRIORITY[best.verdict]:
             best = candidate
     return best
-
-
-# ---------------------------------------------------------------------------
-# Tool → sink classification (deterministic; no LLM, no content semantics)
-# ---------------------------------------------------------------------------
-_TOOL_SINKS: Final[dict[str, int]] = {
-    "file_read": SINK_FS_READ,
-    "file_write": SINK_FS_WRITE,
-    "file_edit": SINK_FS_WRITE,
-    "file_append": SINK_FS_WRITE,
-    "file_delete": SINK_FS_WRITE,
-    "file_move": SINK_FS_WRITE,
-    "file_copy": SINK_FS_WRITE,
-    "glob": SINK_FS_READ,
-    "grep": SINK_FS_READ,
-    "list_dir": SINK_FS_READ,
-    "shell": SINK_SPAWN | SINK_FS_WRITE | SINK_FS_OUTSIDE,
-    "python": SINK_SPAWN | SINK_FS_WRITE,
-    "browser_fetch": SINK_NETWORK_EGRESS,
-    "web_search": SINK_NETWORK_EGRESS,
-    # -- stage B effect types (WP8): connector/egress family ----------------
-    "email.send_exact": SINK_NETWORK_EGRESS | SINK_CONNECTOR,
-    "net.send": SINK_NETWORK_EGRESS | SINK_CONNECTOR,
-    "net.fetch": SINK_FS_READ,
-    "file.commit": SINK_FS_WRITE | SINK_FS_OUTSIDE,
-    "webbridge_navigate": SINK_NETWORK_EGRESS,
-    "webbridge_screenshot": SINK_NETWORK_EGRESS,
-    "webbridge_read": SINK_NETWORK_EGRESS,
-    "send_mail": SINK_NETWORK_EGRESS | SINK_CONNECTOR,
-    "memory_store": SINK_MEMORY_WRITE,
-    "memory_search": 0,
-}
-
-_SINK_PREFIXES: Final[tuple[tuple[str, int], ...]] = (
-    ("connector.", SINK_NETWORK_EGRESS | SINK_CONNECTOR),
-    ("desktop_", 0),
-)
-
-
-def sinks_for_tool(tool_name: str) -> int:
-    """Classify a tool into sink bits by table lookup (fail to default)."""
-
-    if tool_name in _TOOL_SINKS:
-        return _TOOL_SINKS[tool_name]
-    for prefix, sinks in _SINK_PREFIXES:
-        if tool_name.startswith(prefix):
-            return sinks
-    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +156,9 @@ def _row_egress(
 
 def _row_memory_write(sinks: int) -> PolicyDecision | None:
     if sinks & SINK_MEMORY_WRITE and not sinks & (SINK_NETWORK_EGRESS | SINK_SPAWN):
-        return PolicyDecision(VERDICT_ALLOW, "memory-write (async review)", matched_row="memory_write")
+        return PolicyDecision(
+            VERDICT_ALLOW, "memory-write (async review)", matched_row="memory_write"
+        )
     return None
 
 
@@ -213,7 +169,9 @@ def _row_policy_change(
     if sinks & SINK_POLICY_CHANGE:
         if context_taint & t.USER_TURN and context_taint == t.USER_TURN:
             return PolicyDecision(
-                VERDICT_ALLOW, "policy change driven directly by the user", matched_row="policy_change"
+                VERDICT_ALLOW,
+                "policy change driven directly by the user",
+                matched_row="policy_change",
             )
         return PolicyDecision(
             VERDICT_DENY,
