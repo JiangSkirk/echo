@@ -134,7 +134,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | T8 | Wasmtime skill 沙箱 | Echo skill/插件执行 | 亚毫秒启动的全平台沙箱 | 中：skill 需编译 wasm 或运行时嵌入 | 现有 skill 是 Python → 渐进式 | 采纳（P3 探索） |
 | T9 | LLMLingua 式压缩 | Echo context_savings 升级 | 工具输出/长文档最多 20× 压缩 | 中：压缩模型本地运行（phi-2 级 <8GB），启发式回退 | 与"低设备"部分冲突 → 可选模块 | 采纳（P3，可选） |
 | T10 | KV 复用 + 稳定前缀契约 | Echo prompt 组装层 | prefill 成本显著下降；零质量损失 | 低中：须冻结自适应 schema、把 memory 移出 system | 与自适应工具子集互斥 → 可信会话可冻结后追加；**不可信表面整段会话不得扩大冻结集** | **采纳（P0 顺手做）** |
-| T11 | 模型级联路由 | Echo models/router 升级 | 本地小模型优先，云端兜底；成本/延迟双降 | 中 | 现有 fallback 路由器兼容 | 采纳（P2） |
+| T11 | 模型级联路由 | Echo models/router 升级（`_task_complexity` 预留桩可作落点） | 本地小模型优先，云端兜底；成本/延迟双降 | 中 | **重路径回合禁止降级到本地小模型**（或降级即 deny-write）；与 CaMeL 弱模型 -26.8pp 同构 | 采纳（P2） |
 | T12 | 推测解码 | 本地推理后端（Ollama/LM Studio）集成层 | 本地模型解码 2–3× 加速 | 低（后端配置而非自研） | 依赖后端支持 | 采纳（P3 配置层） |
 | T13 | Gemini 教训：检测式防御的定位 | SECURITY.md 已声明 | 防止团队对分类器产生错误信心 | 零 | 无 | 已采纳（维持） |
 | T14 | seL4 形式化验证路线 | 仅作灵感（capability 命名、规格先行） | — | 极高 | 超出项目阶段 | 不采纳（记入远景） |
@@ -165,7 +165,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 │  ├─ capability（租约签发/消费/撤销，+ T3 SMT 收窄证明）      │  │
 │  ├─ ledger（哈希链 + 前向安全键控 + Merkle 锚定，T6）         │  │
 │  ├─ context（CAS 去重 + 稳定前缀 T10：system+冻结 schema；memory 不进前缀）│  │
-│  └─ models（级联路由 T11：本地小模型 → 云端，风险/难度感知）   │  │
+│  └─ models（级联 T11：轻路径可本地优先；重路径禁止降级弱模型）   │  │
 └──────────────────────────┬──────────────────────────────────┘
                            ▼  每个 effect 草案
 ┌─────────────────────────────────────────────────────────────┐
@@ -224,7 +224,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 |---|---|---|---|
 | P2-1 | Apple Containerization 集成：`orind/cells` 新增 `container_vm` 载体后端。**P2-1 VM 白名单只有 file 与 build**（memory **不**进本项：`js/orind/cells/memory.py` 同样在进程内构造 `KeyBox`）。net+connector **不得**进 VM：今日它们与 secret 走同一 `_spawn_services_cell()`（`js/orind/daemon.py`），即使 `ORIN_CELLS_CAPS` 只有 `cell.net` 也会构造 `KeyBox`/`SecretStore`。desktop / secret / production keybox 留宿主。凡进 VM 的 cell：**禁止把生产 KeyBox、`echo_tool_lease.key` 或 `orin/secrets.jsonl` 挂进 guest**；lease 校验走宿主 broker（`cells.sock`）。file 入口今日会构造 `KeyBox`，build 入口今日只用 session MAC——白名单仍按"无密钥材料进 guest"验收，不按模块名猜测。`production_sandbox_carrier` 现语义是 Darwin `sandbox-exec` 可用性（`js/orin/stage_c.py`）；置真前必须先改 `ORIN_STAGE_C_SPEC.md`。置真后仍不得宣称 Stage C 已实施。 | VM 内 **file 与 build** 冒烟通过；白名单拒绝 desktop/secret/net/memory；guest 挂载清单不含 keybox/secret/lease 密钥路径；desktop 冒烟仍在宿主；SPEC 修订后该合取位可置真 | 载体探测失败自动 L1；memory/net 维持宿主直到 KeyBox 离开该进程；外部门保持 pending |
 | P2-2 | taint→label 规划器升级（T4）：plan 的每个槽位携带来源标签，策略判定从"工具调用时"提前到"计划绑定时"。**同时把 P0 的中途收窄升级为剩余迭代 plan-commit**：已执行步骤保持，未执行动作空间按当前 taint 重新 BIND（只收紧不放松）。 | AgentDojo 重路径 ASR 对比 P0 再降；效用分不回退超 3pp；中途升级用例在收窄之上进一步禁止计划外动作 | 标签层开关；关闭后回退为 P0 中途收窄 |
-| P2-3 | 模型级联路由（T11）：难度/风险分类器（规则式，非 LLM）→ 本地小模型优先 → 云端升级；与现有 fallback/断路器合并 | 预定义任务集上云端调用占比下降 ≥40% 且任务成功率不降 | 路由表配置回退 |
+| P2-3 | 模型级联路由（T11）：难度/风险分类器（规则式，非 LLM）→ 本地小模型优先 → 云端升级；与现有 fallback/断路器合并。落点：`js/models/router.py` 的 `_task_complexity` 预留桩。**交互条款**：只要配置了非本地后端，plan-commit（含 PLAN）与中途收窄后仍要调模型的回合 **禁止** `is_local_model`。仅当本地是唯一可用后端时，该回合改为 deny-write（诚实话第 2 条），不得用弱模型跑 PLAN/EXECUTE 写/egress。 | 预定义任务集上**轻路径**云端调用占比下降 ≥40% 且任务成功率不降；负例：存在非本地后端时，入口重路径（含 PLAN）或可信入口中途 dirty 之后的模型调用被路由到 `is_local_model` → fail；仅本地后端时这些回合必须 deny-write | 路由表配置回退；重路径禁降级条款不得随路由表关掉 |
 
 ### P3 —— 性能与 token 深化（持续，全部可选模块）
 
@@ -249,7 +249,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | R5 | 格比较策略收窄（P1） | 策略语言表达力不足，误判"收窄/扩张" | 全部误判偏向人工审批（fail-safe 方向） | 误判成本=多一次人工审批，无安全损失 | 低 |
 | R6 | Apple Containerization（P2） | macOS 26 以下 / Intel Mac / 未来 Windows；误把 desktop/secret/net/memory 放进 Linux VM；guest 挂上生产 KeyBox | 启动探测 + **cell 类型白名单（P2-1 仅 file/build）** + guest 挂载不得含 keybox/secret/lease 密钥 | 自动回退 L1；凡进 VM 的 cell 一律走宿主 broker，不按模块名猜测是否构造 KeyBox | 中（spawn 模型与密钥材料） |
 | R7 | Hyperlight（P3 候选） | 基座 macOS 支持缺失/不成熟；Hyperlight Wasm 自述"实验性，非生产级" | 原型评估 | 仅作 Windows 阶段候选，不进 macOS 关键路径 | 中（故列 P3） |
-| R8 | 级联路由（P2） | 难度误判：难任务路由给弱模型 → 质量下降 | 任务成功率监控（ledger 计量） | 成功率降 >2pp 自动上调该任务类别路由级别 | 低 |
+| R8 | 级联路由（P2） | 难度误判：难任务或重路径路由给弱模型 → 质量下降或控制流崩溃 | 任务成功率监控（ledger 计量）；重路径选模审计 | 成功率降 >2pp 自动上调该任务类别；重路径命中本地模型则 deny-write | 低 |
 | R9 | 提示压缩（P3） | 压缩丢关键信息；tokenizer 不一致低估长度 | 压缩前后任务成功率 A/B | 上限 10×；默认关闭；仅长文档场景 | 低 |
 | R10 | 全局 | 任何新层引入的 bug | 现有测试密度 ratchet（M1 ≥1.2:1）继续适用 | 全部新机制默认关 + 特性开关 + 分版本灰度 | — |
 | R11 | 中途污点收窄（P0） | 可信入口回合中途读入注入内容；收窄只作用于**后续**迭代，本批工具结果打位之前已派出的写/egress 无法撤回 | 迭代边界（工具结果打位并写入 `state.messages` 之后、下一轮 `_get_response` 之前）检查 `context_taint` 增量；不得沿用"本阶段开始前"的旧 snapshot | 收窄只收紧：剩余迭代禁写/禁 egress；已发出动作记入 ledger | 中：与现状相同的"本阶段 snapshot 先于 dispatch"窗口仍在，P0 必须把检查点移到结果回流之后 |
@@ -258,7 +258,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 **三条全局诚实话**：
 
 1. "绝对安全"不存在：Google 的自适应攻击复盘（arXiv:2505.14534）已证明检测式防御必然可被绕过；本方案的安全承诺限于"结构性边界 + 可验证审计 + 受控降级"，与现有 SECURITY.md 一致
-2. CaMeL 类机制对弱模型效用损失大（-26.8pp 实测），工厂低配设备 + 小模型场景下重路径可能不可用 → 小模型部署时重路径改为"不可信表面只读"（deny 一切写动作）
+2. CaMeL 类机制对弱模型效用损失大（-26.8pp 实测），工厂低配设备 + 小模型场景下重路径可能不可用 → 小模型部署时重路径改为"不可信表面只读"（deny 一切写动作）。**T11 不得用级联把重路径悄悄送到这类弱模型上。**
 3. 外部红队审计（Orin 外部门 K§15.6 #9）不是本方案能自闭环的，保持 external-pending 状态如实声明
 
 ---
@@ -271,7 +271,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | 中途污染收窄 | 可信入口 + 中途 web/邮件/文档注入后，剩余迭代 0 次写/egress 成功（P0 验收） | 构造用例 0 次收窄后写/egress | ≥1 用例在收窄后仍写出或 egress | 暂停该工具类写入，回退 deny-all 读模式 |
 | gateway 默认生效面 | `gateway.enabled=true` 时该表面 plan-commit 开且 Orin 非 allow 判定实际拦截（P0-4） | 注入用例走重路径；compat 降级计数 = 0 | 仍走轻路径或 allow+log | 拒绝启动 gateway 或标为降级并阻断该表面写入 |
 | AgentDojo ASR | P1 建立基线后，P2 末 ASR ≤5% | CI 实测 ≤5%（固定模型+多种子中位数） | 基线稳定后 >5% 或回归 >2pp | **基线稳定后**阻断版本发布，启动用例复盘；基线期仅报告 |
-| 云端 token 成本 | 级联路由 + 稳定前缀后，同任务集云端调用量降 ≥40% | 降 ≥40% | 降 <20% | 检查路由误判率，调整难度分类规则 |
+| 云端 token 成本 | 级联路由 + 稳定前缀后，同任务集**轻路径**云端调用量降 ≥40% | 降 ≥40% | 降 <20% | 检查路由误判率；重路径调用不计入该降幅 |
 | 任务成功率 | 全部优化后成功率不低于当前基线 -2pp | 降幅 ≤2pp | 降幅 >2pp | 按 P3→P0 逆序逐个关开关定位元凶 |
 | 回合延迟 | plan-commit 重路径增加的本地延迟 <200ms（不含模型调用） | p95 <200ms | p95 ≥500ms | 计划缓存 + 合并 BIND 检查 |
 | 设备要求 | 默认安装（无压缩模块）内存增量 <100MB | 实测 <100MB | ≥200MB | 压缩模块拆为可选 extra |
