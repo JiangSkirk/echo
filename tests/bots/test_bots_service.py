@@ -10,7 +10,7 @@ import pytest
 
 from js.bots.exceptions import BotsIsolationError, BotsNotFoundError, BotsStateError
 from js.bots.models import BOTS_PRODUCT_ID, GoalBudget, RoomRecord
-from js.bots.persona import BotTurnBinding, bind_bot_turn
+from js.bots.persona import BotTurnBinding, bind_bot_turn, current_bot_binding
 from js.bots.service import (
     BotService,
     _default_turn_runner,
@@ -494,21 +494,31 @@ def test_primary_bot_requires_members(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bot_echo_freezes_agent_tools_schema(tmp_path: Path) -> None:
+async def test_bot_echo_binds_full_frozen_schema_and_forwards_ask_user_lease(
+    tmp_path: Path,
+) -> None:
+    from js.models.usage import sorted_tools_schema
+
+    schema = [
+        {"function": {"name": "shell", "parameters": {"type": "object"}}},
+        {"function": {"name": "ask_user", "parameters": {"type": "object"}}},
+    ]
+
     class _Agent:
         def _get_tools_schema(self, _tools: Any) -> list[dict[str, Any]]:
-            return [
-                {"function": {"name": "shell", "parameters": {"type": "object"}}},
-                {"function": {"name": "ask_user", "parameters": {"type": "object"}}},
-            ]
+            return list(schema)
 
     service = BotService(_store(tmp_path), agent=_Agent())
     bot = _active(service.store, "调查bot")
     room = service.store.ensure_dm_room(bot.id, owner_key_hash=OWNER_A)
-    captured: list[dict[str, Any]] = []
+    seen: dict[str, Any] = {}
 
     async def runner(agent: Any, message: str, **kwargs: Any) -> Any:
-        captured.append({"message": message, **kwargs})
+        binding = current_bot_binding()
+        assert binding is not None
+        seen["frozen"] = binding.frozen_tools
+        seen["kwargs"] = kwargs
+        seen["message"] = message
         return _reply("可见回复")
 
     text = await service._bot_echo(
@@ -521,8 +531,12 @@ async def test_bot_echo_freezes_agent_tools_schema(tmp_path: Path) -> None:
         lease_tool_allowlist=("ask_user",),
     )
     assert text == "可见回复"
-    assert captured[0]["lease_tool_allowlist"] == ("ask_user",)
-    assert captured[0]["session_id"] == room.transcript_session
+    assert seen["kwargs"]["lease_tool_allowlist"] == ("ask_user",)
+    assert seen["kwargs"]["session_id"] == room.transcript_session
+    frozen_names = {item["function"]["name"] for item in seen["frozen"]}
+    # Prefix schema stays the full agent surface; lease, not the schema, is the gate.
+    assert frozen_names == {"ask_user", "shell"}
+    assert seen["frozen"] == tuple(sorted_tools_schema(schema))
 
 
 @pytest.mark.asyncio
