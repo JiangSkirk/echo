@@ -41,7 +41,7 @@
 
 | 组件 | 现状 |
 |---|---|
-| 污点追踪 `taint.py` | u64 位掩码标记消息来源；`context_taint` 为活跃窗口 OR 累积；SECRET 位通过压缩粘性传播；工具调用时附 8-gram Jaccard 参数重叠度。**铁律：taint 永不授权，干净的 taint 不能跳过任何检查，只能产生 approval/deny** |
+| 污点追踪 `taint.py` | u64 位掩码标记消息来源；`context_taint` 为活跃窗口 OR 累积；SECRET 位通过压缩粘性传播；工具调用时附 8-gram Jaccard 参数重叠度。**铁律（代码层）：taint 永不授权，干净的 taint 不能跳过任何检查，只能产生 approval/deny**。**产品默认路径另有降级**：AppShell Stage A 启用 Orin 时强制 `policy_profile=compat`（`js/orin/supervisor.py`），非 allow 判定变为 allow+log；`SECURITY.md` 写明默认 Host 路径不把 taint 当审批门。P0 的默认生效面（下节不变量 5 例外）必须让 gateway 表面脱离此降级，否则新机制交付后默认安装防护提升为零 |
 | 门内核 `orind/kernel.py` | 确定性三见证合取：owner 意图 + 来源句柄契约 + 新鲜状态见证 + 本地策略 + 审批满足 + 配额余量 + 无冻结/撤销。**决策路径上没有任何模型/分类器调用**，任何缺失/过期输入即拒绝 |
 | 提交膜 `orind/membrane.py` | 不可逆 Stage-B 效应的持久化提交膜；只存授权元数据（标识符/摘要/句柄/计数器），效应内容永不入库 |
 | Cell 体系 `orind/cells/` | desktop/file/memory/build/services 五类 cell + keybox 密钥隔离 + patrol（egress/entropy/rate 三道巡逻） |
@@ -190,8 +190,10 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 1. **回合唯一边界**：模型、工具、附件只从 `run_echo_turn` 进；plan-commit 是回合内模式，不是第二套 loop
 2. **taint 铁律**：污点永不授权；升级后的 label 同样只能收紧不能放松；中途 dirty 位触发的收窄（P0）与剩余迭代 BIND（P2）同样只收紧，不得因后续干净消息放松已收窄的动作空间
 3. **决策路径零模型**：Orin kernel 合取不调用任何模型/分类器（现状已满足，保持）
-4. **fail-closed**：任何子系统缺失/异常 → 拒绝，不降级（现状已满足，保持）
-5. **向后兼容**：轻路径行为与当前版本逐字节一致；所有新机制默认关，显式开启
+4. **fail-closed**：任何子系统缺失/异常 → 拒绝，不降级。orind kernel 合取与 `strict_isolation` 沙箱路径现状已满足；**不得把默认 Host 路径写成已 fail-closed**——`orin.enforce` 默认 false，AppShell 把 `policy_profile` 改成 compat。新机制在默认生效面上必须真正拦截，不得再落入 allow+log
+5. **向后兼容**：轻路径（未开启不可信表面时）行为与当前版本逐字节一致；所有新机制默认关，显式开启。**例外（opt-in 表面联动默认）**：用户显式打开不可信入站表面时，该表面的防护默认开，不算破坏向后兼容。具体：`gateway.enabled=true` ⇒ 该表面 `plan_commit` 默认开，且该表面的 Orin 策略档**不落入 compat**（deny/approval_required 必须拦截，不得 allow+log）。CLI/桌面等未声明为不可信入口的路径保持现状，直到用户另开开关
+
+**默认生效面（P0 必须交付，否则防护提升为零）**：gateway 是配置默认 `false` 的显式 opt-in。开启 gateway 而不联动 plan-commit + 脱离 compat，等于把最需要结构性防御的表面留在"只记日志"路径上。验收见 P0-4。
 
 ---
 
@@ -204,6 +206,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | P0-1 | `turn_loop` 新增 `plan_commit` 回合模式：PLAN→BIND→EXECUTE 三阶段。**激活条件是动态风险门控，不是入口一次性判定**。（1）入口不可信（`run_echo_turn` 经 `orin_taint.set_entry_source(channel)` 打上 `INBOX_CONTENT\|WEB_CONTENT` 或 `AUTO_TASK`）→ 整回合走 plan-commit；（2）入口可信但迭代边界发现 `context_taint` 新增 dirty 位（至少 `WEB_CONTENT`/`INBOX_CONTENT`/`BOT_PEER`；与现有 `DIRTY_FOR_WRITE` 对齐）→ **P0 对剩余迭代单调收窄：禁写、禁 egress，只收紧不放松**；（3）中途升级到 plan-commit（对剩余动作重新 BIND）放到 P2-2，与 taint→label 合并。收窄是确定性策略，零额外 token。不沿用 `require_untrusted_surface`（那是隔离姿态门，不是逐回合信任标记）。 | 新增模式与收窄路径单测全覆盖；轻路径现有测试文件零回归；构造"可信入口 + 中途 web 读入注入"用例，收窄后 0 次写/egress 成功 | 配置开关 `echo.plan_commit=false` 恢复现状；收窄路径可单独关但默认与 plan-commit 同开关 |
 | P0-2 | 值槽位机制：计划中的参数位标记 `{slot:taint_policy}`，不可信数据只能填槽；槽位策略复用现有 capability 检查 | 构造 20 个注入用例（邮件/网页/文档各含恶意指令），重路径下 0 个导致计划外动作 | 同上 |
 | P0-3 | prompt 稳定前缀契约：系统提示 + 工具描述排序固定，变动只追加在尾部（配合 provider 的 prompt caching） | 相同会话连续 5 回合的 prompt 前缀哈希一致；token 计量记录入 ledger | 开关回退 |
+| P0-4 | **默认生效面（gateway 联动）**：`gateway.enabled=true` 时，（1）`gateway:*` channel 的 `plan_commit` 默认开（仍可用显式 `echo.plan_commit=false` 关掉，但文档必须把这标成降级）；（2）该表面策略档不落入 `policy_profile=compat`：`file_write`+dirty→approval、`shell`+`WEB_CONTENT`→deny 等现有表项必须拦截，不得 allow+log。AppShell 全局 compat 改写不得覆盖 gateway 表面。CLI/桌面默认仍可不启用 plan-commit。 | gateway 开启的集成测试：注入用例走 plan-commit；Orin 非 allow 判定实际拒绝/要求审批，日志里不得出现"compat degraded to allow" | 显式 `echo.plan_commit=false` 或关闭 gateway；compat 降级必须打可见警告 |
 
 ### P1 —— 可度量安全（3–4 周）
 
@@ -248,6 +251,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | R9 | 提示压缩（P3） | 压缩丢关键信息；tokenizer 不一致低估长度 | 压缩前后任务成功率 A/B | 上限 10×；默认关闭；仅长文档场景 | 低 |
 | R10 | 全局 | 任何新层引入的 bug | 现有测试密度 ratchet（M1 ≥1.2:1）继续适用 | 全部新机制默认关 + 特性开关 + 分版本灰度 | — |
 | R11 | 中途污点收窄（P0） | 可信入口回合中途读入注入内容；收窄只作用于**后续**迭代，本批工具结果打位之前已派出的写/egress 无法撤回 | 迭代边界（工具结果打位并写入 `state.messages` 之后、下一轮 `_get_response` 之前）检查 `context_taint` 增量；不得沿用"本阶段开始前"的旧 snapshot | 收窄只收紧：剩余迭代禁写/禁 egress；已发出动作记入 ledger | 中：与现状相同的"本阶段 snapshot 先于 dispatch"窗口仍在，P0 必须把检查点移到结果回流之后 |
+| R12 | 默认生效面（P0-4） | gateway 开启后仍走 AppShell 全局 compat，plan-commit 与 taint 表只记日志 | 集成测试断言非 allow 判定不得变成 allow；启动日志若仍是 compat 则 fail | 拒绝启动 gateway（fail-closed 联动可选）或强制该表面 conservative | 低（显式 opt-in 表面） |
 
 **三条全局诚实话**：
 
@@ -263,6 +267,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 |---|---|---|---|---|
 | 重路径注入防御 | plan-commit 使入口不可信表面的内部注入用例 0 成功（P0 验收） | 20/20 用例无计划外动作 | ≥1 用例突破 | 暂停该表面写入权限，回退 deny-all 读模式 |
 | 中途污染收窄 | 可信入口 + 中途 web/邮件/文档注入后，剩余迭代 0 次写/egress 成功（P0 验收） | 构造用例 0 次收窄后写/egress | ≥1 用例在收窄后仍写出或 egress | 暂停该工具类写入，回退 deny-all 读模式 |
+| gateway 默认生效面 | `gateway.enabled=true` 时该表面 plan-commit 开且 Orin 非 allow 判定实际拦截（P0-4） | 注入用例走重路径；compat 降级计数 = 0 | 仍走轻路径或 allow+log | 拒绝启动 gateway 或标为降级并阻断该表面写入 |
 | AgentDojo ASR | P1 建立基线后，P2 末 ASR ≤5% | CI 实测 ≤5% | >5% 或回归 >2pp | 阻断版本发布，启动用例复盘 |
 | 云端 token 成本 | 级联路由 + 稳定前缀后，同任务集云端调用量降 ≥40% | 降 ≥40% | 降 <20% | 检查路由误判率，调整难度分类规则 |
 | 任务成功率 | 全部优化后成功率不低于当前基线 -2pp | 降幅 ≤2pp | 降幅 >2pp | 按 P3→P0 逆序逐个关开关定位元凶 |
