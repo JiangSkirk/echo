@@ -956,7 +956,7 @@ class EchoTurnLoop:
             return True
         return bool(self._write_egress_narrowed or self._remaining_rebind_pending)
 
-    def _cascade_intent_for_call(self) -> CascadeIntent:
+    def _cascade_intent_for_call(self, messages: list[ChatMessage] | None = None) -> CascadeIntent:
         heavy = self._heavy_model_path()
         router = getattr(self.agent, "router", None)
         has_cloud = router_has_non_local_backend(router)
@@ -965,9 +965,13 @@ class EchoTurnLoop:
         if heavy:
             complexity = "heavy"
         else:
+            state = getattr(self, "state", None)
+            classify_messages = messages
+            if classify_messages is None and state is not None:
+                classify_messages = state.messages
             complexity = classify_task_complexity(
                 user_text=self.user_input,
-                messages=self.state.messages,
+                messages=classify_messages,
             )
         return CascadeIntent(
             complexity=complexity,
@@ -1445,7 +1449,7 @@ class EchoTurnLoop:
         self, compressed_messages: list[ChatMessage], tools_schema: list[dict[str, Any]] | None
     ) -> ChatResponse:
         """Call the model, preserving structured stream events when requested."""
-        intent = self._cascade_intent_for_call()
+        intent = self._cascade_intent_for_call(compressed_messages)
         self._local_only_deny_write = intent.local_only_deny_write
         token = set_cascade_intent(intent)
         try:

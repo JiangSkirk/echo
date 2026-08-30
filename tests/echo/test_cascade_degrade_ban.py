@@ -141,3 +141,14 @@ def test_midturn_dirty_forbids_local_when_cloud_exists(tmp_path) -> None:
     assert intent.complexity == "heavy"
     assert intent.forbid_local is True
     assert intent.local_only_deny_write is False
+
+
+def test_cascade_intent_without_loop_state_uses_call_messages(tmp_path) -> None:
+    agent = LoopAgent(tmp_path, plan_commit=EchoPlanCommitConfig(enabled=False))
+    loop = new_loop(agent, user_input="hello")
+    object.__delattr__(loop, "state")
+    intent = loop._cascade_intent_for_call(
+        [ChatMessage(role="user", content="hello")],
+    )
+    assert intent.complexity == "light"
+    assert intent.forbid_local is False

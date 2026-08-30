@@ -259,3 +259,41 @@ class TestUnknownProfile:
             profile="bogus",
         )
         assert decision.verdict == p.VERDICT_APPROVAL
+
+
+class TestHostControlRow:
+    def test_provider_mutate_allowed_under_conservative(self) -> None:
+        decision = p.evaluate(
+            tool_name="control_provider_mutate",
+            context_taint=0,
+            arg_taint_bits=0,
+            args_overlap_dirty=False,
+            clearance=1,
+            profile=p.PROFILE_CONSERVATIVE,
+        )
+        assert decision.verdict == p.VERDICT_ALLOW
+        assert decision.matched_row == "host_control"
+
+    def test_memory_mutate_allowed_under_conservative(self) -> None:
+        decision = p.evaluate(
+            tool_name="control_memory_mutate",
+            context_taint=0,
+            arg_taint_bits=0,
+            args_overlap_dirty=False,
+            clearance=1,
+            profile=p.PROFILE_CONSERVATIVE,
+        )
+        assert decision.verdict == p.VERDICT_ALLOW
+        assert decision.matched_row == "host_control"
+
+    def test_unknown_agent_tool_still_requires_approval(self) -> None:
+        decision = p.evaluate(
+            tool_name="mystery_tool",
+            context_taint=0,
+            arg_taint_bits=0,
+            args_overlap_dirty=False,
+            clearance=1,
+            profile=p.PROFILE_CONSERVATIVE,
+        )
+        assert decision.verdict == p.VERDICT_APPROVAL
+        assert decision.matched_row == "default"

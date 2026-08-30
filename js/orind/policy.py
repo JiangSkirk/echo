@@ -181,6 +181,23 @@ def _row_policy_change(
     return None
 
 
+def _row_host_control(tool_name: str) -> PolicyDecision | None:
+    """Host admin control-plane tools already require HTTP admin + Echo lease.
+
+    They are hidden from the model schema. Conservative must not stall
+    first-run Host on the unmatched default row (that used to be hidden
+    by a silent compat widen, which P1-3 forbids).
+    """
+
+    if tool_name.startswith("control_"):
+        return PolicyDecision(
+            VERDICT_ALLOW,
+            "host control-plane (admin Echo lease)",
+            matched_row="host_control",
+        )
+    return None
+
+
 def _default_row(profile: str) -> PolicyDecision:
     if profile == PROFILE_COMPAT:
         return PolicyDecision(VERDICT_ALLOW, "compat default: allow + log", matched_row="default")
@@ -211,6 +228,7 @@ def evaluate(
         profile = PROFILE_CONSERVATIVE
     sinks = sinks_for_tool(tool_name)
     candidates = [
+        _row_host_control(tool_name),
         _row_fs_read(sinks),
         _row_fs_write(sinks, context_taint, arg_taint_bits, profile),
         _row_shell(sinks, context_taint, args_overlap_dirty),
