@@ -17,7 +17,7 @@
 2. **Orin 的 taint（u64 位掩码 + "taint 永不授权"铁律）方向正确**，但学术界已经走得更远：Microsoft FIDES 把信息流标签放进规划器做确定性执行，在 AgentDojo 上挡住全部测试注入且任务完成率反而提升约 16%。Orin 应升级到"规划器级 IFC"。
 3. **"绝对安全"在学术界已被证伪为不可能目标**——Google 防 Gemini 注入的复盘（arXiv:2505.14534）确认：一切分类器/启发式在自适应攻击下都会失效。Orin 的正确目标不是"绝对安全"，而是 **"结构性安全边界 + 可验证审计 + 受控降级"**。这与 Orin 现有 SECURITY.md 信任模型一致，方案不会承诺做不到的事。
 4. **省 token / 低延迟 / 低设备三个目标与安全性存在真实冲突**（CaMeL 花 2.8 倍 token 买安全），本方案的解法是 **动态风险门控（risk-gated）**：入口可信且 `context_taint` 无 dirty 位时走轻路径；入口不可信走 plan-commit 重路径；**入口可信但回合中途出现 dirty 位时，P0 对剩余迭代单调收窄（禁写/禁 egress），不在当回合中途升级 plan-commit**。只看入口会漏掉最常见的注入路径（CLI/桌面回合中途用 web 工具读入恶意内容）。现有 `js/orin/taint.py` 已按来源给工具结果打位（`WEB_CONTENT`/`INBOX_CONTENT`/`BOT_PEER` 等），P0 消费该信号做收窄；中途升级 plan-commit 放到 P2 与 taint→label 合并。
-5. **最紧迫的工程发现**：macOS 的 `sandbox-exec`（Echo 当前默认沙箱载体）已被 Apple 标记废弃且被认为"弱"（见 §2.3），而 Apple 官方 Containerization 框架（每容器独立轻量 VM、亚秒启动、Apache-2.0、v1.0.0 已于 2026-06-09 发布）是 Orin Stage C `production_sandbox_carrier` 外部门的现成答案。
+5. **最紧迫的工程发现**：macOS 的 `sandbox-exec`（Echo 当前默认沙箱载体）已被 Apple 标记废弃且被认为"弱"（见 §2.3），而 Apple 官方 Containerization 框架（每容器独立轻量 **Linux** VM、亚秒启动、Apache-2.0、v1.0.0 已于 2026-06-09 发布）是 **file/build cell** 的载体候选，**不是** desktop/secret/memory/net 或 Stage C 外部门的总开关。desktop（AX/AppKit/`screencapture`）与 secret / production keybox（Keychain）必须留宿主。memory 与 net+connector 今日在进程内构造 `KeyBox`/`SecretStore`，P2-1 **不得**把它们放进 VM。guest **禁止**挂载生产 KeyBox / lease 密钥 / secret 路径。`production_sandbox_carrier` 合取位**当前语义**是 Darwin `sandbox-exec` 可用性（`js/orin/stage_c.py`），升级为 Containerization 验收须先改 `ORIN_STAGE_C_SPEC.md`；即便该位置真，`official_tcc_packaging` / `k156_8_real_model_e2e` / `k156_9_independent_red_team` 仍是外部门，本方案不宣称解锁 Stage C。
 
 **推荐行动**：按 §5 的 P0→P3 四阶段执行。P0（零新依赖、纯现有代码重组）即可拿到"入口不可信 → plan-commit"与"中途 dirty 位 → 单调收窄"两大收益；P1 引入 AgentDojo 作为 Orin 的 CI 安全门；P2 把中途收窄升级为剩余迭代 plan-commit，并解决沙箱载体迁移；P3 做性能与 token 优化。**任何阶段失败都可回退到上一阶段，不破坏现有行为。**
 
@@ -101,7 +101,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | 载体 | 冷启动 | 隔离强度 | 平台 | 适配判断 |
 |---|---|---|---|---|
 | `sandbox-exec`（现状） | 进程级 | 弱：仅文件/网络 ACL，**已被 Apple 废弃**；macOS 无 namespaces/cgroups/seccomp | macOS | 现状可用但需规划迁移 |
-| **Apple Containerization** | **亚秒** | 每容器独立轻量 Linux VM（Virtualization.framework），共享内核 VM 模型被淘汰 | macOS 26 + Apple Silicon，Apache-2.0，v1.0.0（2026-06-09） | **Orin cell 生产载体的首选答案** |
+| **Apple Containerization** | **亚秒** | 每容器独立轻量 Linux VM（Virtualization.framework），共享内核 VM 模型被淘汰 | macOS 26 + Apple Silicon，Apache-2.0，v1.0.0（2026-06-09） | **P2-1：file/build 载体**；desktop/secret/keybox/memory/net 留宿主直至密钥材料离开该进程 |
 | Wasmtime（WASM） | <0.03 ms（AOT 预编译） | 软件沙箱（类型系统 + 边界检查线性内存）；Cranelift 形式化验证进行中 | 全平台 | skill/插件代码执行的理想载体 |
 | Hyperlight | 1–2 ms | 硬件 VM 隔离，无 guest OS，默认 64KB 栈/128KB 堆；Hyperlight Wasm = Wasmtime + microVM 双层 | Linux/Windows 原生；macOS 支持有限（见 §4 风险 R7） | Windows 部署阶段的候选 |
 | Firecracker | ~125 ms | KVM 硬件 VM | Linux | Linux staging 可选 |
@@ -130,7 +130,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | T4 | FIDES 规划器级 IFC | Orin taint 升级：标签进规划器 | 证据显示可增效用（+16%） | 中高 | taint 铁律保持不破 | 采纳（P2） |
 | T5 | AgentDojo CI 门 | Orin 验收体系 | 安全效果从"自说自话"变标准化度量 | 中：benchmark 适配 | 无 | **采纳（P1 核心）** |
 | T6 | 前向安全键控 + Merkle 锚定 | Echo ledger 升级 | 历史日志前向完整；外部可验证证据 | 低：已有 tip_anchor 基础 | 无 | 采纳（P1） |
-| T7 | Apple Containerization 载体 | Orin Stage C `production_sandbox_carrier` | 解锁 Stage C 外部门；真 VM 隔离 | 中：需 macOS 26；老设备回退 sandbox-exec | 设备要求上升 → 分层回退 | **采纳（P2 核心）** |
+| T7 | Apple Containerization 载体 | Orin Stage C `production_sandbox_carrier`（**先改 SPEC 再改位语义**） | P2-1 给 **file/build** 真 VM 隔离；memory/net 须先让该进程不再持有生产 KeyBox；**不**解锁 Stage C 外部门，也**不**承载 desktop/secret | 中：需 macOS 26；老设备回退 sandbox-exec | 设备要求上升 → 分层回退；Linux VM 跑不了 AppKit/Keychain；file/memory/services 今日会在进程内构造 KeyBox | **采纳（P2 核心，范围收窄）** |
 | T8 | Wasmtime skill 沙箱 | Echo skill/插件执行 | 亚毫秒启动的全平台沙箱 | 中：skill 需编译 wasm 或运行时嵌入 | 现有 skill 是 Python → 渐进式 | 采纳（P3 探索） |
 | T9 | LLMLingua 式压缩 | Echo context_savings 升级 | 工具输出/长文档最多 20× 压缩 | 中：压缩模型本地运行（phi-2 级 <8GB），启发式回退 | 与"低设备"部分冲突 → 可选模块 | 采纳（P3，可选） |
 | T10 | KV 复用 + 稳定前缀契约 | Echo prompt 组装层 | prefill 成本显著下降；零质量损失 | 低 | 无 | **采纳（P0 顺手做）** |
@@ -180,7 +180,8 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 │  Cells（执行载体，分层回退）                                    │
 │  L0 进程内（现状，仅可信本地操作）                               │
 │  L1 sandbox-exec / bwrap 子进程（现状默认，strict_isolation）  │
-│  L2 Apple Containerization 独立 VM（T7，macOS 26+ 生产姿态）   │
+│  L2 Apple Containerization Linux VM（T7：P2-1 仅 file/build）     │
+│     desktop/secret/keybox/memory/net 留宿主，直至密钥材料离开该进程 │
 │  L3 Wasmtime（T8，skill/插件代码，全平台探索）                  │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -220,7 +221,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 
 | 项 | 内容 | 验收标准 | 回退 |
 |---|---|---|---|
-| P2-1 | Apple Containerization 集成：`orind/cells` 新增 `container_vm` 载体后端；macOS 26 + Apple Silicon 检测，不满足则回退 L1 | 在 VM 内运行 file/desktop cell 冒烟测试通过；`production_sandbox_carrier` 合取位可置真 | 载体探测失败自动 L1，strict_isolation 语义不变 |
+| P2-1 | Apple Containerization 集成：`orind/cells` 新增 `container_vm` 载体后端。**P2-1 VM 白名单只有 file 与 build**（memory **不**进本项：`js/orind/cells/memory.py` 同样在进程内构造 `KeyBox`）。net+connector **不得**进 VM：今日它们与 secret 走同一 `_spawn_services_cell()`（`js/orind/daemon.py`），即使 `ORIN_CELLS_CAPS` 只有 `cell.net` 也会构造 `KeyBox`/`SecretStore`。desktop / secret / production keybox 留宿主。凡进 VM 的 cell：**禁止把生产 KeyBox、`echo_tool_lease.key` 或 `orin/secrets.jsonl` 挂进 guest**；lease 校验走宿主 broker（`cells.sock`）。file 入口今日会构造 `KeyBox`，build 入口今日只用 session MAC——白名单仍按"无密钥材料进 guest"验收，不按模块名猜测。`production_sandbox_carrier` 现语义是 Darwin `sandbox-exec` 可用性（`js/orin/stage_c.py`）；置真前必须先改 `ORIN_STAGE_C_SPEC.md`。置真后仍不得宣称 Stage C 已实施。 | VM 内 **file 与 build** 冒烟通过；白名单拒绝 desktop/secret/net/memory；guest 挂载清单不含 keybox/secret/lease 密钥路径；desktop 冒烟仍在宿主；SPEC 修订后该合取位可置真 | 载体探测失败自动 L1；memory/net 维持宿主直到 KeyBox 离开该进程；外部门保持 pending |
 | P2-2 | taint→label 规划器升级（T4）：plan 的每个槽位携带来源标签，策略判定从"工具调用时"提前到"计划绑定时"。**同时把 P0 的中途收窄升级为剩余迭代 plan-commit**：已执行步骤保持，未执行动作空间按当前 taint 重新 BIND（只收紧不放松）。 | AgentDojo 重路径 ASR 对比 P0 再降；效用分不回退超 3pp；中途升级用例在收窄之上进一步禁止计划外动作 | 标签层开关；关闭后回退为 P0 中途收窄 |
 | P2-3 | 模型级联路由（T11）：难度/风险分类器（规则式，非 LLM）→ 本地小模型优先 → 云端升级；与现有 fallback/断路器合并 | 预定义任务集上云端调用占比下降 ≥40% 且任务成功率不降 | 路由表配置回退 |
 
@@ -245,7 +246,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | R3 | AgentDojo CI（P1） | benchmark 过拟合（针对 629 用例调参） | 保留 held-out 用例集不进 CI 调参循环 | 每季度引入新攻击集；配合内部红队用例 | 中 |
 | R4 | 前向安全键控（P1） | epoch 切换时密钥管理 bug 导致链验证失败 | 双读期 + 链回放测试 | 旧链只读冻结归档 | 低 |
 | R5 | 格比较策略收窄（P1） | 策略语言表达力不足，误判"收窄/扩张" | 全部误判偏向人工审批（fail-safe 方向） | 误判成本=多一次人工审批，无安全损失 | 低 |
-| R6 | Apple Containerization（P2） | macOS 26 以下设备 / Intel Mac / 未来 Windows | 启动时探测 | 自动回退 L1（sandbox-exec/bwrap）；Windows 候选 Hyperlight（1–2ms microVM，Linux/Windows 原生） | 低 |
+| R6 | Apple Containerization（P2） | macOS 26 以下 / Intel Mac / 未来 Windows；误把 desktop/secret/net/memory 放进 Linux VM；guest 挂上生产 KeyBox | 启动探测 + **cell 类型白名单（P2-1 仅 file/build）** + guest 挂载不得含 keybox/secret/lease 密钥 | 自动回退 L1；凡进 VM 的 cell 一律走宿主 broker，不按模块名猜测是否构造 KeyBox | 中（spawn 模型与密钥材料） |
 | R7 | Hyperlight（P3 候选） | 基座 macOS 支持缺失/不成熟；Hyperlight Wasm 自述"实验性，非生产级" | 原型评估 | 仅作 Windows 阶段候选，不进 macOS 关键路径 | 中（故列 P3） |
 | R8 | 级联路由（P2） | 难度误判：难任务路由给弱模型 → 质量下降 | 任务成功率监控（ledger 计量） | 成功率降 >2pp 自动上调该任务类别路由级别 | 低 |
 | R9 | 提示压缩（P3） | 压缩丢关键信息；tokenizer 不一致低估长度 | 压缩前后任务成功率 A/B | 上限 10×；默认关闭；仅长文档场景 | 低 |
@@ -273,7 +274,7 @@ Echo/Orin 已经造出了"能力 + 污点 + 确定性门 + 防篡改账本"的�
 | 任务成功率 | 全部优化后成功率不低于当前基线 -2pp | 降幅 ≤2pp | 降幅 >2pp | 按 P3→P0 逆序逐个关开关定位元凶 |
 | 回合延迟 | plan-commit 重路径增加的本地延迟 <200ms（不含模型调用） | p95 <200ms | p95 ≥500ms | 计划缓存 + 合并 BIND 检查 |
 | 设备要求 | 默认安装（无压缩模块）内存增量 <100MB | 实测 <100MB | ≥200MB | 压缩模块拆为可选 extra |
-| Stage C 合取 | P2 末 `production_sandbox_carrier` 位可置真 | 合取检查器通过该位 | 载体冒烟失败 | 维持 L1 默认，外部门保持 pending 如实声明 |
+| Stage C 合取位 | P2 末在 SPEC 修订后 `production_sandbox_carrier` 位可置真 | 合取检查器通过**该位**（不是 Stage C 整体） | 载体冒烟失败 | 维持 L1 默认，外部门（TCC / 真模型 e2e / 独立红队）保持 pending 如实声明 |
 
 ---
 
