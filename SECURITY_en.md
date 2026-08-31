@@ -79,6 +79,12 @@ sandbox alone.
 - Echo RCE is not closed.
 - No official TCC / Developer ID / notarization.
 - No independent external red-team attestation.
+- This GitHub tree is MIT source / a local RC. Source publication tracks the
+  engineering gate `internal_ready`, not `stable_ready`. Independent FTO,
+  clean-room, external security audit, and red-team sign-off are not
+  prerequisites for putting this source on GitHub.
+  Do not push a hyphen-free `v*` tag (that runs `stable-release-gate`). Use a
+  pre-release tag such as `v0.1.5-rc`.
 
 ### 2.3 Authorization and Depth (Not the Boundary)
 

@@ -71,6 +71,11 @@ Host 本身仍在原生进程内。
 - 不得宣称 Echo RCE 已收口。
 - 无正式 TCC / Developer ID / 公证。
 - 无独立外部红队背书。
+- 本 GitHub 仓库按 **MIT 源码 / 本地 RC** 发布。源码上架看工程门 `internal_ready`，
+  不把 `stable_ready` 当前置。`stable_ready` 需要独立 FTO、洁净室、外部安全审计与红队；
+  那些不是个人团队把源码放到 GitHub 上的条件。
+  不要打不含连字符的 `v*` tag（会触发 `stable-release-gate`）。预发布用
+  `v0.1.5-rc` 这类带连字符的 tag。
 
 ### 2.3 授权与纵深（不是边界）
 
