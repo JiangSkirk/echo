@@ -395,8 +395,12 @@ class PromptBuilderMixin(AgentBase):
                 variant = self.optimizer.select_variant("system")
                 if variant:
                     variant_id, prompt_template = variant
-                    parts.append(f"## Optimization Variant\n{prompt_template}")
                     _SELECTED_PROMPT_VARIANT.set(variant_id)
+                    # Baseline is already the cacheable system prefix. Re-injecting
+                    # SYSTEM_PROMPT here doubled ~1000 tokens every turn after the
+                    # untrusted-tail split (SLO api_full_agent p95 38ms -> 50ms).
+                    if prompt_template.strip() != self.SYSTEM_PROMPT.strip():
+                        parts.append(f"## Optimization Variant\n{prompt_template}")
             except Exception:
                 self.logger.warning("Failed to select prompt variant", exc_info=True)
         if self.settings.memory.enabled:

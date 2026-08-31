@@ -45,7 +45,7 @@ def _orin_write_taint(key: str, value: str) -> int:
         from js.orin.taint import SECRET
 
         taint |= SECRET
-    logger.info(
+    logger.debug(
         "memory_write_taint",
         extra={"memory_key": key[:80], "orin_taint": taint},
     )

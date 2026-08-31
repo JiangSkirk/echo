@@ -34,28 +34,34 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
 
-from js.agent import JSAgent
-from js.config import JSSettings, MemoryConfig, ModelConfig, SecurityConfig
-from js.echo.context_runtime import (
+from js.utils.log import configure_logging
+
+if __name__ == "__main__":
+    # Bind INFO filtering before any js.* import creates cached module loggers.
+    configure_logging("INFO")
+
+from js.agent import JSAgent  # noqa: E402
+from js.config import JSSettings, MemoryConfig, ModelConfig, SecurityConfig  # noqa: E402
+from js.echo.context_runtime import (  # noqa: E402
     get_context_runtime_snapshot_for_tests,
     reset_context_runtime_for_tests,
 )
-from js.echo.ledger import journal as journal_module
-from js.echo.ledger.archive_store import ArchiveRecord, ArchiveStore
-from js.echo.ledger.journal import FileEchoLedger
-from js.echo.ledger.release_gates import (
+from js.echo.ledger import journal as journal_module  # noqa: E402
+from js.echo.ledger.archive_store import ArchiveRecord, ArchiveStore  # noqa: E402
+from js.echo.ledger.journal import FileEchoLedger  # noqa: E402
+from js.echo.ledger.release_gates import (  # noqa: E402
     _TOKENIZER_TREE_DIGEST_VERSION,
     release_source_digest,
     tokenizer_resource_digest,
 )
-from js.echo.ledger.security_matrix import run_security_matrix
-from js.echo.slo_contract import SLO_CONTRACT
-from js.echo.state import AgentState
-from js.echo.turn_runtime import EchoRuntime
-from js.models.providers import ChatMessage, ChatResponse, ModelProvider
-from js.models.router import ModelRouter, RoutingDecision
-from js.models.stream_events import StreamEvent
-from js.web.routers.chat import router as chat_router
+from js.echo.ledger.security_matrix import run_security_matrix  # noqa: E402
+from js.echo.slo_contract import SLO_CONTRACT  # noqa: E402
+from js.echo.state import AgentState  # noqa: E402
+from js.echo.turn_runtime import EchoRuntime  # noqa: E402
+from js.models.providers import ChatMessage, ChatResponse, ModelProvider  # noqa: E402
+from js.models.router import ModelRouter, RoutingDecision  # noqa: E402
+from js.models.stream_events import StreamEvent  # noqa: E402
+from js.web.routers.chat import router as chat_router  # noqa: E402
 
 
 @dataclass(frozen=True)

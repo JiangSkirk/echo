@@ -1,28 +1,28 @@
 {
   "schema_version": "isolated-venv-e2e-v8",
   "offline": true,
-  "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
-  "evidence_root": ".task-tmp/evidence/internal-rebind-20260831T032058Z",
-  "started_utc": "2026-08-31T03:20:59Z",
-  "finished_utc": "2026-08-31T03:21:47Z",
+  "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916",
+  "evidence_root": ".task-tmp/evidence/internal-rebind-20260831T082320Z",
+  "started_utc": "2026-08-31T08:23:21Z",
+  "finished_utc": "2026-08-31T08:24:11Z",
   "ok": true,
-  "wheelhouse": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse",
+  "wheelhouse": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse",
   "artifacts": {
     "wheel": {
       "path": "e2e/artifacts/js_agent-0.1.5-py3-none-any.whl",
-      "sha256": "2711561d0fa65b586f3f6cc91f5f298ad0fce8c35833acbc4318a1b3d89a3631",
-      "bytes": 4988606
+      "sha256": "3a7fcdd344bab0af926c3e37d277334e661571339ccd8f91c73a2517d1284b72",
+      "bytes": 4988725
     },
     "sdist": {
       "path": "e2e/artifacts/js_agent-0.1.5.tar.gz",
-      "sha256": "605af500970bcb5bbd2d600909feb8ef8111f641d4b3acb022458a7aa3bb19e7",
-      "bytes": 4998213
+      "sha256": "87681b685c1be625e793e938d98f2e1cc6291c8bb55c6ae4ca7f9520870da328",
+      "bytes": 4998307
     }
   },
   "work_output": {
     "path": "e2e/work/sdist/iso-e2e.xlsx",
-    "sha256": "5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d",
-    "bytes": 4841,
+    "sha256": "cc5cda303ec039e78fe13f1c2e68c5e86db74203d1309261ea03b8eb96c16b2e",
+    "bytes": 4840,
     "cells": [
       [
         "iso",
@@ -34,8 +34,8 @@
   "work_outputs": {
     "wheel": {
       "path": "e2e/work/wheel/iso-e2e.xlsx",
-      "sha256": "4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259",
-      "bytes": 4840,
+      "sha256": "69780d7525671a37502a012ac4e30a8aeba704921985794b4ab8fa070ff5eb70",
+      "bytes": 4841,
       "cells": [
         [
           "iso",
@@ -46,8 +46,8 @@
     },
     "sdist": {
       "path": "e2e/work/sdist/iso-e2e.xlsx",
-      "sha256": "5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d",
-      "bytes": 4841,
+      "sha256": "cc5cda303ec039e78fe13f1c2e68c5e86db74203d1309261ea03b8eb96c16b2e",
+      "bytes": 4840,
       "cells": [
         [
           "iso",
@@ -60,33 +60,33 @@
   "manifest": [
     {
       "path": "e2e/artifacts/js_agent-0.1.5-py3-none-any.whl",
-      "sha256": "2711561d0fa65b586f3f6cc91f5f298ad0fce8c35833acbc4318a1b3d89a3631",
-      "bytes": 4988606
+      "sha256": "3a7fcdd344bab0af926c3e37d277334e661571339ccd8f91c73a2517d1284b72",
+      "bytes": 4988725
     },
     {
       "path": "e2e/artifacts/js_agent-0.1.5.tar.gz",
-      "sha256": "605af500970bcb5bbd2d600909feb8ef8111f641d4b3acb022458a7aa3bb19e7",
-      "bytes": 4998213
+      "sha256": "87681b685c1be625e793e938d98f2e1cc6291c8bb55c6ae4ca7f9520870da328",
+      "bytes": 4998307
     },
     {
       "path": "e2e/work/wheel/iso-e2e.xlsx",
-      "sha256": "4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259",
-      "bytes": 4840
-    },
-    {
-      "path": "e2e/work/wheel/ledger.journal",
-      "sha256": "e0e08b47e2db267706c1f4f39c2745021cb312891d971e54be38b481a26930d5",
-      "bytes": 16626
-    },
-    {
-      "path": "e2e/work/sdist/iso-e2e.xlsx",
-      "sha256": "5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d",
+      "sha256": "69780d7525671a37502a012ac4e30a8aeba704921985794b4ab8fa070ff5eb70",
       "bytes": 4841
     },
     {
+      "path": "e2e/work/wheel/ledger.journal",
+      "sha256": "f31384fe2ec7927296f05658c94c1df7a7ec603cb48ef33d396a83ba11bbcd2a",
+      "bytes": 16622
+    },
+    {
+      "path": "e2e/work/sdist/iso-e2e.xlsx",
+      "sha256": "cc5cda303ec039e78fe13f1c2e68c5e86db74203d1309261ea03b8eb96c16b2e",
+      "bytes": 4840
+    },
+    {
       "path": "e2e/work/sdist/ledger.journal",
-      "sha256": "640e6f80c70885ccef8d0170684fe8c4df34751b82d84b8276fcc4f10b888111",
-      "bytes": 16626
+      "sha256": "3a31104c4a7d5f469f1d595afd17473897f4ae9c55b9b4df0fbe094d7b8d48ee",
+      "bytes": 16622
     }
   ],
   "pip_check": {
@@ -111,23 +111,23 @@
         "-m",
         "build",
         "--outdir",
-        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/iso-venv-e2e-2qtzl97e/dist",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/iso-venv-e2e-p7v9kl5u/dist",
         "--no-isolation"
       ],
       "cwd": "{repo_root}",
-      "started_utc": "2026-08-31T03:20:59Z",
-      "finished_utc": "2026-08-31T03:21:01Z",
+      "started_utc": "2026-08-31T08:23:21Z",
+      "finished_utc": "2026-08-31T08:23:25Z",
       "exit_code": 0,
-      "duration_seconds": 2.213,
+      "duration_seconds": 3.907,
       "stdout_tail": "Successfully built js_agent-0.1.5.tar.gz and js_agent-0.1.5-py3-none-any.whl\n",
       "stderr_tail": "* Getting build dependencies for sdist...\n* Building sdist...\n* Building wheel from sdist\n* Getting build dependencies for wheel...\n* Building wheel...\n",
       "stdout_sha256": "fddb6771913e9a7df6b2dd441a048b4e814b4ae66121cf319a6d1a0142fd7703",
       "stderr_sha256": "807e97125a07cf58c76bef6d9db88eabace05a8d396c6082665436b821e3923f",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/01_build_python_m_build_no_isolation_wheel_sdist.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/01_build_python_m_build_no_isolation_wheel_sdist.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/01_build_python_m_build_no_isolation_wheel_sdist.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/01_build_python_m_build_no_isolation_wheel_sdist.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/01_build_python_m_build_no_isolation_wheel_sdist.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/01_build_python_m_build_no_isolation_wheel_sdist.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916"
     },
     {
       "step": "wheel: create venv",
@@ -135,60 +135,60 @@
         "{repo_root}/.venv/bin/python",
         "-m",
         "venv",
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv"
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-31T03:21:01Z",
-      "finished_utc": "2026-08-31T03:21:02Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T08:23:25Z",
+      "finished_utc": "2026-08-31T08:23:26Z",
       "exit_code": 0,
-      "duration_seconds": 0.951,
+      "duration_seconds": 0.913,
       "stdout_tail": "",
       "stderr_tail": "",
       "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/02_wheel_create_venv.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/02_wheel_create_venv.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/02_wheel_create_venv.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/02_wheel_create_venv.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/02_wheel_create_venv.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/02_wheel_create_venv.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916"
     },
     {
       "step": "wheel: pip install artifact offline (echo-tokenizer,office)",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/bin/python",
         "-m",
         "pip",
         "install",
         "--no-index",
         "--find-links",
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse",
         "--no-input",
         "--report",
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/pip/wheel.install-report.json",
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/artifacts/js_agent-0.1.5-py3-none-any.whl[echo-tokenizer,office]"
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/pip/wheel.install-report.json",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/artifacts/js_agent-0.1.5-py3-none-any.whl[echo-tokenizer,office]"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-31T03:21:02Z",
-      "finished_utc": "2026-08-31T03:21:08Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T08:23:26Z",
+      "finished_utc": "2026-08-31T08:23:32Z",
       "exit_code": 0,
-      "duration_seconds": 6.728,
-      "stdout_tail": "sing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/mdit_py_plugins-0.6.1-py3-none-any.whl (from textual<9,>=0.70->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/regex-2026.8.31-cp312-cp312-macosx_11_0_arm64.whl (from tiktoken<1,>=0.7->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/requests-2.34.2-py3-none-any.whl (from tiktoken<1,>=0.7->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/pycparser-3.0-py3-none-any.whl (from cffi>=2.0.0->cryptography<51,>=49.0.0->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/mdurl-0.1.2-py3-none-any.whl (from markdown-it-py>=2.2.0->rich<16,>=13.9->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/linkify_it_py-2.1.0-py3-none-any.whl (from markdown-it-py[linkify]>=2.1.0->textual<9,>=0.70->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/uc_micro_py-2.0.0-py3-none-any.whl (from linkify-it-py<3,>=1->markdown-it-py[linkify]>=2.1.0->textual<9,>=0.70->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl (from pandas>=2.2->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/python_dateutil-2.9.0.post0-py2.py3-none-any.whl (from pandas>=2.2->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/six-1.17.0-py2.py3-none-any.whl (from python-dateutil>=2.8.2->pandas>=2.2->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/urllib3-2.7.0-py3-none-any.whl (from requests->tiktoken<1,>=0.7->js-agent==0.1.5->js-agent==0.1.5)\nInstalling collected packages: xlrd, wcwidth, watchdog, urllib3, uc-micro-py, typing_extensions, tqdm, tenacity, structlog, sniffio, six, rfc8785, regex, pyyaml, python-multipart, python-dotenv, pypdf, pygments, pycparser, psutil, platformdirs, pillow, packaging, numpy, mdurl, lxml, jiter, idna, hyperframe, hpack, h11, et-xmlfile, distro, click, charset-normalizer, certifi, cachetools, annotated-types, annotated-doc, aiosqlite, uvicorn, typing-inspection, requests, reportlab, python-docx, python-dateutil, pydantic-core, prompt-toolkit, openpyxl, markdown-it-py, linkify-it-py, httpcore, h2, cffi, anyio, tiktoken, starlette, rich, pydantic, pandas, mdit-py-plugins, httpx, cryptography, textual, pydantic-settings, openai, fastapi, js-agent\n\nSuccessfully installed aiosqlite-0.22.1 annotated-doc-0.0.4 annotated-types-0.7.0 anyio-4.13.0 cachetools-7.1.4 certifi-2026.7.22 cffi-2.0.0 charset-normalizer-3.5.1 click-8.4.1 cryptography-50.0.0 distro-1.9.0 et-xmlfile-2.0.0 fastapi-0.139.0 h11-0.16.0 h2-4.4.1 hpack-4.2.0 httpcore-1.0.9 httpx-0.28.1 hyperframe-6.1.0 idna-3.19 jiter-0.15.0 js-agent-0.1.5 linkify-it-py-2.1.0 lxml-6.1.1 markdown-it-py-4.2.0 mdit-py-plugins-0.6.1 mdurl-0.1.2 numpy-2.5.2 openai-2.38.0 openpyxl-3.1.5 packaging-26.3 pandas-3.0.3 pillow-12.3.0 platformdirs-4.10.0 prompt-toolkit-3.0.52 psutil-7.2.2 pycparser-3.0 pydantic-2.13.4 pydantic-core-2.46.4 pydantic-settings-2.14.2 pygments-2.20.0 pypdf-6.16.1 python-dateutil-2.9.0.post0 python-docx-1.2.0 python-dotenv-1.2.2 python-multipart-0.0.32 pyyaml-6.0.3 regex-2026.8.31 reportlab-4.5.1 requests-2.34.2 rfc8785-0.1.4 rich-15.0.0 six-1.17.0 sniffio-1.3.1 starlette-1.3.1 structlog-25.5.0 tenacity-9.1.4 textual-8.2.7 tiktoken-0.13.0 tqdm-4.67.3 typing-inspection-0.4.2 typing_extensions-4.15.0 uc-micro-py-2.0.0 urllib3-2.7.0 uvicorn-0.48.0 watchdog-6.0.0 wcwidth-0.7.0 xlrd-2.0.2\n",
+      "duration_seconds": 6.472,
+      "stdout_tail": "sing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/mdit_py_plugins-0.6.1-py3-none-any.whl (from textual<9,>=0.70->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/regex-2026.8.31-cp312-cp312-macosx_11_0_arm64.whl (from tiktoken<1,>=0.7->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/requests-2.34.2-py3-none-any.whl (from tiktoken<1,>=0.7->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/pycparser-3.0-py3-none-any.whl (from cffi>=2.0.0->cryptography<51,>=49.0.0->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/mdurl-0.1.2-py3-none-any.whl (from markdown-it-py>=2.2.0->rich<16,>=13.9->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/linkify_it_py-2.1.0-py3-none-any.whl (from markdown-it-py[linkify]>=2.1.0->textual<9,>=0.70->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/uc_micro_py-2.0.0-py3-none-any.whl (from linkify-it-py<3,>=1->markdown-it-py[linkify]>=2.1.0->textual<9,>=0.70->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl (from pandas>=2.2->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/python_dateutil-2.9.0.post0-py2.py3-none-any.whl (from pandas>=2.2->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/six-1.17.0-py2.py3-none-any.whl (from python-dateutil>=2.8.2->pandas>=2.2->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/urllib3-2.7.0-py3-none-any.whl (from requests->tiktoken<1,>=0.7->js-agent==0.1.5->js-agent==0.1.5)\nInstalling collected packages: xlrd, wcwidth, watchdog, urllib3, uc-micro-py, typing_extensions, tqdm, tenacity, structlog, sniffio, six, rfc8785, regex, pyyaml, python-multipart, python-dotenv, pypdf, pygments, pycparser, psutil, platformdirs, pillow, packaging, numpy, mdurl, lxml, jiter, idna, hyperframe, hpack, h11, et-xmlfile, distro, click, charset-normalizer, certifi, cachetools, annotated-types, annotated-doc, aiosqlite, uvicorn, typing-inspection, requests, reportlab, python-docx, python-dateutil, pydantic-core, prompt-toolkit, openpyxl, markdown-it-py, linkify-it-py, httpcore, h2, cffi, anyio, tiktoken, starlette, rich, pydantic, pandas, mdit-py-plugins, httpx, cryptography, textual, pydantic-settings, openai, fastapi, js-agent\n\nSuccessfully installed aiosqlite-0.22.1 annotated-doc-0.0.4 annotated-types-0.7.0 anyio-4.13.0 cachetools-7.1.4 certifi-2026.7.22 cffi-2.0.0 charset-normalizer-3.5.1 click-8.4.1 cryptography-50.0.0 distro-1.9.0 et-xmlfile-2.0.0 fastapi-0.139.0 h11-0.16.0 h2-4.4.1 hpack-4.2.0 httpcore-1.0.9 httpx-0.28.1 hyperframe-6.1.0 idna-3.19 jiter-0.15.0 js-agent-0.1.5 linkify-it-py-2.1.0 lxml-6.1.1 markdown-it-py-4.2.0 mdit-py-plugins-0.6.1 mdurl-0.1.2 numpy-2.5.2 openai-2.38.0 openpyxl-3.1.5 packaging-26.3 pandas-3.0.3 pillow-12.3.0 platformdirs-4.10.0 prompt-toolkit-3.0.52 psutil-7.2.2 pycparser-3.0 pydantic-2.13.4 pydantic-core-2.46.4 pydantic-settings-2.14.2 pygments-2.20.0 pypdf-6.16.1 python-dateutil-2.9.0.post0 python-docx-1.2.0 python-dotenv-1.2.2 python-multipart-0.0.32 pyyaml-6.0.3 regex-2026.8.31 reportlab-4.5.1 requests-2.34.2 rfc8785-0.1.4 rich-15.0.0 six-1.17.0 sniffio-1.3.1 starlette-1.3.1 structlog-25.5.0 tenacity-9.1.4 textual-8.2.7 tiktoken-0.13.0 tqdm-4.67.3 typing-inspection-0.4.2 typing_extensions-4.15.0 uc-micro-py-2.0.0 urllib3-2.7.0 uvicorn-0.48.0 watchdog-6.0.0 wcwidth-0.7.0 xlrd-2.0.2\n",
       "stderr_tail": "",
-      "stdout_sha256": "9ea9824683b6e8e4678f225c8d590e7ddae6e8cca46ae53c8cbdef9ea8a560a2",
+      "stdout_sha256": "13e2f287db9532d740691110272e6f5e938ba4f06d37f59bbf621c06f010863f",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/03_wheel_pip_install_artifact_offline_echo_tokenizer_office.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/03_wheel_pip_install_artifact_offline_echo_tokenizer_office.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/03_wheel_pip_install_artifact_offline_echo_tokenizer_office.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/03_wheel_pip_install_artifact_offline_echo_tokenizer_office.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/03_wheel_pip_install_artifact_offline_echo_tokenizer_office.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/03_wheel_pip_install_artifact_offline_echo_tokenizer_office.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916",
       "pip_report": {
-        "path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/pip/wheel.install-report.json",
-        "sha256": "5843171d66a4c4aae11a6db97d2719876ecd9e8e1714b2e59ef535c73df1bd77",
+        "path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/pip/wheel.install-report.json",
+        "sha256": "4d615360ea09476c43357a584c8cfb41fc75b562baf728d469bec2c12eb38751",
         "packages": [
           {
             "name": "js-agent",
             "version": "0.1.5",
-            "archive_hash": "sha256=2711561d0fa65b586f3f6cc91f5f298ad0fce8c35833acbc4318a1b3d89a3631"
+            "archive_hash": "sha256=3a7fcdd344bab0af926c3e37d277334e661571339ccd8f91c73a2517d1284b72"
           },
           {
             "name": "rfc8785",
@@ -531,58 +531,58 @@
     {
       "step": "wheel: pip check",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/bin/python",
         "-m",
         "pip",
         "check"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-31T03:21:08Z",
-      "finished_utc": "2026-08-31T03:21:09Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T08:23:32Z",
+      "finished_utc": "2026-08-31T08:23:32Z",
       "exit_code": 0,
-      "duration_seconds": 0.143,
+      "duration_seconds": 0.136,
       "stdout_tail": "No broken requirements found.\n",
       "stderr_tail": "",
       "stdout_sha256": "9261363b733079a641c2e4cc9bc46ffa1d8336945a87f807b6cf68847dbc9b09",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/04_wheel_pip_check.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/04_wheel_pip_check.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/04_wheel_pip_check.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/04_wheel_pip_check.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/04_wheel_pip_check.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/04_wheel_pip_check.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916"
     },
     {
       "step": "wheel: import js/js_work from venv site-packages",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/bin/python",
         "-c",
         "\nimport hashlib, json, pathlib, sys, sysconfig\nimport js, js_work\nerrors = []\nmodules = {}\nfor module in (js, js_work):\n    path = str(pathlib.Path(module.__file__).resolve())\n    if \"site-packages\" not in path:\n        errors.append(f\"{module.__name__} loaded from non-site-packages: {path}\")\n    modules[module.__name__] = {\n        \"file\": path,\n        \"file_sha256\": hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest(),\n        \"site_packages\": str(pathlib.Path(sysconfig.get_paths()[\"purelib\"]).resolve()),\n    }\nimport js.agent, js.echo.turn_runtime, js.echo.ledger.service\nimport js.models.router, js.models.permit\nimport js.security.approvals, js.web.server, js.tools.registry\nimport js_work.cli, js_work.routines.store, js_work.safe_output, js_work.routines\nfrom js.echo.turn_runtime import EchoPulseRuntime  # noqa: F401\nfrom js.security.approvals import ApprovalQueue  # noqa: F401\nprint(json.dumps({\"modules\": modules, \"errors\": errors}))\nsys.exit(1 if errors else 0)\n"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-31T03:21:09Z",
-      "finished_utc": "2026-08-31T03:21:16Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T08:23:32Z",
+      "finished_utc": "2026-08-31T08:23:40Z",
       "exit_code": 0,
-      "duration_seconds": 7.074,
-      "stdout_tail": "{\"modules\": {\"js\": {\"file\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js/__init__.py\", \"file_sha256\": \"52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0\", \"site_packages\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages\"}, \"js_work\": {\"file\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js_work/__init__.py\", \"file_sha256\": \"ee40c59a0c6a8780e06ba6ecffbc2c0eba0e533b0dbbbd8ef6b4fe3dba4b272a\", \"site_packages\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages\"}}, \"errors\": []}\n",
+      "duration_seconds": 7.49,
+      "stdout_tail": "{\"modules\": {\"js\": {\"file\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js/__init__.py\", \"file_sha256\": \"52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0\", \"site_packages\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages\"}, \"js_work\": {\"file\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js_work/__init__.py\", \"file_sha256\": \"ee40c59a0c6a8780e06ba6ecffbc2c0eba0e533b0dbbbd8ef6b4fe3dba4b272a\", \"site_packages\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages\"}}, \"errors\": []}\n",
       "stderr_tail": "",
-      "stdout_sha256": "8548c91e134989c1c5c7ec557b8648eb7daaadb902fa9e9c8dfecb4c9cf74585",
+      "stdout_sha256": "7b466e1183871b60fc29126a6ede84013fc8be8458cc56d2a264f310ae07d1f8",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/05_wheel_import_js_js_work_from_venv_site_packages.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/05_wheel_import_js_js_work_from_venv_site_packages.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/05_wheel_import_js_js_work_from_venv_site_packages.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/05_wheel_import_js_js_work_from_venv_site_packages.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/05_wheel_import_js_js_work_from_venv_site_packages.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/05_wheel_import_js_js_work_from_venv_site_packages.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916",
       "import_evidence": {
         "modules": {
           "js": {
-            "file": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js/__init__.py",
+            "file": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js/__init__.py",
             "file_sha256": "52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0",
-            "site_packages": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages"
+            "site_packages": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages"
           },
           "js_work": {
-            "file": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js_work/__init__.py",
+            "file": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js_work/__init__.py",
             "file_sha256": "ee40c59a0c6a8780e06ba6ecffbc2c0eba0e533b0dbbbd8ef6b4fe3dba4b272a",
-            "site_packages": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages"
+            "site_packages": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages"
           }
         },
         "errors": []
@@ -594,24 +594,24 @@
     {
       "step": "wheel: tokenizer loads offline from vendored cache",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/bin/python",
         "-c",
         "\nimport json, os, sys\nos.environ.pop(\"TIKTOKEN_CACHE_DIR\", None)\nfrom js.echo.context_tokenizer import tiktoken_counter_factory\ncounter = tiktoken_counter_factory(\"cl100k_base\")\ncount = counter(b\"hello offline world\")\ncache_dir = os.environ.get(\"TIKTOKEN_CACHE_DIR\", \"\")\nok = count > 0 and \"site-packages\" in cache_dir\nprint(json.dumps({\"count\": count, \"cache_dir\": cache_dir, \"ok\": ok}))\nsys.exit(0 if ok else 1)\n"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-31T03:21:16Z",
-      "finished_utc": "2026-08-31T03:21:16Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T08:23:40Z",
+      "finished_utc": "2026-08-31T08:23:40Z",
       "exit_code": 0,
-      "duration_seconds": 0.763,
-      "stdout_tail": "{\"count\": 3, \"cache_dir\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/resources/tokenizer\", \"ok\": true}\n",
+      "duration_seconds": 0.779,
+      "stdout_tail": "{\"count\": 3, \"cache_dir\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/resources/tokenizer\", \"ok\": true}\n",
       "stderr_tail": "",
-      "stdout_sha256": "8bed7487646df2008c5b1096e51cd0f4a4876fec0a3be1241ec37b42664e4f3f",
+      "stdout_sha256": "b442742d43e4f5210cff1ccb82bf482503f8515f5e122be1880e1e7a8367636b",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/06_wheel_tokenizer_loads_offline_from_vendored_cache.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/06_wheel_tokenizer_loads_offline_from_vendored_cache.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/06_wheel_tokenizer_loads_offline_from_vendored_cache.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/06_wheel_tokenizer_loads_offline_from_vendored_cache.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/06_wheel_tokenizer_loads_offline_from_vendored_cache.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/06_wheel_tokenizer_loads_offline_from_vendored_cache.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916",
       "detail": {
         "payload_ok": true
       }
@@ -619,110 +619,110 @@
     {
       "step": "wheel: CLI js --help",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/js",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/bin/js",
         "--help"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-31T03:21:16Z",
-      "finished_utc": "2026-08-31T03:21:17Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T08:23:40Z",
+      "finished_utc": "2026-08-31T08:23:42Z",
       "exit_code": 0,
-      "duration_seconds": 0.912,
+      "duration_seconds": 1.324,
       "stdout_tail": "Usage: js [OPTIONS] COMMAND [ARGS]...\n\n  JS Agent - A stable, secure, and convenient AI agent.\n\nOptions:\n  -c, --config PATH  Path to config file\n  -v, --verbose      Verbose logging\n  --help             Show this message and exit.\n\nCommands:\n  appshell  Launch the local AppShell Host (desktop / development).\n  daemon    Run JS Agent in background daemon mode with scheduled tasks.\n  doctor    Local diagnostics.\n  init      Initialize JS configuration.\n  plugin    Manage plugins (discover, list, enable, disable).\n  rl        Reinforcement Learning: train agent policies in simulated...\n  run       Run a single message and exit.\n  search    Search the web.\n  setup     Run setup wizard to auto-configure everything.\n  skill     Manage skills.\n  status    Show system status.\n  telegram  Run JS Agent as a Telegram Bot (24/7 messaging interface).\n  tui       Launch the Terminal User Interface (Textual-based rich CLI).\n  work      Work mode - the restricted work-focused mode inside JS Agent.\n",
       "stderr_tail": "",
       "stdout_sha256": "154daffa29b9b0d080f298b1dd98c22b8da9e86ed5c8ae51a1f757cc6451324f",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/07_wheel_cli_js_help.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/07_wheel_cli_js_help.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/07_wheel_cli_js_help.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/07_wheel_cli_js_help.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/07_wheel_cli_js_help.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/07_wheel_cli_js_help.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916"
     },
     {
       "step": "wheel: CLI js work --help",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/js",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/bin/js",
         "work",
         "--help"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-31T03:21:17Z",
-      "finished_utc": "2026-08-31T03:21:18Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T08:23:42Z",
+      "finished_utc": "2026-08-31T08:23:42Z",
       "exit_code": 0,
-      "duration_seconds": 0.528,
+      "duration_seconds": 0.502,
       "stdout_tail": "Usage: js work [OPTIONS] COMMAND [ARGS]...\n\n  Work mode - the restricted work-focused mode inside JS Agent.\n\nOptions:\n  -c, --config PATH               Path to JS Agent Work config\n  --profile [execute|safe|office]\n                                  [default: execute]\n  -v, --verbose                   Verbose logging\n  --help                          Show this message and exit.\n\nCommands:\n  init     Initialize JS Agent Work configuration.\n  routine  Manage JS Agent Work routines.\n  run      Run one Work task and exit.\n  web      Run Work through the single parent AppShell host.\n",
       "stderr_tail": "",
       "stdout_sha256": "67a59de9f8307d4e63b3ee089543b498c47c2af276fc62eba370402b0218fd13",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/08_wheel_cli_js_work_help.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/08_wheel_cli_js_work_help.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/08_wheel_cli_js_work_help.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/08_wheel_cli_js_work_help.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/08_wheel_cli_js_work_help.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/08_wheel_cli_js_work_help.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916"
     },
     {
       "step": "wheel: CLI js-work --help",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/js-work",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/bin/js-work",
         "--help"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-31T03:21:18Z",
-      "finished_utc": "2026-08-31T03:21:19Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T08:23:42Z",
+      "finished_utc": "2026-08-31T08:23:43Z",
       "exit_code": 0,
-      "duration_seconds": 0.865,
+      "duration_seconds": 0.859,
       "stdout_tail": "Usage: js work [OPTIONS] COMMAND [ARGS]...\n\n  Work mode - the restricted work-focused mode inside JS Agent.\n\nOptions:\n  -c, --config PATH               Path to JS Agent Work config\n  --profile [execute|safe|office]\n                                  [default: execute]\n  -v, --verbose                   Verbose logging\n  --help                          Show this message and exit.\n\nCommands:\n  init     Initialize JS Agent Work configuration.\n  routine  Manage JS Agent Work routines.\n  run      Run one Work task and exit.\n  web      Run Work through the single parent AppShell host.\n",
-      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/js-work:6: FutureWarning: js-work is a compatibility shim; use `js work`.\n  sys.exit(compat_main())\n",
+      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/bin/js-work:6: FutureWarning: js-work is a compatibility shim; use `js work`.\n  sys.exit(compat_main())\n",
       "stdout_sha256": "67a59de9f8307d4e63b3ee089543b498c47c2af276fc62eba370402b0218fd13",
-      "stderr_sha256": "e26ff7333829bc314d1a3d33f209205747d0334f75c01c11cdd3c944ff9b825f",
+      "stderr_sha256": "2cec1026f55f0feab0109d1858e83db0b9e0100e79b21305b4937615c9836c67",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/09_wheel_cli_js_work_help.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/09_wheel_cli_js_work_help.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/09_wheel_cli_js_work_help.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/09_wheel_cli_js_work_help.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/09_wheel_cli_js_work_help.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/09_wheel_cli_js_work_help.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916"
     },
     {
       "step": "wheel: CLI python -m js_work --help",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/bin/python",
         "-m",
         "js_work",
         "--help"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-31T03:21:19Z",
-      "finished_utc": "2026-08-31T03:21:19Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T08:23:43Z",
+      "finished_utc": "2026-08-31T08:23:44Z",
       "exit_code": 0,
-      "duration_seconds": 0.528,
+      "duration_seconds": 0.501,
       "stdout_tail": "Usage: js work [OPTIONS] COMMAND [ARGS]...\n\n  Work mode - the restricted work-focused mode inside JS Agent.\n\nOptions:\n  -c, --config PATH               Path to JS Agent Work config\n  --profile [execute|safe|office]\n                                  [default: execute]\n  -v, --verbose                   Verbose logging\n  --help                          Show this message and exit.\n\nCommands:\n  init     Initialize JS Agent Work configuration.\n  routine  Manage JS Agent Work routines.\n  run      Run one Work task and exit.\n  web      Run Work through the single parent AppShell host.\n",
-      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js_work/__main__.py:8: FutureWarning: js-work is a compatibility shim; use `js work`.\n  compat_main()\n",
+      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js_work/__main__.py:8: FutureWarning: js-work is a compatibility shim; use `js work`.\n  compat_main()\n",
       "stdout_sha256": "67a59de9f8307d4e63b3ee089543b498c47c2af276fc62eba370402b0218fd13",
-      "stderr_sha256": "4e6609196b8a41d2484f36853640532dba7decce651a87b21b6a2ab44ae2ca9e",
+      "stderr_sha256": "2320247f82d79302ace1a4beda1d5003d756e78f4154968182c8079e61fffbd2",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/10_wheel_cli_python_m_js_work_help.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/10_wheel_cli_python_m_js_work_help.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/10_wheel_cli_python_m_js_work_help.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/10_wheel_cli_python_m_js_work_help.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/10_wheel_cli_python_m_js_work_help.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/10_wheel_cli_python_m_js_work_help.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916"
     },
     {
       "step": "wheel: server HTTP+WS+attachment+work E2E",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/python",
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/server_e2e.py"
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/server_e2e.py"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-31T03:21:19Z",
-      "finished_utc": "2026-08-31T03:21:21Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T08:23:44Z",
+      "finished_utc": "2026-08-31T08:23:45Z",
       "exit_code": 0,
-      "duration_seconds": 1.694,
-      "stdout_tail": "bf39c7b558\", \"replay_class\": \"non_idempotent\", \"resource\": \"tool:excel_write\", \"scopes\": [\"tool:excel_write\"]}, \"executor_kind\": \"tool\", \"executor_route\": \"ToolExecutor.execute_tool\", \"outbox\": {\"bridge_hash\": \"sha256:31cffe5b1f9633a0d5bfda4c815daec2ebbb1317c1f2e80bc2e70b82fab5577d\", \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_53695fb8eb7f2c0a3473b5c1daf3e339\"}, \"run_id\": \"iso-e2e-work-run\", \"session_id\": \"iso-e2e-work\", \"side_effect\": {\"commitment\": \"manual_confirmation_required\", \"replay_class\": \"non_idempotent\"}, \"state_mapping\": {\"args_hash\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"journal_record_start\": 10, \"lease_id\": \"e72e46d2161ee9b0aed03e366eb20b9d\", \"partition_bound\": true, \"permit_journal_seq\": 13, \"product_id\": \"js-work\", \"tool_call_id\": \"call_745948e2fa4727c1930588\", \"tool_name\": \"excel_write\", \"workspace\": \"ws-cbb32615338ba2d94130a90daeed2e5495c96332f2c0eddb3ef2cbe7cf20364b\"}, \"tenant_id\": \"iso-e2e-owner\"}, \"outbox_id\": \"out_53695fb8eb7f2c0a3473b5c1daf3e339\", \"seal\": {\"action_kind\": \"tool.excel_write\", \"deadline_ms\": 418436859, \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"granted_scopes\": [\"tool:excel_write\"], \"journal_seq\": 13, \"key_epoch\": \"permit-epoch-1\", \"mac\": \"25c109e6150474b553400603329eef3147c5a6704a6dcc5f717df1781c293238\", \"policy_decision_id\": \"pdr_e06420550a3e24b9cb0cd43cf40b563d\", \"replay_class\": \"non_idempotent\", \"seal_id\": \"seal_a805c5d940d47e8151e722b553ae3433\", \"tenant_id\": \"iso-e2e-owner\"}, \"sealed_input_ref\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\"}, \"prev_hash\": \"sha256:920c37bf209c39d9700429e18c7d20f069dc4595517c614b240f2dd9bb109d8e\", \"record_hash\": \"sha256:4c4ebd35990d84f3c6cec5dd4fd754f9900c42ac515e5495ed1123597f46bea1\"}, {\"seq\": 15, \"record_type\": \"outbox_claimed\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_53695fb8eb7f2c0a3473b5c1daf3e339\"}, \"prev_hash\": \"sha256:4c4ebd35990d84f3c6cec5dd4fd754f9900c42ac515e5495ed1123597f46bea1\", \"record_hash\": \"sha256:72f3aefa17b03dc54d22389b50800fa877d84754afa8920244af79e6aadf0106\"}, {\"seq\": 17, \"record_type\": \"receipt\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"artifact_refs\": [{\"acl\": \"owner\", \"created_by_run\": \"iso-e2e-work-run\", \"digest\": \"sha256:4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259\", \"kind\": \"spreadsheet\", \"mode\": \"work\", \"owner\": \"iso-e2e-owner\", \"schema_version\": 1, \"session\": \"iso-e2e-work\", \"uri\": \"echo://artifact/excel_write/4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259\", \"workspace\": \"ws-cbb32615338ba2d94130a90daeed2e5495c96332f2c0eddb3ef2cbe7cf20364b\"}], \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_53695fb8eb7f2c0a3473b5c1daf3e339\", \"output_hash\": \"sha256:4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259\", \"output_ref\": \"sha256:4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259\", \"replay_class\": \"non_idempotent\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:38ba2e4232b6a8f771300d2069d85b7e9300b3fabc9b3b48b40122bf6203ce29\", \"record_hash\": \"sha256:60fba94cd2102a7cf4327c73f8f0483690564dd4309b14b62427a1c361d76628\"}, {\"seq\": 18, \"record_type\": \"merge\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:60fba94cd2102a7cf4327c73f8f0483690564dd4309b14b62427a1c361d76628\", \"record_hash\": \"sha256:7855ce1034fb4f1e5c979fa7d5121b2bb3c066e3b4e2c1a156ac938807d2c72e\"}], \"journal_evidence_path\": \"e2e/work/wheel/ledger.journal\", \"arguments_sha256\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"ledger_signature_b64\": \"7rkxcBrZe6JpVF2k9hoJcbVd5VxSAaqT6fU/gF70sz5UTNS/IpxSvs2M0lHYbWRE/defnU/yTjL+qlZAtakfAw==\", \"pubkey_fingerprint\": \"b15df485259192b9a2568cf0d8d558bcfb667ecd0d8b00fb0cdaf48aac27b8e0\"}}}\n",
-      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n  from starlette.testclient import TestClient as TestClient  # noqa\n",
-      "stdout_sha256": "e47388e245c7bb620859c717d592183283b5f513efd92d76b6fb96f9f5ca8b04",
-      "stderr_sha256": "99012b4bc9efe466fc4c3d1bb3ec57fbfaadb30ca321b009e32b3c5400ca8738",
+      "duration_seconds": 1.633,
+      "stdout_tail": "bf39c7b558\", \"replay_class\": \"non_idempotent\", \"resource\": \"tool:excel_write\", \"scopes\": [\"tool:excel_write\"]}, \"executor_kind\": \"tool\", \"executor_route\": \"ToolExecutor.execute_tool\", \"outbox\": {\"bridge_hash\": \"sha256:0e7c904fd9fdcf5483c5bcba69cbeef3d8ed898f66af14f85d22d7dcc77f9f20\", \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_522087617fc769850ff1ac76f9e21cae\"}, \"run_id\": \"iso-e2e-work-run\", \"session_id\": \"iso-e2e-work\", \"side_effect\": {\"commitment\": \"manual_confirmation_required\", \"replay_class\": \"non_idempotent\"}, \"state_mapping\": {\"args_hash\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"journal_record_start\": 10, \"lease_id\": \"d25e50162c2e4509caca3f5fc42cd08c\", \"partition_bound\": true, \"permit_journal_seq\": 13, \"product_id\": \"js-work\", \"tool_call_id\": \"call_745948e2fa4727c1930588\", \"tool_name\": \"excel_write\", \"workspace\": \"ws-a59d4716eb897aabfa6951416fbe29dfbc8499ca5def2256bb652903bcf78765\"}, \"tenant_id\": \"iso-e2e-owner\"}, \"outbox_id\": \"out_522087617fc769850ff1ac76f9e21cae\", \"seal\": {\"action_kind\": \"tool.excel_write\", \"deadline_ms\": 436580926, \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"granted_scopes\": [\"tool:excel_write\"], \"journal_seq\": 13, \"key_epoch\": \"permit-epoch-1\", \"mac\": \"904190a1d5475cfd5fa15c1acebfe4a033e4dac7e81e5b69e9d6906aff3ea4cd\", \"policy_decision_id\": \"pdr_55a558d180672ff2ac126b3574e12be6\", \"replay_class\": \"non_idempotent\", \"seal_id\": \"seal_6e639b9fe886ad2f9963a2b1d3d69d96\", \"tenant_id\": \"iso-e2e-owner\"}, \"sealed_input_ref\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\"}, \"prev_hash\": \"sha256:350efc92fbbbdd1b13a4217d4bb6205afb928bc4835833e65e1c9f9619adf3c8\", \"record_hash\": \"sha256:e437da0d7e0e5674d6a51c2422619af6d7c94459fb4e0b08b95968f58382eb05\"}, {\"seq\": 15, \"record_type\": \"outbox_claimed\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_522087617fc769850ff1ac76f9e21cae\"}, \"prev_hash\": \"sha256:e437da0d7e0e5674d6a51c2422619af6d7c94459fb4e0b08b95968f58382eb05\", \"record_hash\": \"sha256:d72dfca3cb57633744cc4fc5dedaf482b83e507fb6a7586ee67b354cd6869e6d\"}, {\"seq\": 17, \"record_type\": \"receipt\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"artifact_refs\": [{\"acl\": \"owner\", \"created_by_run\": \"iso-e2e-work-run\", \"digest\": \"sha256:69780d7525671a37502a012ac4e30a8aeba704921985794b4ab8fa070ff5eb70\", \"kind\": \"spreadsheet\", \"mode\": \"work\", \"owner\": \"iso-e2e-owner\", \"schema_version\": 1, \"session\": \"iso-e2e-work\", \"uri\": \"echo://artifact/excel_write/69780d7525671a37502a012ac4e30a8aeba704921985794b4ab8fa070ff5eb70\", \"workspace\": \"ws-a59d4716eb897aabfa6951416fbe29dfbc8499ca5def2256bb652903bcf78765\"}], \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_522087617fc769850ff1ac76f9e21cae\", \"output_hash\": \"sha256:69780d7525671a37502a012ac4e30a8aeba704921985794b4ab8fa070ff5eb70\", \"output_ref\": \"sha256:69780d7525671a37502a012ac4e30a8aeba704921985794b4ab8fa070ff5eb70\", \"replay_class\": \"non_idempotent\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:2d9d5ee5379b7fa69e099e78117acfd5ad73e7acaa0325dd848ee9b256740e6b\", \"record_hash\": \"sha256:e0e21fc32cb5cfa51162d168ef03643f0b039b5835943b9ab16f67a612528950\"}, {\"seq\": 18, \"record_type\": \"merge\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:e0e21fc32cb5cfa51162d168ef03643f0b039b5835943b9ab16f67a612528950\", \"record_hash\": \"sha256:fac791eb41a6ba2e64c31661622e49bb5aed170fff1f8de3177ee6dd9c428773\"}], \"journal_evidence_path\": \"e2e/work/wheel/ledger.journal\", \"arguments_sha256\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"ledger_signature_b64\": \"KNnKgUG02H/a4i51XFKw6sccL7xIC9S8TMjS4VbojYUe5CDWL0bs9wj2MR8rN9/hg3PTrhI+UDRk2mFy6LtlCA==\", \"pubkey_fingerprint\": \"c0e4b2b41515292118c87a55ceedc7b23319316ff765c26920f7c815bfcee81b\"}}}\n",
+      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n  from starlette.testclient import TestClient as TestClient  # noqa\n",
+      "stdout_sha256": "fd176ed5d2a8182115086bd546294d20dd6b9316090212e129e5bfdf36c4b563",
+      "stderr_sha256": "3568e69e42fe44629b20e33425d4e073ae558759d76d913550becb46f395436b",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/11_wheel_server_http_ws_attachment_work_e2e.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/11_wheel_server_http_ws_attachment_work_e2e.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/11_wheel_server_http_ws_attachment_work_e2e.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/11_wheel_server_http_ws_attachment_work_e2e.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/11_wheel_server_http_ws_attachment_work_e2e.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/11_wheel_server_http_ws_attachment_work_e2e.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916",
       "detail": {
         "offline": true,
         "schema_version": "isolated-venv-e2e-v6",
@@ -768,13 +768,13 @@
           "session": "iso-e2e-work",
           "run_id": "iso-e2e-work-run",
           "tool_name": "excel_write",
-          "lease_id": "e72e46d2161ee9b0aed03e366eb20b9d",
+          "lease_id": "d25e50162c2e4509caca3f5fc42cd08c",
           "lease_consumed": true,
           "status": "ok",
           "terminal": true,
-          "output_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/home/.js-work/workspace/owners/o_4d801da505c7398e008b8819/s_43a848a10dbbeb10caf2d479/outputs/iso-e2e.xlsx",
+          "output_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-wheel/home/.js-work/workspace/owners/o_4d801da505c7398e008b8819/s_43a848a10dbbeb10caf2d479/outputs/iso-e2e.xlsx",
           "output_exists": true,
-          "output_sha256": "4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259",
+          "output_sha256": "69780d7525671a37502a012ac4e30a8aeba704921985794b4ab8fa070ff5eb70",
           "output_cells": [
             [
               "iso",
@@ -784,9 +784,9 @@
           ],
           "journal_records_added": true,
           "journal_relative_path": "echo/ledger/partitions/product_bb8e07ce637484216fe7ee1ecfda1057/owner_a75baa10e0f98108e330f25712195612/session_f27d520621b860f345f7448222ba3b5e/chat.jsonl",
-          "journal_sha256": "e0e08b47e2db267706c1f4f39c2745021cb312891d971e54be38b481a26930d5",
+          "journal_sha256": "f31384fe2ec7927296f05658c94c1df7a7ec603cb48ef33d396a83ba11bbcd2a",
           "ledger_sequence": 18,
-          "record_hash": "sha256:7855ce1034fb4f1e5c979fa7d5121b2bb3c066e3b4e2c1a156ac938807d2c72e",
+          "record_hash": "sha256:fac791eb41a6ba2e64c31661622e49bb5aed170fff1f8de3177ee6dd9c428773",
           "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
           "terminal_status": "ok",
           "ledger_chain": [
@@ -799,32 +799,32 @@
                 "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
                 "seal": {
                   "action_kind": "tool.excel_write",
-                  "deadline_ms": 418436859,
+                  "deadline_ms": 436580926,
                   "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
                   "granted_scopes": [
                     "tool:excel_write"
                   ],
                   "journal_seq": 13,
                   "key_epoch": "permit-epoch-1",
-                  "mac": "25c109e6150474b553400603329eef3147c5a6704a6dcc5f717df1781c293238",
-                  "policy_decision_id": "pdr_e06420550a3e24b9cb0cd43cf40b563d",
+                  "mac": "904190a1d5475cfd5fa15c1acebfe4a033e4dac7e81e5b69e9d6906aff3ea4cd",
+                  "policy_decision_id": "pdr_55a558d180672ff2ac126b3574e12be6",
                   "replay_class": "non_idempotent",
-                  "seal_id": "seal_a805c5d940d47e8151e722b553ae3433",
+                  "seal_id": "seal_6e639b9fe886ad2f9963a2b1d3d69d96",
                   "tenant_id": "iso-e2e-owner"
                 },
-                "seal_id": "seal_a805c5d940d47e8151e722b553ae3433",
+                "seal_id": "seal_6e639b9fe886ad2f9963a2b1d3d69d96",
                 "tool_effect": {
                   "args_hash": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
-                  "lease_id": "e72e46d2161ee9b0aed03e366eb20b9d",
+                  "lease_id": "d25e50162c2e4509caca3f5fc42cd08c",
                   "product_id": "js-work",
                   "session_id": "iso-e2e-work",
                   "tool_call_id": "call_745948e2fa4727c1930588",
                   "tool_name": "excel_write",
-                  "workspace": "ws-cbb32615338ba2d94130a90daeed2e5495c96332f2c0eddb3ef2cbe7cf20364b"
+                  "workspace": "ws-a59d4716eb897aabfa6951416fbe29dfbc8499ca5def2256bb652903bcf78765"
                 }
               },
-              "prev_hash": "sha256:05bdd51cf6a73ab86154a8aae031aa461b37021c7efdd151b1655dfc23febd36",
-              "record_hash": "sha256:920c37bf209c39d9700429e18c7d20f069dc4595517c614b240f2dd9bb109d8e"
+              "prev_hash": "sha256:f45d3e5e9a7d1c1d02fa7a493d3f02edaf4c162158d121a6a9571497329bd0bc",
+              "record_hash": "sha256:350efc92fbbbdd1b13a4217d4bb6205afb928bc4835833e65e1c9f9619adf3c8"
             },
             {
               "seq": 14,
@@ -850,9 +850,9 @@
                   "executor_kind": "tool",
                   "executor_route": "ToolExecutor.execute_tool",
                   "outbox": {
-                    "bridge_hash": "sha256:31cffe5b1f9633a0d5bfda4c815daec2ebbb1317c1f2e80bc2e70b82fab5577d",
+                    "bridge_hash": "sha256:0e7c904fd9fdcf5483c5bcba69cbeef3d8ed898f66af14f85d22d7dcc77f9f20",
                     "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
-                    "outbox_id": "out_53695fb8eb7f2c0a3473b5c1daf3e339"
+                    "outbox_id": "out_522087617fc769850ff1ac76f9e21cae"
                   },
                   "run_id": "iso-e2e-work-run",
                   "session_id": "iso-e2e-work",
@@ -863,36 +863,36 @@
                   "state_mapping": {
                     "args_hash": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
                     "journal_record_start": 10,
-                    "lease_id": "e72e46d2161ee9b0aed03e366eb20b9d",
+                    "lease_id": "d25e50162c2e4509caca3f5fc42cd08c",
                     "partition_bound": true,
                     "permit_journal_seq": 13,
                     "product_id": "js-work",
                     "tool_call_id": "call_745948e2fa4727c1930588",
                     "tool_name": "excel_write",
-                    "workspace": "ws-cbb32615338ba2d94130a90daeed2e5495c96332f2c0eddb3ef2cbe7cf20364b"
+                    "workspace": "ws-a59d4716eb897aabfa6951416fbe29dfbc8499ca5def2256bb652903bcf78765"
                   },
                   "tenant_id": "iso-e2e-owner"
                 },
-                "outbox_id": "out_53695fb8eb7f2c0a3473b5c1daf3e339",
+                "outbox_id": "out_522087617fc769850ff1ac76f9e21cae",
                 "seal": {
                   "action_kind": "tool.excel_write",
-                  "deadline_ms": 418436859,
+                  "deadline_ms": 436580926,
                   "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
                   "granted_scopes": [
                     "tool:excel_write"
                   ],
                   "journal_seq": 13,
                   "key_epoch": "permit-epoch-1",
-                  "mac": "25c109e6150474b553400603329eef3147c5a6704a6dcc5f717df1781c293238",
-                  "policy_decision_id": "pdr_e06420550a3e24b9cb0cd43cf40b563d",
+                  "mac": "904190a1d5475cfd5fa15c1acebfe4a033e4dac7e81e5b69e9d6906aff3ea4cd",
+                  "policy_decision_id": "pdr_55a558d180672ff2ac126b3574e12be6",
                   "replay_class": "non_idempotent",
-                  "seal_id": "seal_a805c5d940d47e8151e722b553ae3433",
+                  "seal_id": "seal_6e639b9fe886ad2f9963a2b1d3d69d96",
                   "tenant_id": "iso-e2e-owner"
                 },
                 "sealed_input_ref": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558"
               },
-              "prev_hash": "sha256:920c37bf209c39d9700429e18c7d20f069dc4595517c614b240f2dd9bb109d8e",
-              "record_hash": "sha256:4c4ebd35990d84f3c6cec5dd4fd754f9900c42ac515e5495ed1123597f46bea1"
+              "prev_hash": "sha256:350efc92fbbbdd1b13a4217d4bb6205afb928bc4835833e65e1c9f9619adf3c8",
+              "record_hash": "sha256:e437da0d7e0e5674d6a51c2422619af6d7c94459fb4e0b08b95968f58382eb05"
             },
             {
               "seq": 15,
@@ -901,10 +901,10 @@
               "run_id": "iso-e2e-work-run",
               "payload": {
                 "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
-                "outbox_id": "out_53695fb8eb7f2c0a3473b5c1daf3e339"
+                "outbox_id": "out_522087617fc769850ff1ac76f9e21cae"
               },
-              "prev_hash": "sha256:4c4ebd35990d84f3c6cec5dd4fd754f9900c42ac515e5495ed1123597f46bea1",
-              "record_hash": "sha256:72f3aefa17b03dc54d22389b50800fa877d84754afa8920244af79e6aadf0106"
+              "prev_hash": "sha256:e437da0d7e0e5674d6a51c2422619af6d7c94459fb4e0b08b95968f58382eb05",
+              "record_hash": "sha256:d72dfca3cb57633744cc4fc5dedaf482b83e507fb6a7586ee67b354cd6869e6d"
             },
             {
               "seq": 17,
@@ -916,25 +916,25 @@
                   {
                     "acl": "owner",
                     "created_by_run": "iso-e2e-work-run",
-                    "digest": "sha256:4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259",
+                    "digest": "sha256:69780d7525671a37502a012ac4e30a8aeba704921985794b4ab8fa070ff5eb70",
                     "kind": "spreadsheet",
                     "mode": "work",
                     "owner": "iso-e2e-owner",
                     "schema_version": 1,
                     "session": "iso-e2e-work",
-                    "uri": "echo://artifact/excel_write/4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259",
-                    "workspace": "ws-cbb32615338ba2d94130a90daeed2e5495c96332f2c0eddb3ef2cbe7cf20364b"
+                    "uri": "echo://artifact/excel_write/69780d7525671a37502a012ac4e30a8aeba704921985794b4ab8fa070ff5eb70",
+                    "workspace": "ws-a59d4716eb897aabfa6951416fbe29dfbc8499ca5def2256bb652903bcf78765"
                   }
                 ],
                 "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
-                "outbox_id": "out_53695fb8eb7f2c0a3473b5c1daf3e339",
-                "output_hash": "sha256:4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259",
-                "output_ref": "sha256:4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259",
+                "outbox_id": "out_522087617fc769850ff1ac76f9e21cae",
+                "output_hash": "sha256:69780d7525671a37502a012ac4e30a8aeba704921985794b4ab8fa070ff5eb70",
+                "output_ref": "sha256:69780d7525671a37502a012ac4e30a8aeba704921985794b4ab8fa070ff5eb70",
                 "replay_class": "non_idempotent",
                 "status": "ok"
               },
-              "prev_hash": "sha256:38ba2e4232b6a8f771300d2069d85b7e9300b3fabc9b3b48b40122bf6203ce29",
-              "record_hash": "sha256:60fba94cd2102a7cf4327c73f8f0483690564dd4309b14b62427a1c361d76628"
+              "prev_hash": "sha256:2d9d5ee5379b7fa69e099e78117acfd5ad73e7acaa0325dd848ee9b256740e6b",
+              "record_hash": "sha256:e0e21fc32cb5cfa51162d168ef03643f0b039b5835943b9ab16f67a612528950"
             },
             {
               "seq": 18,
@@ -945,14 +945,14 @@
                 "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
                 "status": "ok"
               },
-              "prev_hash": "sha256:60fba94cd2102a7cf4327c73f8f0483690564dd4309b14b62427a1c361d76628",
-              "record_hash": "sha256:7855ce1034fb4f1e5c979fa7d5121b2bb3c066e3b4e2c1a156ac938807d2c72e"
+              "prev_hash": "sha256:e0e21fc32cb5cfa51162d168ef03643f0b039b5835943b9ab16f67a612528950",
+              "record_hash": "sha256:fac791eb41a6ba2e64c31661622e49bb5aed170fff1f8de3177ee6dd9c428773"
             }
           ],
           "journal_evidence_path": "e2e/work/wheel/ledger.journal",
           "arguments_sha256": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
-          "ledger_signature_b64": "7rkxcBrZe6JpVF2k9hoJcbVd5VxSAaqT6fU/gF70sz5UTNS/IpxSvs2M0lHYbWRE/defnU/yTjL+qlZAtakfAw==",
-          "pubkey_fingerprint": "b15df485259192b9a2568cf0d8d558bcfb667ecd0d8b00fb0cdaf48aac27b8e0"
+          "ledger_signature_b64": "KNnKgUG02H/a4i51XFKw6sccL7xIC9S8TMjS4VbojYUe5CDWL0bs9wj2MR8rN9/hg3PTrhI+UDRk2mFy6LtlCA==",
+          "pubkey_fingerprint": "c0e4b2b41515292118c87a55ceedc7b23319316ff765c26920f7c815bfcee81b"
         },
         "payload_ok": true
       }
@@ -963,33 +963,33 @@
         "{repo_root}/.venv/bin/python",
         "-m",
         "venv",
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv"
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-31T03:21:21Z",
-      "finished_utc": "2026-08-31T03:21:22Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T08:23:45Z",
+      "finished_utc": "2026-08-31T08:23:46Z",
       "exit_code": 0,
-      "duration_seconds": 0.959,
+      "duration_seconds": 0.922,
       "stdout_tail": "",
       "stderr_tail": "",
       "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/12_sdist_create_venv.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/12_sdist_create_venv.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/12_sdist_create_venv.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/12_sdist_create_venv.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/12_sdist_create_venv.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/12_sdist_create_venv.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916"
     },
     {
       "step": "sdist: pip install build backends offline",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/bin/python",
         "-m",
         "pip",
         "install",
         "--no-index",
         "--find-links",
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse",
         "--no-input",
         "hatchling",
         "pathspec",
@@ -997,59 +997,59 @@
         "trove-classifiers",
         "pluggy"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-31T03:21:22Z",
-      "finished_utc": "2026-08-31T03:21:22Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T08:23:46Z",
+      "finished_utc": "2026-08-31T08:23:46Z",
       "exit_code": 0,
-      "duration_seconds": 0.26,
-      "stdout_tail": "Looking in links: {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse, {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/hatchling-1.31.0-py3-none-any.whl\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/pathspec-1.1.1-py3-none-any.whl\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/packaging-26.3-py3-none-any.whl\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/trove_classifiers-2026.6.1.19-py3-none-any.whl\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/pluggy-1.6.0-py3-none-any.whl\nInstalling collected packages: trove-classifiers, pluggy, pathspec, packaging, hatchling\n\nSuccessfully installed hatchling-1.31.0 packaging-26.3 pathspec-1.1.1 pluggy-1.6.0 trove-classifiers-2026.6.1.19\n",
+      "duration_seconds": 0.251,
+      "stdout_tail": "Looking in links: {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse, {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/hatchling-1.31.0-py3-none-any.whl\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/pathspec-1.1.1-py3-none-any.whl\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/packaging-26.3-py3-none-any.whl\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/trove_classifiers-2026.6.1.19-py3-none-any.whl\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/pluggy-1.6.0-py3-none-any.whl\nInstalling collected packages: trove-classifiers, pluggy, pathspec, packaging, hatchling\n\nSuccessfully installed hatchling-1.31.0 packaging-26.3 pathspec-1.1.1 pluggy-1.6.0 trove-classifiers-2026.6.1.19\n",
       "stderr_tail": "",
-      "stdout_sha256": "a77c089fcbdea64aa3df89e6b3a478c4cb4b75cbd3002a3c920bb2bd578b643f",
+      "stdout_sha256": "d8af1948b106bea4f667c0c58eb75b87c0572ffec10a31ec13b99b99346496e6",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/13_sdist_pip_install_build_backends_offline.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/13_sdist_pip_install_build_backends_offline.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/13_sdist_pip_install_build_backends_offline.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/13_sdist_pip_install_build_backends_offline.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/13_sdist_pip_install_build_backends_offline.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/13_sdist_pip_install_build_backends_offline.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916"
     },
     {
       "step": "sdist: pip install artifact offline (echo-tokenizer,office)",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/bin/python",
         "-m",
         "pip",
         "install",
         "--no-index",
         "--find-links",
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse",
         "--no-input",
         "--report",
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/pip/sdist.install-report.json",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/pip/sdist.install-report.json",
         "--no-build-isolation",
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/artifacts/js_agent-0.1.5.tar.gz[echo-tokenizer,office]"
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/artifacts/js_agent-0.1.5.tar.gz[echo-tokenizer,office]"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-31T03:21:22Z",
-      "finished_utc": "2026-08-31T03:21:30Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T08:23:46Z",
+      "finished_utc": "2026-08-31T08:23:54Z",
       "exit_code": 0,
-      "duration_seconds": 7.333,
-      "stdout_tail": "ot}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/requests-2.34.2-py3-none-any.whl (from tiktoken<1,>=0.7->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/pycparser-3.0-py3-none-any.whl (from cffi>=2.0.0->cryptography<51,>=49.0.0->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/mdurl-0.1.2-py3-none-any.whl (from markdown-it-py>=2.2.0->rich<16,>=13.9->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/linkify_it_py-2.1.0-py3-none-any.whl (from markdown-it-py[linkify]>=2.1.0->textual<9,>=0.70->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/uc_micro_py-2.0.0-py3-none-any.whl (from linkify-it-py<3,>=1->markdown-it-py[linkify]>=2.1.0->textual<9,>=0.70->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl (from pandas>=2.2->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/python_dateutil-2.9.0.post0-py2.py3-none-any.whl (from pandas>=2.2->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/six-1.17.0-py2.py3-none-any.whl (from python-dateutil>=2.8.2->pandas>=2.2->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/urllib3-2.7.0-py3-none-any.whl (from requests->tiktoken<1,>=0.7->js-agent==0.1.5)\nBuilding wheels for collected packages: js-agent\n  Building wheel for js-agent (pyproject.toml): started\n  Building wheel for js-agent (pyproject.toml): finished with status 'done'\n  Created wheel for js-agent: filename=js_agent-0.1.5-py3-none-any.whl size=4988606 sha256=2711561d0fa65b586f3f6cc91f5f298ad0fce8c35833acbc4318a1b3d89a3631\n  Stored in directory: {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/home/Library/Caches/pip/wheels/08/26/29/9f0ddd01894277668d06b0ccd0f8ed6da20865699188627765\nSuccessfully built js-agent\nInstalling collected packages: xlrd, wcwidth, watchdog, urllib3, uc-micro-py, typing_extensions, tqdm, tenacity, structlog, sniffio, six, rfc8785, regex, pyyaml, python-multipart, python-dotenv, pypdf, pygments, pycparser, psutil, platformdirs, pillow, numpy, mdurl, lxml, jiter, idna, hyperframe, hpack, h11, et-xmlfile, distro, click, charset-normalizer, certifi, cachetools, annotated-types, annotated-doc, aiosqlite, uvicorn, typing-inspection, requests, reportlab, python-docx, python-dateutil, pydantic-core, prompt-toolkit, openpyxl, markdown-it-py, linkify-it-py, httpcore, h2, cffi, anyio, tiktoken, starlette, rich, pydantic, pandas, mdit-py-plugins, httpx, cryptography, textual, pydantic-settings, openai, fastapi, js-agent\n\nSuccessfully installed aiosqlite-0.22.1 annotated-doc-0.0.4 annotated-types-0.7.0 anyio-4.13.0 cachetools-7.1.4 certifi-2026.7.22 cffi-2.0.0 charset-normalizer-3.5.1 click-8.4.1 cryptography-50.0.0 distro-1.9.0 et-xmlfile-2.0.0 fastapi-0.139.0 h11-0.16.0 h2-4.4.1 hpack-4.2.0 httpcore-1.0.9 httpx-0.28.1 hyperframe-6.1.0 idna-3.19 jiter-0.15.0 js-agent-0.1.5 linkify-it-py-2.1.0 lxml-6.1.1 markdown-it-py-4.2.0 mdit-py-plugins-0.6.1 mdurl-0.1.2 numpy-2.5.2 openai-2.38.0 openpyxl-3.1.5 pandas-3.0.3 pillow-12.3.0 platformdirs-4.10.0 prompt-toolkit-3.0.52 psutil-7.2.2 pycparser-3.0 pydantic-2.13.4 pydantic-core-2.46.4 pydantic-settings-2.14.2 pygments-2.20.0 pypdf-6.16.1 python-dateutil-2.9.0.post0 python-docx-1.2.0 python-dotenv-1.2.2 python-multipart-0.0.32 pyyaml-6.0.3 regex-2026.8.31 reportlab-4.5.1 requests-2.34.2 rfc8785-0.1.4 rich-15.0.0 six-1.17.0 sniffio-1.3.1 starlette-1.3.1 structlog-25.5.0 tenacity-9.1.4 textual-8.2.7 tiktoken-0.13.0 tqdm-4.67.3 typing-inspection-0.4.2 typing_extensions-4.15.0 uc-micro-py-2.0.0 urllib3-2.7.0 uvicorn-0.48.0 watchdog-6.0.0 wcwidth-0.7.0 xlrd-2.0.2\n",
+      "duration_seconds": 7.14,
+      "stdout_tail": "ot}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/requests-2.34.2-py3-none-any.whl (from tiktoken<1,>=0.7->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/pycparser-3.0-py3-none-any.whl (from cffi>=2.0.0->cryptography<51,>=49.0.0->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/mdurl-0.1.2-py3-none-any.whl (from markdown-it-py>=2.2.0->rich<16,>=13.9->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/linkify_it_py-2.1.0-py3-none-any.whl (from markdown-it-py[linkify]>=2.1.0->textual<9,>=0.70->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/uc_micro_py-2.0.0-py3-none-any.whl (from linkify-it-py<3,>=1->markdown-it-py[linkify]>=2.1.0->textual<9,>=0.70->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl (from pandas>=2.2->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/python_dateutil-2.9.0.post0-py2.py3-none-any.whl (from pandas>=2.2->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/six-1.17.0-py2.py3-none-any.whl (from python-dateutil>=2.8.2->pandas>=2.2->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/wheelhouse/urllib3-2.7.0-py3-none-any.whl (from requests->tiktoken<1,>=0.7->js-agent==0.1.5)\nBuilding wheels for collected packages: js-agent\n  Building wheel for js-agent (pyproject.toml): started\n  Building wheel for js-agent (pyproject.toml): finished with status 'done'\n  Created wheel for js-agent: filename=js_agent-0.1.5-py3-none-any.whl size=4988725 sha256=3a7fcdd344bab0af926c3e37d277334e661571339ccd8f91c73a2517d1284b72\n  Stored in directory: {repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/home/Library/Caches/pip/wheels/9a/5f/42/21e98d8252403e066d54ed725ed2923e890319c88130073e05\nSuccessfully built js-agent\nInstalling collected packages: xlrd, wcwidth, watchdog, urllib3, uc-micro-py, typing_extensions, tqdm, tenacity, structlog, sniffio, six, rfc8785, regex, pyyaml, python-multipart, python-dotenv, pypdf, pygments, pycparser, psutil, platformdirs, pillow, numpy, mdurl, lxml, jiter, idna, hyperframe, hpack, h11, et-xmlfile, distro, click, charset-normalizer, certifi, cachetools, annotated-types, annotated-doc, aiosqlite, uvicorn, typing-inspection, requests, reportlab, python-docx, python-dateutil, pydantic-core, prompt-toolkit, openpyxl, markdown-it-py, linkify-it-py, httpcore, h2, cffi, anyio, tiktoken, starlette, rich, pydantic, pandas, mdit-py-plugins, httpx, cryptography, textual, pydantic-settings, openai, fastapi, js-agent\n\nSuccessfully installed aiosqlite-0.22.1 annotated-doc-0.0.4 annotated-types-0.7.0 anyio-4.13.0 cachetools-7.1.4 certifi-2026.7.22 cffi-2.0.0 charset-normalizer-3.5.1 click-8.4.1 cryptography-50.0.0 distro-1.9.0 et-xmlfile-2.0.0 fastapi-0.139.0 h11-0.16.0 h2-4.4.1 hpack-4.2.0 httpcore-1.0.9 httpx-0.28.1 hyperframe-6.1.0 idna-3.19 jiter-0.15.0 js-agent-0.1.5 linkify-it-py-2.1.0 lxml-6.1.1 markdown-it-py-4.2.0 mdit-py-plugins-0.6.1 mdurl-0.1.2 numpy-2.5.2 openai-2.38.0 openpyxl-3.1.5 pandas-3.0.3 pillow-12.3.0 platformdirs-4.10.0 prompt-toolkit-3.0.52 psutil-7.2.2 pycparser-3.0 pydantic-2.13.4 pydantic-core-2.46.4 pydantic-settings-2.14.2 pygments-2.20.0 pypdf-6.16.1 python-dateutil-2.9.0.post0 python-docx-1.2.0 python-dotenv-1.2.2 python-multipart-0.0.32 pyyaml-6.0.3 regex-2026.8.31 reportlab-4.5.1 requests-2.34.2 rfc8785-0.1.4 rich-15.0.0 six-1.17.0 sniffio-1.3.1 starlette-1.3.1 structlog-25.5.0 tenacity-9.1.4 textual-8.2.7 tiktoken-0.13.0 tqdm-4.67.3 typing-inspection-0.4.2 typing_extensions-4.15.0 uc-micro-py-2.0.0 urllib3-2.7.0 uvicorn-0.48.0 watchdog-6.0.0 wcwidth-0.7.0 xlrd-2.0.2\n",
       "stderr_tail": "",
-      "stdout_sha256": "135b90157d82c869eba102b06199810ad3a9340f28b49720fd683fbe850dae95",
+      "stdout_sha256": "2fc06a9330b7022d7d7785f69749b07c0ea51105aa576940c157acf2b876cd1d",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/14_sdist_pip_install_artifact_offline_echo_tokenizer_office.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/14_sdist_pip_install_artifact_offline_echo_tokenizer_office.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/14_sdist_pip_install_artifact_offline_echo_tokenizer_office.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/14_sdist_pip_install_artifact_offline_echo_tokenizer_office.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/14_sdist_pip_install_artifact_offline_echo_tokenizer_office.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/14_sdist_pip_install_artifact_offline_echo_tokenizer_office.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916",
       "pip_report": {
-        "path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/pip/sdist.install-report.json",
-        "sha256": "d454ae41403c836588ee17052ca59d3122f07c67c4f55cbeb7c37aafb06308fb",
+        "path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/pip/sdist.install-report.json",
+        "sha256": "de91031404fba076aef3cfc80f8920210d0d65d98861cdb2ed389912dd7d231a",
         "packages": [
           {
             "name": "js-agent",
             "version": "0.1.5",
-            "archive_hash": "sha256=605af500970bcb5bbd2d600909feb8ef8111f641d4b3acb022458a7aa3bb19e7"
+            "archive_hash": "sha256=87681b685c1be625e793e938d98f2e1cc6291c8bb55c6ae4ca7f9520870da328"
           },
           {
             "name": "rfc8785",
@@ -1387,58 +1387,58 @@
     {
       "step": "sdist: pip check",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/bin/python",
         "-m",
         "pip",
         "check"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-31T03:21:30Z",
-      "finished_utc": "2026-08-31T03:21:30Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T08:23:54Z",
+      "finished_utc": "2026-08-31T08:23:54Z",
       "exit_code": 0,
-      "duration_seconds": 0.145,
+      "duration_seconds": 0.137,
       "stdout_tail": "No broken requirements found.\n",
       "stderr_tail": "",
       "stdout_sha256": "9261363b733079a641c2e4cc9bc46ffa1d8336945a87f807b6cf68847dbc9b09",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/15_sdist_pip_check.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/15_sdist_pip_check.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/15_sdist_pip_check.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/15_sdist_pip_check.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/15_sdist_pip_check.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/15_sdist_pip_check.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916"
     },
     {
       "step": "sdist: import js/js_work from venv site-packages",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/bin/python",
         "-c",
         "\nimport hashlib, json, pathlib, sys, sysconfig\nimport js, js_work\nerrors = []\nmodules = {}\nfor module in (js, js_work):\n    path = str(pathlib.Path(module.__file__).resolve())\n    if \"site-packages\" not in path:\n        errors.append(f\"{module.__name__} loaded from non-site-packages: {path}\")\n    modules[module.__name__] = {\n        \"file\": path,\n        \"file_sha256\": hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest(),\n        \"site_packages\": str(pathlib.Path(sysconfig.get_paths()[\"purelib\"]).resolve()),\n    }\nimport js.agent, js.echo.turn_runtime, js.echo.ledger.service\nimport js.models.router, js.models.permit\nimport js.security.approvals, js.web.server, js.tools.registry\nimport js_work.cli, js_work.routines.store, js_work.safe_output, js_work.routines\nfrom js.echo.turn_runtime import EchoPulseRuntime  # noqa: F401\nfrom js.security.approvals import ApprovalQueue  # noqa: F401\nprint(json.dumps({\"modules\": modules, \"errors\": errors}))\nsys.exit(1 if errors else 0)\n"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-31T03:21:30Z",
-      "finished_utc": "2026-08-31T03:21:39Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T08:23:54Z",
+      "finished_utc": "2026-08-31T08:24:02Z",
       "exit_code": 0,
-      "duration_seconds": 9.263,
-      "stdout_tail": "{\"modules\": {\"js\": {\"file\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js/__init__.py\", \"file_sha256\": \"52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0\", \"site_packages\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages\"}, \"js_work\": {\"file\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js_work/__init__.py\", \"file_sha256\": \"ee40c59a0c6a8780e06ba6ecffbc2c0eba0e533b0dbbbd8ef6b4fe3dba4b272a\", \"site_packages\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages\"}}, \"errors\": []}\n",
+      "duration_seconds": 8.234,
+      "stdout_tail": "{\"modules\": {\"js\": {\"file\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js/__init__.py\", \"file_sha256\": \"52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0\", \"site_packages\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages\"}, \"js_work\": {\"file\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js_work/__init__.py\", \"file_sha256\": \"ee40c59a0c6a8780e06ba6ecffbc2c0eba0e533b0dbbbd8ef6b4fe3dba4b272a\", \"site_packages\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages\"}}, \"errors\": []}\n",
       "stderr_tail": "",
-      "stdout_sha256": "4457c54f659dd46a2414efbecbd28f1e0d39033f92384f1e5521c5eb13409eec",
+      "stdout_sha256": "3f28ad311172c9f9804f3a6de4d444bbd26a7d3937b4796c9cba6ed49e32df26",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/16_sdist_import_js_js_work_from_venv_site_packages.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/16_sdist_import_js_js_work_from_venv_site_packages.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/16_sdist_import_js_js_work_from_venv_site_packages.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/16_sdist_import_js_js_work_from_venv_site_packages.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/16_sdist_import_js_js_work_from_venv_site_packages.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/16_sdist_import_js_js_work_from_venv_site_packages.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916",
       "import_evidence": {
         "modules": {
           "js": {
-            "file": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js/__init__.py",
+            "file": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js/__init__.py",
             "file_sha256": "52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0",
-            "site_packages": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages"
+            "site_packages": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages"
           },
           "js_work": {
-            "file": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js_work/__init__.py",
+            "file": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js_work/__init__.py",
             "file_sha256": "ee40c59a0c6a8780e06ba6ecffbc2c0eba0e533b0dbbbd8ef6b4fe3dba4b272a",
-            "site_packages": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages"
+            "site_packages": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages"
           }
         },
         "errors": []
@@ -1450,24 +1450,24 @@
     {
       "step": "sdist: tokenizer loads offline from vendored cache",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/bin/python",
         "-c",
         "\nimport json, os, sys\nos.environ.pop(\"TIKTOKEN_CACHE_DIR\", None)\nfrom js.echo.context_tokenizer import tiktoken_counter_factory\ncounter = tiktoken_counter_factory(\"cl100k_base\")\ncount = counter(b\"hello offline world\")\ncache_dir = os.environ.get(\"TIKTOKEN_CACHE_DIR\", \"\")\nok = count > 0 and \"site-packages\" in cache_dir\nprint(json.dumps({\"count\": count, \"cache_dir\": cache_dir, \"ok\": ok}))\nsys.exit(0 if ok else 1)\n"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-31T03:21:39Z",
-      "finished_utc": "2026-08-31T03:21:40Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T08:24:02Z",
+      "finished_utc": "2026-08-31T08:24:03Z",
       "exit_code": 0,
-      "duration_seconds": 0.731,
-      "stdout_tail": "{\"count\": 3, \"cache_dir\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/resources/tokenizer\", \"ok\": true}\n",
+      "duration_seconds": 1.2,
+      "stdout_tail": "{\"count\": 3, \"cache_dir\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/resources/tokenizer\", \"ok\": true}\n",
       "stderr_tail": "",
-      "stdout_sha256": "4a5fae541d63d6ef9d77d1ce1d6822c3a8d001ad568b9ae5ef67663e33740464",
+      "stdout_sha256": "ed9945d5419c426e62dbb46d86883e70edfa468cb0276e89d906281934c07ceb",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/17_sdist_tokenizer_loads_offline_from_vendored_cache.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/17_sdist_tokenizer_loads_offline_from_vendored_cache.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/17_sdist_tokenizer_loads_offline_from_vendored_cache.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/17_sdist_tokenizer_loads_offline_from_vendored_cache.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/17_sdist_tokenizer_loads_offline_from_vendored_cache.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/17_sdist_tokenizer_loads_offline_from_vendored_cache.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916",
       "detail": {
         "payload_ok": true
       }
@@ -1475,110 +1475,110 @@
     {
       "step": "sdist: CLI js --help",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/js",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/bin/js",
         "--help"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-31T03:21:40Z",
-      "finished_utc": "2026-08-31T03:21:41Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T08:24:03Z",
+      "finished_utc": "2026-08-31T08:24:04Z",
       "exit_code": 0,
-      "duration_seconds": 0.902,
+      "duration_seconds": 0.85,
       "stdout_tail": "Usage: js [OPTIONS] COMMAND [ARGS]...\n\n  JS Agent - A stable, secure, and convenient AI agent.\n\nOptions:\n  -c, --config PATH  Path to config file\n  -v, --verbose      Verbose logging\n  --help             Show this message and exit.\n\nCommands:\n  appshell  Launch the local AppShell Host (desktop / development).\n  daemon    Run JS Agent in background daemon mode with scheduled tasks.\n  doctor    Local diagnostics.\n  init      Initialize JS configuration.\n  plugin    Manage plugins (discover, list, enable, disable).\n  rl        Reinforcement Learning: train agent policies in simulated...\n  run       Run a single message and exit.\n  search    Search the web.\n  setup     Run setup wizard to auto-configure everything.\n  skill     Manage skills.\n  status    Show system status.\n  telegram  Run JS Agent as a Telegram Bot (24/7 messaging interface).\n  tui       Launch the Terminal User Interface (Textual-based rich CLI).\n  work      Work mode - the restricted work-focused mode inside JS Agent.\n",
       "stderr_tail": "",
       "stdout_sha256": "154daffa29b9b0d080f298b1dd98c22b8da9e86ed5c8ae51a1f757cc6451324f",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/18_sdist_cli_js_help.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/18_sdist_cli_js_help.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/18_sdist_cli_js_help.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/18_sdist_cli_js_help.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/18_sdist_cli_js_help.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/18_sdist_cli_js_help.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916"
     },
     {
       "step": "sdist: CLI js work --help",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/js",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/bin/js",
         "work",
         "--help"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-31T03:21:41Z",
-      "finished_utc": "2026-08-31T03:21:41Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T08:24:04Z",
+      "finished_utc": "2026-08-31T08:24:04Z",
       "exit_code": 0,
-      "duration_seconds": 0.531,
+      "duration_seconds": 0.496,
       "stdout_tail": "Usage: js work [OPTIONS] COMMAND [ARGS]...\n\n  Work mode - the restricted work-focused mode inside JS Agent.\n\nOptions:\n  -c, --config PATH               Path to JS Agent Work config\n  --profile [execute|safe|office]\n                                  [default: execute]\n  -v, --verbose                   Verbose logging\n  --help                          Show this message and exit.\n\nCommands:\n  init     Initialize JS Agent Work configuration.\n  routine  Manage JS Agent Work routines.\n  run      Run one Work task and exit.\n  web      Run Work through the single parent AppShell host.\n",
       "stderr_tail": "",
       "stdout_sha256": "67a59de9f8307d4e63b3ee089543b498c47c2af276fc62eba370402b0218fd13",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/19_sdist_cli_js_work_help.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/19_sdist_cli_js_work_help.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/19_sdist_cli_js_work_help.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/19_sdist_cli_js_work_help.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/19_sdist_cli_js_work_help.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/19_sdist_cli_js_work_help.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916"
     },
     {
       "step": "sdist: CLI js-work --help",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/js-work",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/bin/js-work",
         "--help"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-31T03:21:41Z",
-      "finished_utc": "2026-08-31T03:21:42Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T08:24:04Z",
+      "finished_utc": "2026-08-31T08:24:06Z",
       "exit_code": 0,
-      "duration_seconds": 0.889,
+      "duration_seconds": 1.303,
       "stdout_tail": "Usage: js work [OPTIONS] COMMAND [ARGS]...\n\n  Work mode - the restricted work-focused mode inside JS Agent.\n\nOptions:\n  -c, --config PATH               Path to JS Agent Work config\n  --profile [execute|safe|office]\n                                  [default: execute]\n  -v, --verbose                   Verbose logging\n  --help                          Show this message and exit.\n\nCommands:\n  init     Initialize JS Agent Work configuration.\n  routine  Manage JS Agent Work routines.\n  run      Run one Work task and exit.\n  web      Run Work through the single parent AppShell host.\n",
-      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/js-work:6: FutureWarning: js-work is a compatibility shim; use `js work`.\n  sys.exit(compat_main())\n",
+      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/bin/js-work:6: FutureWarning: js-work is a compatibility shim; use `js work`.\n  sys.exit(compat_main())\n",
       "stdout_sha256": "67a59de9f8307d4e63b3ee089543b498c47c2af276fc62eba370402b0218fd13",
-      "stderr_sha256": "711d3c1e2fb5d3a27699776959a7e785252261da639f99a16323eb553a5c355a",
+      "stderr_sha256": "51cfb563c8ea588942c9f263b08a9c8dc9d7c2fe65bfcd61f59bb71eccc478ba",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/20_sdist_cli_js_work_help.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/20_sdist_cli_js_work_help.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/20_sdist_cli_js_work_help.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/20_sdist_cli_js_work_help.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/20_sdist_cli_js_work_help.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/20_sdist_cli_js_work_help.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916"
     },
     {
       "step": "sdist: CLI python -m js_work --help",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/bin/python",
         "-m",
         "js_work",
         "--help"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-31T03:21:42Z",
-      "finished_utc": "2026-08-31T03:21:43Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T08:24:06Z",
+      "finished_utc": "2026-08-31T08:24:06Z",
       "exit_code": 0,
-      "duration_seconds": 0.534,
+      "duration_seconds": 0.494,
       "stdout_tail": "Usage: js work [OPTIONS] COMMAND [ARGS]...\n\n  Work mode - the restricted work-focused mode inside JS Agent.\n\nOptions:\n  -c, --config PATH               Path to JS Agent Work config\n  --profile [execute|safe|office]\n                                  [default: execute]\n  -v, --verbose                   Verbose logging\n  --help                          Show this message and exit.\n\nCommands:\n  init     Initialize JS Agent Work configuration.\n  routine  Manage JS Agent Work routines.\n  run      Run one Work task and exit.\n  web      Run Work through the single parent AppShell host.\n",
-      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js_work/__main__.py:8: FutureWarning: js-work is a compatibility shim; use `js work`.\n  compat_main()\n",
+      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js_work/__main__.py:8: FutureWarning: js-work is a compatibility shim; use `js work`.\n  compat_main()\n",
       "stdout_sha256": "67a59de9f8307d4e63b3ee089543b498c47c2af276fc62eba370402b0218fd13",
-      "stderr_sha256": "c41ec24a95ba797ffa165aa3b4316ae14333b886058128266a73f4f5e300568c",
+      "stderr_sha256": "35059a3899dde5630d374a8b703514503d88f81b90ba9d5434b49443d2b39414",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/21_sdist_cli_python_m_js_work_help.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/21_sdist_cli_python_m_js_work_help.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/21_sdist_cli_python_m_js_work_help.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/21_sdist_cli_python_m_js_work_help.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/21_sdist_cli_python_m_js_work_help.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/21_sdist_cli_python_m_js_work_help.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916"
     },
     {
       "step": "sdist: server HTTP+WS+attachment+work E2E",
       "argv": [
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/python",
-        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/server_e2e.py"
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/server_e2e.py"
       ],
-      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-31T03:21:43Z",
-      "finished_utc": "2026-08-31T03:21:44Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T08:24:06Z",
+      "finished_utc": "2026-08-31T08:24:08Z",
       "exit_code": 0,
-      "duration_seconds": 1.772,
-      "stdout_tail": "bf39c7b558\", \"replay_class\": \"non_idempotent\", \"resource\": \"tool:excel_write\", \"scopes\": [\"tool:excel_write\"]}, \"executor_kind\": \"tool\", \"executor_route\": \"ToolExecutor.execute_tool\", \"outbox\": {\"bridge_hash\": \"sha256:09813b7ba02c0fabf8e7521be155b360f87078fe502002f6e5aa82dba24b043a\", \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_5afb684c6ba189583d36e503dd8a7a11\"}, \"run_id\": \"iso-e2e-work-run\", \"session_id\": \"iso-e2e-work\", \"side_effect\": {\"commitment\": \"manual_confirmation_required\", \"replay_class\": \"non_idempotent\"}, \"state_mapping\": {\"args_hash\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"journal_record_start\": 10, \"lease_id\": \"e0281671936c50634620041edb8408aa\", \"partition_bound\": true, \"permit_journal_seq\": 13, \"product_id\": \"js-work\", \"tool_call_id\": \"call_745948e2fa4727c1930588\", \"tool_name\": \"excel_write\", \"workspace\": \"ws-ad919938bf494fb50ce94ef5b968398f875744201b4fb5991f3bfd294fbf8906\"}, \"tenant_id\": \"iso-e2e-owner\"}, \"outbox_id\": \"out_5afb684c6ba189583d36e503dd8a7a11\", \"seal\": {\"action_kind\": \"tool.excel_write\", \"deadline_ms\": 418460192, \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"granted_scopes\": [\"tool:excel_write\"], \"journal_seq\": 13, \"key_epoch\": \"permit-epoch-1\", \"mac\": \"d5bf436f4574df58c1f02c6d65d0a251499bab57e0404ff989cd26654af4b2ab\", \"policy_decision_id\": \"pdr_b9bf545b83431cd6b9400644aef10881\", \"replay_class\": \"non_idempotent\", \"seal_id\": \"seal_1ff150f67ae79f8105deb3cecd8dd0a8\", \"tenant_id\": \"iso-e2e-owner\"}, \"sealed_input_ref\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\"}, \"prev_hash\": \"sha256:55ac5ff301ab4ae211836325885736e1dc2ccacf669117cf212966b8b12a87aa\", \"record_hash\": \"sha256:56ea7ef1abe43b91f14e1c632140ee6b16fead123e2a71fd780e75e29dcc1732\"}, {\"seq\": 15, \"record_type\": \"outbox_claimed\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_5afb684c6ba189583d36e503dd8a7a11\"}, \"prev_hash\": \"sha256:56ea7ef1abe43b91f14e1c632140ee6b16fead123e2a71fd780e75e29dcc1732\", \"record_hash\": \"sha256:9aaac6d6fe727f5e3583f2472fb520376307b4dbcbe79baf7b3292cff1d58309\"}, {\"seq\": 17, \"record_type\": \"receipt\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"artifact_refs\": [{\"acl\": \"owner\", \"created_by_run\": \"iso-e2e-work-run\", \"digest\": \"sha256:5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d\", \"kind\": \"spreadsheet\", \"mode\": \"work\", \"owner\": \"iso-e2e-owner\", \"schema_version\": 1, \"session\": \"iso-e2e-work\", \"uri\": \"echo://artifact/excel_write/5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d\", \"workspace\": \"ws-ad919938bf494fb50ce94ef5b968398f875744201b4fb5991f3bfd294fbf8906\"}], \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_5afb684c6ba189583d36e503dd8a7a11\", \"output_hash\": \"sha256:5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d\", \"output_ref\": \"sha256:5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d\", \"replay_class\": \"non_idempotent\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:803849386b19e1a9281c5247a87b077f40130a98306498e98290122993c87b83\", \"record_hash\": \"sha256:a7869da22e7d89ce8280edb615c30ca7ff09b60a3d0c48743c3eaa076f5d1a46\"}, {\"seq\": 18, \"record_type\": \"merge\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:a7869da22e7d89ce8280edb615c30ca7ff09b60a3d0c48743c3eaa076f5d1a46\", \"record_hash\": \"sha256:42859622585d617cb3e85beb154057cd073ed69752d7c73a7aba105fda2685c9\"}], \"journal_evidence_path\": \"e2e/work/sdist/ledger.journal\", \"arguments_sha256\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"ledger_signature_b64\": \"zfR+gDKb7nmFMZOkHhG6f531DQBVl6qg1e7j8JQILOltyWBgaZYtNDOBI4xst470SMnvNNoj1e2a0Bgx5joACg==\", \"pubkey_fingerprint\": \"b15df485259192b9a2568cf0d8d558bcfb667ecd0d8b00fb0cdaf48aac27b8e0\"}}}\n",
-      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n  from starlette.testclient import TestClient as TestClient  # noqa\n",
-      "stdout_sha256": "52be244499bb63601837f5822ce960fecfb98162840eb02542b543b96ab72336",
-      "stderr_sha256": "64d6b1854f8c8358b48cb8f35d7c928cdb678a23a95dc315c4bddf28e963709c",
+      "duration_seconds": 1.619,
+      "stdout_tail": "bf39c7b558\", \"replay_class\": \"non_idempotent\", \"resource\": \"tool:excel_write\", \"scopes\": [\"tool:excel_write\"]}, \"executor_kind\": \"tool\", \"executor_route\": \"ToolExecutor.execute_tool\", \"outbox\": {\"bridge_hash\": \"sha256:e50e5ab99ddea8d6f62a1557bb1b77b0b08c4803b2f3c82712a6dbdf9265633d\", \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_6135ae823f9e03cf94f499e0da5eed93\"}, \"run_id\": \"iso-e2e-work-run\", \"session_id\": \"iso-e2e-work\", \"side_effect\": {\"commitment\": \"manual_confirmation_required\", \"replay_class\": \"non_idempotent\"}, \"state_mapping\": {\"args_hash\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"journal_record_start\": 10, \"lease_id\": \"3379a921bc30aeefe8b7820656e1cb63\", \"partition_bound\": true, \"permit_journal_seq\": 13, \"product_id\": \"js-work\", \"tool_call_id\": \"call_745948e2fa4727c1930588\", \"tool_name\": \"excel_write\", \"workspace\": \"ws-f63b04bdfaf07baaba51a3ec4cfa6b69692a469b12a96ad7aa1ad1ec61d916f4\"}, \"tenant_id\": \"iso-e2e-owner\"}, \"outbox_id\": \"out_6135ae823f9e03cf94f499e0da5eed93\", \"seal\": {\"action_kind\": \"tool.excel_write\", \"deadline_ms\": 436603587, \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"granted_scopes\": [\"tool:excel_write\"], \"journal_seq\": 13, \"key_epoch\": \"permit-epoch-1\", \"mac\": \"977e0f806fb94b2d18829e025bd5b1b4889a42d50338fe41fc3279c5d2a948e5\", \"policy_decision_id\": \"pdr_ed8a165ac6c5aa277d9c42c0fadd69d9\", \"replay_class\": \"non_idempotent\", \"seal_id\": \"seal_a3bcc0326fe7256a05b1ae31984fccdb\", \"tenant_id\": \"iso-e2e-owner\"}, \"sealed_input_ref\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\"}, \"prev_hash\": \"sha256:9055e3a6d5aca023919d66a68a8b4734e80c3d50bed00fd5110e352f49bfabba\", \"record_hash\": \"sha256:f686078c81e354c1b0100b2163511a0d111197faaf9b77ba6d96f779435fba4d\"}, {\"seq\": 15, \"record_type\": \"outbox_claimed\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_6135ae823f9e03cf94f499e0da5eed93\"}, \"prev_hash\": \"sha256:f686078c81e354c1b0100b2163511a0d111197faaf9b77ba6d96f779435fba4d\", \"record_hash\": \"sha256:bca60d1ea7f19e35a2b87b53fd2dd09b03aa88480f855b33846fede3263a601e\"}, {\"seq\": 17, \"record_type\": \"receipt\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"artifact_refs\": [{\"acl\": \"owner\", \"created_by_run\": \"iso-e2e-work-run\", \"digest\": \"sha256:cc5cda303ec039e78fe13f1c2e68c5e86db74203d1309261ea03b8eb96c16b2e\", \"kind\": \"spreadsheet\", \"mode\": \"work\", \"owner\": \"iso-e2e-owner\", \"schema_version\": 1, \"session\": \"iso-e2e-work\", \"uri\": \"echo://artifact/excel_write/cc5cda303ec039e78fe13f1c2e68c5e86db74203d1309261ea03b8eb96c16b2e\", \"workspace\": \"ws-f63b04bdfaf07baaba51a3ec4cfa6b69692a469b12a96ad7aa1ad1ec61d916f4\"}], \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_6135ae823f9e03cf94f499e0da5eed93\", \"output_hash\": \"sha256:cc5cda303ec039e78fe13f1c2e68c5e86db74203d1309261ea03b8eb96c16b2e\", \"output_ref\": \"sha256:cc5cda303ec039e78fe13f1c2e68c5e86db74203d1309261ea03b8eb96c16b2e\", \"replay_class\": \"non_idempotent\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:256318b1aadd4915b8aaadd2cfe5401202a31c6123697603b4d88d0871d59457\", \"record_hash\": \"sha256:48e3958781c093617ad42542c78a0badfc868c6db5ea6bde8d8c5542ef335021\"}, {\"seq\": 18, \"record_type\": \"merge\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:48e3958781c093617ad42542c78a0badfc868c6db5ea6bde8d8c5542ef335021\", \"record_hash\": \"sha256:1530956d4fb03ef51940419e1cfad2313996977c9d3c7240ee6cf108853431a2\"}], \"journal_evidence_path\": \"e2e/work/sdist/ledger.journal\", \"arguments_sha256\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"ledger_signature_b64\": \"LHk0rAsU0BI7mu2miOMebyDvLmJR+d+LK2PLwj5Iux1hT39E4a7Ku/eXBlr5d2zn1uzZP3h2Kbp/JcZIz43eDg==\", \"pubkey_fingerprint\": \"c0e4b2b41515292118c87a55ceedc7b23319316ff765c26920f7c815bfcee81b\"}}}\n",
+      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n  from starlette.testclient import TestClient as TestClient  # noqa\n",
+      "stdout_sha256": "c53b2076744d202b072483aa094b4e073801cbc0bf2708f3827847cc2c2be6b2",
+      "stderr_sha256": "33b42ccb9815a42b5cfe42f51583ef1cb988434e1f60f58068edaea49acbf0c5",
       "ok": true,
-      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/22_sdist_server_http_ws_attachment_work_e2e.stdout.txt",
-      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/22_sdist_server_http_ws_attachment_work_e2e.stderr.txt",
-      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/22_sdist_server_http_ws_attachment_work_e2e.receipt.json",
-      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/22_sdist_server_http_ws_attachment_work_e2e.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/22_sdist_server_http_ws_attachment_work_e2e.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/steps/22_sdist_server_http_ws_attachment_work_e2e.receipt.json",
+      "source_digest": "029e8c003ad961f00f54c11bd17fcad8c9bbbdcb2e269bf54b1d00dda3eea916",
       "detail": {
         "offline": true,
         "schema_version": "isolated-venv-e2e-v6",
@@ -1624,13 +1624,13 @@
           "session": "iso-e2e-work",
           "run_id": "iso-e2e-work-run",
           "tool_name": "excel_write",
-          "lease_id": "e0281671936c50634620041edb8408aa",
+          "lease_id": "3379a921bc30aeefe8b7820656e1cb63",
           "lease_consumed": true,
           "status": "ok",
           "terminal": true,
-          "output_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/home/.js-work/workspace/owners/o_4d801da505c7398e008b8819/s_43a848a10dbbeb10caf2d479/outputs/iso-e2e.xlsx",
+          "output_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T082320Z/e2e/runtime/install-sdist/home/.js-work/workspace/owners/o_4d801da505c7398e008b8819/s_43a848a10dbbeb10caf2d479/outputs/iso-e2e.xlsx",
           "output_exists": true,
-          "output_sha256": "5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d",
+          "output_sha256": "cc5cda303ec039e78fe13f1c2e68c5e86db74203d1309261ea03b8eb96c16b2e",
           "output_cells": [
             [
               "iso",
@@ -1640,9 +1640,9 @@
           ],
           "journal_records_added": true,
           "journal_relative_path": "echo/ledger/partitions/product_bb8e07ce637484216fe7ee1ecfda1057/owner_a75baa10e0f98108e330f25712195612/session_f27d520621b860f345f7448222ba3b5e/chat.jsonl",
-          "journal_sha256": "640e6f80c70885ccef8d0170684fe8c4df34751b82d84b8276fcc4f10b888111",
+          "journal_sha256": "3a31104c4a7d5f469f1d595afd17473897f4ae9c55b9b4df0fbe094d7b8d48ee",
           "ledger_sequence": 18,
-          "record_hash": "sha256:42859622585d617cb3e85beb154057cd073ed69752d7c73a7aba105fda2685c9",
+          "record_hash": "sha256:1530956d4fb03ef51940419e1cfad2313996977c9d3c7240ee6cf108853431a2",
           "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
           "terminal_status": "ok",
           "ledger_chain": [
@@ -1655,32 +1655,32 @@
                 "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
                 "seal": {
                   "action_kind": "tool.excel_write",
-                  "deadline_ms": 418460192,
+                  "deadline_ms": 436603587,
                   "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
                   "granted_scopes": [
                     "tool:excel_write"
                   ],
                   "journal_seq": 13,
                   "key_epoch": "permit-epoch-1",
-                  "mac": "d5bf436f4574df58c1f02c6d65d0a251499bab57e0404ff989cd26654af4b2ab",
-                  "policy_decision_id": "pdr_b9bf545b83431cd6b9400644aef10881",
+                  "mac": "977e0f806fb94b2d18829e025bd5b1b4889a42d50338fe41fc3279c5d2a948e5",
+                  "policy_decision_id": "pdr_ed8a165ac6c5aa277d9c42c0fadd69d9",
                   "replay_class": "non_idempotent",
-                  "seal_id": "seal_1ff150f67ae79f8105deb3cecd8dd0a8",
+                  "seal_id": "seal_a3bcc0326fe7256a05b1ae31984fccdb",
                   "tenant_id": "iso-e2e-owner"
                 },
-                "seal_id": "seal_1ff150f67ae79f8105deb3cecd8dd0a8",
+                "seal_id": "seal_a3bcc0326fe7256a05b1ae31984fccdb",
                 "tool_effect": {
                   "args_hash": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
-                  "lease_id": "e0281671936c50634620041edb8408aa",
+                  "lease_id": "3379a921bc30aeefe8b7820656e1cb63",
                   "product_id": "js-work",
                   "session_id": "iso-e2e-work",
                   "tool_call_id": "call_745948e2fa4727c1930588",
                   "tool_name": "excel_write",
-                  "workspace": "ws-ad919938bf494fb50ce94ef5b968398f875744201b4fb5991f3bfd294fbf8906"
+                  "workspace": "ws-f63b04bdfaf07baaba51a3ec4cfa6b69692a469b12a96ad7aa1ad1ec61d916f4"
                 }
               },
-              "prev_hash": "sha256:6e8f3909b86e7f294d51b6914be4f34dc728c25581e1681f33f3f983466d14fe",
-              "record_hash": "sha256:55ac5ff301ab4ae211836325885736e1dc2ccacf669117cf212966b8b12a87aa"
+              "prev_hash": "sha256:8f9c93b99f341e3c4e963191113f6410de0faeb39448392990881258317e0e8a",
+              "record_hash": "sha256:9055e3a6d5aca023919d66a68a8b4734e80c3d50bed00fd5110e352f49bfabba"
             },
             {
               "seq": 14,
@@ -1706,9 +1706,9 @@
                   "executor_kind": "tool",
                   "executor_route": "ToolExecutor.execute_tool",
                   "outbox": {
-                    "bridge_hash": "sha256:09813b7ba02c0fabf8e7521be155b360f87078fe502002f6e5aa82dba24b043a",
+                    "bridge_hash": "sha256:e50e5ab99ddea8d6f62a1557bb1b77b0b08c4803b2f3c82712a6dbdf9265633d",
                     "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
-                    "outbox_id": "out_5afb684c6ba189583d36e503dd8a7a11"
+                    "outbox_id": "out_6135ae823f9e03cf94f499e0da5eed93"
                   },
                   "run_id": "iso-e2e-work-run",
                   "session_id": "iso-e2e-work",
@@ -1719,36 +1719,36 @@
                   "state_mapping": {
                     "args_hash": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
                     "journal_record_start": 10,
-                    "lease_id": "e0281671936c50634620041edb8408aa",
+                    "lease_id": "3379a921bc30aeefe8b7820656e1cb63",
                     "partition_bound": true,
                     "permit_journal_seq": 13,
                     "product_id": "js-work",
                     "tool_call_id": "call_745948e2fa4727c1930588",
                     "tool_name": "excel_write",
-                    "workspace": "ws-ad919938bf494fb50ce94ef5b968398f875744201b4fb5991f3bfd294fbf8906"
+                    "workspace": "ws-f63b04bdfaf07baaba51a3ec4cfa6b69692a469b12a96ad7aa1ad1ec61d916f4"
                   },
                   "tenant_id": "iso-e2e-owner"
                 },
-                "outbox_id": "out_5afb684c6ba189583d36e503dd8a7a11",
+                "outbox_id": "out_6135ae823f9e03cf94f499e0da5eed93",
                 "seal": {
                   "action_kind": "tool.excel_write",
-                  "deadline_ms": 418460192,
+                  "deadline_ms": 436603587,
                   "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
                   "granted_scopes": [
                     "tool:excel_write"
                   ],
                   "journal_seq": 13,
                   "key_epoch": "permit-epoch-1",
-                  "mac": "d5bf436f4574df58c1f02c6d65d0a251499bab57e0404ff989cd26654af4b2ab",
-                  "policy_decision_id": "pdr_b9bf545b83431cd6b9400644aef10881",
+                  "mac": "977e0f806fb94b2d18829e025bd5b1b4889a42d50338fe41fc3279c5d2a948e5",
+                  "policy_decision_id": "pdr_ed8a165ac6c5aa277d9c42c0fadd69d9",
                   "replay_class": "non_idempotent",
-                  "seal_id": "seal_1ff150f67ae79f8105deb3cecd8dd0a8",
+                  "seal_id": "seal_a3bcc0326fe7256a05b1ae31984fccdb",
                   "tenant_id": "iso-e2e-owner"
                 },
                 "sealed_input_ref": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558"
               },
-              "prev_hash": "sha256:55ac5ff301ab4ae211836325885736e1dc2ccacf669117cf212966b8b12a87aa",
-              "record_hash": "sha256:56ea7ef1abe43b91f14e1c632140ee6b16fead123e2a71fd780e75e29dcc1732"
+              "prev_hash": "sha256:9055e3a6d5aca023919d66a68a8b4734e80c3d50bed00fd5110e352f49bfabba",
+              "record_hash": "sha256:f686078c81e354c1b0100b2163511a0d111197faaf9b77ba6d96f779435fba4d"
             },
             {
               "seq": 15,
@@ -1757,10 +1757,10 @@
               "run_id": "iso-e2e-work-run",
               "payload": {
                 "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
-                "outbox_id": "out_5afb684c6ba189583d36e503dd8a7a11"
+                "outbox_id": "out_6135ae823f9e03cf94f499e0da5eed93"
               },
-              "prev_hash": "sha256:56ea7ef1abe43b91f14e1c632140ee6b16fead123e2a71fd780e75e29dcc1732",
-              "record_hash": "sha256:9aaac6d6fe727f5e3583f2472fb520376307b4dbcbe79baf7b3292cff1d58309"
+              "prev_hash": "sha256:f686078c81e354c1b0100b2163511a0d111197faaf9b77ba6d96f779435fba4d",
+              "record_hash": "sha256:bca60d1ea7f19e35a2b87b53fd2dd09b03aa88480f855b33846fede3263a601e"
             },
             {
               "seq": 17,
@@ -1772,25 +1772,25 @@
                   {
                     "acl": "owner",
                     "created_by_run": "iso-e2e-work-run",
-                    "digest": "sha256:5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d",
+                    "digest": "sha256:cc5cda303ec039e78fe13f1c2e68c5e86db74203d1309261ea03b8eb96c16b2e",
                     "kind": "spreadsheet",
                     "mode": "work",
                     "owner": "iso-e2e-owner",
                     "schema_version": 1,
                     "session": "iso-e2e-work",
-                    "uri": "echo://artifact/excel_write/5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d",
-                    "workspace": "ws-ad919938bf494fb50ce94ef5b968398f875744201b4fb5991f3bfd294fbf8906"
+                    "uri": "echo://artifact/excel_write/cc5cda303ec039e78fe13f1c2e68c5e86db74203d1309261ea03b8eb96c16b2e",
+                    "workspace": "ws-f63b04bdfaf07baaba51a3ec4cfa6b69692a469b12a96ad7aa1ad1ec61d916f4"
                   }
                 ],
                 "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
-                "outbox_id": "out_5afb684c6ba189583d36e503dd8a7a11",
-                "output_hash": "sha256:5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d",
-                "output_ref": "sha256:5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d",
+                "outbox_id": "out_6135ae823f9e03cf94f499e0da5eed93",
+                "output_hash": "sha256:cc5cda303ec039e78fe13f1c2e68c5e86db74203d1309261ea03b8eb96c16b2e",
+                "output_ref": "sha256:cc5cda303ec039e78fe13f1c2e68c5e86db74203d1309261ea03b8eb96c16b2e",
                 "replay_class": "non_idempotent",
                 "status": "ok"
               },
-              "prev_hash": "sha256:803849386b19e1a9281c5247a87b077f40130a98306498e98290122993c87b83",
-              "record_hash": "sha256:a7869da22e7d89ce8280edb615c30ca7ff09b60a3d0c48743c3eaa076f5d1a46"
+              "prev_hash": "sha256:256318b1aadd4915b8aaadd2cfe5401202a31c6123697603b4d88d0871d59457",
+              "record_hash": "sha256:48e3958781c093617ad42542c78a0badfc868c6db5ea6bde8d8c5542ef335021"
             },
             {
               "seq": 18,
@@ -1801,14 +1801,14 @@
                 "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
                 "status": "ok"
               },
-              "prev_hash": "sha256:a7869da22e7d89ce8280edb615c30ca7ff09b60a3d0c48743c3eaa076f5d1a46",
-              "record_hash": "sha256:42859622585d617cb3e85beb154057cd073ed69752d7c73a7aba105fda2685c9"
+              "prev_hash": "sha256:48e3958781c093617ad42542c78a0badfc868c6db5ea6bde8d8c5542ef335021",
+              "record_hash": "sha256:1530956d4fb03ef51940419e1cfad2313996977c9d3c7240ee6cf108853431a2"
             }
           ],
           "journal_evidence_path": "e2e/work/sdist/ledger.journal",
           "arguments_sha256": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
-          "ledger_signature_b64": "zfR+gDKb7nmFMZOkHhG6f531DQBVl6qg1e7j8JQILOltyWBgaZYtNDOBI4xst470SMnvNNoj1e2a0Bgx5joACg==",
-          "pubkey_fingerprint": "b15df485259192b9a2568cf0d8d558bcfb667ecd0d8b00fb0cdaf48aac27b8e0"
+          "ledger_signature_b64": "LHk0rAsU0BI7mu2miOMebyDvLmJR+d+LK2PLwj5Iux1hT39E4a7Ku/eXBlr5d2zn1uzZP3h2Kbp/JcZIz43eDg==",
+          "pubkey_fingerprint": "c0e4b2b41515292118c87a55ceedc7b23319316ff765c26920f7c815bfcee81b"
         },
         "payload_ok": true
       }

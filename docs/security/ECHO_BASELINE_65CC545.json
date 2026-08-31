@@ -36,8 +36,8 @@
       "executable_sha256": "fe46716a94d8efa4514feb3c39ba3e270deee2187556986f6ddcff54aba7bb9a"
     },
     "platform": {
-      "identity": "macOS-26.6-arm64-arm-64bit",
-      "identity_sha256": "11bcc4e1bb08805aff26d1a2aec6c5b3452adae8f514e4193349c3cd7e7bf751"
+      "identity": "macOS-26.6.2-arm64-arm-64bit",
+      "identity_sha256": "fd42a3dfa9ff29ecc4c9c8371fddaf55aaa6cf48c38bc5f0e3b604ca507b2b39"
     }
   },
   "iterations": 50,
@@ -49,7 +49,7 @@
   "import_root": "/private/tmp/js-agent-baseline-clone/js/__init__.py",
   "environment": {
     "python": "3.12.13",
-    "platform": "macOS-26.6-arm64-arm-64bit"
+    "platform": "macOS-26.6.2-arm64-arm-64bit"
   },
   "methodology": "External trusted harness over the measured tree's real /api/chat path; deterministic local fake provider; old architecture sends all 40 fixed history messages; fresh-session short prompts; cl100k_base canonical provider payload. Current Echo's separate benchmark intentionally verifies only its latest-14 history window.",
   "limitations": "Local single-process evidence only; tokenizer counts are not provider billing tokens and latency excludes network/provider variance.",

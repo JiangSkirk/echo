@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -168,6 +169,35 @@ def test_memory_in_system_fails_prefix_contract(tmp_path: Path) -> None:
     assert "private-memory" not in system
     assert "Learned Insight" not in system
     assert "Optimization Variant" not in system
+
+
+def test_untrusted_skips_baseline_system_prompt_variant(tmp_path: Path) -> None:
+    builder = _prompt_builder()
+    builder.optimizer = SimpleNamespace(
+        select_variant=lambda _context: ("v-baseline", builder.SYSTEM_PROMPT),
+    )
+    with _turn_context(tmp_path, "owner-a"):
+        untrusted = builder._build_untrusted_context(
+            query="same query",
+            session_id="shared-session",
+        )
+    assert "Optimization Variant" not in untrusted
+    assert builder.SYSTEM_PROMPT not in untrusted
+
+
+def test_untrusted_injects_mutated_optimization_variant(tmp_path: Path) -> None:
+    builder = _prompt_builder()
+    mutated = "Be concise and direct.\n" + builder.SYSTEM_PROMPT
+    builder.optimizer = SimpleNamespace(
+        select_variant=lambda _context: ("v-mut", mutated),
+    )
+    with _turn_context(tmp_path, "owner-a"):
+        untrusted = builder._build_untrusted_context(
+            query="same query",
+            session_id="shared-session",
+        )
+    assert "## Optimization Variant" in untrusted
+    assert mutated in untrusted
 
 
 def test_generic_cache_hooks_attach_prompt_cache_key() -> None:
