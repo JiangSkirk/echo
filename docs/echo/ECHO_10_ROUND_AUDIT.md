@@ -6,10 +6,10 @@ This is local engineering evidence. It is not external FTO, clean-room, security
 
 - Echo-only default: `True`
 - Security matrix: `25/25`, ok=`True`
-- Internal release ready: `True`
+- Internal release ready: `False`
 - Stable release ready: `False`
-- Stable release blockers: `legal_fto_review_pending, clean_room_reviewer_pending, external_security_audit_missing, redteam_report_missing`
-- Benchmark SHA-256: `a0522361696a1212651eeb7ab07e12937eede4c27bc4605c7ace8a67f16d1e11`
+- Stable release blockers: `legal_fto_review_pending, clean_room_reviewer_pending, external_security_audit_missing, redteam_report_missing, echo_slo_benchmark_invalid`
+- Benchmark SHA-256: `c77b62bf59c2b0d527de7abfebec7df3d86e4df13b9376db3a97c73c1f605c88`
 
 ## Round 1: 架构边界轮
 
@@ -79,27 +79,27 @@ This is local engineering evidence. It is not external FTO, clean-room, security
 
 ## Round 8: 性能/token 轮
 
-- **P2 api_full_agent Echo p95 38.298ms / limit 45.0ms**
+- **P1 api_full_agent Echo p95 50.475ms / limit 45.0ms**
+  - Status: `open`
+  - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
+  - Repair: Keep Echo p95 within the deterministic absolute SLO gate.
+  - Verification: `.venv/bin/python scripts/echo_architecture_benchmark.py --iterations 50 --warmup 10 --enforce-slo --baseline docs/security/ECHO_BASELINE_65CC545.json --output docs/security/ECHO_SLO_BENCHMARK.json`
+- **P2 api_wrapper_only Echo p95 0.715ms / limit 2.5ms**
   - Status: `fixed`
   - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
   - Repair: Keep Echo p95 within the deterministic absolute SLO gate.
   - Verification: `.venv/bin/python scripts/echo_architecture_benchmark.py --iterations 50 --warmup 10 --enforce-slo --baseline docs/security/ECHO_BASELINE_65CC545.json --output docs/security/ECHO_SLO_BENCHMARK.json`
-- **P2 api_wrapper_only Echo p95 0.617ms / limit 2.5ms**
+- **P2 ws_message_wrapper Echo p95 1.367ms / limit 2.5ms**
   - Status: `fixed`
   - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
   - Repair: Keep Echo p95 within the deterministic absolute SLO gate.
   - Verification: `.venv/bin/python scripts/echo_architecture_benchmark.py --iterations 50 --warmup 10 --enforce-slo --baseline docs/security/ECHO_BASELINE_65CC545.json --output docs/security/ECHO_SLO_BENCHMARK.json`
-- **P2 ws_message_wrapper Echo p95 1.244ms / limit 2.5ms**
+- **P2 ws_stream_wrapper Echo p95 1.547ms / limit 2.5ms**
   - Status: `fixed`
   - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
   - Repair: Keep Echo p95 within the deterministic absolute SLO gate.
   - Verification: `.venv/bin/python scripts/echo_architecture_benchmark.py --iterations 50 --warmup 10 --enforce-slo --baseline docs/security/ECHO_BASELINE_65CC545.json --output docs/security/ECHO_SLO_BENCHMARK.json`
-- **P2 ws_stream_wrapper Echo p95 1.406ms / limit 2.5ms**
-  - Status: `fixed`
-  - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
-  - Repair: Keep Echo p95 within the deterministic absolute SLO gate.
-  - Verification: `.venv/bin/python scripts/echo_architecture_benchmark.py --iterations 50 --warmup 10 --enforce-slo --baseline docs/security/ECHO_BASELINE_65CC545.json --output docs/security/ECHO_SLO_BENCHMARK.json`
-- **P2 api_full_agent prompt token p95 3257.0 (tokenizer) / limit 9000.0**
+- **P2 api_full_agent prompt token p95 4284.0 (tokenizer) / limit 9000.0**
   - Status: `fixed`
   - Evidence: `docs/security/ECHO_SLO_BENCHMARK.json`
   - Repair: Keep ContextVault payloads bounded and label token evidence honestly.
@@ -136,7 +136,7 @@ This is local engineering evidence. It is not external FTO, clean-room, security
 ## Round 10: 发布与供应链轮
 
 - **P0 Stable release blockers remain external-only**
-  - Status: `fixed`
+  - Status: `open`
   - Evidence: `docs/security; js/echo/ledger/release_gates.py`
   - Repair: Do not mark stable until external FTO, clean-room, security audit, and red-team reports are approved.
   - Verification: `.venv/bin/python - <<'PY'

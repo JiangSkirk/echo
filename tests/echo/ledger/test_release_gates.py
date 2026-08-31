@@ -16,12 +16,15 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from js.echo.ledger.release_gates import (
+    _ISOLATED_VENV_E2E_REQUIRED_STEPS,
     _REPO_ROOT_TOKEN,
     _canonical_external_approval_payload,
     _expand_repo_root_token,
     _has_unresolved_artifact_marker,
+    _resolve_isolated_e2e_evidence_root,
     _valid_echo_live_acceptance,
     _valid_echo_slo_benchmark,
+    _valid_isolated_venv_e2e_step,
     _valid_old_baseline_evidence,
     release_source_digest,
     verify_echo_ip_boundary,
@@ -2111,7 +2114,13 @@ def test_expand_repo_root_token_round_trips_absolute_and_token(tmp_path: pathlib
     resolved = tmp_path.resolve()
     assert _expand_repo_root_token(_REPO_ROOT_TOKEN, root=tmp_path) == str(resolved)
     assert _expand_repo_root_token(f"{_REPO_ROOT_TOKEN}/resources/tokenizer", root=tmp_path) == str(
-        (resolved / "resources" / "tokenizer").resolve()
+        resolved / "resources" / "tokenizer"
+    )
+    venv_python = tmp_path / ".venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.symlink_to(tmp_path / "missing-python-target")
+    assert _expand_repo_root_token(f"{_REPO_ROOT_TOKEN}/.venv/bin/python", root=tmp_path) == str(
+        resolved / ".venv" / "bin" / "python"
     )
     assert _expand_repo_root_token(str(resolved), root=tmp_path) == str(resolved)
     assert _expand_repo_root_token(f"{_REPO_ROOT_TOKEN}/../secret", root=tmp_path) is None
@@ -2141,4 +2150,146 @@ def test_committed_echo_baseline_uses_repo_root_tokens() -> None:
     assert payload["provenance"]["harness_root"] == _REPO_ROOT_TOKEN
     assert payload["provenance"]["tokenizer"]["resource_root"] == (
         f"{_REPO_ROOT_TOKEN}/resources/tokenizer"
+    )
+
+
+def _tokenize_under_root(path: pathlib.Path, *, root: pathlib.Path) -> str:
+    relative = path.resolve().relative_to(root.resolve()).as_posix()
+    if relative == ".":
+        return _REPO_ROOT_TOKEN
+    return f"{_REPO_ROOT_TOKEN}/{relative}"
+
+
+def _isolated_e2e_build_step(
+    tmp_path: pathlib.Path,
+    *,
+    tokenized: bool,
+) -> tuple[dict[str, object], pathlib.Path]:
+    evidence = tmp_path / "evidence-bundle"
+    steps = evidence / "e2e" / "steps"
+    steps.mkdir(parents=True)
+    python = tmp_path / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\n", encoding="utf-8")
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    stdout_path = steps / "01_build.stdout.txt"
+    stderr_path = steps / "01_build.stderr.txt"
+    receipt_path = steps / "01_build.receipt.json"
+    stdout_path.write_text("", encoding="utf-8")
+    stderr_path.write_text("", encoding="utf-8")
+    cwd_abs = str(tmp_path.resolve())
+    argv_abs = [
+        str(python.resolve()),
+        "-m",
+        "build",
+        "--outdir",
+        str(dist.resolve()),
+        "--no-isolation",
+    ]
+    captures_abs = {
+        "stdout_path": str(stdout_path.resolve()),
+        "stderr_path": str(stderr_path.resolve()),
+        "step_receipt_path": str(receipt_path.resolve()),
+    }
+    digest = "a" * 64
+    receipt = {
+        "argv": argv_abs,
+        "cwd": cwd_abs,
+        "exit_code": 0,
+        "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+        "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+        **captures_abs,
+    }
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    argv: list[str]
+    cwd: str
+    captures: dict[str, str]
+    if tokenized:
+        argv = [
+            _tokenize_under_root(python, root=tmp_path),
+            "-m",
+            "build",
+            "--outdir",
+            _tokenize_under_root(dist, root=tmp_path),
+            "--no-isolation",
+        ]
+        cwd = _REPO_ROOT_TOKEN
+        captures = {
+            "stdout_path": _tokenize_under_root(stdout_path, root=tmp_path),
+            "stderr_path": _tokenize_under_root(stderr_path, root=tmp_path),
+            "step_receipt_path": _tokenize_under_root(receipt_path, root=tmp_path),
+        }
+    else:
+        argv = argv_abs
+        cwd = cwd_abs
+        captures = captures_abs
+    step: dict[str, object] = {
+        "step": _ISOLATED_VENV_E2E_REQUIRED_STEPS[0],
+        "ok": True,
+        "exit_code": 0,
+        "argv": argv,
+        "cwd": cwd,
+        "stdout_tail": "",
+        "stderr_tail": "",
+        "stdout_sha256": receipt["stdout_sha256"],
+        "stderr_sha256": receipt["stderr_sha256"],
+        "started_utc": "2026-08-31T00:00:00Z",
+        "finished_utc": "2026-08-31T00:00:01Z",
+        "source_digest": digest,
+        **captures,
+    }
+    return step, evidence
+
+
+def test_isolated_e2e_step_accepts_repo_root_tokens(tmp_path: pathlib.Path) -> None:
+    step, evidence = _isolated_e2e_build_step(tmp_path, tokenized=True)
+    assert _valid_isolated_venv_e2e_step(
+        step,
+        source_digest="a" * 64,
+        root=tmp_path,
+        evidence_root=evidence.resolve(),
+    )
+
+
+def test_isolated_e2e_step_tokens_fail_when_evidence_missing(tmp_path: pathlib.Path) -> None:
+    step, evidence = _isolated_e2e_build_step(tmp_path, tokenized=True)
+    assert _valid_isolated_venv_e2e_step(
+        step,
+        source_digest="a" * 64,
+        root=tmp_path,
+        evidence_root=evidence.resolve(),
+    )
+    stdout_path = evidence / "e2e" / "steps" / "01_build.stdout.txt"
+    stdout_path.unlink()
+    assert not _valid_isolated_venv_e2e_step(
+        step,
+        source_digest="a" * 64,
+        root=tmp_path,
+        evidence_root=evidence.resolve(),
+    )
+
+
+def test_isolated_e2e_evidence_root_expands_repo_root_token(tmp_path: pathlib.Path) -> None:
+    bundle = tmp_path / "evidence-bundle"
+    bundle.mkdir()
+    assert (
+        _resolve_isolated_e2e_evidence_root(
+            tmp_path,
+            {"evidence_root": f"{_REPO_ROOT_TOKEN}/evidence-bundle"},
+        )
+        == bundle.resolve()
+    )
+    assert _resolve_isolated_e2e_evidence_root(tmp_path, {"evidence_root": "evidence-bundle"}) == (
+        bundle.resolve()
+    )
+    assert (
+        _resolve_isolated_e2e_evidence_root(tmp_path, {"evidence_root": "<EVIDENCE_ROOT>"}) is None
+    )
+    assert (
+        _resolve_isolated_e2e_evidence_root(
+            tmp_path,
+            {"evidence_root": f"{_REPO_ROOT_TOKEN}/missing"},
+        )
+        is None
     )

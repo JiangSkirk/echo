@@ -1,28 +1,28 @@
 {
   "schema_version": "isolated-venv-e2e-v8",
   "offline": true,
-  "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7",
-  "evidence_root": "<EVIDENCE_ROOT>",
-  "started_utc": "2026-08-10T03:22:24Z",
-  "finished_utc": "2026-08-10T03:23:29Z",
+  "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
+  "evidence_root": ".task-tmp/evidence/internal-rebind-20260831T032058Z",
+  "started_utc": "2026-08-31T03:20:59Z",
+  "finished_utc": "2026-08-31T03:21:47Z",
   "ok": true,
-  "wheelhouse": "<EVIDENCE_ROOT>/wheelhouse",
+  "wheelhouse": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse",
   "artifacts": {
     "wheel": {
       "path": "e2e/artifacts/js_agent-0.1.5-py3-none-any.whl",
-      "sha256": "6878ab9cc814eb930f8cb769b828f7456f4a00e9491852fc0b987fe2d2bae51d",
-      "bytes": 4513391
+      "sha256": "2711561d0fa65b586f3f6cc91f5f298ad0fce8c35833acbc4318a1b3d89a3631",
+      "bytes": 4988606
     },
     "sdist": {
       "path": "e2e/artifacts/js_agent-0.1.5.tar.gz",
-      "sha256": "bfcac9dad9f4ced98b4384e4c8972610ddc29d4ad86a61b8cbb5f35e5f14023b",
-      "bytes": 4463289
+      "sha256": "605af500970bcb5bbd2d600909feb8ef8111f641d4b3acb022458a7aa3bb19e7",
+      "bytes": 4998213
     }
   },
   "work_output": {
     "path": "e2e/work/sdist/iso-e2e.xlsx",
-    "sha256": "59eea01d2e0b916fda98d0dc204dd1478ccbea4b922a2c5d725c5419d9537a12",
-    "bytes": 4840,
+    "sha256": "5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d",
+    "bytes": 4841,
     "cells": [
       [
         "iso",
@@ -34,7 +34,7 @@
   "work_outputs": {
     "wheel": {
       "path": "e2e/work/wheel/iso-e2e.xlsx",
-      "sha256": "20ca6fea5de62189e363cd2b2278c702273272dd0d9498a8353096c16404159f",
+      "sha256": "4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259",
       "bytes": 4840,
       "cells": [
         [
@@ -46,8 +46,8 @@
     },
     "sdist": {
       "path": "e2e/work/sdist/iso-e2e.xlsx",
-      "sha256": "59eea01d2e0b916fda98d0dc204dd1478ccbea4b922a2c5d725c5419d9537a12",
-      "bytes": 4840,
+      "sha256": "5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d",
+      "bytes": 4841,
       "cells": [
         [
           "iso",
@@ -60,33 +60,33 @@
   "manifest": [
     {
       "path": "e2e/artifacts/js_agent-0.1.5-py3-none-any.whl",
-      "sha256": "6878ab9cc814eb930f8cb769b828f7456f4a00e9491852fc0b987fe2d2bae51d",
-      "bytes": 4513391
+      "sha256": "2711561d0fa65b586f3f6cc91f5f298ad0fce8c35833acbc4318a1b3d89a3631",
+      "bytes": 4988606
     },
     {
       "path": "e2e/artifacts/js_agent-0.1.5.tar.gz",
-      "sha256": "bfcac9dad9f4ced98b4384e4c8972610ddc29d4ad86a61b8cbb5f35e5f14023b",
-      "bytes": 4463289
+      "sha256": "605af500970bcb5bbd2d600909feb8ef8111f641d4b3acb022458a7aa3bb19e7",
+      "bytes": 4998213
     },
     {
       "path": "e2e/work/wheel/iso-e2e.xlsx",
-      "sha256": "20ca6fea5de62189e363cd2b2278c702273272dd0d9498a8353096c16404159f",
+      "sha256": "4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259",
       "bytes": 4840
     },
     {
       "path": "e2e/work/wheel/ledger.journal",
-      "sha256": "08870cc4c468f57eef0bd959ec7593b3f48f0d3ac800d24df894a70671a4ca80",
-      "bytes": 16618
+      "sha256": "e0e08b47e2db267706c1f4f39c2745021cb312891d971e54be38b481a26930d5",
+      "bytes": 16626
     },
     {
       "path": "e2e/work/sdist/iso-e2e.xlsx",
-      "sha256": "59eea01d2e0b916fda98d0dc204dd1478ccbea4b922a2c5d725c5419d9537a12",
-      "bytes": 4840
+      "sha256": "5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d",
+      "bytes": 4841
     },
     {
       "path": "e2e/work/sdist/ledger.journal",
-      "sha256": "e8bda1c2f688af28eb4d48bdc1b065ebdb8252b932b0bc4aa06112a5ffd4f9de",
-      "bytes": 16618
+      "sha256": "640e6f80c70885ccef8d0170684fe8c4df34751b82d84b8276fcc4f10b888111",
+      "bytes": 16626
     }
   ],
   "pip_check": {
@@ -107,88 +107,88 @@
     {
       "step": "build: python -m build --no-isolation (wheel+sdist)",
       "argv": [
-        "<REPO_ROOT>/.venv/bin/python",
+        "{repo_root}/.venv/bin/python",
         "-m",
         "build",
         "--outdir",
-        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/iso-venv-e2e-zwac_85g/dist",
+        "/var/folders/t8/hp9mcjnd0_s08_43cp5f3xnm0000gn/T/iso-venv-e2e-2qtzl97e/dist",
         "--no-isolation"
       ],
-      "cwd": "<REPO_ROOT>",
-      "started_utc": "2026-08-10T03:22:24Z",
-      "finished_utc": "2026-08-10T03:22:38Z",
+      "cwd": "{repo_root}",
+      "started_utc": "2026-08-31T03:20:59Z",
+      "finished_utc": "2026-08-31T03:21:01Z",
       "exit_code": 0,
-      "duration_seconds": 14.485,
+      "duration_seconds": 2.213,
       "stdout_tail": "Successfully built js_agent-0.1.5.tar.gz and js_agent-0.1.5-py3-none-any.whl\n",
       "stderr_tail": "* Getting build dependencies for sdist...\n* Building sdist...\n* Building wheel from sdist\n* Getting build dependencies for wheel...\n* Building wheel...\n",
       "stdout_sha256": "fddb6771913e9a7df6b2dd441a048b4e814b4ae66121cf319a6d1a0142fd7703",
       "stderr_sha256": "807e97125a07cf58c76bef6d9db88eabace05a8d396c6082665436b821e3923f",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/01_build_python_m_build_no_isolation_wheel_sdist.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/01_build_python_m_build_no_isolation_wheel_sdist.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/01_build_python_m_build_no_isolation_wheel_sdist.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/01_build_python_m_build_no_isolation_wheel_sdist.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/01_build_python_m_build_no_isolation_wheel_sdist.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/01_build_python_m_build_no_isolation_wheel_sdist.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
     },
     {
       "step": "wheel: create venv",
       "argv": [
-        "<REPO_ROOT>/.venv/bin/python",
+        "{repo_root}/.venv/bin/python",
         "-m",
         "venv",
-        "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv"
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-10T03:22:38Z",
-      "finished_utc": "2026-08-10T03:22:39Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T03:21:01Z",
+      "finished_utc": "2026-08-31T03:21:02Z",
       "exit_code": 0,
-      "duration_seconds": 0.849,
+      "duration_seconds": 0.951,
       "stdout_tail": "",
       "stderr_tail": "",
       "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/02_wheel_create_venv.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/02_wheel_create_venv.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/02_wheel_create_venv.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/02_wheel_create_venv.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/02_wheel_create_venv.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/02_wheel_create_venv.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
     },
     {
       "step": "wheel: pip install artifact offline (echo-tokenizer,office)",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/python",
         "-m",
         "pip",
         "install",
         "--no-index",
         "--find-links",
-        "<EVIDENCE_ROOT>/wheelhouse",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse",
         "--no-input",
         "--report",
-        "<EVIDENCE_ROOT>/e2e/pip/wheel.install-report.json",
-        "<EVIDENCE_ROOT>/e2e/artifacts/js_agent-0.1.5-py3-none-any.whl[echo-tokenizer,office]"
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/pip/wheel.install-report.json",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/artifacts/js_agent-0.1.5-py3-none-any.whl[echo-tokenizer,office]"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-10T03:22:39Z",
-      "finished_utc": "2026-08-10T03:22:45Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T03:21:02Z",
+      "finished_utc": "2026-08-31T03:21:08Z",
       "exit_code": 0,
-      "duration_seconds": 5.903,
-      "stdout_tail": "e/lxml-6.1.1-cp312-cp312-macosx_10_13_universal2.whl (from python-docx>=1.2->js-agent==0.1.5->js-agent==0.1.5)\nProcessing <EVIDENCE_ROOT>/wheelhouse/pillow-12.2.0-cp312-cp312-macosx_11_0_arm64.whl (from reportlab>=4.0->js-agent==0.1.5->js-agent==0.1.5)\nProcessing <EVIDENCE_ROOT>/wheelhouse/charset_normalizer-3.4.7-cp312-cp312-macosx_10_13_universal2.whl (from reportlab>=4.0->js-agent==0.1.5->js-agent==0.1.5)\nProcessing <EVIDENCE_ROOT>/wheelhouse/markdown_it_py-4.2.0-py3-none-any.whl (from rich>=13.9->js-agent==0.1.5->js-agent==0.1.5)\nProcessing <EVIDENCE_ROOT>/wheelhouse/pygments-2.20.0-py3-none-any.whl (from rich>=13.9->js-agent==0.1.5->js-agent==0.1.5)\nProcessing <EVIDENCE_ROOT>/wheelhouse/mdurl-0.1.2-py3-none-any.whl (from markdown-it-py>=2.2.0->rich>=13.9->js-agent==0.1.5->js-agent==0.1.5)\nProcessing <EVIDENCE_ROOT>/wheelhouse/mdit_py_plugins-0.6.1-py3-none-any.whl (from textual>=0.70->js-agent==0.1.5->js-agent==0.1.5)\nProcessing <EVIDENCE_ROOT>/wheelhouse/linkify_it_py-2.1.0-py3-none-any.whl (from markdown-it-py[linkify]>=2.1.0->textual>=0.70->js-agent==0.1.5->js-agent==0.1.5)\nProcessing <EVIDENCE_ROOT>/wheelhouse/uc_micro_py-2.0.0-py3-none-any.whl (from linkify-it-py<3,>=1->markdown-it-py[linkify]>=2.1.0->textual>=0.70->js-agent==0.1.5->js-agent==0.1.5)\nProcessing <EVIDENCE_ROOT>/wheelhouse/urllib3-2.7.0-py3-none-any.whl (from requests->tiktoken<1,>=0.7->js-agent==0.1.5->js-agent==0.1.5)\nInstalling collected packages: xlrd, wcwidth, watchdog, urllib3, uc-micro-py, typing-extensions, tqdm, tenacity, structlog, sniffio, six, rfc8785, regex, pyyaml, python-multipart, python-dotenv, pypdf, pygments, pycparser, psutil, platformdirs, pillow, packaging, numpy, mdurl, lxml, jiter, idna, hyperframe, hpack, h11, et-xmlfile, distro, click, charset-normalizer, certifi, cachetools, annotated-types, annotated-doc, aiosqlite, uvicorn, typing-inspection, requests, reportlab, python-docx, python-dateutil, pydantic-core, prompt-toolkit, openpyxl, markdown-it-py, linkify-it-py, httpcore, h2, cffi, anyio, tiktoken, starlette, rich, pydantic, pandas, mdit-py-plugins, httpx, cryptography, textual, pydantic-settings, openai, fastapi, js-agent\n\nSuccessfully installed aiosqlite-0.22.1 annotated-doc-0.0.4 annotated-types-0.7.0 anyio-4.13.0 cachetools-7.1.4 certifi-2026.5.20 cffi-2.0.0 charset-normalizer-3.4.7 click-8.4.1 cryptography-48.0.1 distro-1.9.0 et-xmlfile-2.0.0 fastapi-0.139.0 h11-0.16.0 h2-4.3.0 hpack-4.2.0 httpcore-1.0.9 httpx-0.28.1 hyperframe-6.1.0 idna-3.18 jiter-0.15.0 js-agent-0.1.5 linkify-it-py-2.1.0 lxml-6.1.1 markdown-it-py-4.2.0 mdit-py-plugins-0.6.1 mdurl-0.1.2 numpy-2.4.6 openai-2.38.0 openpyxl-3.1.5 packaging-26.2 pandas-3.0.3 pillow-12.2.0 platformdirs-4.10.0 prompt-toolkit-3.0.52 psutil-7.2.2 pycparser-3.0 pydantic-2.13.4 pydantic-core-2.46.4 pydantic-settings-2.14.2 pygments-2.20.0 pypdf-6.14.2 python-dateutil-2.9.0.post0 python-docx-1.2.0 python-dotenv-1.2.2 python-multipart-0.0.32 pyyaml-6.0.3 regex-2026.5.9 reportlab-4.5.1 requests-2.34.2 rfc8785-0.1.4 rich-15.0.0 six-1.17.0 sniffio-1.3.1 starlette-1.3.1 structlog-25.5.0 tenacity-9.1.4 textual-8.2.7 tiktoken-0.13.0 tqdm-4.67.3 typing-extensions-4.15.0 typing-inspection-0.4.2 uc-micro-py-2.0.0 urllib3-2.7.0 uvicorn-0.48.0 watchdog-6.0.0 wcwidth-0.7.0 xlrd-2.0.2\n",
-      "stderr_tail": "lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\n",
-      "stdout_sha256": "99dd693f025c947213f1be0d29ac599acacb33f12611432ed9ea28fba8c89929",
-      "stderr_sha256": "d61aeff63d9fe49df3207463c9c6245d7e2dccdc48b67e2bd5bc93bc4e994b27",
+      "duration_seconds": 6.728,
+      "stdout_tail": "sing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/mdit_py_plugins-0.6.1-py3-none-any.whl (from textual<9,>=0.70->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/regex-2026.8.31-cp312-cp312-macosx_11_0_arm64.whl (from tiktoken<1,>=0.7->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/requests-2.34.2-py3-none-any.whl (from tiktoken<1,>=0.7->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/pycparser-3.0-py3-none-any.whl (from cffi>=2.0.0->cryptography<51,>=49.0.0->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/mdurl-0.1.2-py3-none-any.whl (from markdown-it-py>=2.2.0->rich<16,>=13.9->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/linkify_it_py-2.1.0-py3-none-any.whl (from markdown-it-py[linkify]>=2.1.0->textual<9,>=0.70->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/uc_micro_py-2.0.0-py3-none-any.whl (from linkify-it-py<3,>=1->markdown-it-py[linkify]>=2.1.0->textual<9,>=0.70->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl (from pandas>=2.2->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/python_dateutil-2.9.0.post0-py2.py3-none-any.whl (from pandas>=2.2->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/six-1.17.0-py2.py3-none-any.whl (from python-dateutil>=2.8.2->pandas>=2.2->js-agent==0.1.5->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/urllib3-2.7.0-py3-none-any.whl (from requests->tiktoken<1,>=0.7->js-agent==0.1.5->js-agent==0.1.5)\nInstalling collected packages: xlrd, wcwidth, watchdog, urllib3, uc-micro-py, typing_extensions, tqdm, tenacity, structlog, sniffio, six, rfc8785, regex, pyyaml, python-multipart, python-dotenv, pypdf, pygments, pycparser, psutil, platformdirs, pillow, packaging, numpy, mdurl, lxml, jiter, idna, hyperframe, hpack, h11, et-xmlfile, distro, click, charset-normalizer, certifi, cachetools, annotated-types, annotated-doc, aiosqlite, uvicorn, typing-inspection, requests, reportlab, python-docx, python-dateutil, pydantic-core, prompt-toolkit, openpyxl, markdown-it-py, linkify-it-py, httpcore, h2, cffi, anyio, tiktoken, starlette, rich, pydantic, pandas, mdit-py-plugins, httpx, cryptography, textual, pydantic-settings, openai, fastapi, js-agent\n\nSuccessfully installed aiosqlite-0.22.1 annotated-doc-0.0.4 annotated-types-0.7.0 anyio-4.13.0 cachetools-7.1.4 certifi-2026.7.22 cffi-2.0.0 charset-normalizer-3.5.1 click-8.4.1 cryptography-50.0.0 distro-1.9.0 et-xmlfile-2.0.0 fastapi-0.139.0 h11-0.16.0 h2-4.4.1 hpack-4.2.0 httpcore-1.0.9 httpx-0.28.1 hyperframe-6.1.0 idna-3.19 jiter-0.15.0 js-agent-0.1.5 linkify-it-py-2.1.0 lxml-6.1.1 markdown-it-py-4.2.0 mdit-py-plugins-0.6.1 mdurl-0.1.2 numpy-2.5.2 openai-2.38.0 openpyxl-3.1.5 packaging-26.3 pandas-3.0.3 pillow-12.3.0 platformdirs-4.10.0 prompt-toolkit-3.0.52 psutil-7.2.2 pycparser-3.0 pydantic-2.13.4 pydantic-core-2.46.4 pydantic-settings-2.14.2 pygments-2.20.0 pypdf-6.16.1 python-dateutil-2.9.0.post0 python-docx-1.2.0 python-dotenv-1.2.2 python-multipart-0.0.32 pyyaml-6.0.3 regex-2026.8.31 reportlab-4.5.1 requests-2.34.2 rfc8785-0.1.4 rich-15.0.0 six-1.17.0 sniffio-1.3.1 starlette-1.3.1 structlog-25.5.0 tenacity-9.1.4 textual-8.2.7 tiktoken-0.13.0 tqdm-4.67.3 typing-inspection-0.4.2 typing_extensions-4.15.0 uc-micro-py-2.0.0 urllib3-2.7.0 uvicorn-0.48.0 watchdog-6.0.0 wcwidth-0.7.0 xlrd-2.0.2\n",
+      "stderr_tail": "",
+      "stdout_sha256": "9ea9824683b6e8e4678f225c8d590e7ddae6e8cca46ae53c8cbdef9ea8a560a2",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/03_wheel_pip_install_artifact_offline_echo_tokenizer_office.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/03_wheel_pip_install_artifact_offline_echo_tokenizer_office.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/03_wheel_pip_install_artifact_offline_echo_tokenizer_office.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7",
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/03_wheel_pip_install_artifact_offline_echo_tokenizer_office.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/03_wheel_pip_install_artifact_offline_echo_tokenizer_office.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/03_wheel_pip_install_artifact_offline_echo_tokenizer_office.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
       "pip_report": {
-        "path": "<EVIDENCE_ROOT>/e2e/pip/wheel.install-report.json",
-        "sha256": "30c1b7c9728bb9be4f9b9c53ea2c078dbce908a06f1bae5e37acca8823938bf9",
+        "path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/pip/wheel.install-report.json",
+        "sha256": "5843171d66a4c4aae11a6db97d2719876ecd9e8e1714b2e59ef535c73df1bd77",
         "packages": [
           {
             "name": "js-agent",
             "version": "0.1.5",
-            "archive_hash": "sha256=6878ab9cc814eb930f8cb769b828f7456f4a00e9491852fc0b987fe2d2bae51d"
+            "archive_hash": "sha256=2711561d0fa65b586f3f6cc91f5f298ad0fce8c35833acbc4318a1b3d89a3631"
           },
           {
             "name": "rfc8785",
@@ -201,19 +201,9 @@
             "archive_hash": "sha256=ea762c3d29f4cca48d82df517b6d89fbce4db3107f9d78713e48cd321d5c9aa9"
           },
           {
-            "name": "cryptography",
-            "version": "48.0.1",
-            "archive_hash": "sha256=3e4a1a3232eef2e6c732827d5722db29a0cc8b27af2a4d865b094cf954be9ca1"
-          },
-          {
-            "name": "fastapi",
-            "version": "0.139.0",
-            "archive_hash": "sha256=cf15e1e9e667ddb0ad63811e60bd11390d1aac838ca4a7a23f421807b2308189"
-          },
-          {
-            "name": "openai",
-            "version": "2.38.0",
-            "archive_hash": "sha256=ec6661c57b2dcc47414a767e6e3335c7ed3d19c9696999283a3c82e95c756a3c"
+            "name": "aiosqlite",
+            "version": "0.22.1",
+            "archive_hash": "sha256=21c002eb13823fad740196c5a2e9d8e62f6243bd9e7e4a1f87fb5e44ecb4fceb"
           },
           {
             "name": "anyio",
@@ -221,9 +211,24 @@
             "archive_hash": "sha256=08b310f9e24a9594186fd75b4f73f4a4152069e3853f1ed8bfbf58369f4ad708"
           },
           {
-            "name": "distro",
-            "version": "1.9.0",
-            "archive_hash": "sha256=7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2"
+            "name": "cachetools",
+            "version": "7.1.4",
+            "archive_hash": "sha256=323dc4127934744db5b54eb4924482d7edafbf9554e820d1531c2e08c0e4ef54"
+          },
+          {
+            "name": "click",
+            "version": "8.4.1",
+            "archive_hash": "sha256=482be17c6991b8c19c5429a1e995d9b0efdbb63172824c41f99965dc0ade8ec2"
+          },
+          {
+            "name": "cryptography",
+            "version": "50.0.0",
+            "archive_hash": "sha256=031e2d5dd4bb9caa3ca9c82e5a197fd8ae680232cee62603d1a813f3f07e3d03"
+          },
+          {
+            "name": "fastapi",
+            "version": "0.139.0",
+            "archive_hash": "sha256=cf15e1e9e667ddb0ad63811e60bd11390d1aac838ca4a7a23f421807b2308189"
           },
           {
             "name": "httpx",
@@ -236,74 +241,9 @@
             "archive_hash": "sha256=2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55"
           },
           {
-            "name": "jiter",
-            "version": "0.15.0",
-            "archive_hash": "sha256=8c9004af7c8d67cce7f1aae1026fb55607f4aa600710d08ede3a3ce4aeefe7e0"
-          },
-          {
-            "name": "pydantic",
-            "version": "2.13.4",
-            "archive_hash": "sha256=45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba"
-          },
-          {
-            "name": "pydantic_core",
-            "version": "2.46.4",
-            "archive_hash": "sha256=962ccbab7b642487b1d8b7df90ef677e03134cf1fd8880bf698649b22a69371f"
-          },
-          {
-            "name": "starlette",
-            "version": "1.3.1",
-            "archive_hash": "sha256=c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6"
-          },
-          {
-            "name": "tiktoken",
-            "version": "0.13.0",
-            "archive_hash": "sha256=4d9980f11429ed2d737c463bb1fb78cf330caa026adf002f714aced7849a687b"
-          },
-          {
-            "name": "typing_extensions",
-            "version": "4.15.0",
-            "archive_hash": "sha256=f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548"
-          },
-          {
-            "name": "aiosqlite",
-            "version": "0.22.1",
-            "archive_hash": "sha256=21c002eb13823fad740196c5a2e9d8e62f6243bd9e7e4a1f87fb5e44ecb4fceb"
-          },
-          {
-            "name": "annotated-doc",
-            "version": "0.0.4",
-            "archive_hash": "sha256=571ac1dc6991c450b25a9c2d84a3705e2ae7a53467b5d111c24fa8baabbed320"
-          },
-          {
-            "name": "annotated-types",
-            "version": "0.7.0",
-            "archive_hash": "sha256=1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53"
-          },
-          {
-            "name": "cachetools",
-            "version": "7.1.4",
-            "archive_hash": "sha256=323dc4127934744db5b54eb4924482d7edafbf9554e820d1531c2e08c0e4ef54"
-          },
-          {
-            "name": "cffi",
-            "version": "2.0.0",
-            "archive_hash": "sha256=8eca2a813c1cb7ad4fb74d368c2ffbbb4789d377ee5bb8df98373c2cc0dee76c"
-          },
-          {
-            "name": "click",
-            "version": "8.4.1",
-            "archive_hash": "sha256=482be17c6991b8c19c5429a1e995d9b0efdbb63172824c41f99965dc0ade8ec2"
-          },
-          {
-            "name": "h11",
-            "version": "0.16.0",
-            "archive_hash": "sha256=63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86"
-          },
-          {
             "name": "h2",
-            "version": "4.3.0",
-            "archive_hash": "sha256=c438f029a25f7945c69e0ccf0fb951dc3f73a5f6412981daee861431b70e2bdd"
+            "version": "4.4.1",
+            "archive_hash": "sha256=0e25f1462b23c9cb82d9eb02e28bc706dac2a68cb457c6a0d74d63c8a2a5d0e6"
           },
           {
             "name": "hpack",
@@ -316,9 +256,19 @@
             "archive_hash": "sha256=b03380493a519fce58ea5af42e4a42317bf9bd425596f7a0835ffce80f1a42e5"
           },
           {
-            "name": "idna",
-            "version": "3.18",
-            "archive_hash": "sha256=7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2"
+            "name": "openai",
+            "version": "2.38.0",
+            "archive_hash": "sha256=ec6661c57b2dcc47414a767e6e3335c7ed3d19c9696999283a3c82e95c756a3c"
+          },
+          {
+            "name": "distro",
+            "version": "1.9.0",
+            "archive_hash": "sha256=7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2"
+          },
+          {
+            "name": "jiter",
+            "version": "0.15.0",
+            "archive_hash": "sha256=8c9004af7c8d67cce7f1aae1026fb55607f4aa600710d08ede3a3ce4aeefe7e0"
           },
           {
             "name": "openpyxl",
@@ -327,18 +277,8 @@
           },
           {
             "name": "packaging",
-            "version": "26.2",
-            "archive_hash": "sha256=5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e"
-          },
-          {
-            "name": "pandas",
-            "version": "3.0.3",
-            "archive_hash": "sha256=b168fc218fd80a6cbdbdbc1a97ddc7889ed057d7eb45f50d866ceab5f39904c4"
-          },
-          {
-            "name": "numpy",
-            "version": "2.4.6",
-            "archive_hash": "sha256=3213d622a0283a39a93d188f3cf72b26862df52fbb4ca3697f51705016523d41"
+            "version": "26.3",
+            "archive_hash": "sha256=d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c"
           },
           {
             "name": "platformdirs",
@@ -356,29 +296,29 @@
             "archive_hash": "sha256=1a7b04c10f32cc88ab39cbf606e117fd74721c831c98a27dc04578deb0c16979"
           },
           {
+            "name": "pydantic",
+            "version": "2.13.4",
+            "archive_hash": "sha256=45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba"
+          },
+          {
+            "name": "pydantic_core",
+            "version": "2.46.4",
+            "archive_hash": "sha256=962ccbab7b642487b1d8b7df90ef677e03134cf1fd8880bf698649b22a69371f"
+          },
+          {
             "name": "pydantic-settings",
             "version": "2.14.2",
             "archive_hash": "sha256=a20c97b37910b6550d5ea50fbcc2d4187defe58cd57070b73863d069419c9440"
           },
           {
             "name": "pypdf",
-            "version": "6.14.2",
-            "archive_hash": "sha256=3f07891af76dc002657e04993ab9b4de81de29f9013b9761d0b7968bff12e946"
-          },
-          {
-            "name": "python-dateutil",
-            "version": "2.9.0.post0",
-            "archive_hash": "sha256=a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427"
+            "version": "6.16.1",
+            "archive_hash": "sha256=63fec31c4092ae50b6729beedcb469055b60d20c834bde1c402df241f371f644"
           },
           {
             "name": "python-docx",
             "version": "1.2.0",
             "archive_hash": "sha256=3fd478f3250fbbbfd3b94fe1e985955737c145627498896a8a6bf81f4baf66c7"
-          },
-          {
-            "name": "lxml",
-            "version": "6.1.1",
-            "archive_hash": "sha256=104c09bda8d2a562824c0e319d0768ce26a779b7601e0931d33b09b53c392ef7"
           },
           {
             "name": "python-dotenv",
@@ -401,11 +341,6 @@
             "archive_hash": "sha256=06fce8cb56c83307cfa4909cdf4e6a2ddbb44e5d6ef4d2edca896d7e9769f091"
           },
           {
-            "name": "pillow",
-            "version": "12.2.0",
-            "archive_hash": "sha256=f3f40b3c5a968281fd507d519e444c35f0ff171237f4fdde090dd60699458421"
-          },
-          {
             "name": "rich",
             "version": "15.0.0",
             "archive_hash": "sha256=33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb"
@@ -416,19 +351,9 @@
             "archive_hash": "sha256=81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176"
           },
           {
-            "name": "markdown-it-py",
-            "version": "4.2.0",
-            "archive_hash": "sha256=9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a"
-          },
-          {
-            "name": "mdurl",
-            "version": "0.1.2",
-            "archive_hash": "sha256=84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8"
-          },
-          {
-            "name": "six",
-            "version": "1.17.0",
-            "archive_hash": "sha256=4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"
+            "name": "starlette",
+            "version": "1.3.1",
+            "archive_hash": "sha256=c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6"
           },
           {
             "name": "structlog",
@@ -446,19 +371,14 @@
             "archive_hash": "sha256=4caaa13a90bc4cf9c6c862c067ccd34fe84e9c161710a2a907a8026313b6bd73"
           },
           {
-            "name": "linkify-it-py",
-            "version": "2.1.0",
-            "archive_hash": "sha256=0d252c1594ecba2ecedc444053db5d3a9b7ec1b0dd929c8f1d74dce89f86c05e"
+            "name": "tiktoken",
+            "version": "0.13.0",
+            "archive_hash": "sha256=4d9980f11429ed2d737c463bb1fb78cf330caa026adf002f714aced7849a687b"
           },
           {
-            "name": "tqdm",
-            "version": "4.67.3",
-            "archive_hash": "sha256=ee1e4c0e59148062281c49d80b25b67771a127c85fc9676d3be5f243206826bf"
-          },
-          {
-            "name": "typing-inspection",
-            "version": "0.4.2",
-            "archive_hash": "sha256=4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7"
+            "name": "typing_extensions",
+            "version": "4.15.0",
+            "archive_hash": "sha256=f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548"
           },
           {
             "name": "uvicorn",
@@ -471,14 +391,94 @@
             "archive_hash": "sha256=6f10cb2d5902447c7d0da897e2c6768bca89174d0c6e1e30abec5421af97a5b0"
           },
           {
+            "name": "annotated-doc",
+            "version": "0.0.4",
+            "archive_hash": "sha256=571ac1dc6991c450b25a9c2d84a3705e2ae7a53467b5d111c24fa8baabbed320"
+          },
+          {
+            "name": "annotated-types",
+            "version": "0.7.0",
+            "archive_hash": "sha256=1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53"
+          },
+          {
+            "name": "cffi",
+            "version": "2.0.0",
+            "archive_hash": "sha256=8eca2a813c1cb7ad4fb74d368c2ffbbb4789d377ee5bb8df98373c2cc0dee76c"
+          },
+          {
+            "name": "h11",
+            "version": "0.16.0",
+            "archive_hash": "sha256=63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86"
+          },
+          {
+            "name": "idna",
+            "version": "3.19",
+            "archive_hash": "sha256=815e7be7a7806d54abb586dc943addc79e8b2ee16915059658cbeff4b1b43bf4"
+          },
+          {
+            "name": "lxml",
+            "version": "6.1.1",
+            "archive_hash": "sha256=104c09bda8d2a562824c0e319d0768ce26a779b7601e0931d33b09b53c392ef7"
+          },
+          {
+            "name": "markdown-it-py",
+            "version": "4.2.0",
+            "archive_hash": "sha256=9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a"
+          },
+          {
+            "name": "mdurl",
+            "version": "0.1.2",
+            "archive_hash": "sha256=84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8"
+          },
+          {
+            "name": "linkify-it-py",
+            "version": "2.1.0",
+            "archive_hash": "sha256=0d252c1594ecba2ecedc444053db5d3a9b7ec1b0dd929c8f1d74dce89f86c05e"
+          },
+          {
+            "name": "pandas",
+            "version": "3.0.3",
+            "archive_hash": "sha256=b168fc218fd80a6cbdbdbc1a97ddc7889ed057d7eb45f50d866ceab5f39904c4"
+          },
+          {
+            "name": "numpy",
+            "version": "2.5.2",
+            "archive_hash": "sha256=6e8172ddfcf5cf74b811d372b570b83c60bd2de87a6fbfbebdadb4a9bd9c6cbb"
+          },
+          {
+            "name": "pillow",
+            "version": "12.3.0",
+            "archive_hash": "sha256=ffd0c5368496f41b0944be820fcb7a838aa6e623d250b01acf2643939c3f99d7"
+          },
+          {
+            "name": "python-dateutil",
+            "version": "2.9.0.post0",
+            "archive_hash": "sha256=a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427"
+          },
+          {
+            "name": "six",
+            "version": "1.17.0",
+            "archive_hash": "sha256=4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"
+          },
+          {
+            "name": "tqdm",
+            "version": "4.67.3",
+            "archive_hash": "sha256=ee1e4c0e59148062281c49d80b25b67771a127c85fc9676d3be5f243206826bf"
+          },
+          {
+            "name": "typing-inspection",
+            "version": "0.4.2",
+            "archive_hash": "sha256=4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7"
+          },
+          {
             "name": "certifi",
-            "version": "2026.5.20",
-            "archive_hash": "sha256=3c52e209ba0a4ad7aebe60436a4ab349c39e1e602e8c134221e546902ad25897"
+            "version": "2026.7.22",
+            "archive_hash": "sha256=62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775"
           },
           {
             "name": "charset-normalizer",
-            "version": "3.4.7",
-            "archive_hash": "sha256=eca9705049ad3c7345d574e3510665cb2cf844c2f2dcfe675332677f081cbd46"
+            "version": "3.5.1",
+            "archive_hash": "sha256=5b6d1386bf0096d26d3a863dc0a487a5b4eb9aa93cf5ba69683d29dde6b9d60f"
           },
           {
             "name": "et_xmlfile",
@@ -497,8 +497,8 @@
           },
           {
             "name": "regex",
-            "version": "2026.5.9",
-            "archive_hash": "sha256=f7a7c26137296beba7784de6eba69c6a93a63ccebc385e4962fe67e267a91225"
+            "version": "2026.8.31",
+            "archive_hash": "sha256=caa959da9bb21394131eaf5c57698b47926ebada98c6796cfb4e754a52de001f"
           },
           {
             "name": "requests",
@@ -531,58 +531,58 @@
     {
       "step": "wheel: pip check",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/python",
         "-m",
         "pip",
         "check"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-10T03:22:45Z",
-      "finished_utc": "2026-08-10T03:22:45Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T03:21:08Z",
+      "finished_utc": "2026-08-31T03:21:09Z",
       "exit_code": 0,
-      "duration_seconds": 0.127,
+      "duration_seconds": 0.143,
       "stdout_tail": "No broken requirements found.\n",
       "stderr_tail": "",
       "stdout_sha256": "9261363b733079a641c2e4cc9bc46ffa1d8336945a87f807b6cf68847dbc9b09",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/04_wheel_pip_check.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/04_wheel_pip_check.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/04_wheel_pip_check.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/04_wheel_pip_check.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/04_wheel_pip_check.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/04_wheel_pip_check.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
     },
     {
       "step": "wheel: import js/js_work from venv site-packages",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/python",
         "-c",
         "\nimport hashlib, json, pathlib, sys, sysconfig\nimport js, js_work\nerrors = []\nmodules = {}\nfor module in (js, js_work):\n    path = str(pathlib.Path(module.__file__).resolve())\n    if \"site-packages\" not in path:\n        errors.append(f\"{module.__name__} loaded from non-site-packages: {path}\")\n    modules[module.__name__] = {\n        \"file\": path,\n        \"file_sha256\": hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest(),\n        \"site_packages\": str(pathlib.Path(sysconfig.get_paths()[\"purelib\"]).resolve()),\n    }\nimport js.agent, js.echo.turn_runtime, js.echo.ledger.service\nimport js.models.router, js.models.permit\nimport js.security.approvals, js.web.server, js.tools.registry\nimport js_work.cli, js_work.routines.store, js_work.safe_output, js_work.routines\nfrom js.echo.turn_runtime import EchoPulseRuntime  # noqa: F401\nfrom js.security.approvals import ApprovalQueue  # noqa: F401\nprint(json.dumps({\"modules\": modules, \"errors\": errors}))\nsys.exit(1 if errors else 0)\n"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-10T03:22:45Z",
-      "finished_utc": "2026-08-10T03:22:58Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T03:21:09Z",
+      "finished_utc": "2026-08-31T03:21:16Z",
       "exit_code": 0,
-      "duration_seconds": 12.714,
-      "stdout_tail": "{\"modules\": {\"js\": {\"file\": \"<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js/__init__.py\", \"file_sha256\": \"52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0\", \"site_packages\": \"<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages\"}, \"js_work\": {\"file\": \"<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js_work/__init__.py\", \"file_sha256\": \"ee40c59a0c6a8780e06ba6ecffbc2c0eba0e533b0dbbbd8ef6b4fe3dba4b272a\", \"site_packages\": \"<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages\"}}, \"errors\": []}\n",
+      "duration_seconds": 7.074,
+      "stdout_tail": "{\"modules\": {\"js\": {\"file\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js/__init__.py\", \"file_sha256\": \"52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0\", \"site_packages\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages\"}, \"js_work\": {\"file\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js_work/__init__.py\", \"file_sha256\": \"ee40c59a0c6a8780e06ba6ecffbc2c0eba0e533b0dbbbd8ef6b4fe3dba4b272a\", \"site_packages\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages\"}}, \"errors\": []}\n",
       "stderr_tail": "",
-      "stdout_sha256": "d23d1d52f3630e125608278545423e6a8c50d895b775a041b05177cea3f6cc24",
+      "stdout_sha256": "8548c91e134989c1c5c7ec557b8648eb7daaadb902fa9e9c8dfecb4c9cf74585",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/05_wheel_import_js_js_work_from_venv_site_packages.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/05_wheel_import_js_js_work_from_venv_site_packages.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/05_wheel_import_js_js_work_from_venv_site_packages.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7",
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/05_wheel_import_js_js_work_from_venv_site_packages.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/05_wheel_import_js_js_work_from_venv_site_packages.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/05_wheel_import_js_js_work_from_venv_site_packages.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
       "import_evidence": {
         "modules": {
           "js": {
-            "file": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js/__init__.py",
+            "file": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js/__init__.py",
             "file_sha256": "52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0",
-            "site_packages": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages"
+            "site_packages": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages"
           },
           "js_work": {
-            "file": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js_work/__init__.py",
+            "file": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js_work/__init__.py",
             "file_sha256": "ee40c59a0c6a8780e06ba6ecffbc2c0eba0e533b0dbbbd8ef6b4fe3dba4b272a",
-            "site_packages": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages"
+            "site_packages": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages"
           }
         },
         "errors": []
@@ -594,24 +594,24 @@
     {
       "step": "wheel: tokenizer loads offline from vendored cache",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/python",
         "-c",
         "\nimport json, os, sys\nos.environ.pop(\"TIKTOKEN_CACHE_DIR\", None)\nfrom js.echo.context_tokenizer import tiktoken_counter_factory\ncounter = tiktoken_counter_factory(\"cl100k_base\")\ncount = counter(b\"hello offline world\")\ncache_dir = os.environ.get(\"TIKTOKEN_CACHE_DIR\", \"\")\nok = count > 0 and \"site-packages\" in cache_dir\nprint(json.dumps({\"count\": count, \"cache_dir\": cache_dir, \"ok\": ok}))\nsys.exit(0 if ok else 1)\n"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-10T03:22:58Z",
-      "finished_utc": "2026-08-10T03:22:58Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T03:21:16Z",
+      "finished_utc": "2026-08-31T03:21:16Z",
       "exit_code": 0,
-      "duration_seconds": 0.494,
-      "stdout_tail": "{\"count\": 3, \"cache_dir\": \"<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/resources/tokenizer\", \"ok\": true}\n",
+      "duration_seconds": 0.763,
+      "stdout_tail": "{\"count\": 3, \"cache_dir\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/resources/tokenizer\", \"ok\": true}\n",
       "stderr_tail": "",
-      "stdout_sha256": "7580bc917248e20ccd45e3771a0083b2463e931ad686950cd115cd491c8fadbe",
+      "stdout_sha256": "8bed7487646df2008c5b1096e51cd0f4a4876fec0a3be1241ec37b42664e4f3f",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/06_wheel_tokenizer_loads_offline_from_vendored_cache.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/06_wheel_tokenizer_loads_offline_from_vendored_cache.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/06_wheel_tokenizer_loads_offline_from_vendored_cache.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7",
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/06_wheel_tokenizer_loads_offline_from_vendored_cache.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/06_wheel_tokenizer_loads_offline_from_vendored_cache.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/06_wheel_tokenizer_loads_offline_from_vendored_cache.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
       "detail": {
         "payload_ok": true
       }
@@ -619,110 +619,110 @@
     {
       "step": "wheel: CLI js --help",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/bin/js",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/js",
         "--help"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-10T03:22:58Z",
-      "finished_utc": "2026-08-10T03:22:59Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T03:21:16Z",
+      "finished_utc": "2026-08-31T03:21:17Z",
       "exit_code": 0,
-      "duration_seconds": 0.885,
-      "stdout_tail": "Usage: js [OPTIONS] COMMAND [ARGS]...\n\n  JS Agent - A stable, secure, and convenient AI agent.\n\nOptions:\n  -c, --config PATH  Path to config file\n  -v, --verbose      Verbose logging\n  --help             Show this message and exit.\n\nCommands:\n  appshell  Launch the unified JS Agent AppShell (single host, single port).\n  daemon    Run JS Agent in background daemon mode with scheduled tasks.\n  init      Initialize JS configuration.\n  open      Launch Web UI and open browser.\n  plugin    Manage plugins (discover, list, enable, disable).\n  rl        Reinforcement Learning: train agent policies in simulated...\n  run       Run a single message and exit.\n  search    Search the web.\n  setup     Run setup wizard to auto-configure everything.\n  skill     Manage skills.\n  status    Show system status.\n  telegram  Run JS Agent as a Telegram Bot (24/7 messaging interface).\n  tui       Launch the Terminal User Interface (Textual-based rich CLI).\n  web       Web UI server management.\n  work      Work mode - the restricted work-focused mode inside JS Agent.\n",
+      "duration_seconds": 0.912,
+      "stdout_tail": "Usage: js [OPTIONS] COMMAND [ARGS]...\n\n  JS Agent - A stable, secure, and convenient AI agent.\n\nOptions:\n  -c, --config PATH  Path to config file\n  -v, --verbose      Verbose logging\n  --help             Show this message and exit.\n\nCommands:\n  appshell  Launch the local AppShell Host (desktop / development).\n  daemon    Run JS Agent in background daemon mode with scheduled tasks.\n  doctor    Local diagnostics.\n  init      Initialize JS configuration.\n  plugin    Manage plugins (discover, list, enable, disable).\n  rl        Reinforcement Learning: train agent policies in simulated...\n  run       Run a single message and exit.\n  search    Search the web.\n  setup     Run setup wizard to auto-configure everything.\n  skill     Manage skills.\n  status    Show system status.\n  telegram  Run JS Agent as a Telegram Bot (24/7 messaging interface).\n  tui       Launch the Terminal User Interface (Textual-based rich CLI).\n  work      Work mode - the restricted work-focused mode inside JS Agent.\n",
       "stderr_tail": "",
-      "stdout_sha256": "ebf0a728baa92b517b0fe2f154bcb1be17888f02c70455524f0274fd2757394e",
+      "stdout_sha256": "154daffa29b9b0d080f298b1dd98c22b8da9e86ed5c8ae51a1f757cc6451324f",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/07_wheel_cli_js_help.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/07_wheel_cli_js_help.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/07_wheel_cli_js_help.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/07_wheel_cli_js_help.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/07_wheel_cli_js_help.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/07_wheel_cli_js_help.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
     },
     {
       "step": "wheel: CLI js work --help",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/bin/js",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/js",
         "work",
         "--help"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-10T03:22:59Z",
-      "finished_utc": "2026-08-10T03:23:00Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T03:21:17Z",
+      "finished_utc": "2026-08-31T03:21:18Z",
       "exit_code": 0,
-      "duration_seconds": 0.442,
+      "duration_seconds": 0.528,
       "stdout_tail": "Usage: js work [OPTIONS] COMMAND [ARGS]...\n\n  Work mode - the restricted work-focused mode inside JS Agent.\n\nOptions:\n  -c, --config PATH               Path to JS Agent Work config\n  --profile [execute|safe|office]\n                                  [default: execute]\n  -v, --verbose                   Verbose logging\n  --help                          Show this message and exit.\n\nCommands:\n  init     Initialize JS Agent Work configuration.\n  routine  Manage JS Agent Work routines.\n  run      Run one Work task and exit.\n  web      Run Work through the single parent AppShell host.\n",
       "stderr_tail": "",
       "stdout_sha256": "67a59de9f8307d4e63b3ee089543b498c47c2af276fc62eba370402b0218fd13",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/08_wheel_cli_js_work_help.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/08_wheel_cli_js_work_help.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/08_wheel_cli_js_work_help.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/08_wheel_cli_js_work_help.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/08_wheel_cli_js_work_help.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/08_wheel_cli_js_work_help.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
     },
     {
       "step": "wheel: CLI js-work --help",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/bin/js-work",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/js-work",
         "--help"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-10T03:23:00Z",
-      "finished_utc": "2026-08-10T03:23:00Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T03:21:18Z",
+      "finished_utc": "2026-08-31T03:21:19Z",
       "exit_code": 0,
-      "duration_seconds": 0.857,
+      "duration_seconds": 0.865,
       "stdout_tail": "Usage: js work [OPTIONS] COMMAND [ARGS]...\n\n  Work mode - the restricted work-focused mode inside JS Agent.\n\nOptions:\n  -c, --config PATH               Path to JS Agent Work config\n  --profile [execute|safe|office]\n                                  [default: execute]\n  -v, --verbose                   Verbose logging\n  --help                          Show this message and exit.\n\nCommands:\n  init     Initialize JS Agent Work configuration.\n  routine  Manage JS Agent Work routines.\n  run      Run one Work task and exit.\n  web      Run Work through the single parent AppShell host.\n",
-      "stderr_tail": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/bin/js-work:6: FutureWarning: js-work is a compatibility shim; use `js work`.\n  sys.exit(compat_main())\n",
+      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/js-work:6: FutureWarning: js-work is a compatibility shim; use `js work`.\n  sys.exit(compat_main())\n",
       "stdout_sha256": "67a59de9f8307d4e63b3ee089543b498c47c2af276fc62eba370402b0218fd13",
-      "stderr_sha256": "3ab6709c4ab9ce8b0505ffe3ba05420345e21228d14c0d91532e9c006b23f5d5",
+      "stderr_sha256": "e26ff7333829bc314d1a3d33f209205747d0334f75c01c11cdd3c944ff9b825f",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/09_wheel_cli_js_work_help.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/09_wheel_cli_js_work_help.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/09_wheel_cli_js_work_help.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/09_wheel_cli_js_work_help.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/09_wheel_cli_js_work_help.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/09_wheel_cli_js_work_help.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
     },
     {
       "step": "wheel: CLI python -m js_work --help",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/python",
         "-m",
         "js_work",
         "--help"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-10T03:23:00Z",
-      "finished_utc": "2026-08-10T03:23:01Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T03:21:19Z",
+      "finished_utc": "2026-08-31T03:21:19Z",
       "exit_code": 0,
-      "duration_seconds": 0.435,
+      "duration_seconds": 0.528,
       "stdout_tail": "Usage: js work [OPTIONS] COMMAND [ARGS]...\n\n  Work mode - the restricted work-focused mode inside JS Agent.\n\nOptions:\n  -c, --config PATH               Path to JS Agent Work config\n  --profile [execute|safe|office]\n                                  [default: execute]\n  -v, --verbose                   Verbose logging\n  --help                          Show this message and exit.\n\nCommands:\n  init     Initialize JS Agent Work configuration.\n  routine  Manage JS Agent Work routines.\n  run      Run one Work task and exit.\n  web      Run Work through the single parent AppShell host.\n",
-      "stderr_tail": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js_work/__main__.py:8: FutureWarning: js-work is a compatibility shim; use `js work`.\n  compat_main()\n",
+      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/js_work/__main__.py:8: FutureWarning: js-work is a compatibility shim; use `js work`.\n  compat_main()\n",
       "stdout_sha256": "67a59de9f8307d4e63b3ee089543b498c47c2af276fc62eba370402b0218fd13",
-      "stderr_sha256": "3c5e7e30b7590cc840b21d0359e2160ef13741ad35b459c8291a393c1f396e3f",
+      "stderr_sha256": "4e6609196b8a41d2484f36853640532dba7decce651a87b21b6a2ab44ae2ca9e",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/10_wheel_cli_python_m_js_work_help.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/10_wheel_cli_python_m_js_work_help.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/10_wheel_cli_python_m_js_work_help.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/10_wheel_cli_python_m_js_work_help.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/10_wheel_cli_python_m_js_work_help.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/10_wheel_cli_python_m_js_work_help.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
     },
     {
       "step": "wheel: server HTTP+WS+attachment+work E2E",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/bin/python",
-        "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/server_e2e.py"
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/server_e2e.py"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel",
-      "started_utc": "2026-08-10T03:23:01Z",
-      "finished_utc": "2026-08-10T03:23:02Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel",
+      "started_utc": "2026-08-31T03:21:19Z",
+      "finished_utc": "2026-08-31T03:21:21Z",
       "exit_code": 0,
-      "duration_seconds": 1.244,
-      "stdout_tail": "bf39c7b558\", \"replay_class\": \"non_idempotent\", \"resource\": \"tool:excel_write\", \"scopes\": [\"tool:excel_write\"]}, \"executor_kind\": \"tool\", \"executor_route\": \"ToolExecutor.execute_tool\", \"outbox\": {\"bridge_hash\": \"sha256:828d26a1f5755c5adef36e5d53507099f1e635ad55bb2e80deefcf20ba467391\", \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_172572688ad809fe49195f29a0f43e33\"}, \"run_id\": \"iso-e2e-work-run\", \"session_id\": \"iso-e2e-work\", \"side_effect\": {\"commitment\": \"manual_confirmation_required\", \"replay_class\": \"non_idempotent\"}, \"state_mapping\": {\"args_hash\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"journal_record_start\": 10, \"lease_id\": \"b9ca2adf762c4d27845ada720b0fa23f\", \"partition_bound\": true, \"permit_journal_seq\": 13, \"product_id\": \"js-work\", \"tool_call_id\": \"call_745948e2fa4727c1930588\", \"tool_name\": \"excel_write\", \"workspace\": \"ws-b3b8e1316d0d7ade18d92695220d2e3219c8796aa14cfba40da75d5f9aebf2ed\"}, \"tenant_id\": \"iso-e2e-owner\"}, \"outbox_id\": \"out_172572688ad809fe49195f29a0f43e33\", \"seal\": {\"action_kind\": \"tool.excel_write\", \"deadline_ms\": 230632659, \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"granted_scopes\": [\"tool:excel_write\"], \"journal_seq\": 13, \"key_epoch\": \"permit-epoch-1\", \"mac\": \"89a3dc068fa3dcd5d0971d7f72b7243d486b91743fbf2482e707fb4a4412040f\", \"policy_decision_id\": \"pdr_b5d4676001a662f7d6ec38201c0d7de3\", \"replay_class\": \"non_idempotent\", \"seal_id\": \"seal_a9f9ae928c7ec4ea471fa2b636f4a4c6\", \"tenant_id\": \"iso-e2e-owner\"}, \"sealed_input_ref\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\"}, \"prev_hash\": \"sha256:9e0fbdc5a616a8da05a6554a851be138d43fbc5fd21629f75810714dad082a61\", \"record_hash\": \"sha256:f7f6865d9d5b1aebe002061565fc4c5f686609f6368a77e8c9cd0bab0f40508d\"}, {\"seq\": 15, \"record_type\": \"outbox_claimed\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_172572688ad809fe49195f29a0f43e33\"}, \"prev_hash\": \"sha256:f7f6865d9d5b1aebe002061565fc4c5f686609f6368a77e8c9cd0bab0f40508d\", \"record_hash\": \"sha256:0cbc620bcf1ef8be0f1574e21f48a28fd3806df8aa5c5d12ba1ea9d58a25f922\"}, {\"seq\": 17, \"record_type\": \"receipt\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"artifact_refs\": [{\"acl\": \"owner\", \"created_by_run\": \"iso-e2e-work-run\", \"digest\": \"sha256:20ca6fea5de62189e363cd2b2278c702273272dd0d9498a8353096c16404159f\", \"kind\": \"spreadsheet\", \"mode\": \"work\", \"owner\": \"iso-e2e-owner\", \"schema_version\": 1, \"session\": \"iso-e2e-work\", \"uri\": \"echo://artifact/excel_write/20ca6fea5de62189e363cd2b2278c702273272dd0d9498a8353096c16404159f\", \"workspace\": \"ws-b3b8e1316d0d7ade18d92695220d2e3219c8796aa14cfba40da75d5f9aebf2ed\"}], \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_172572688ad809fe49195f29a0f43e33\", \"output_hash\": \"sha256:20ca6fea5de62189e363cd2b2278c702273272dd0d9498a8353096c16404159f\", \"output_ref\": \"sha256:20ca6fea5de62189e363cd2b2278c702273272dd0d9498a8353096c16404159f\", \"replay_class\": \"non_idempotent\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:f796da8600700b35f43aeff10f79ae1ac5aedc17eb157e50c8438d64db6a84bd\", \"record_hash\": \"sha256:3bb843c91bc017e31e84b601deb8c431dbdca8c991fcd61bc8ea2ff0d7d088af\"}, {\"seq\": 18, \"record_type\": \"merge\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:3bb843c91bc017e31e84b601deb8c431dbdca8c991fcd61bc8ea2ff0d7d088af\", \"record_hash\": \"sha256:152c9255e3ad61d07c3b077c8cbb2cd87f68b088b3ca59399eafd13c6a67dde3\"}], \"journal_evidence_path\": \"e2e/work/wheel/ledger.journal\", \"arguments_sha256\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"ledger_signature_b64\": \"3TT6ZTpQkkTxE91KN3fbA6L5/11AuXoV/v1a96443MNDQkwzWTBpUdnBBfS1wqi8BgywBMtg9E79C/gy3KxTDA==\", \"pubkey_fingerprint\": \"85df2fe3b07e9399fd20acdeed1afef3af3cd450edb48417530ef17aa4123d27\"}}}\n",
-      "stderr_tail": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n  from starlette.testclient import TestClient as TestClient  # noqa\n",
-      "stdout_sha256": "7b27b9a695b679e0d2faf52d685604d7da9c86d4c549d0951dfb5c0633b510ef",
-      "stderr_sha256": "b6b2e9fd5d63296cb474c34590cf1f1b63dc6e77adbe5810e0e3c8c67717a0ba",
+      "duration_seconds": 1.694,
+      "stdout_tail": "bf39c7b558\", \"replay_class\": \"non_idempotent\", \"resource\": \"tool:excel_write\", \"scopes\": [\"tool:excel_write\"]}, \"executor_kind\": \"tool\", \"executor_route\": \"ToolExecutor.execute_tool\", \"outbox\": {\"bridge_hash\": \"sha256:31cffe5b1f9633a0d5bfda4c815daec2ebbb1317c1f2e80bc2e70b82fab5577d\", \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_53695fb8eb7f2c0a3473b5c1daf3e339\"}, \"run_id\": \"iso-e2e-work-run\", \"session_id\": \"iso-e2e-work\", \"side_effect\": {\"commitment\": \"manual_confirmation_required\", \"replay_class\": \"non_idempotent\"}, \"state_mapping\": {\"args_hash\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"journal_record_start\": 10, \"lease_id\": \"e72e46d2161ee9b0aed03e366eb20b9d\", \"partition_bound\": true, \"permit_journal_seq\": 13, \"product_id\": \"js-work\", \"tool_call_id\": \"call_745948e2fa4727c1930588\", \"tool_name\": \"excel_write\", \"workspace\": \"ws-cbb32615338ba2d94130a90daeed2e5495c96332f2c0eddb3ef2cbe7cf20364b\"}, \"tenant_id\": \"iso-e2e-owner\"}, \"outbox_id\": \"out_53695fb8eb7f2c0a3473b5c1daf3e339\", \"seal\": {\"action_kind\": \"tool.excel_write\", \"deadline_ms\": 418436859, \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"granted_scopes\": [\"tool:excel_write\"], \"journal_seq\": 13, \"key_epoch\": \"permit-epoch-1\", \"mac\": \"25c109e6150474b553400603329eef3147c5a6704a6dcc5f717df1781c293238\", \"policy_decision_id\": \"pdr_e06420550a3e24b9cb0cd43cf40b563d\", \"replay_class\": \"non_idempotent\", \"seal_id\": \"seal_a805c5d940d47e8151e722b553ae3433\", \"tenant_id\": \"iso-e2e-owner\"}, \"sealed_input_ref\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\"}, \"prev_hash\": \"sha256:920c37bf209c39d9700429e18c7d20f069dc4595517c614b240f2dd9bb109d8e\", \"record_hash\": \"sha256:4c4ebd35990d84f3c6cec5dd4fd754f9900c42ac515e5495ed1123597f46bea1\"}, {\"seq\": 15, \"record_type\": \"outbox_claimed\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_53695fb8eb7f2c0a3473b5c1daf3e339\"}, \"prev_hash\": \"sha256:4c4ebd35990d84f3c6cec5dd4fd754f9900c42ac515e5495ed1123597f46bea1\", \"record_hash\": \"sha256:72f3aefa17b03dc54d22389b50800fa877d84754afa8920244af79e6aadf0106\"}, {\"seq\": 17, \"record_type\": \"receipt\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"artifact_refs\": [{\"acl\": \"owner\", \"created_by_run\": \"iso-e2e-work-run\", \"digest\": \"sha256:4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259\", \"kind\": \"spreadsheet\", \"mode\": \"work\", \"owner\": \"iso-e2e-owner\", \"schema_version\": 1, \"session\": \"iso-e2e-work\", \"uri\": \"echo://artifact/excel_write/4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259\", \"workspace\": \"ws-cbb32615338ba2d94130a90daeed2e5495c96332f2c0eddb3ef2cbe7cf20364b\"}], \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_53695fb8eb7f2c0a3473b5c1daf3e339\", \"output_hash\": \"sha256:4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259\", \"output_ref\": \"sha256:4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259\", \"replay_class\": \"non_idempotent\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:38ba2e4232b6a8f771300d2069d85b7e9300b3fabc9b3b48b40122bf6203ce29\", \"record_hash\": \"sha256:60fba94cd2102a7cf4327c73f8f0483690564dd4309b14b62427a1c361d76628\"}, {\"seq\": 18, \"record_type\": \"merge\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:60fba94cd2102a7cf4327c73f8f0483690564dd4309b14b62427a1c361d76628\", \"record_hash\": \"sha256:7855ce1034fb4f1e5c979fa7d5121b2bb3c066e3b4e2c1a156ac938807d2c72e\"}], \"journal_evidence_path\": \"e2e/work/wheel/ledger.journal\", \"arguments_sha256\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"ledger_signature_b64\": \"7rkxcBrZe6JpVF2k9hoJcbVd5VxSAaqT6fU/gF70sz5UTNS/IpxSvs2M0lHYbWRE/defnU/yTjL+qlZAtakfAw==\", \"pubkey_fingerprint\": \"b15df485259192b9a2568cf0d8d558bcfb667ecd0d8b00fb0cdaf48aac27b8e0\"}}}\n",
+      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n  from starlette.testclient import TestClient as TestClient  # noqa\n",
+      "stdout_sha256": "e47388e245c7bb620859c717d592183283b5f513efd92d76b6fb96f9f5ca8b04",
+      "stderr_sha256": "99012b4bc9efe466fc4c3d1bb3ec57fbfaadb30ca321b009e32b3c5400ca8738",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/11_wheel_server_http_ws_attachment_work_e2e.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/11_wheel_server_http_ws_attachment_work_e2e.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/11_wheel_server_http_ws_attachment_work_e2e.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7",
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/11_wheel_server_http_ws_attachment_work_e2e.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/11_wheel_server_http_ws_attachment_work_e2e.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/11_wheel_server_http_ws_attachment_work_e2e.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
       "detail": {
         "offline": true,
         "schema_version": "isolated-venv-e2e-v6",
@@ -768,13 +768,13 @@
           "session": "iso-e2e-work",
           "run_id": "iso-e2e-work-run",
           "tool_name": "excel_write",
-          "lease_id": "b9ca2adf762c4d27845ada720b0fa23f",
+          "lease_id": "e72e46d2161ee9b0aed03e366eb20b9d",
           "lease_consumed": true,
           "status": "ok",
           "terminal": true,
-          "output_path": "<EVIDENCE_ROOT>/e2e/runtime/install-wheel<HOME>/workspace/owners/o_4d801da505c7398e008b8819/s_43a848a10dbbeb10caf2d479/outputs/iso-e2e.xlsx",
+          "output_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-wheel/home/.js-work/workspace/owners/o_4d801da505c7398e008b8819/s_43a848a10dbbeb10caf2d479/outputs/iso-e2e.xlsx",
           "output_exists": true,
-          "output_sha256": "20ca6fea5de62189e363cd2b2278c702273272dd0d9498a8353096c16404159f",
+          "output_sha256": "4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259",
           "output_cells": [
             [
               "iso",
@@ -784,9 +784,9 @@
           ],
           "journal_records_added": true,
           "journal_relative_path": "echo/ledger/partitions/product_bb8e07ce637484216fe7ee1ecfda1057/owner_a75baa10e0f98108e330f25712195612/session_f27d520621b860f345f7448222ba3b5e/chat.jsonl",
-          "journal_sha256": "08870cc4c468f57eef0bd959ec7593b3f48f0d3ac800d24df894a70671a4ca80",
+          "journal_sha256": "e0e08b47e2db267706c1f4f39c2745021cb312891d971e54be38b481a26930d5",
           "ledger_sequence": 18,
-          "record_hash": "sha256:152c9255e3ad61d07c3b077c8cbb2cd87f68b088b3ca59399eafd13c6a67dde3",
+          "record_hash": "sha256:7855ce1034fb4f1e5c979fa7d5121b2bb3c066e3b4e2c1a156ac938807d2c72e",
           "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
           "terminal_status": "ok",
           "ledger_chain": [
@@ -799,32 +799,32 @@
                 "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
                 "seal": {
                   "action_kind": "tool.excel_write",
-                  "deadline_ms": 230632659,
+                  "deadline_ms": 418436859,
                   "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
                   "granted_scopes": [
                     "tool:excel_write"
                   ],
                   "journal_seq": 13,
                   "key_epoch": "permit-epoch-1",
-                  "mac": "89a3dc068fa3dcd5d0971d7f72b7243d486b91743fbf2482e707fb4a4412040f",
-                  "policy_decision_id": "pdr_b5d4676001a662f7d6ec38201c0d7de3",
+                  "mac": "25c109e6150474b553400603329eef3147c5a6704a6dcc5f717df1781c293238",
+                  "policy_decision_id": "pdr_e06420550a3e24b9cb0cd43cf40b563d",
                   "replay_class": "non_idempotent",
-                  "seal_id": "seal_a9f9ae928c7ec4ea471fa2b636f4a4c6",
+                  "seal_id": "seal_a805c5d940d47e8151e722b553ae3433",
                   "tenant_id": "iso-e2e-owner"
                 },
-                "seal_id": "seal_a9f9ae928c7ec4ea471fa2b636f4a4c6",
+                "seal_id": "seal_a805c5d940d47e8151e722b553ae3433",
                 "tool_effect": {
                   "args_hash": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
-                  "lease_id": "b9ca2adf762c4d27845ada720b0fa23f",
+                  "lease_id": "e72e46d2161ee9b0aed03e366eb20b9d",
                   "product_id": "js-work",
                   "session_id": "iso-e2e-work",
                   "tool_call_id": "call_745948e2fa4727c1930588",
                   "tool_name": "excel_write",
-                  "workspace": "ws-b3b8e1316d0d7ade18d92695220d2e3219c8796aa14cfba40da75d5f9aebf2ed"
+                  "workspace": "ws-cbb32615338ba2d94130a90daeed2e5495c96332f2c0eddb3ef2cbe7cf20364b"
                 }
               },
-              "prev_hash": "sha256:641d84b29757a11b3763a50a8dd725e0b4aa5a801ed6f710ef0b62bb616a8eca",
-              "record_hash": "sha256:9e0fbdc5a616a8da05a6554a851be138d43fbc5fd21629f75810714dad082a61"
+              "prev_hash": "sha256:05bdd51cf6a73ab86154a8aae031aa461b37021c7efdd151b1655dfc23febd36",
+              "record_hash": "sha256:920c37bf209c39d9700429e18c7d20f069dc4595517c614b240f2dd9bb109d8e"
             },
             {
               "seq": 14,
@@ -850,9 +850,9 @@
                   "executor_kind": "tool",
                   "executor_route": "ToolExecutor.execute_tool",
                   "outbox": {
-                    "bridge_hash": "sha256:828d26a1f5755c5adef36e5d53507099f1e635ad55bb2e80deefcf20ba467391",
+                    "bridge_hash": "sha256:31cffe5b1f9633a0d5bfda4c815daec2ebbb1317c1f2e80bc2e70b82fab5577d",
                     "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
-                    "outbox_id": "out_172572688ad809fe49195f29a0f43e33"
+                    "outbox_id": "out_53695fb8eb7f2c0a3473b5c1daf3e339"
                   },
                   "run_id": "iso-e2e-work-run",
                   "session_id": "iso-e2e-work",
@@ -863,36 +863,36 @@
                   "state_mapping": {
                     "args_hash": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
                     "journal_record_start": 10,
-                    "lease_id": "b9ca2adf762c4d27845ada720b0fa23f",
+                    "lease_id": "e72e46d2161ee9b0aed03e366eb20b9d",
                     "partition_bound": true,
                     "permit_journal_seq": 13,
                     "product_id": "js-work",
                     "tool_call_id": "call_745948e2fa4727c1930588",
                     "tool_name": "excel_write",
-                    "workspace": "ws-b3b8e1316d0d7ade18d92695220d2e3219c8796aa14cfba40da75d5f9aebf2ed"
+                    "workspace": "ws-cbb32615338ba2d94130a90daeed2e5495c96332f2c0eddb3ef2cbe7cf20364b"
                   },
                   "tenant_id": "iso-e2e-owner"
                 },
-                "outbox_id": "out_172572688ad809fe49195f29a0f43e33",
+                "outbox_id": "out_53695fb8eb7f2c0a3473b5c1daf3e339",
                 "seal": {
                   "action_kind": "tool.excel_write",
-                  "deadline_ms": 230632659,
+                  "deadline_ms": 418436859,
                   "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
                   "granted_scopes": [
                     "tool:excel_write"
                   ],
                   "journal_seq": 13,
                   "key_epoch": "permit-epoch-1",
-                  "mac": "89a3dc068fa3dcd5d0971d7f72b7243d486b91743fbf2482e707fb4a4412040f",
-                  "policy_decision_id": "pdr_b5d4676001a662f7d6ec38201c0d7de3",
+                  "mac": "25c109e6150474b553400603329eef3147c5a6704a6dcc5f717df1781c293238",
+                  "policy_decision_id": "pdr_e06420550a3e24b9cb0cd43cf40b563d",
                   "replay_class": "non_idempotent",
-                  "seal_id": "seal_a9f9ae928c7ec4ea471fa2b636f4a4c6",
+                  "seal_id": "seal_a805c5d940d47e8151e722b553ae3433",
                   "tenant_id": "iso-e2e-owner"
                 },
                 "sealed_input_ref": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558"
               },
-              "prev_hash": "sha256:9e0fbdc5a616a8da05a6554a851be138d43fbc5fd21629f75810714dad082a61",
-              "record_hash": "sha256:f7f6865d9d5b1aebe002061565fc4c5f686609f6368a77e8c9cd0bab0f40508d"
+              "prev_hash": "sha256:920c37bf209c39d9700429e18c7d20f069dc4595517c614b240f2dd9bb109d8e",
+              "record_hash": "sha256:4c4ebd35990d84f3c6cec5dd4fd754f9900c42ac515e5495ed1123597f46bea1"
             },
             {
               "seq": 15,
@@ -901,10 +901,10 @@
               "run_id": "iso-e2e-work-run",
               "payload": {
                 "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
-                "outbox_id": "out_172572688ad809fe49195f29a0f43e33"
+                "outbox_id": "out_53695fb8eb7f2c0a3473b5c1daf3e339"
               },
-              "prev_hash": "sha256:f7f6865d9d5b1aebe002061565fc4c5f686609f6368a77e8c9cd0bab0f40508d",
-              "record_hash": "sha256:0cbc620bcf1ef8be0f1574e21f48a28fd3806df8aa5c5d12ba1ea9d58a25f922"
+              "prev_hash": "sha256:4c4ebd35990d84f3c6cec5dd4fd754f9900c42ac515e5495ed1123597f46bea1",
+              "record_hash": "sha256:72f3aefa17b03dc54d22389b50800fa877d84754afa8920244af79e6aadf0106"
             },
             {
               "seq": 17,
@@ -916,25 +916,25 @@
                   {
                     "acl": "owner",
                     "created_by_run": "iso-e2e-work-run",
-                    "digest": "sha256:20ca6fea5de62189e363cd2b2278c702273272dd0d9498a8353096c16404159f",
+                    "digest": "sha256:4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259",
                     "kind": "spreadsheet",
                     "mode": "work",
                     "owner": "iso-e2e-owner",
                     "schema_version": 1,
                     "session": "iso-e2e-work",
-                    "uri": "echo://artifact/excel_write/20ca6fea5de62189e363cd2b2278c702273272dd0d9498a8353096c16404159f",
-                    "workspace": "ws-b3b8e1316d0d7ade18d92695220d2e3219c8796aa14cfba40da75d5f9aebf2ed"
+                    "uri": "echo://artifact/excel_write/4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259",
+                    "workspace": "ws-cbb32615338ba2d94130a90daeed2e5495c96332f2c0eddb3ef2cbe7cf20364b"
                   }
                 ],
                 "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
-                "outbox_id": "out_172572688ad809fe49195f29a0f43e33",
-                "output_hash": "sha256:20ca6fea5de62189e363cd2b2278c702273272dd0d9498a8353096c16404159f",
-                "output_ref": "sha256:20ca6fea5de62189e363cd2b2278c702273272dd0d9498a8353096c16404159f",
+                "outbox_id": "out_53695fb8eb7f2c0a3473b5c1daf3e339",
+                "output_hash": "sha256:4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259",
+                "output_ref": "sha256:4222c29a1a9a45d1e068c611298f819708fc945d0558dc9fc7c3fcfb1acb1259",
                 "replay_class": "non_idempotent",
                 "status": "ok"
               },
-              "prev_hash": "sha256:f796da8600700b35f43aeff10f79ae1ac5aedc17eb157e50c8438d64db6a84bd",
-              "record_hash": "sha256:3bb843c91bc017e31e84b601deb8c431dbdca8c991fcd61bc8ea2ff0d7d088af"
+              "prev_hash": "sha256:38ba2e4232b6a8f771300d2069d85b7e9300b3fabc9b3b48b40122bf6203ce29",
+              "record_hash": "sha256:60fba94cd2102a7cf4327c73f8f0483690564dd4309b14b62427a1c361d76628"
             },
             {
               "seq": 18,
@@ -945,14 +945,14 @@
                 "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
                 "status": "ok"
               },
-              "prev_hash": "sha256:3bb843c91bc017e31e84b601deb8c431dbdca8c991fcd61bc8ea2ff0d7d088af",
-              "record_hash": "sha256:152c9255e3ad61d07c3b077c8cbb2cd87f68b088b3ca59399eafd13c6a67dde3"
+              "prev_hash": "sha256:60fba94cd2102a7cf4327c73f8f0483690564dd4309b14b62427a1c361d76628",
+              "record_hash": "sha256:7855ce1034fb4f1e5c979fa7d5121b2bb3c066e3b4e2c1a156ac938807d2c72e"
             }
           ],
           "journal_evidence_path": "e2e/work/wheel/ledger.journal",
           "arguments_sha256": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
-          "ledger_signature_b64": "3TT6ZTpQkkTxE91KN3fbA6L5/11AuXoV/v1a96443MNDQkwzWTBpUdnBBfS1wqi8BgywBMtg9E79C/gy3KxTDA==",
-          "pubkey_fingerprint": "85df2fe3b07e9399fd20acdeed1afef3af3cd450edb48417530ef17aa4123d27"
+          "ledger_signature_b64": "7rkxcBrZe6JpVF2k9hoJcbVd5VxSAaqT6fU/gF70sz5UTNS/IpxSvs2M0lHYbWRE/defnU/yTjL+qlZAtakfAw==",
+          "pubkey_fingerprint": "b15df485259192b9a2568cf0d8d558bcfb667ecd0d8b00fb0cdaf48aac27b8e0"
         },
         "payload_ok": true
       }
@@ -960,36 +960,36 @@
     {
       "step": "sdist: create venv",
       "argv": [
-        "<REPO_ROOT>/.venv/bin/python",
+        "{repo_root}/.venv/bin/python",
         "-m",
         "venv",
-        "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv"
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-10T03:23:02Z",
-      "finished_utc": "2026-08-10T03:23:03Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T03:21:21Z",
+      "finished_utc": "2026-08-31T03:21:22Z",
       "exit_code": 0,
-      "duration_seconds": 0.852,
+      "duration_seconds": 0.959,
       "stdout_tail": "",
       "stderr_tail": "",
       "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/12_sdist_create_venv.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/12_sdist_create_venv.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/12_sdist_create_venv.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/12_sdist_create_venv.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/12_sdist_create_venv.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/12_sdist_create_venv.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
     },
     {
       "step": "sdist: pip install build backends offline",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/python",
         "-m",
         "pip",
         "install",
         "--no-index",
         "--find-links",
-        "<EVIDENCE_ROOT>/wheelhouse",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse",
         "--no-input",
         "hatchling",
         "pathspec",
@@ -997,59 +997,59 @@
         "trove-classifiers",
         "pluggy"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-10T03:23:03Z",
-      "finished_utc": "2026-08-10T03:23:03Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T03:21:22Z",
+      "finished_utc": "2026-08-31T03:21:22Z",
       "exit_code": 0,
-      "duration_seconds": 0.222,
-      "stdout_tail": "Looking in links: <HOME>/Documents/JS, agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse, <EVIDENCE_ROOT>/wheelhouse\nProcessing <EVIDENCE_ROOT>/wheelhouse/hatchling-1.31.0-py3-none-any.whl\nProcessing <EVIDENCE_ROOT>/wheelhouse/pathspec-1.1.1-py3-none-any.whl\nProcessing <EVIDENCE_ROOT>/wheelhouse/packaging-26.2-py3-none-any.whl\nProcessing <EVIDENCE_ROOT>/wheelhouse/trove_classifiers-2026.6.1.19-py3-none-any.whl\nProcessing <EVIDENCE_ROOT>/wheelhouse/pluggy-1.6.0-py3-none-any.whl\nInstalling collected packages: trove-classifiers, pluggy, pathspec, packaging, hatchling\n\nSuccessfully installed hatchling-1.31.0 packaging-26.2 pathspec-1.1.1 pluggy-1.6.0 trove-classifiers-2026.6.1.19\n",
-      "stderr_tail": "WARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\n",
-      "stdout_sha256": "434c61910eab40df9bdca2b464a66007490a348f4e1541c011562b4ef65bcec3",
-      "stderr_sha256": "392e08f5f7edca7239b769b4dc1219da401ab5482da6a8eecbd1bb0b0b017ea4",
+      "duration_seconds": 0.26,
+      "stdout_tail": "Looking in links: {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse, {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/hatchling-1.31.0-py3-none-any.whl\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/pathspec-1.1.1-py3-none-any.whl\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/packaging-26.3-py3-none-any.whl\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/trove_classifiers-2026.6.1.19-py3-none-any.whl\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/pluggy-1.6.0-py3-none-any.whl\nInstalling collected packages: trove-classifiers, pluggy, pathspec, packaging, hatchling\n\nSuccessfully installed hatchling-1.31.0 packaging-26.3 pathspec-1.1.1 pluggy-1.6.0 trove-classifiers-2026.6.1.19\n",
+      "stderr_tail": "",
+      "stdout_sha256": "a77c089fcbdea64aa3df89e6b3a478c4cb4b75cbd3002a3c920bb2bd578b643f",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/13_sdist_pip_install_build_backends_offline.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/13_sdist_pip_install_build_backends_offline.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/13_sdist_pip_install_build_backends_offline.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/13_sdist_pip_install_build_backends_offline.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/13_sdist_pip_install_build_backends_offline.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/13_sdist_pip_install_build_backends_offline.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
     },
     {
       "step": "sdist: pip install artifact offline (echo-tokenizer,office)",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/python",
         "-m",
         "pip",
         "install",
         "--no-index",
         "--find-links",
-        "<EVIDENCE_ROOT>/wheelhouse",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse",
         "--no-input",
         "--report",
-        "<EVIDENCE_ROOT>/e2e/pip/sdist.install-report.json",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/pip/sdist.install-report.json",
         "--no-build-isolation",
-        "<EVIDENCE_ROOT>/e2e/artifacts/js_agent-0.1.5.tar.gz[echo-tokenizer,office]"
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/artifacts/js_agent-0.1.5.tar.gz[echo-tokenizer,office]"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-10T03:23:03Z",
-      "finished_utc": "2026-08-10T03:23:09Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T03:21:22Z",
+      "finished_utc": "2026-08-31T03:21:30Z",
       "exit_code": 0,
-      "duration_seconds": 6.317,
-      "stdout_tail": "/wheelhouse/charset_normalizer-3.4.7-cp312-cp312-macosx_10_13_universal2.whl (from reportlab>=4.0->js-agent==0.1.5)\nProcessing <EVIDENCE_ROOT>/wheelhouse/markdown_it_py-4.2.0-py3-none-any.whl (from rich>=13.9->js-agent==0.1.5)\nProcessing <EVIDENCE_ROOT>/wheelhouse/pygments-2.20.0-py3-none-any.whl (from rich>=13.9->js-agent==0.1.5)\nProcessing <EVIDENCE_ROOT>/wheelhouse/mdurl-0.1.2-py3-none-any.whl (from markdown-it-py>=2.2.0->rich>=13.9->js-agent==0.1.5)\nProcessing <EVIDENCE_ROOT>/wheelhouse/mdit_py_plugins-0.6.1-py3-none-any.whl (from textual>=0.70->js-agent==0.1.5)\nProcessing <EVIDENCE_ROOT>/wheelhouse/linkify_it_py-2.1.0-py3-none-any.whl (from markdown-it-py[linkify]>=2.1.0->textual>=0.70->js-agent==0.1.5)\nProcessing <EVIDENCE_ROOT>/wheelhouse/uc_micro_py-2.0.0-py3-none-any.whl (from linkify-it-py<3,>=1->markdown-it-py[linkify]>=2.1.0->textual>=0.70->js-agent==0.1.5)\nProcessing <EVIDENCE_ROOT>/wheelhouse/urllib3-2.7.0-py3-none-any.whl (from requests->tiktoken<1,>=0.7->js-agent==0.1.5)\nBuilding wheels for collected packages: js-agent\n  Building wheel for js-agent (pyproject.toml): started\n  Building wheel for js-agent (pyproject.toml): finished with status 'done'\n  Created wheel for js-agent: filename=js_agent-0.1.5-py3-none-any.whl size=4513391 sha256=6878ab9cc814eb930f8cb769b828f7456f4a00e9491852fc0b987fe2d2bae51d\n  Stored in directory: <EVIDENCE_ROOT>/e2e/runtime/install-sdist<HOME>/Caches/pip/wheels/ff/aa/89/c012e2c306cb218798eec026b15c3b1819fd82bbd5c3057937\nSuccessfully built js-agent\nInstalling collected packages: xlrd, wcwidth, watchdog, urllib3, uc-micro-py, typing-extensions, tqdm, tenacity, structlog, sniffio, six, rfc8785, regex, pyyaml, python-multipart, python-dotenv, pypdf, pygments, pycparser, psutil, platformdirs, pillow, numpy, mdurl, lxml, jiter, idna, hyperframe, hpack, h11, et-xmlfile, distro, click, charset-normalizer, certifi, cachetools, annotated-types, annotated-doc, aiosqlite, uvicorn, typing-inspection, requests, reportlab, python-docx, python-dateutil, pydantic-core, prompt-toolkit, openpyxl, markdown-it-py, linkify-it-py, httpcore, h2, cffi, anyio, tiktoken, starlette, rich, pydantic, pandas, mdit-py-plugins, httpx, cryptography, textual, pydantic-settings, openai, fastapi, js-agent\n\nSuccessfully installed aiosqlite-0.22.1 annotated-doc-0.0.4 annotated-types-0.7.0 anyio-4.13.0 cachetools-7.1.4 certifi-2026.5.20 cffi-2.0.0 charset-normalizer-3.4.7 click-8.4.1 cryptography-48.0.1 distro-1.9.0 et-xmlfile-2.0.0 fastapi-0.139.0 h11-0.16.0 h2-4.3.0 hpack-4.2.0 httpcore-1.0.9 httpx-0.28.1 hyperframe-6.1.0 idna-3.18 jiter-0.15.0 js-agent-0.1.5 linkify-it-py-2.1.0 lxml-6.1.1 markdown-it-py-4.2.0 mdit-py-plugins-0.6.1 mdurl-0.1.2 numpy-2.4.6 openai-2.38.0 openpyxl-3.1.5 pandas-3.0.3 pillow-12.2.0 platformdirs-4.10.0 prompt-toolkit-3.0.52 psutil-7.2.2 pycparser-3.0 pydantic-2.13.4 pydantic-core-2.46.4 pydantic-settings-2.14.2 pygments-2.20.0 pypdf-6.14.2 python-dateutil-2.9.0.post0 python-docx-1.2.0 python-dotenv-1.2.2 python-multipart-0.0.32 pyyaml-6.0.3 regex-2026.5.9 reportlab-4.5.1 requests-2.34.2 rfc8785-0.1.4 rich-15.0.0 six-1.17.0 sniffio-1.3.1 starlette-1.3.1 structlog-25.5.0 tenacity-9.1.4 textual-8.2.7 tiktoken-0.13.0 tqdm-4.67.3 typing-extensions-4.15.0 typing-inspection-0.4.2 uc-micro-py-2.0.0 urllib3-2.7.0 uvicorn-0.48.0 watchdog-6.0.0 wcwidth-0.7.0 xlrd-2.0.2\n",
-      "stderr_tail": "lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location '<HOME>/Documents/JS' is ignored: it is either a non-existing path or lacks a specific scheme.\nWARNING: Location 'agent优化/audit-evidence/20260810T031446Z-security-closeout-r11/wheelhouse' is ignored: it is either a non-existing path or lacks a specific scheme.\n",
-      "stdout_sha256": "949e385fcfcfe48b7b6668c373ea4bff60d77ff0d32ab95cbfe26cd05e13d51b",
-      "stderr_sha256": "dd321a6cab5b26f4db550289f7f5c8b78a252a228ea8c902e0a1e4b024652603",
+      "duration_seconds": 7.333,
+      "stdout_tail": "ot}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/requests-2.34.2-py3-none-any.whl (from tiktoken<1,>=0.7->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/pycparser-3.0-py3-none-any.whl (from cffi>=2.0.0->cryptography<51,>=49.0.0->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/mdurl-0.1.2-py3-none-any.whl (from markdown-it-py>=2.2.0->rich<16,>=13.9->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/linkify_it_py-2.1.0-py3-none-any.whl (from markdown-it-py[linkify]>=2.1.0->textual<9,>=0.70->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/uc_micro_py-2.0.0-py3-none-any.whl (from linkify-it-py<3,>=1->markdown-it-py[linkify]>=2.1.0->textual<9,>=0.70->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/numpy-2.5.2-cp312-cp312-macosx_14_0_arm64.whl (from pandas>=2.2->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/python_dateutil-2.9.0.post0-py2.py3-none-any.whl (from pandas>=2.2->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/six-1.17.0-py2.py3-none-any.whl (from python-dateutil>=2.8.2->pandas>=2.2->js-agent==0.1.5)\nProcessing {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/wheelhouse/urllib3-2.7.0-py3-none-any.whl (from requests->tiktoken<1,>=0.7->js-agent==0.1.5)\nBuilding wheels for collected packages: js-agent\n  Building wheel for js-agent (pyproject.toml): started\n  Building wheel for js-agent (pyproject.toml): finished with status 'done'\n  Created wheel for js-agent: filename=js_agent-0.1.5-py3-none-any.whl size=4988606 sha256=2711561d0fa65b586f3f6cc91f5f298ad0fce8c35833acbc4318a1b3d89a3631\n  Stored in directory: {repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/home/Library/Caches/pip/wheels/08/26/29/9f0ddd01894277668d06b0ccd0f8ed6da20865699188627765\nSuccessfully built js-agent\nInstalling collected packages: xlrd, wcwidth, watchdog, urllib3, uc-micro-py, typing_extensions, tqdm, tenacity, structlog, sniffio, six, rfc8785, regex, pyyaml, python-multipart, python-dotenv, pypdf, pygments, pycparser, psutil, platformdirs, pillow, numpy, mdurl, lxml, jiter, idna, hyperframe, hpack, h11, et-xmlfile, distro, click, charset-normalizer, certifi, cachetools, annotated-types, annotated-doc, aiosqlite, uvicorn, typing-inspection, requests, reportlab, python-docx, python-dateutil, pydantic-core, prompt-toolkit, openpyxl, markdown-it-py, linkify-it-py, httpcore, h2, cffi, anyio, tiktoken, starlette, rich, pydantic, pandas, mdit-py-plugins, httpx, cryptography, textual, pydantic-settings, openai, fastapi, js-agent\n\nSuccessfully installed aiosqlite-0.22.1 annotated-doc-0.0.4 annotated-types-0.7.0 anyio-4.13.0 cachetools-7.1.4 certifi-2026.7.22 cffi-2.0.0 charset-normalizer-3.5.1 click-8.4.1 cryptography-50.0.0 distro-1.9.0 et-xmlfile-2.0.0 fastapi-0.139.0 h11-0.16.0 h2-4.4.1 hpack-4.2.0 httpcore-1.0.9 httpx-0.28.1 hyperframe-6.1.0 idna-3.19 jiter-0.15.0 js-agent-0.1.5 linkify-it-py-2.1.0 lxml-6.1.1 markdown-it-py-4.2.0 mdit-py-plugins-0.6.1 mdurl-0.1.2 numpy-2.5.2 openai-2.38.0 openpyxl-3.1.5 pandas-3.0.3 pillow-12.3.0 platformdirs-4.10.0 prompt-toolkit-3.0.52 psutil-7.2.2 pycparser-3.0 pydantic-2.13.4 pydantic-core-2.46.4 pydantic-settings-2.14.2 pygments-2.20.0 pypdf-6.16.1 python-dateutil-2.9.0.post0 python-docx-1.2.0 python-dotenv-1.2.2 python-multipart-0.0.32 pyyaml-6.0.3 regex-2026.8.31 reportlab-4.5.1 requests-2.34.2 rfc8785-0.1.4 rich-15.0.0 six-1.17.0 sniffio-1.3.1 starlette-1.3.1 structlog-25.5.0 tenacity-9.1.4 textual-8.2.7 tiktoken-0.13.0 tqdm-4.67.3 typing-inspection-0.4.2 typing_extensions-4.15.0 uc-micro-py-2.0.0 urllib3-2.7.0 uvicorn-0.48.0 watchdog-6.0.0 wcwidth-0.7.0 xlrd-2.0.2\n",
+      "stderr_tail": "",
+      "stdout_sha256": "135b90157d82c869eba102b06199810ad3a9340f28b49720fd683fbe850dae95",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/14_sdist_pip_install_artifact_offline_echo_tokenizer_office.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/14_sdist_pip_install_artifact_offline_echo_tokenizer_office.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/14_sdist_pip_install_artifact_offline_echo_tokenizer_office.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7",
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/14_sdist_pip_install_artifact_offline_echo_tokenizer_office.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/14_sdist_pip_install_artifact_offline_echo_tokenizer_office.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/14_sdist_pip_install_artifact_offline_echo_tokenizer_office.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
       "pip_report": {
-        "path": "<EVIDENCE_ROOT>/e2e/pip/sdist.install-report.json",
-        "sha256": "13e9e7835c018f2fc219a70cce81e4102e96567112e76f2273b59a1687e04bbd",
+        "path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/pip/sdist.install-report.json",
+        "sha256": "d454ae41403c836588ee17052ca59d3122f07c67c4f55cbeb7c37aafb06308fb",
         "packages": [
           {
             "name": "js-agent",
             "version": "0.1.5",
-            "archive_hash": "sha256=bfcac9dad9f4ced98b4384e4c8972610ddc29d4ad86a61b8cbb5f35e5f14023b"
+            "archive_hash": "sha256=605af500970bcb5bbd2d600909feb8ef8111f641d4b3acb022458a7aa3bb19e7"
           },
           {
             "name": "rfc8785",
@@ -1062,19 +1062,9 @@
             "archive_hash": "sha256=ea762c3d29f4cca48d82df517b6d89fbce4db3107f9d78713e48cd321d5c9aa9"
           },
           {
-            "name": "cryptography",
-            "version": "48.0.1",
-            "archive_hash": "sha256=3e4a1a3232eef2e6c732827d5722db29a0cc8b27af2a4d865b094cf954be9ca1"
-          },
-          {
-            "name": "fastapi",
-            "version": "0.139.0",
-            "archive_hash": "sha256=cf15e1e9e667ddb0ad63811e60bd11390d1aac838ca4a7a23f421807b2308189"
-          },
-          {
-            "name": "openai",
-            "version": "2.38.0",
-            "archive_hash": "sha256=ec6661c57b2dcc47414a767e6e3335c7ed3d19c9696999283a3c82e95c756a3c"
+            "name": "aiosqlite",
+            "version": "0.22.1",
+            "archive_hash": "sha256=21c002eb13823fad740196c5a2e9d8e62f6243bd9e7e4a1f87fb5e44ecb4fceb"
           },
           {
             "name": "anyio",
@@ -1082,9 +1072,24 @@
             "archive_hash": "sha256=08b310f9e24a9594186fd75b4f73f4a4152069e3853f1ed8bfbf58369f4ad708"
           },
           {
-            "name": "distro",
-            "version": "1.9.0",
-            "archive_hash": "sha256=7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2"
+            "name": "cachetools",
+            "version": "7.1.4",
+            "archive_hash": "sha256=323dc4127934744db5b54eb4924482d7edafbf9554e820d1531c2e08c0e4ef54"
+          },
+          {
+            "name": "click",
+            "version": "8.4.1",
+            "archive_hash": "sha256=482be17c6991b8c19c5429a1e995d9b0efdbb63172824c41f99965dc0ade8ec2"
+          },
+          {
+            "name": "cryptography",
+            "version": "50.0.0",
+            "archive_hash": "sha256=031e2d5dd4bb9caa3ca9c82e5a197fd8ae680232cee62603d1a813f3f07e3d03"
+          },
+          {
+            "name": "fastapi",
+            "version": "0.139.0",
+            "archive_hash": "sha256=cf15e1e9e667ddb0ad63811e60bd11390d1aac838ca4a7a23f421807b2308189"
           },
           {
             "name": "httpx",
@@ -1097,74 +1102,9 @@
             "archive_hash": "sha256=2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55"
           },
           {
-            "name": "jiter",
-            "version": "0.15.0",
-            "archive_hash": "sha256=8c9004af7c8d67cce7f1aae1026fb55607f4aa600710d08ede3a3ce4aeefe7e0"
-          },
-          {
-            "name": "pydantic",
-            "version": "2.13.4",
-            "archive_hash": "sha256=45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba"
-          },
-          {
-            "name": "pydantic_core",
-            "version": "2.46.4",
-            "archive_hash": "sha256=962ccbab7b642487b1d8b7df90ef677e03134cf1fd8880bf698649b22a69371f"
-          },
-          {
-            "name": "starlette",
-            "version": "1.3.1",
-            "archive_hash": "sha256=c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6"
-          },
-          {
-            "name": "tiktoken",
-            "version": "0.13.0",
-            "archive_hash": "sha256=4d9980f11429ed2d737c463bb1fb78cf330caa026adf002f714aced7849a687b"
-          },
-          {
-            "name": "typing_extensions",
-            "version": "4.15.0",
-            "archive_hash": "sha256=f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548"
-          },
-          {
-            "name": "aiosqlite",
-            "version": "0.22.1",
-            "archive_hash": "sha256=21c002eb13823fad740196c5a2e9d8e62f6243bd9e7e4a1f87fb5e44ecb4fceb"
-          },
-          {
-            "name": "annotated-doc",
-            "version": "0.0.4",
-            "archive_hash": "sha256=571ac1dc6991c450b25a9c2d84a3705e2ae7a53467b5d111c24fa8baabbed320"
-          },
-          {
-            "name": "annotated-types",
-            "version": "0.7.0",
-            "archive_hash": "sha256=1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53"
-          },
-          {
-            "name": "cachetools",
-            "version": "7.1.4",
-            "archive_hash": "sha256=323dc4127934744db5b54eb4924482d7edafbf9554e820d1531c2e08c0e4ef54"
-          },
-          {
-            "name": "cffi",
-            "version": "2.0.0",
-            "archive_hash": "sha256=8eca2a813c1cb7ad4fb74d368c2ffbbb4789d377ee5bb8df98373c2cc0dee76c"
-          },
-          {
-            "name": "click",
-            "version": "8.4.1",
-            "archive_hash": "sha256=482be17c6991b8c19c5429a1e995d9b0efdbb63172824c41f99965dc0ade8ec2"
-          },
-          {
-            "name": "h11",
-            "version": "0.16.0",
-            "archive_hash": "sha256=63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86"
-          },
-          {
             "name": "h2",
-            "version": "4.3.0",
-            "archive_hash": "sha256=c438f029a25f7945c69e0ccf0fb951dc3f73a5f6412981daee861431b70e2bdd"
+            "version": "4.4.1",
+            "archive_hash": "sha256=0e25f1462b23c9cb82d9eb02e28bc706dac2a68cb457c6a0d74d63c8a2a5d0e6"
           },
           {
             "name": "hpack",
@@ -1177,24 +1117,24 @@
             "archive_hash": "sha256=b03380493a519fce58ea5af42e4a42317bf9bd425596f7a0835ffce80f1a42e5"
           },
           {
-            "name": "idna",
-            "version": "3.18",
-            "archive_hash": "sha256=7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2"
+            "name": "openai",
+            "version": "2.38.0",
+            "archive_hash": "sha256=ec6661c57b2dcc47414a767e6e3335c7ed3d19c9696999283a3c82e95c756a3c"
+          },
+          {
+            "name": "distro",
+            "version": "1.9.0",
+            "archive_hash": "sha256=7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2"
+          },
+          {
+            "name": "jiter",
+            "version": "0.15.0",
+            "archive_hash": "sha256=8c9004af7c8d67cce7f1aae1026fb55607f4aa600710d08ede3a3ce4aeefe7e0"
           },
           {
             "name": "openpyxl",
             "version": "3.1.5",
             "archive_hash": "sha256=5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2"
-          },
-          {
-            "name": "pandas",
-            "version": "3.0.3",
-            "archive_hash": "sha256=b168fc218fd80a6cbdbdbc1a97ddc7889ed057d7eb45f50d866ceab5f39904c4"
-          },
-          {
-            "name": "numpy",
-            "version": "2.4.6",
-            "archive_hash": "sha256=3213d622a0283a39a93d188f3cf72b26862df52fbb4ca3697f51705016523d41"
           },
           {
             "name": "platformdirs",
@@ -1212,29 +1152,29 @@
             "archive_hash": "sha256=1a7b04c10f32cc88ab39cbf606e117fd74721c831c98a27dc04578deb0c16979"
           },
           {
+            "name": "pydantic",
+            "version": "2.13.4",
+            "archive_hash": "sha256=45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba"
+          },
+          {
+            "name": "pydantic_core",
+            "version": "2.46.4",
+            "archive_hash": "sha256=962ccbab7b642487b1d8b7df90ef677e03134cf1fd8880bf698649b22a69371f"
+          },
+          {
             "name": "pydantic-settings",
             "version": "2.14.2",
             "archive_hash": "sha256=a20c97b37910b6550d5ea50fbcc2d4187defe58cd57070b73863d069419c9440"
           },
           {
             "name": "pypdf",
-            "version": "6.14.2",
-            "archive_hash": "sha256=3f07891af76dc002657e04993ab9b4de81de29f9013b9761d0b7968bff12e946"
-          },
-          {
-            "name": "python-dateutil",
-            "version": "2.9.0.post0",
-            "archive_hash": "sha256=a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427"
+            "version": "6.16.1",
+            "archive_hash": "sha256=63fec31c4092ae50b6729beedcb469055b60d20c834bde1c402df241f371f644"
           },
           {
             "name": "python-docx",
             "version": "1.2.0",
             "archive_hash": "sha256=3fd478f3250fbbbfd3b94fe1e985955737c145627498896a8a6bf81f4baf66c7"
-          },
-          {
-            "name": "lxml",
-            "version": "6.1.1",
-            "archive_hash": "sha256=104c09bda8d2a562824c0e319d0768ce26a779b7601e0931d33b09b53c392ef7"
           },
           {
             "name": "python-dotenv",
@@ -1257,11 +1197,6 @@
             "archive_hash": "sha256=06fce8cb56c83307cfa4909cdf4e6a2ddbb44e5d6ef4d2edca896d7e9769f091"
           },
           {
-            "name": "pillow",
-            "version": "12.2.0",
-            "archive_hash": "sha256=f3f40b3c5a968281fd507d519e444c35f0ff171237f4fdde090dd60699458421"
-          },
-          {
             "name": "rich",
             "version": "15.0.0",
             "archive_hash": "sha256=33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb"
@@ -1272,19 +1207,9 @@
             "archive_hash": "sha256=81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176"
           },
           {
-            "name": "markdown-it-py",
-            "version": "4.2.0",
-            "archive_hash": "sha256=9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a"
-          },
-          {
-            "name": "mdurl",
-            "version": "0.1.2",
-            "archive_hash": "sha256=84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8"
-          },
-          {
-            "name": "six",
-            "version": "1.17.0",
-            "archive_hash": "sha256=4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"
+            "name": "starlette",
+            "version": "1.3.1",
+            "archive_hash": "sha256=c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6"
           },
           {
             "name": "structlog",
@@ -1302,19 +1227,14 @@
             "archive_hash": "sha256=4caaa13a90bc4cf9c6c862c067ccd34fe84e9c161710a2a907a8026313b6bd73"
           },
           {
-            "name": "linkify-it-py",
-            "version": "2.1.0",
-            "archive_hash": "sha256=0d252c1594ecba2ecedc444053db5d3a9b7ec1b0dd929c8f1d74dce89f86c05e"
+            "name": "tiktoken",
+            "version": "0.13.0",
+            "archive_hash": "sha256=4d9980f11429ed2d737c463bb1fb78cf330caa026adf002f714aced7849a687b"
           },
           {
-            "name": "tqdm",
-            "version": "4.67.3",
-            "archive_hash": "sha256=ee1e4c0e59148062281c49d80b25b67771a127c85fc9676d3be5f243206826bf"
-          },
-          {
-            "name": "typing-inspection",
-            "version": "0.4.2",
-            "archive_hash": "sha256=4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7"
+            "name": "typing_extensions",
+            "version": "4.15.0",
+            "archive_hash": "sha256=f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548"
           },
           {
             "name": "uvicorn",
@@ -1327,14 +1247,94 @@
             "archive_hash": "sha256=6f10cb2d5902447c7d0da897e2c6768bca89174d0c6e1e30abec5421af97a5b0"
           },
           {
+            "name": "annotated-doc",
+            "version": "0.0.4",
+            "archive_hash": "sha256=571ac1dc6991c450b25a9c2d84a3705e2ae7a53467b5d111c24fa8baabbed320"
+          },
+          {
+            "name": "annotated-types",
+            "version": "0.7.0",
+            "archive_hash": "sha256=1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53"
+          },
+          {
+            "name": "cffi",
+            "version": "2.0.0",
+            "archive_hash": "sha256=8eca2a813c1cb7ad4fb74d368c2ffbbb4789d377ee5bb8df98373c2cc0dee76c"
+          },
+          {
+            "name": "h11",
+            "version": "0.16.0",
+            "archive_hash": "sha256=63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86"
+          },
+          {
+            "name": "idna",
+            "version": "3.19",
+            "archive_hash": "sha256=815e7be7a7806d54abb586dc943addc79e8b2ee16915059658cbeff4b1b43bf4"
+          },
+          {
+            "name": "lxml",
+            "version": "6.1.1",
+            "archive_hash": "sha256=104c09bda8d2a562824c0e319d0768ce26a779b7601e0931d33b09b53c392ef7"
+          },
+          {
+            "name": "markdown-it-py",
+            "version": "4.2.0",
+            "archive_hash": "sha256=9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a"
+          },
+          {
+            "name": "mdurl",
+            "version": "0.1.2",
+            "archive_hash": "sha256=84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8"
+          },
+          {
+            "name": "linkify-it-py",
+            "version": "2.1.0",
+            "archive_hash": "sha256=0d252c1594ecba2ecedc444053db5d3a9b7ec1b0dd929c8f1d74dce89f86c05e"
+          },
+          {
+            "name": "pandas",
+            "version": "3.0.3",
+            "archive_hash": "sha256=b168fc218fd80a6cbdbdbc1a97ddc7889ed057d7eb45f50d866ceab5f39904c4"
+          },
+          {
+            "name": "numpy",
+            "version": "2.5.2",
+            "archive_hash": "sha256=6e8172ddfcf5cf74b811d372b570b83c60bd2de87a6fbfbebdadb4a9bd9c6cbb"
+          },
+          {
+            "name": "pillow",
+            "version": "12.3.0",
+            "archive_hash": "sha256=ffd0c5368496f41b0944be820fcb7a838aa6e623d250b01acf2643939c3f99d7"
+          },
+          {
+            "name": "python-dateutil",
+            "version": "2.9.0.post0",
+            "archive_hash": "sha256=a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427"
+          },
+          {
+            "name": "six",
+            "version": "1.17.0",
+            "archive_hash": "sha256=4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"
+          },
+          {
+            "name": "tqdm",
+            "version": "4.67.3",
+            "archive_hash": "sha256=ee1e4c0e59148062281c49d80b25b67771a127c85fc9676d3be5f243206826bf"
+          },
+          {
+            "name": "typing-inspection",
+            "version": "0.4.2",
+            "archive_hash": "sha256=4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7"
+          },
+          {
             "name": "certifi",
-            "version": "2026.5.20",
-            "archive_hash": "sha256=3c52e209ba0a4ad7aebe60436a4ab349c39e1e602e8c134221e546902ad25897"
+            "version": "2026.7.22",
+            "archive_hash": "sha256=62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775"
           },
           {
             "name": "charset-normalizer",
-            "version": "3.4.7",
-            "archive_hash": "sha256=eca9705049ad3c7345d574e3510665cb2cf844c2f2dcfe675332677f081cbd46"
+            "version": "3.5.1",
+            "archive_hash": "sha256=5b6d1386bf0096d26d3a863dc0a487a5b4eb9aa93cf5ba69683d29dde6b9d60f"
           },
           {
             "name": "et_xmlfile",
@@ -1353,8 +1353,8 @@
           },
           {
             "name": "regex",
-            "version": "2026.5.9",
-            "archive_hash": "sha256=f7a7c26137296beba7784de6eba69c6a93a63ccebc385e4962fe67e267a91225"
+            "version": "2026.8.31",
+            "archive_hash": "sha256=caa959da9bb21394131eaf5c57698b47926ebada98c6796cfb4e754a52de001f"
           },
           {
             "name": "requests",
@@ -1387,58 +1387,58 @@
     {
       "step": "sdist: pip check",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/python",
         "-m",
         "pip",
         "check"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-10T03:23:09Z",
-      "finished_utc": "2026-08-10T03:23:10Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T03:21:30Z",
+      "finished_utc": "2026-08-31T03:21:30Z",
       "exit_code": 0,
-      "duration_seconds": 0.124,
+      "duration_seconds": 0.145,
       "stdout_tail": "No broken requirements found.\n",
       "stderr_tail": "",
       "stdout_sha256": "9261363b733079a641c2e4cc9bc46ffa1d8336945a87f807b6cf68847dbc9b09",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/15_sdist_pip_check.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/15_sdist_pip_check.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/15_sdist_pip_check.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/15_sdist_pip_check.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/15_sdist_pip_check.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/15_sdist_pip_check.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
     },
     {
       "step": "sdist: import js/js_work from venv site-packages",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/python",
         "-c",
         "\nimport hashlib, json, pathlib, sys, sysconfig\nimport js, js_work\nerrors = []\nmodules = {}\nfor module in (js, js_work):\n    path = str(pathlib.Path(module.__file__).resolve())\n    if \"site-packages\" not in path:\n        errors.append(f\"{module.__name__} loaded from non-site-packages: {path}\")\n    modules[module.__name__] = {\n        \"file\": path,\n        \"file_sha256\": hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest(),\n        \"site_packages\": str(pathlib.Path(sysconfig.get_paths()[\"purelib\"]).resolve()),\n    }\nimport js.agent, js.echo.turn_runtime, js.echo.ledger.service\nimport js.models.router, js.models.permit\nimport js.security.approvals, js.web.server, js.tools.registry\nimport js_work.cli, js_work.routines.store, js_work.safe_output, js_work.routines\nfrom js.echo.turn_runtime import EchoPulseRuntime  # noqa: F401\nfrom js.security.approvals import ApprovalQueue  # noqa: F401\nprint(json.dumps({\"modules\": modules, \"errors\": errors}))\nsys.exit(1 if errors else 0)\n"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-10T03:23:10Z",
-      "finished_utc": "2026-08-10T03:23:20Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T03:21:30Z",
+      "finished_utc": "2026-08-31T03:21:39Z",
       "exit_code": 0,
-      "duration_seconds": 10.2,
-      "stdout_tail": "{\"modules\": {\"js\": {\"file\": \"<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js/__init__.py\", \"file_sha256\": \"52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0\", \"site_packages\": \"<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages\"}, \"js_work\": {\"file\": \"<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js_work/__init__.py\", \"file_sha256\": \"ee40c59a0c6a8780e06ba6ecffbc2c0eba0e533b0dbbbd8ef6b4fe3dba4b272a\", \"site_packages\": \"<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages\"}}, \"errors\": []}\n",
+      "duration_seconds": 9.263,
+      "stdout_tail": "{\"modules\": {\"js\": {\"file\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js/__init__.py\", \"file_sha256\": \"52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0\", \"site_packages\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages\"}, \"js_work\": {\"file\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js_work/__init__.py\", \"file_sha256\": \"ee40c59a0c6a8780e06ba6ecffbc2c0eba0e533b0dbbbd8ef6b4fe3dba4b272a\", \"site_packages\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages\"}}, \"errors\": []}\n",
       "stderr_tail": "",
-      "stdout_sha256": "85e2b31de44784f0c508b8b092d546a87f458e25fca004e78be12c72adabf75c",
+      "stdout_sha256": "4457c54f659dd46a2414efbecbd28f1e0d39033f92384f1e5521c5eb13409eec",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/16_sdist_import_js_js_work_from_venv_site_packages.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/16_sdist_import_js_js_work_from_venv_site_packages.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/16_sdist_import_js_js_work_from_venv_site_packages.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7",
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/16_sdist_import_js_js_work_from_venv_site_packages.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/16_sdist_import_js_js_work_from_venv_site_packages.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/16_sdist_import_js_js_work_from_venv_site_packages.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
       "import_evidence": {
         "modules": {
           "js": {
-            "file": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js/__init__.py",
+            "file": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js/__init__.py",
             "file_sha256": "52ca898f824bc6698dce23993fa86adfa9c3a56125f799eeda72ebcb8b5991f0",
-            "site_packages": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages"
+            "site_packages": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages"
           },
           "js_work": {
-            "file": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js_work/__init__.py",
+            "file": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js_work/__init__.py",
             "file_sha256": "ee40c59a0c6a8780e06ba6ecffbc2c0eba0e533b0dbbbd8ef6b4fe3dba4b272a",
-            "site_packages": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages"
+            "site_packages": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages"
           }
         },
         "errors": []
@@ -1450,24 +1450,24 @@
     {
       "step": "sdist: tokenizer loads offline from vendored cache",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/python",
         "-c",
         "\nimport json, os, sys\nos.environ.pop(\"TIKTOKEN_CACHE_DIR\", None)\nfrom js.echo.context_tokenizer import tiktoken_counter_factory\ncounter = tiktoken_counter_factory(\"cl100k_base\")\ncount = counter(b\"hello offline world\")\ncache_dir = os.environ.get(\"TIKTOKEN_CACHE_DIR\", \"\")\nok = count > 0 and \"site-packages\" in cache_dir\nprint(json.dumps({\"count\": count, \"cache_dir\": cache_dir, \"ok\": ok}))\nsys.exit(0 if ok else 1)\n"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-10T03:23:20Z",
-      "finished_utc": "2026-08-10T03:23:21Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T03:21:39Z",
+      "finished_utc": "2026-08-31T03:21:40Z",
       "exit_code": 0,
-      "duration_seconds": 1.396,
-      "stdout_tail": "{\"count\": 3, \"cache_dir\": \"<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/resources/tokenizer\", \"ok\": true}\n",
+      "duration_seconds": 0.731,
+      "stdout_tail": "{\"count\": 3, \"cache_dir\": \"{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/resources/tokenizer\", \"ok\": true}\n",
       "stderr_tail": "",
-      "stdout_sha256": "b9450549aabc96bc7bb8cf40e50fa621b88ea5a58c453454efd86a7679d4f42d",
+      "stdout_sha256": "4a5fae541d63d6ef9d77d1ce1d6822c3a8d001ad568b9ae5ef67663e33740464",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/17_sdist_tokenizer_loads_offline_from_vendored_cache.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/17_sdist_tokenizer_loads_offline_from_vendored_cache.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/17_sdist_tokenizer_loads_offline_from_vendored_cache.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7",
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/17_sdist_tokenizer_loads_offline_from_vendored_cache.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/17_sdist_tokenizer_loads_offline_from_vendored_cache.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/17_sdist_tokenizer_loads_offline_from_vendored_cache.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
       "detail": {
         "payload_ok": true
       }
@@ -1475,110 +1475,110 @@
     {
       "step": "sdist: CLI js --help",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/bin/js",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/js",
         "--help"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-10T03:23:21Z",
-      "finished_utc": "2026-08-10T03:23:22Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T03:21:40Z",
+      "finished_utc": "2026-08-31T03:21:41Z",
       "exit_code": 0,
-      "duration_seconds": 0.865,
-      "stdout_tail": "Usage: js [OPTIONS] COMMAND [ARGS]...\n\n  JS Agent - A stable, secure, and convenient AI agent.\n\nOptions:\n  -c, --config PATH  Path to config file\n  -v, --verbose      Verbose logging\n  --help             Show this message and exit.\n\nCommands:\n  appshell  Launch the unified JS Agent AppShell (single host, single port).\n  daemon    Run JS Agent in background daemon mode with scheduled tasks.\n  init      Initialize JS configuration.\n  open      Launch Web UI and open browser.\n  plugin    Manage plugins (discover, list, enable, disable).\n  rl        Reinforcement Learning: train agent policies in simulated...\n  run       Run a single message and exit.\n  search    Search the web.\n  setup     Run setup wizard to auto-configure everything.\n  skill     Manage skills.\n  status    Show system status.\n  telegram  Run JS Agent as a Telegram Bot (24/7 messaging interface).\n  tui       Launch the Terminal User Interface (Textual-based rich CLI).\n  web       Web UI server management.\n  work      Work mode - the restricted work-focused mode inside JS Agent.\n",
+      "duration_seconds": 0.902,
+      "stdout_tail": "Usage: js [OPTIONS] COMMAND [ARGS]...\n\n  JS Agent - A stable, secure, and convenient AI agent.\n\nOptions:\n  -c, --config PATH  Path to config file\n  -v, --verbose      Verbose logging\n  --help             Show this message and exit.\n\nCommands:\n  appshell  Launch the local AppShell Host (desktop / development).\n  daemon    Run JS Agent in background daemon mode with scheduled tasks.\n  doctor    Local diagnostics.\n  init      Initialize JS configuration.\n  plugin    Manage plugins (discover, list, enable, disable).\n  rl        Reinforcement Learning: train agent policies in simulated...\n  run       Run a single message and exit.\n  search    Search the web.\n  setup     Run setup wizard to auto-configure everything.\n  skill     Manage skills.\n  status    Show system status.\n  telegram  Run JS Agent as a Telegram Bot (24/7 messaging interface).\n  tui       Launch the Terminal User Interface (Textual-based rich CLI).\n  work      Work mode - the restricted work-focused mode inside JS Agent.\n",
       "stderr_tail": "",
-      "stdout_sha256": "ebf0a728baa92b517b0fe2f154bcb1be17888f02c70455524f0274fd2757394e",
+      "stdout_sha256": "154daffa29b9b0d080f298b1dd98c22b8da9e86ed5c8ae51a1f757cc6451324f",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/18_sdist_cli_js_help.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/18_sdist_cli_js_help.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/18_sdist_cli_js_help.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/18_sdist_cli_js_help.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/18_sdist_cli_js_help.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/18_sdist_cli_js_help.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
     },
     {
       "step": "sdist: CLI js work --help",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/bin/js",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/js",
         "work",
         "--help"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-10T03:23:22Z",
-      "finished_utc": "2026-08-10T03:23:22Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T03:21:41Z",
+      "finished_utc": "2026-08-31T03:21:41Z",
       "exit_code": 0,
-      "duration_seconds": 0.433,
+      "duration_seconds": 0.531,
       "stdout_tail": "Usage: js work [OPTIONS] COMMAND [ARGS]...\n\n  Work mode - the restricted work-focused mode inside JS Agent.\n\nOptions:\n  -c, --config PATH               Path to JS Agent Work config\n  --profile [execute|safe|office]\n                                  [default: execute]\n  -v, --verbose                   Verbose logging\n  --help                          Show this message and exit.\n\nCommands:\n  init     Initialize JS Agent Work configuration.\n  routine  Manage JS Agent Work routines.\n  run      Run one Work task and exit.\n  web      Run Work through the single parent AppShell host.\n",
       "stderr_tail": "",
       "stdout_sha256": "67a59de9f8307d4e63b3ee089543b498c47c2af276fc62eba370402b0218fd13",
       "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/19_sdist_cli_js_work_help.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/19_sdist_cli_js_work_help.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/19_sdist_cli_js_work_help.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/19_sdist_cli_js_work_help.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/19_sdist_cli_js_work_help.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/19_sdist_cli_js_work_help.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
     },
     {
       "step": "sdist: CLI js-work --help",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/bin/js-work",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/js-work",
         "--help"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-10T03:23:22Z",
-      "finished_utc": "2026-08-10T03:23:24Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T03:21:41Z",
+      "finished_utc": "2026-08-31T03:21:42Z",
       "exit_code": 0,
-      "duration_seconds": 1.259,
+      "duration_seconds": 0.889,
       "stdout_tail": "Usage: js work [OPTIONS] COMMAND [ARGS]...\n\n  Work mode - the restricted work-focused mode inside JS Agent.\n\nOptions:\n  -c, --config PATH               Path to JS Agent Work config\n  --profile [execute|safe|office]\n                                  [default: execute]\n  -v, --verbose                   Verbose logging\n  --help                          Show this message and exit.\n\nCommands:\n  init     Initialize JS Agent Work configuration.\n  routine  Manage JS Agent Work routines.\n  run      Run one Work task and exit.\n  web      Run Work through the single parent AppShell host.\n",
-      "stderr_tail": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/bin/js-work:6: FutureWarning: js-work is a compatibility shim; use `js work`.\n  sys.exit(compat_main())\n",
+      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/js-work:6: FutureWarning: js-work is a compatibility shim; use `js work`.\n  sys.exit(compat_main())\n",
       "stdout_sha256": "67a59de9f8307d4e63b3ee089543b498c47c2af276fc62eba370402b0218fd13",
-      "stderr_sha256": "afedfa03a3e4a12bde76971c4f4259852bcd0386893b3997e339a840eb9b8788",
+      "stderr_sha256": "711d3c1e2fb5d3a27699776959a7e785252261da639f99a16323eb553a5c355a",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/20_sdist_cli_js_work_help.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/20_sdist_cli_js_work_help.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/20_sdist_cli_js_work_help.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/20_sdist_cli_js_work_help.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/20_sdist_cli_js_work_help.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/20_sdist_cli_js_work_help.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
     },
     {
       "step": "sdist: CLI python -m js_work --help",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/python",
         "-m",
         "js_work",
         "--help"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-10T03:23:24Z",
-      "finished_utc": "2026-08-10T03:23:24Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T03:21:42Z",
+      "finished_utc": "2026-08-31T03:21:43Z",
       "exit_code": 0,
-      "duration_seconds": 0.451,
+      "duration_seconds": 0.534,
       "stdout_tail": "Usage: js work [OPTIONS] COMMAND [ARGS]...\n\n  Work mode - the restricted work-focused mode inside JS Agent.\n\nOptions:\n  -c, --config PATH               Path to JS Agent Work config\n  --profile [execute|safe|office]\n                                  [default: execute]\n  -v, --verbose                   Verbose logging\n  --help                          Show this message and exit.\n\nCommands:\n  init     Initialize JS Agent Work configuration.\n  routine  Manage JS Agent Work routines.\n  run      Run one Work task and exit.\n  web      Run Work through the single parent AppShell host.\n",
-      "stderr_tail": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js_work/__main__.py:8: FutureWarning: js-work is a compatibility shim; use `js work`.\n  compat_main()\n",
+      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/js_work/__main__.py:8: FutureWarning: js-work is a compatibility shim; use `js work`.\n  compat_main()\n",
       "stdout_sha256": "67a59de9f8307d4e63b3ee089543b498c47c2af276fc62eba370402b0218fd13",
-      "stderr_sha256": "6e8faea0597e3ddc5c1ee52675d65d19e16e278c9af85918dbaf0e7a382a26e6",
+      "stderr_sha256": "c41ec24a95ba797ffa165aa3b4316ae14333b886058128266a73f4f5e300568c",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/21_sdist_cli_python_m_js_work_help.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/21_sdist_cli_python_m_js_work_help.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/21_sdist_cli_python_m_js_work_help.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7"
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/21_sdist_cli_python_m_js_work_help.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/21_sdist_cli_python_m_js_work_help.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/21_sdist_cli_python_m_js_work_help.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c"
     },
     {
       "step": "sdist: server HTTP+WS+attachment+work E2E",
       "argv": [
-        "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/bin/python",
-        "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/server_e2e.py"
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/bin/python",
+        "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/server_e2e.py"
       ],
-      "cwd": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist",
-      "started_utc": "2026-08-10T03:23:24Z",
-      "finished_utc": "2026-08-10T03:23:26Z",
+      "cwd": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist",
+      "started_utc": "2026-08-31T03:21:43Z",
+      "finished_utc": "2026-08-31T03:21:44Z",
       "exit_code": 0,
-      "duration_seconds": 1.708,
-      "stdout_tail": "bf39c7b558\", \"replay_class\": \"non_idempotent\", \"resource\": \"tool:excel_write\", \"scopes\": [\"tool:excel_write\"]}, \"executor_kind\": \"tool\", \"executor_route\": \"ToolExecutor.execute_tool\", \"outbox\": {\"bridge_hash\": \"sha256:61b4acaa46da5d2777b0a5b5973011d1d036b82c3e1600592e6690821494c0f3\", \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_0c3f265597b296c7d798333be897162d\"}, \"run_id\": \"iso-e2e-work-run\", \"session_id\": \"iso-e2e-work\", \"side_effect\": {\"commitment\": \"manual_confirmation_required\", \"replay_class\": \"non_idempotent\"}, \"state_mapping\": {\"args_hash\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"journal_record_start\": 10, \"lease_id\": \"2250d16a36b441e59083ddfedead533c\", \"partition_bound\": true, \"permit_journal_seq\": 13, \"product_id\": \"js-work\", \"tool_call_id\": \"call_745948e2fa4727c1930588\", \"tool_name\": \"excel_write\", \"workspace\": \"ws-5d87fbe1c6fc4c572c0073b878641a4b64cf8e48f8baece91b954cf8f307d45b\"}, \"tenant_id\": \"iso-e2e-owner\"}, \"outbox_id\": \"out_0c3f265597b296c7d798333be897162d\", \"seal\": {\"action_kind\": \"tool.excel_write\", \"deadline_ms\": 230656497, \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"granted_scopes\": [\"tool:excel_write\"], \"journal_seq\": 13, \"key_epoch\": \"permit-epoch-1\", \"mac\": \"50d0532fd179f887010baefd88b77bac59c4252359d8eb5d11b29ba2061af93a\", \"policy_decision_id\": \"pdr_4f7a8f4e545ce94896b74c108ac6dfab\", \"replay_class\": \"non_idempotent\", \"seal_id\": \"seal_9b9f434379f76a3426cc37f7db180a97\", \"tenant_id\": \"iso-e2e-owner\"}, \"sealed_input_ref\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\"}, \"prev_hash\": \"sha256:4ae1b237311a0018801e0d41f6b37181baa34597fdb41e198147b19cc1b5e523\", \"record_hash\": \"sha256:bdbec15e614c330910e2d98e9d47be68e9ac11796f4b402c8eb23456878d24c3\"}, {\"seq\": 15, \"record_type\": \"outbox_claimed\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_0c3f265597b296c7d798333be897162d\"}, \"prev_hash\": \"sha256:bdbec15e614c330910e2d98e9d47be68e9ac11796f4b402c8eb23456878d24c3\", \"record_hash\": \"sha256:ae7b8a32e12746be9c6fffb037da5736d54c75cdc36877296301841183d87eb5\"}, {\"seq\": 17, \"record_type\": \"receipt\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"artifact_refs\": [{\"acl\": \"owner\", \"created_by_run\": \"iso-e2e-work-run\", \"digest\": \"sha256:59eea01d2e0b916fda98d0dc204dd1478ccbea4b922a2c5d725c5419d9537a12\", \"kind\": \"spreadsheet\", \"mode\": \"work\", \"owner\": \"iso-e2e-owner\", \"schema_version\": 1, \"session\": \"iso-e2e-work\", \"uri\": \"echo://artifact/excel_write/59eea01d2e0b916fda98d0dc204dd1478ccbea4b922a2c5d725c5419d9537a12\", \"workspace\": \"ws-5d87fbe1c6fc4c572c0073b878641a4b64cf8e48f8baece91b954cf8f307d45b\"}], \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_0c3f265597b296c7d798333be897162d\", \"output_hash\": \"sha256:59eea01d2e0b916fda98d0dc204dd1478ccbea4b922a2c5d725c5419d9537a12\", \"output_ref\": \"sha256:59eea01d2e0b916fda98d0dc204dd1478ccbea4b922a2c5d725c5419d9537a12\", \"replay_class\": \"non_idempotent\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:9907d955cf8483ff53bf945ad4824ce563001b1facc26f29c3a936f2740d207d\", \"record_hash\": \"sha256:a84b920f235d9530f378cd863061e1f90cf652cda820a3fcf9079a2770e76f72\"}, {\"seq\": 18, \"record_type\": \"merge\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:a84b920f235d9530f378cd863061e1f90cf652cda820a3fcf9079a2770e76f72\", \"record_hash\": \"sha256:1e77f4cb897ca07310ddf3b40c1ff0b08bf672605f30aa16c0720e77855c3e80\"}], \"journal_evidence_path\": \"e2e/work/sdist/ledger.journal\", \"arguments_sha256\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"ledger_signature_b64\": \"5m2gv3TkfGnP3mI8uw8v5yWQdzRL+7TS5PAdRVFugqQjma2upZ4f+07llw1Hpl3Llnusou2EoJrgFHM3AhRpAw==\", \"pubkey_fingerprint\": \"85df2fe3b07e9399fd20acdeed1afef3af3cd450edb48417530ef17aa4123d27\"}}}\n",
-      "stderr_tail": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n  from starlette.testclient import TestClient as TestClient  # noqa\n",
-      "stdout_sha256": "289d0f4b7195ae5a6384c3aeeebde51b3da6b08ebc08816b5381f53cbee67de0",
-      "stderr_sha256": "cd7f381a6e8b0b1493b311e2428566c6d79082402bd80da38fd79de40d38f7ce",
+      "duration_seconds": 1.772,
+      "stdout_tail": "bf39c7b558\", \"replay_class\": \"non_idempotent\", \"resource\": \"tool:excel_write\", \"scopes\": [\"tool:excel_write\"]}, \"executor_kind\": \"tool\", \"executor_route\": \"ToolExecutor.execute_tool\", \"outbox\": {\"bridge_hash\": \"sha256:09813b7ba02c0fabf8e7521be155b360f87078fe502002f6e5aa82dba24b043a\", \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_5afb684c6ba189583d36e503dd8a7a11\"}, \"run_id\": \"iso-e2e-work-run\", \"session_id\": \"iso-e2e-work\", \"side_effect\": {\"commitment\": \"manual_confirmation_required\", \"replay_class\": \"non_idempotent\"}, \"state_mapping\": {\"args_hash\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"journal_record_start\": 10, \"lease_id\": \"e0281671936c50634620041edb8408aa\", \"partition_bound\": true, \"permit_journal_seq\": 13, \"product_id\": \"js-work\", \"tool_call_id\": \"call_745948e2fa4727c1930588\", \"tool_name\": \"excel_write\", \"workspace\": \"ws-ad919938bf494fb50ce94ef5b968398f875744201b4fb5991f3bfd294fbf8906\"}, \"tenant_id\": \"iso-e2e-owner\"}, \"outbox_id\": \"out_5afb684c6ba189583d36e503dd8a7a11\", \"seal\": {\"action_kind\": \"tool.excel_write\", \"deadline_ms\": 418460192, \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"granted_scopes\": [\"tool:excel_write\"], \"journal_seq\": 13, \"key_epoch\": \"permit-epoch-1\", \"mac\": \"d5bf436f4574df58c1f02c6d65d0a251499bab57e0404ff989cd26654af4b2ab\", \"policy_decision_id\": \"pdr_b9bf545b83431cd6b9400644aef10881\", \"replay_class\": \"non_idempotent\", \"seal_id\": \"seal_1ff150f67ae79f8105deb3cecd8dd0a8\", \"tenant_id\": \"iso-e2e-owner\"}, \"sealed_input_ref\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\"}, \"prev_hash\": \"sha256:55ac5ff301ab4ae211836325885736e1dc2ccacf669117cf212966b8b12a87aa\", \"record_hash\": \"sha256:56ea7ef1abe43b91f14e1c632140ee6b16fead123e2a71fd780e75e29dcc1732\"}, {\"seq\": 15, \"record_type\": \"outbox_claimed\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_5afb684c6ba189583d36e503dd8a7a11\"}, \"prev_hash\": \"sha256:56ea7ef1abe43b91f14e1c632140ee6b16fead123e2a71fd780e75e29dcc1732\", \"record_hash\": \"sha256:9aaac6d6fe727f5e3583f2472fb520376307b4dbcbe79baf7b3292cff1d58309\"}, {\"seq\": 17, \"record_type\": \"receipt\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"artifact_refs\": [{\"acl\": \"owner\", \"created_by_run\": \"iso-e2e-work-run\", \"digest\": \"sha256:5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d\", \"kind\": \"spreadsheet\", \"mode\": \"work\", \"owner\": \"iso-e2e-owner\", \"schema_version\": 1, \"session\": \"iso-e2e-work\", \"uri\": \"echo://artifact/excel_write/5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d\", \"workspace\": \"ws-ad919938bf494fb50ce94ef5b968398f875744201b4fb5991f3bfd294fbf8906\"}], \"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"outbox_id\": \"out_5afb684c6ba189583d36e503dd8a7a11\", \"output_hash\": \"sha256:5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d\", \"output_ref\": \"sha256:5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d\", \"replay_class\": \"non_idempotent\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:803849386b19e1a9281c5247a87b077f40130a98306498e98290122993c87b83\", \"record_hash\": \"sha256:a7869da22e7d89ce8280edb615c30ca7ff09b60a3d0c48743c3eaa076f5d1a46\"}, {\"seq\": 18, \"record_type\": \"merge\", \"tenant_id\": \"iso-e2e-owner\", \"run_id\": \"iso-e2e-work-run\", \"payload\": {\"effect_id\": \"eff_42a2f1e362d3c0f2d95ae12e70688275\", \"status\": \"ok\"}, \"prev_hash\": \"sha256:a7869da22e7d89ce8280edb615c30ca7ff09b60a3d0c48743c3eaa076f5d1a46\", \"record_hash\": \"sha256:42859622585d617cb3e85beb154057cd073ed69752d7c73a7aba105fda2685c9\"}], \"journal_evidence_path\": \"e2e/work/sdist/ledger.journal\", \"arguments_sha256\": \"sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558\", \"ledger_signature_b64\": \"zfR+gDKb7nmFMZOkHhG6f531DQBVl6qg1e7j8JQILOltyWBgaZYtNDOBI4xst470SMnvNNoj1e2a0Bgx5joACg==\", \"pubkey_fingerprint\": \"b15df485259192b9a2568cf0d8d558bcfb667ecd0d8b00fb0cdaf48aac27b8e0\"}}}\n",
+      "stderr_tail": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n  from starlette.testclient import TestClient as TestClient  # noqa\n",
+      "stdout_sha256": "52be244499bb63601837f5822ce960fecfb98162840eb02542b543b96ab72336",
+      "stderr_sha256": "64d6b1854f8c8358b48cb8f35d7c928cdb678a23a95dc315c4bddf28e963709c",
       "ok": true,
-      "stdout_path": "<EVIDENCE_ROOT>/e2e/steps/22_sdist_server_http_ws_attachment_work_e2e.stdout.txt",
-      "stderr_path": "<EVIDENCE_ROOT>/e2e/steps/22_sdist_server_http_ws_attachment_work_e2e.stderr.txt",
-      "step_receipt_path": "<EVIDENCE_ROOT>/e2e/steps/22_sdist_server_http_ws_attachment_work_e2e.receipt.json",
-      "source_digest": "7a161604782a91fda84a7324f4d9fd34479abab09f9d418917bbbea5992b65b7",
+      "stdout_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/22_sdist_server_http_ws_attachment_work_e2e.stdout.txt",
+      "stderr_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/22_sdist_server_http_ws_attachment_work_e2e.stderr.txt",
+      "step_receipt_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/steps/22_sdist_server_http_ws_attachment_work_e2e.receipt.json",
+      "source_digest": "c02ee77ebd9c9392fe9d62ffb0851e30cb31f764d029aa1100336caecfc6ec3c",
       "detail": {
         "offline": true,
         "schema_version": "isolated-venv-e2e-v6",
@@ -1624,13 +1624,13 @@
           "session": "iso-e2e-work",
           "run_id": "iso-e2e-work-run",
           "tool_name": "excel_write",
-          "lease_id": "2250d16a36b441e59083ddfedead533c",
+          "lease_id": "e0281671936c50634620041edb8408aa",
           "lease_consumed": true,
           "status": "ok",
           "terminal": true,
-          "output_path": "<EVIDENCE_ROOT>/e2e/runtime/install-sdist<HOME>/workspace/owners/o_4d801da505c7398e008b8819/s_43a848a10dbbeb10caf2d479/outputs/iso-e2e.xlsx",
+          "output_path": "{repo_root}/.task-tmp/evidence/internal-rebind-20260831T032058Z/e2e/runtime/install-sdist/home/.js-work/workspace/owners/o_4d801da505c7398e008b8819/s_43a848a10dbbeb10caf2d479/outputs/iso-e2e.xlsx",
           "output_exists": true,
-          "output_sha256": "59eea01d2e0b916fda98d0dc204dd1478ccbea4b922a2c5d725c5419d9537a12",
+          "output_sha256": "5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d",
           "output_cells": [
             [
               "iso",
@@ -1640,9 +1640,9 @@
           ],
           "journal_records_added": true,
           "journal_relative_path": "echo/ledger/partitions/product_bb8e07ce637484216fe7ee1ecfda1057/owner_a75baa10e0f98108e330f25712195612/session_f27d520621b860f345f7448222ba3b5e/chat.jsonl",
-          "journal_sha256": "e8bda1c2f688af28eb4d48bdc1b065ebdb8252b932b0bc4aa06112a5ffd4f9de",
+          "journal_sha256": "640e6f80c70885ccef8d0170684fe8c4df34751b82d84b8276fcc4f10b888111",
           "ledger_sequence": 18,
-          "record_hash": "sha256:1e77f4cb897ca07310ddf3b40c1ff0b08bf672605f30aa16c0720e77855c3e80",
+          "record_hash": "sha256:42859622585d617cb3e85beb154057cd073ed69752d7c73a7aba105fda2685c9",
           "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
           "terminal_status": "ok",
           "ledger_chain": [
@@ -1655,32 +1655,32 @@
                 "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
                 "seal": {
                   "action_kind": "tool.excel_write",
-                  "deadline_ms": 230656497,
+                  "deadline_ms": 418460192,
                   "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
                   "granted_scopes": [
                     "tool:excel_write"
                   ],
                   "journal_seq": 13,
                   "key_epoch": "permit-epoch-1",
-                  "mac": "50d0532fd179f887010baefd88b77bac59c4252359d8eb5d11b29ba2061af93a",
-                  "policy_decision_id": "pdr_4f7a8f4e545ce94896b74c108ac6dfab",
+                  "mac": "d5bf436f4574df58c1f02c6d65d0a251499bab57e0404ff989cd26654af4b2ab",
+                  "policy_decision_id": "pdr_b9bf545b83431cd6b9400644aef10881",
                   "replay_class": "non_idempotent",
-                  "seal_id": "seal_9b9f434379f76a3426cc37f7db180a97",
+                  "seal_id": "seal_1ff150f67ae79f8105deb3cecd8dd0a8",
                   "tenant_id": "iso-e2e-owner"
                 },
-                "seal_id": "seal_9b9f434379f76a3426cc37f7db180a97",
+                "seal_id": "seal_1ff150f67ae79f8105deb3cecd8dd0a8",
                 "tool_effect": {
                   "args_hash": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
-                  "lease_id": "2250d16a36b441e59083ddfedead533c",
+                  "lease_id": "e0281671936c50634620041edb8408aa",
                   "product_id": "js-work",
                   "session_id": "iso-e2e-work",
                   "tool_call_id": "call_745948e2fa4727c1930588",
                   "tool_name": "excel_write",
-                  "workspace": "ws-5d87fbe1c6fc4c572c0073b878641a4b64cf8e48f8baece91b954cf8f307d45b"
+                  "workspace": "ws-ad919938bf494fb50ce94ef5b968398f875744201b4fb5991f3bfd294fbf8906"
                 }
               },
-              "prev_hash": "sha256:933ac87e77a3be33a63f40777f4e37b5fa2c6bb2722fd2c0d2f2acd2f9299b69",
-              "record_hash": "sha256:4ae1b237311a0018801e0d41f6b37181baa34597fdb41e198147b19cc1b5e523"
+              "prev_hash": "sha256:6e8f3909b86e7f294d51b6914be4f34dc728c25581e1681f33f3f983466d14fe",
+              "record_hash": "sha256:55ac5ff301ab4ae211836325885736e1dc2ccacf669117cf212966b8b12a87aa"
             },
             {
               "seq": 14,
@@ -1706,9 +1706,9 @@
                   "executor_kind": "tool",
                   "executor_route": "ToolExecutor.execute_tool",
                   "outbox": {
-                    "bridge_hash": "sha256:61b4acaa46da5d2777b0a5b5973011d1d036b82c3e1600592e6690821494c0f3",
+                    "bridge_hash": "sha256:09813b7ba02c0fabf8e7521be155b360f87078fe502002f6e5aa82dba24b043a",
                     "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
-                    "outbox_id": "out_0c3f265597b296c7d798333be897162d"
+                    "outbox_id": "out_5afb684c6ba189583d36e503dd8a7a11"
                   },
                   "run_id": "iso-e2e-work-run",
                   "session_id": "iso-e2e-work",
@@ -1719,36 +1719,36 @@
                   "state_mapping": {
                     "args_hash": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
                     "journal_record_start": 10,
-                    "lease_id": "2250d16a36b441e59083ddfedead533c",
+                    "lease_id": "e0281671936c50634620041edb8408aa",
                     "partition_bound": true,
                     "permit_journal_seq": 13,
                     "product_id": "js-work",
                     "tool_call_id": "call_745948e2fa4727c1930588",
                     "tool_name": "excel_write",
-                    "workspace": "ws-5d87fbe1c6fc4c572c0073b878641a4b64cf8e48f8baece91b954cf8f307d45b"
+                    "workspace": "ws-ad919938bf494fb50ce94ef5b968398f875744201b4fb5991f3bfd294fbf8906"
                   },
                   "tenant_id": "iso-e2e-owner"
                 },
-                "outbox_id": "out_0c3f265597b296c7d798333be897162d",
+                "outbox_id": "out_5afb684c6ba189583d36e503dd8a7a11",
                 "seal": {
                   "action_kind": "tool.excel_write",
-                  "deadline_ms": 230656497,
+                  "deadline_ms": 418460192,
                   "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
                   "granted_scopes": [
                     "tool:excel_write"
                   ],
                   "journal_seq": 13,
                   "key_epoch": "permit-epoch-1",
-                  "mac": "50d0532fd179f887010baefd88b77bac59c4252359d8eb5d11b29ba2061af93a",
-                  "policy_decision_id": "pdr_4f7a8f4e545ce94896b74c108ac6dfab",
+                  "mac": "d5bf436f4574df58c1f02c6d65d0a251499bab57e0404ff989cd26654af4b2ab",
+                  "policy_decision_id": "pdr_b9bf545b83431cd6b9400644aef10881",
                   "replay_class": "non_idempotent",
-                  "seal_id": "seal_9b9f434379f76a3426cc37f7db180a97",
+                  "seal_id": "seal_1ff150f67ae79f8105deb3cecd8dd0a8",
                   "tenant_id": "iso-e2e-owner"
                 },
                 "sealed_input_ref": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558"
               },
-              "prev_hash": "sha256:4ae1b237311a0018801e0d41f6b37181baa34597fdb41e198147b19cc1b5e523",
-              "record_hash": "sha256:bdbec15e614c330910e2d98e9d47be68e9ac11796f4b402c8eb23456878d24c3"
+              "prev_hash": "sha256:55ac5ff301ab4ae211836325885736e1dc2ccacf669117cf212966b8b12a87aa",
+              "record_hash": "sha256:56ea7ef1abe43b91f14e1c632140ee6b16fead123e2a71fd780e75e29dcc1732"
             },
             {
               "seq": 15,
@@ -1757,10 +1757,10 @@
               "run_id": "iso-e2e-work-run",
               "payload": {
                 "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
-                "outbox_id": "out_0c3f265597b296c7d798333be897162d"
+                "outbox_id": "out_5afb684c6ba189583d36e503dd8a7a11"
               },
-              "prev_hash": "sha256:bdbec15e614c330910e2d98e9d47be68e9ac11796f4b402c8eb23456878d24c3",
-              "record_hash": "sha256:ae7b8a32e12746be9c6fffb037da5736d54c75cdc36877296301841183d87eb5"
+              "prev_hash": "sha256:56ea7ef1abe43b91f14e1c632140ee6b16fead123e2a71fd780e75e29dcc1732",
+              "record_hash": "sha256:9aaac6d6fe727f5e3583f2472fb520376307b4dbcbe79baf7b3292cff1d58309"
             },
             {
               "seq": 17,
@@ -1772,25 +1772,25 @@
                   {
                     "acl": "owner",
                     "created_by_run": "iso-e2e-work-run",
-                    "digest": "sha256:59eea01d2e0b916fda98d0dc204dd1478ccbea4b922a2c5d725c5419d9537a12",
+                    "digest": "sha256:5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d",
                     "kind": "spreadsheet",
                     "mode": "work",
                     "owner": "iso-e2e-owner",
                     "schema_version": 1,
                     "session": "iso-e2e-work",
-                    "uri": "echo://artifact/excel_write/59eea01d2e0b916fda98d0dc204dd1478ccbea4b922a2c5d725c5419d9537a12",
-                    "workspace": "ws-5d87fbe1c6fc4c572c0073b878641a4b64cf8e48f8baece91b954cf8f307d45b"
+                    "uri": "echo://artifact/excel_write/5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d",
+                    "workspace": "ws-ad919938bf494fb50ce94ef5b968398f875744201b4fb5991f3bfd294fbf8906"
                   }
                 ],
                 "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
-                "outbox_id": "out_0c3f265597b296c7d798333be897162d",
-                "output_hash": "sha256:59eea01d2e0b916fda98d0dc204dd1478ccbea4b922a2c5d725c5419d9537a12",
-                "output_ref": "sha256:59eea01d2e0b916fda98d0dc204dd1478ccbea4b922a2c5d725c5419d9537a12",
+                "outbox_id": "out_5afb684c6ba189583d36e503dd8a7a11",
+                "output_hash": "sha256:5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d",
+                "output_ref": "sha256:5b5accb149334bc9632732dafd7a0f0dff165ee3d8e70688e2b8e30915c1395d",
                 "replay_class": "non_idempotent",
                 "status": "ok"
               },
-              "prev_hash": "sha256:9907d955cf8483ff53bf945ad4824ce563001b1facc26f29c3a936f2740d207d",
-              "record_hash": "sha256:a84b920f235d9530f378cd863061e1f90cf652cda820a3fcf9079a2770e76f72"
+              "prev_hash": "sha256:803849386b19e1a9281c5247a87b077f40130a98306498e98290122993c87b83",
+              "record_hash": "sha256:a7869da22e7d89ce8280edb615c30ca7ff09b60a3d0c48743c3eaa076f5d1a46"
             },
             {
               "seq": 18,
@@ -1801,14 +1801,14 @@
                 "effect_id": "eff_42a2f1e362d3c0f2d95ae12e70688275",
                 "status": "ok"
               },
-              "prev_hash": "sha256:a84b920f235d9530f378cd863061e1f90cf652cda820a3fcf9079a2770e76f72",
-              "record_hash": "sha256:1e77f4cb897ca07310ddf3b40c1ff0b08bf672605f30aa16c0720e77855c3e80"
+              "prev_hash": "sha256:a7869da22e7d89ce8280edb615c30ca7ff09b60a3d0c48743c3eaa076f5d1a46",
+              "record_hash": "sha256:42859622585d617cb3e85beb154057cd073ed69752d7c73a7aba105fda2685c9"
             }
           ],
           "journal_evidence_path": "e2e/work/sdist/ledger.journal",
           "arguments_sha256": "sha256:70121ec75b70f9d79b2275578479cc3b4006df164c85348c38f224bf39c7b558",
-          "ledger_signature_b64": "5m2gv3TkfGnP3mI8uw8v5yWQdzRL+7TS5PAdRVFugqQjma2upZ4f+07llw1Hpl3Llnusou2EoJrgFHM3AhRpAw==",
-          "pubkey_fingerprint": "85df2fe3b07e9399fd20acdeed1afef3af3cd450edb48417530ef17aa4123d27"
+          "ledger_signature_b64": "zfR+gDKb7nmFMZOkHhG6f531DQBVl6qg1e7j8JQILOltyWBgaZYtNDOBI4xst470SMnvNNoj1e2a0Bgx5joACg==",
+          "pubkey_fingerprint": "b15df485259192b9a2568cf0d8d558bcfb667ecd0d8b00fb0cdaf48aac27b8e0"
         },
         "payload_ok": true
       }

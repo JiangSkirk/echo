@@ -1887,6 +1887,23 @@ def _normalize_sha256_ref(value: str) -> str:
     return text
 
 
+def _expand_isolated_e2e_argv(argv: Sequence[object], *, root: Path) -> list[str] | None:
+    expanded: list[str] = []
+    for item in argv:
+        if not isinstance(item, str) or not item:
+            return None
+        extra = ""
+        path_part = item
+        if item.startswith("{repo_root}") and "[" in item:
+            path_part, extra_tail = item.split("[", 1)
+            extra = "[" + extra_tail
+        expanded_item = _expand_repo_root_token(path_part, root=root)
+        if expanded_item is None:
+            return None
+        expanded.append(expanded_item + extra)
+    return expanded
+
+
 def _valid_isolated_venv_e2e_step(
     step: object,
     *,
@@ -1910,8 +1927,18 @@ def _valid_isolated_venv_e2e_step(
     cwd = step.get("cwd")
     if not isinstance(cwd, str) or not cwd.strip():
         return False
-    cwd_path = Path(cwd)
-    if not cwd_path.is_absolute() or str(cwd_path.resolve()) != cwd or not cwd_path.is_dir():
+    expanded_cwd = _expand_repo_root_token(cwd, root=root)
+    if expanded_cwd is None:
+        return False
+    expanded_argv = _expand_isolated_e2e_argv(argv, root=root)
+    if expanded_argv is None:
+        return False
+    cwd_path = Path(expanded_cwd)
+    if (
+        not cwd_path.is_absolute()
+        or str(cwd_path.resolve()) != expanded_cwd
+        or not cwd_path.is_dir()
+    ):
         return False
     if not any(
         _path_is_within(cwd_path, approved)
@@ -1923,11 +1950,13 @@ def _valid_isolated_venv_e2e_step(
     if not isinstance(stdout, str) or not isinstance(stderr, str):
         return False
     capture_values: dict[str, Path] = {}
+    expanded_captures: dict[str, str] = {}
     for field in ("stdout_path", "stderr_path", "step_receipt_path"):
         raw_path = step.get(field)
-        if not isinstance(raw_path, str) or not raw_path.strip():
+        expanded_path = _expand_repo_root_token(raw_path, root=root)
+        if expanded_path is None:
             return False
-        capture_path = Path(raw_path).resolve()
+        capture_path = Path(expanded_path).resolve()
         try:
             capture_path.relative_to(evidence_root.resolve())
         except ValueError:
@@ -1935,6 +1964,7 @@ def _valid_isolated_venv_e2e_step(
         if not capture_path.is_file():
             return False
         capture_values[field] = capture_path
+        expanded_captures[field] = expanded_path
     stdout_payload = capture_values["stdout_path"].read_bytes()
     stderr_payload = capture_values["stderr_path"].read_bytes()
     if (
@@ -1948,27 +1978,26 @@ def _valid_isolated_venv_e2e_step(
         step_receipt = strict_load_object(capture_values["step_receipt_path"])
     except (OSError, json.JSONDecodeError, StrictJSONError, ValueError):
         return False
-    if any(
-        step_receipt.get(field) != step.get(field)
-        for field in (
-            "argv",
-            "cwd",
-            "exit_code",
-            "stdout_sha256",
-            "stderr_sha256",
-            "stdout_path",
-            "stderr_path",
-            "step_receipt_path",
-        )
-    ):
+    receipt_expected: dict[str, object] = {
+        "argv": expanded_argv,
+        "cwd": expanded_cwd,
+        "exit_code": step.get("exit_code"),
+        "stdout_sha256": step.get("stdout_sha256"),
+        "stderr_sha256": step.get("stderr_sha256"),
+        "stdout_path": expanded_captures["stdout_path"],
+        "stderr_path": expanded_captures["stderr_path"],
+        "step_receipt_path": expanded_captures["step_receipt_path"],
+    }
+    if any(step_receipt.get(field) != receipt_expected[field] for field in receipt_expected):
         return False
+    argv = expanded_argv
     if any(Path(argument).name == "true" for argument in argv):
         return False
     name = step.get("step")
     if not isinstance(name, str):
         return False
 
-    def _python_command(command: list[object]) -> bool:
+    def _python_command(command: Sequence[object]) -> bool:
         if not command or not isinstance(command[0], str) or "python" not in Path(command[0]).name:
             return False
         executable = Path(command[0])
@@ -2062,7 +2091,10 @@ def _valid_isolated_venv_e2e_step(
             report = step.get("pip_report")
             if not isinstance(report, dict):
                 return False
-            report_path = Path(str(report.get("path", ""))).resolve()
+            report_path_raw = _expand_repo_root_token(report.get("path"), root=root)
+            if report_path_raw is None:
+                return False
+            report_path = Path(report_path_raw).resolve()
             if (
                 not report_path.is_file()
                 or not _path_is_within(report_path, evidence_root.resolve())
@@ -2094,8 +2126,15 @@ def _valid_isolated_venv_e2e_step(
             for module_evidence in modules.values():
                 if not isinstance(module_evidence, dict):
                     return False
-                module_file = Path(str(module_evidence.get("file", ""))).resolve()
-                site_packages = Path(str(module_evidence.get("site_packages", ""))).resolve()
+                module_file_raw = _expand_repo_root_token(module_evidence.get("file"), root=root)
+                site_packages_raw = _expand_repo_root_token(
+                    module_evidence.get("site_packages"),
+                    root=root,
+                )
+                if module_file_raw is None or site_packages_raw is None:
+                    return False
+                module_file = Path(module_file_raw).resolve()
+                site_packages = Path(site_packages_raw).resolve()
                 claimed_sha = module_evidence.get("file_sha256")
                 if (
                     not module_file.is_file()
@@ -2794,12 +2833,13 @@ def _valid_isolated_venv_e2e_provider_detail(
 
 def _resolve_isolated_e2e_evidence_root(root: Path, data: Mapping[str, object]) -> Path | None:
     evidence_root = data.get("evidence_root")
-    if not isinstance(evidence_root, str) or not evidence_root.strip():
+    expanded = _expand_repo_root_token(evidence_root, root=root)
+    if expanded is None:
         return None
-    # Accept both relative (within repo) and absolute (external evidence) paths
-    candidate = Path(evidence_root)
+    # Accept repo-relative, {repo_root}/rel, and absolute (external evidence) paths.
+    candidate = Path(expanded)
     if not candidate.is_absolute():
-        candidate = (root / evidence_root).resolve()
+        candidate = (root / expanded).resolve()
         resolved_root = root.resolve()
         try:
             candidate.relative_to(resolved_root)
@@ -4483,7 +4523,9 @@ def _expand_repo_root_token(value: object, *, root: Path) -> str | None:
         suffix = value.removeprefix(prefix)
         if not suffix or suffix.startswith("/") or ".." in Path(suffix).parts:
             return None
-        return str((resolved / suffix).resolve())
+        # Do not follow the final symlink: venv python receipts record
+        # `{repo_root}/.venv/bin/python`, not the Homebrew Cellar target.
+        return str(resolved / suffix)
     return value
 
 
