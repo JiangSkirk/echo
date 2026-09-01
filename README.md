@@ -4,6 +4,9 @@ Echo 是本地个人 Agent 的**核心回合架构**：模型、工具、附件�
 
 本仓库只介绍这个模型。可运行的产品在 [titan-agent](https://github.com/JiangSkirk/titan-agent)；旁路保安在 [orin](https://github.com/JiangSkirk/orin)。
 
+- **Echo 2.0**：回合合同（`EchoRuntime` / 租约 / ledger / `pulse()`）。
+- **Echo 3.0**：同一内核抽成 `echo-core`，Host 通过 `GuardianSPI` 盖章；进化分 `tighten` / `note` / `widen`。见 [docs/ECHO_3_ARCHITECTURE.md](docs/ECHO_3_ARCHITECTURE.md)。
+
 [English](#echo-core-architecture)
 
 ## 一句话
@@ -44,6 +47,12 @@ flowchart TD
 
 `pulse()` 只观察背压（准入/调度），不调用模型、工具、文件或网络。
 
+## Echo 3.0 抽包
+
+内核在 titan-agent 的 `packages/echo-core`（版本 3.0.0）。`echo-core` 不 import `js.*`，也不 import `orin-guard`。Host 绑定 `GuardianSPI`；`NullGuardian` fail-closed。进化：`tighten` / `note` 可在 USER_TURN-only taint 下自动提交；**`widen` 永不无人值守**。
+
+PyPI 未上架。从产品仓 path 安装。
+
 ## 核心零件
 
 | 零件 | 职责 |
@@ -55,6 +64,8 @@ flowchart TD
 | `CapabilityLease` | 单次租约；消费先于 handler |
 | `ScopeGate` | 把 product / session / run / 模型 / 消息 / 工具绑进许可 |
 | `FileEchoLedger` | MAC/hash 链式 journal、outbox、收据、恢复 |
+| `GuardianSPI` | Host 盖章；echo-core 不直接依赖 orin-guard |
+| `Phylogeny` | 两档进化；widen 永不自动提交 |
 
 扩展规则：新渠道只组 `TurnRequest`，不另写 Agent loop；新模型走 router 合同，不能绕过模型回调；新工具只注册元数据，执行必须经过租约后的 `ToolEffect`。
 
@@ -62,16 +73,20 @@ flowchart TD
 
 - [docs/DEFAULT_ARCHITECTURE.md](docs/DEFAULT_ARCHITECTURE.md) — 默认路径
 - [docs/ECHO_2_ARCHITECTURE.md](docs/ECHO_2_ARCHITECTURE.md) — 运行时组件
+- [docs/ECHO_3_ARCHITECTURE.md](docs/ECHO_3_ARCHITECTURE.md) — 抽包、SPI、两档进化
 - [docs/ECHO_UNIFIED_EXECUTION_CONTRACT.md](docs/ECHO_UNIFIED_EXECUTION_CONTRACT.md) — 统一执行合同
 - [docs/adr/0001-echo-ledger-boundary.md](docs/adr/0001-echo-ledger-boundary.md) — 账本边界 ADR
+- [docs/adr/0009-echo-core-orin-guard-extraction.md](docs/adr/0009-echo-core-orin-guard-extraction.md) — 抽包 ADR
+- [docs/adr/0010-echo-two-tier-learning.md](docs/adr/0010-echo-two-tier-learning.md) — 两档进化 ADR
 
-这里没有桌面、Host、bots、Fleet，也没有把 `js/echo` 整树搬过来。实现仍在产品仓。
+这里没有桌面、Host、bots、Fleet，也没有把 `echo_core` 源码整树搬过来。实现仍在产品仓。
 
 ## 明确不宣称
 
 - Echo 不是对抗性模型的承重隔离；承重边界是 OS 沙箱。Echo 是授权与纵深。
 - 默认没有第二套运行时。`off` / `shadow` 这类回滚开关 fail-closed。
-- 本仓库是架构说明，不是 GitHub stable 发行。
+- `widen` 不会自动提交。Stage C / `orin.enforce` 默认 true 未宣称。
+- 本仓库是架构说明，不是 GitHub stable 发行，也不是 PyPI。
 
 MIT。见 [LICENSE](LICENSE)。
 
@@ -83,6 +98,8 @@ Echo is the **turn architecture** for a local personal agent: models, tools, att
 
 This repository is that introduction. The runnable product is [titan-agent](https://github.com/JiangSkirk/titan-agent). The sidecar gate is [orin](https://github.com/JiangSkirk/orin).
 
+**Echo 2.0** is the turn contract. **Echo 3.0** is that kernel as `echo-core`: Host-wired `GuardianSPI`, two-tier phylogeny (`tighten` / `note` / `widen`; widen never unattended). Details: [docs/ECHO_3_ARCHITECTURE.md](docs/ECHO_3_ARCHITECTURE.md).
+
 One turn: adapter → `TurnRequest` → `EchoRuntime` → `EchoTurnLoop` → `EffectInterpreter` → gated model call or single-use `CapabilityLease` → `FileEchoLedger`. `pulse()` observes backpressure only; it does not Exec.
 
-Fail closed. No second loop. No naked provider or tool-handler calls in normal operation.
+Fail closed. No second loop. No naked provider or tool-handler calls in normal operation. Not on PyPI.
